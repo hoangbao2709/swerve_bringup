@@ -1,0 +1,5 @@
+PARAM_PARSE=PASS file=/tmp/baseline.urdf input_bytes=18701 parsed_bytes=15919
+[rcutils|error_handling.c:65] an error string (message, file name, or formatted message) will be truncated
+[ERROR] [1789656216.376907500] [rcl]: Failed to parse global arguments
+PARAM_PARSE=FAIL file=/tmp/proper.urdf error=RCLError: 
+PARAM_PARSE=PASS file=/tmp/proper_comment_fixed.urdf input_bytes=21626 parsed_bytes=18529

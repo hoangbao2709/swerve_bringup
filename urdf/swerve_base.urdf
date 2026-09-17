@@ -107,7 +107,7 @@
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="1.5708 0 0"/>
-        <!-- Cylinder axis is Y: this is the rolling DOF of the test caster. -->
+        <!-- Cylinder axis is Y; this is the rolling DOF of the test caster. -->
         <geometry><cylinder radius="0.040" length="0.040"/></geometry>
       </collision>
       <inertial>

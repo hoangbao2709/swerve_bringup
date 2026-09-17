@@ -1,0 +1,233 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-5f6a6616ddc5318eb5be.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17
+					]
+				},
+				{
+					"build" : "swerve_bringup__py",
+					"jsonFile" : "directory-swerve_bringup__py-db0015b12c0c7e77dad8.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "build/swerve_bringup/swerve_bringup__py",
+					"targetIndexes" : 
+					[
+						4
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0,
+						1
+					],
+					"name" : "swerve_bringup",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_build_swerve_bringup_egg::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_build_swerve_bringup_egg-b00cd5934dfdc739a932.json",
+					"name" : "ament_cmake_python_build_swerve_bringup_egg",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_symlink_swerve_bringup::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_symlink_swerve_bringup-530c38767c46dfc37195.json",
+					"name" : "ament_cmake_python_symlink_swerve_bringup",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup-9517ac924e31f7e11638.json",
+					"name" : "swerve_bringup",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__cpp-d02d0b53abb88224c1f7.json",
+					"name" : "swerve_bringup__cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "swerve_bringup__py::@b46d7779a59364104143",
+					"jsonFile" : "target-swerve_bringup__py-96b22156e7d537f4fa30.json",
+					"name" : "swerve_bringup__py",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_generator_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_generator_c-075768a199b7d36f3c7b.json",
+					"name" : "swerve_bringup__rosidl_generator_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_generator_py::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_generator_py-9482a65741c3c09353e6.json",
+					"name" : "swerve_bringup__rosidl_generator_py",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_c-8e5057860636d2e990c1.json",
+					"name" : "swerve_bringup__rosidl_typesupport_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_c__pyext-6365af750c650d466b4f.json",
+					"name" : "swerve_bringup__rosidl_typesupport_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_cpp-9b8390524947dfcdb763.json",
+					"name" : "swerve_bringup__rosidl_typesupport_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_fastrtps_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_fastrtps_c-5a1ddbec4772bad88c2f.json",
+					"name" : "swerve_bringup__rosidl_typesupport_fastrtps_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_fastrtps_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_fastrtps_c__pyext-bd833911e5032764bdcc.json",
+					"name" : "swerve_bringup__rosidl_typesupport_fastrtps_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_fastrtps_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_fastrtps_cpp-99b2d7536624aa1f3fb5.json",
+					"name" : "swerve_bringup__rosidl_typesupport_fastrtps_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_introspection_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_introspection_c-97aab810e6627e519ea5.json",
+					"name" : "swerve_bringup__rosidl_typesupport_introspection_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_introspection_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_introspection_c__pyext-7256fc2710f1e602e558.json",
+					"name" : "swerve_bringup__rosidl_typesupport_introspection_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup__rosidl_typesupport_introspection_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup__rosidl_typesupport_introspection_cpp-0a00e3ed3fefac82a049.json",
+					"name" : "swerve_bringup__rosidl_typesupport_introspection_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "swerve_bringup_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-swerve_bringup_uninstall-530210de4d790941c5c1.json",
+					"name" : "swerve_bringup_uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-c78a6097c6434126cc9a.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/yahboom/swerve_bringup/build/swerve_bringup",
+		"source" : "/home/yahboom/swerve_bringup"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

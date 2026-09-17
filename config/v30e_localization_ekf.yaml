@@ -32,7 +32,9 @@ ekf_v30e:
     imu0_relative: false
     imu0_remove_gravitational_acceleration: false
     # Absolute V30E correction is sparse: no message means no correction.
-    pose0: /v30e/pose
+    # Tag route planner reconstructs this correction from the approved tag graph
+    # plus V30E offset; wheel odometry/IMU remain active between detections.
+    pose0: /tag_navigation/global_measurement
     pose0_config: [true, true, false, false, false, true,
                    false, false, false, false, false, false,
                    false, false, false]

@@ -11,9 +11,8 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
-from nav2_msgs.action import NavigateToPose
+from swerve_bringup.action import GoToTag
 from sensor_msgs.msg import JointState
 
 
@@ -32,7 +31,7 @@ class SwerveBridge(Node):
         self.declare_parameter('heartbeat_rate', 1.0)
         self.declare_parameter('odom_topic', '/odometry/filtered')
         self.declare_parameter('joint_states_topic', '/joint_states')
-        self.declare_parameter('navigate_action', '/navigate_to_pose')
+        self.declare_parameter('navigate_action', '/go_to_tag')
         self.declare_parameter('navigate_server_timeout', 2.0)
         self.robot_id = str(self.get_parameter('robot_id').value)
         self.ws_url = str(self.get_parameter('django_ws_url').value)
@@ -52,7 +51,7 @@ class SwerveBridge(Node):
 
         self.create_subscription(Odometry, str(self.get_parameter('odom_topic').value), self.odom_cb, 20)
         self.create_subscription(JointState, str(self.get_parameter('joint_states_topic').value), self.joint_cb, 10)
-        self.nav_client = ActionClient(self, NavigateToPose, str(self.get_parameter('navigate_action').value))
+        self.nav_client = ActionClient(self, GoToTag, str(self.get_parameter('navigate_action').value))
         self.create_timer(self.telemetry_period, self.telemetry_timer)
         self.create_timer(1.0 / max(0.1, float(self.get_parameter('heartbeat_rate').value)), self.heartbeat_timer)
         self.create_timer(0.05, self.process_commands)
@@ -140,25 +139,21 @@ class SwerveBridge(Node):
             'robot_id': self.robot_id,
         }
         if self.active_goal is not None or self.goal_request_pending:
-            self.send_nav_status(context, 'FAILED', 'another Nav2 goal is already active')
+            self.send_nav_status(context, 'FAILED', 'another tag-navigation goal is already active')
+            return
+        if 'target_tag_id' not in data:
+            self.send_nav_status(context, 'FAILED', 'target_tag_id is required; x/y navigation is not supported')
             return
         timeout = float(self.get_parameter('navigate_server_timeout').value)
         if not self.nav_client.wait_for_server(timeout_sec=timeout):
             self.nav_state = 'FAILED'
             self.send_nav_status(
                 context, 'FAILED',
-                f'Nav2 action server unavailable after {timeout:.1f}s',
+                f'GoToTag action server unavailable after {timeout:.1f}s',
             )
             return
-        goal = NavigateToPose.Goal()
-        goal.pose = PoseStamped()
-        goal.pose.header.frame_id = str(data.get('frame_id') or 'map')
-        goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = float(data.get('x', 0.0))
-        goal.pose.pose.position.y = float(data.get('y', 0.0))
-        yaw = float(data.get('yaw', 0.0))
-        goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
+        goal = GoToTag.Goal()
+        goal.target_tag_id = int(data['target_tag_id'])
         self.nav_state = 'PENDING'
         self.goal_request_pending = True
         try:
@@ -184,11 +179,11 @@ class SwerveBridge(Node):
             handle = future.result()
         except Exception as exc:
             self.nav_state = 'FAILED'
-            self.send_nav_status(context, 'FAILED', f'Nav2 goal request failed: {exc}')
+            self.send_nav_status(context, 'FAILED', f'GoToTag goal request failed: {exc}')
             return
         if handle is None or not handle.accepted:
             self.nav_state = 'FAILED'
-            self.send_nav_status(context, 'FAILED', 'Nav2 rejected the goal')
+            self.send_nav_status(context, 'FAILED', 'GoToTag rejected the goal')
             return
         self.active_goal = handle
         self.active_context = context
@@ -220,7 +215,7 @@ class SwerveBridge(Node):
             self.active_goal = None
             self.active_context = None
             self.cancel_pending = False
-        reason = None if status != 'FAILED' else f'Nav2 finished with status code {status_code}'
+        reason = None if status != 'FAILED' else f'GoToTag finished with status code {status_code}'
         self.send_nav_status(context, status, reason)
 
     def cancel_navigation(self, data):

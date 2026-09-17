@@ -15,6 +15,7 @@ def generate_launch_description():
     map_file = os.path.join(pkg, 'config', 'datamatrix_map.yaml')
     sim_cfg = os.path.join(pkg, 'config', 'v30e_sim.yaml')
     ekf_cfg = os.path.join(pkg, 'config', 'v30e_localization_ekf.yaml')
+    tag_nav_cfg = os.path.join(pkg, 'config', 'tag_navigation.yaml')
     reader = Node(package='swerve_bringup', executable='v30e_sim_node', name='v30e_sim_node',
                   output='screen', condition=IfCondition(enabled),
                   parameters=[sim_cfg, {'marker_map': map_file,
@@ -23,6 +24,9 @@ def generate_launch_description():
                output='screen', condition=IfCondition(enabled),
                parameters=[ekf_cfg, {'use_sim_time': LaunchConfiguration('use_sim_time')}],
                remappings=[('odometry/filtered', '/odometry/v30e')])
+    tag_navigation = Node(package='swerve_bringup', executable='tag_route_planner',
+                          name='tag_route_planner', output='screen', condition=IfCondition(enabled),
+                          parameters=[tag_nav_cfg, {'use_sim_time': LaunchConfiguration('use_sim_time')}])
     return LaunchDescription([
         DeclareLaunchArgument('enable_v30e_sim', default_value='false'),
-        DeclareLaunchArgument('use_sim_time', default_value='true'), reader, ekf])
+        DeclareLaunchArgument('use_sim_time', default_value='true'), reader, tag_navigation, ekf])

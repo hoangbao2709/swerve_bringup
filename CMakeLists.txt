@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.8)
 project(swerve_bringup)
 
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/GoToTag.action"
+)
 
 install(
   DIRECTORY urdf meshes launch rviz worlds config models
@@ -45,9 +50,28 @@ install(
 )
 
 install(
+  PROGRAMS swerve_controller/tag_route_planner_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME tag_route_planner
+)
+
+install(
+  FILES swerve_controller/tag_navigation_core.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+ament_export_dependencies(rosidl_default_runtime)
+
+install(
   PROGRAMS test_navigation.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME test_navigation.py
+)
+
+install(
+  PROGRAMS indoor_localization_navigation.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME tag_navigation_cli
 )
 
 install(

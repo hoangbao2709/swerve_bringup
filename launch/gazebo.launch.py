@@ -176,7 +176,6 @@ def generate_launch_description():
                       on_exit=[swerve_controller, swerve_odometry, ekf]))
 
     return LaunchDescription([
-        LogInfo(msg=['CONTACT_DIAGNOSTICS=', LaunchConfiguration('contact_diagnostics')]),
         DeclareLaunchArgument(
             'use_sim_time', default_value='true',
             description='Use the Gazebo /clock for every ROS node.',

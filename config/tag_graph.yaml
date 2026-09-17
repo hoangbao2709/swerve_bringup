@@ -1,0 +1,50 @@
+# Authoritative allowed-travel graph.  Every listed edge is an inspected aisle
+# corridor; absence of an edge means travel is prohibited (including across a shelf).
+# IDs/poses come from datamatrix_map.yaml.  Neighbours are deliberately explicit,
+# never inferred from distance.
+tags:
+  101: {x: -12.0, y: -8.0, yaw: 0.0, neighbors: [102, 201]}
+  102: {x: -9.0, y: -8.0, yaw: 0.0, neighbors: [101, 103]}
+  103: {x: -6.0, y: -8.0, yaw: 0.0, neighbors: [102, 104]}
+  104: {x: -3.0, y: -8.0, yaw: 0.0, neighbors: [103, 105]}
+  105: {x: 0.0, y: -8.0, yaw: 0.0, neighbors: [104, 106, 205]}
+  106: {x: 3.0, y: -8.0, yaw: 0.0, neighbors: [105, 107]}
+  107: {x: 6.0, y: -8.0, yaw: 0.0, neighbors: [106, 108]}
+  108: {x: 9.0, y: -8.0, yaw: 0.0, neighbors: [107, 109]}
+  109: {x: 12.0, y: -8.0, yaw: 0.0, neighbors: [108, 209]}
+  201: {x: -12.0, y: -4.0, yaw: 0.0, neighbors: [101, 202, 301]}
+  202: {x: -9.0, y: -4.0, yaw: 0.0, neighbors: [201, 203]}
+  203: {x: -6.0, y: -4.0, yaw: 0.0, neighbors: [202, 204]}
+  204: {x: -3.0, y: -4.0, yaw: 0.0, neighbors: [203, 205]}
+  205: {x: 0.0, y: -4.0, yaw: 0.0, neighbors: [105, 204, 206, 305]}
+  206: {x: 3.0, y: -4.0, yaw: 0.0, neighbors: [205, 207]}
+  207: {x: 6.0, y: -4.0, yaw: 0.0, neighbors: [206, 208]}
+  208: {x: 9.0, y: -4.0, yaw: 0.0, neighbors: [207, 209]}
+  209: {x: 12.0, y: -4.0, yaw: 0.0, neighbors: [109, 208, 309]}
+  301: {x: -12.0, y: 0.0, yaw: 0.0, neighbors: [201, 302, 401]}
+  302: {x: -9.0, y: 0.0, yaw: 0.0, neighbors: [301, 303]}
+  303: {x: -6.0, y: 0.0, yaw: 0.0, neighbors: [302, 304]}
+  304: {x: -3.0, y: 0.0, yaw: 0.0, neighbors: [303, 305]}
+  305: {x: 0.0, y: 0.0, yaw: 0.0, neighbors: [205, 405]}
+  306: {x: 3.0, y: 0.0, yaw: 0.0, neighbors: [406, 307]}
+  307: {x: 6.0, y: 0.0, yaw: 0.0, neighbors: [306, 308]}
+  308: {x: 9.0, y: 0.0, yaw: 0.0, neighbors: [307, 309]}
+  309: {x: 12.0, y: 0.0, yaw: 0.0, neighbors: [209, 308, 409]}
+  401: {x: -12.0, y: 4.0, yaw: 0.0, neighbors: [301, 402, 501]}
+  402: {x: -9.0, y: 4.0, yaw: 0.0, neighbors: [401, 403]}
+  403: {x: -6.0, y: 4.0, yaw: 0.0, neighbors: [402, 404]}
+  404: {x: -3.0, y: 4.0, yaw: 0.0, neighbors: [403, 405]}
+  405: {x: 0.0, y: 4.0, yaw: 0.0, neighbors: [305, 404, 406, 505]}
+  406: {x: 3.0, y: 4.0, yaw: 0.0, neighbors: [306, 405, 407]}
+  407: {x: 6.0, y: 4.0, yaw: 0.0, neighbors: [406, 408]}
+  408: {x: 9.0, y: 4.0, yaw: 0.0, neighbors: [407, 409]}
+  409: {x: 12.0, y: 4.0, yaw: 0.0, neighbors: [309, 408, 509]}
+  501: {x: -12.0, y: 8.0, yaw: 0.0, neighbors: [401, 502]}
+  502: {x: -9.0, y: 8.0, yaw: 0.0, neighbors: [501, 503]}
+  503: {x: -6.0, y: 8.0, yaw: 0.0, neighbors: [502, 504]}
+  504: {x: -3.0, y: 8.0, yaw: 0.0, neighbors: [503, 505]}
+  505: {x: 0.0, y: 8.0, yaw: 0.0, neighbors: [405, 504, 506]}
+  506: {x: 3.0, y: 8.0, yaw: 0.0, neighbors: [505, 507]}
+  507: {x: 6.0, y: 8.0, yaw: 0.0, neighbors: [506, 508]}
+  508: {x: 9.0, y: 8.0, yaw: 0.0, neighbors: [507, 509]}
+  509: {x: 12.0, y: 8.0, yaw: 0.0, neighbors: [409, 508]}

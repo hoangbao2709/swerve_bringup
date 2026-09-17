@@ -1,0 +1,30 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from swerve_bringup/action/GoToTag.action
+// generated code does not contain a copyright notice
+
+
+module swerve_bringup {
+  module action {
+    @verbatim (language="comment", text=
+      "Public navigation contract.  Coordinates intentionally do not appear here.")
+    struct GoToTag_Goal {
+      int32 target_tag_id;
+    };
+    struct GoToTag_Result {
+      boolean success;
+
+      string reason;
+    };
+    struct GoToTag_Feedback {
+      int32 current_tag_id;
+
+      int32 next_tag_id;
+
+      int32 target_tag_id;
+
+      string state;
+
+      float progress;
+    };
+  };
+};

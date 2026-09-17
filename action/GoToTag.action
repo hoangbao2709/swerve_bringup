@@ -1,0 +1,11 @@
+# Public navigation contract.  Coordinates intentionally do not appear here.
+int32 target_tag_id
+---
+bool success
+string reason
+---
+int32 current_tag_id
+int32 next_tag_id
+int32 target_tag_id
+string state
+float32 progress

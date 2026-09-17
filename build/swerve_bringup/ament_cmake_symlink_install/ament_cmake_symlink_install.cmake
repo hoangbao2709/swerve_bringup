@@ -310,6 +310,60 @@ message(STATUS "Execute custom install script")
 
 # begin of custom install code
 
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_index/share/ament_index/resource_index/rosidl_interfaces/swerve_bringup" "DESTINATION" "share/ament_index/resource_index/rosidl_interfaces")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_index/share/ament_index/resource_index/rosidl_interfaces/swerve_bringup" "DESTINATION" "share/ament_index/resource_index/rosidl_interfaces")
+
+# install(DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_generator_c/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN" "*.h")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_generator_c/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN" "*.h")
+
+# install(FILES "/opt/ros/humble/lib/python3.10/site-packages/ament_package/template/environment_hook/library_path.sh" "DESTINATION" "share/swerve_bringup/environment")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/opt/ros/humble/lib/python3.10/site-packages/ament_package/template/environment_hook/library_path.sh" "DESTINATION" "share/swerve_bringup/environment")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_environment_hooks/library_path.dsv" "DESTINATION" "share/swerve_bringup/environment")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_environment_hooks/library_path.dsv" "DESTINATION" "share/swerve_bringup/environment")
+
+# install(DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_fastrtps_c/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN_EXCLUDE" "*.cpp")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_fastrtps_c/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN_EXCLUDE" "*.cpp")
+
+# install(DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_introspection_c/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN" "*.h")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_introspection_c/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN" "*.h")
+
+# install(DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_generator_cpp/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN" "*.hpp")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_generator_cpp/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN" "*.hpp")
+
+# install(DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_fastrtps_cpp/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN_EXCLUDE" "*.cpp")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_fastrtps_cpp/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN_EXCLUDE" "*.cpp")
+
+# install(DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_introspection_cpp/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN" "*.hpp")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_introspection_cpp/swerve_bringup/" "DESTINATION" "include/swerve_bringup/swerve_bringup" "PATTERN" "*.hpp")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_environment_hooks/pythonpath.sh" "DESTINATION" "share/swerve_bringup/environment")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_environment_hooks/pythonpath.sh" "DESTINATION" "share/swerve_bringup/environment")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_environment_hooks/pythonpath.dsv" "DESTINATION" "share/swerve_bringup/environment")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_environment_hooks/pythonpath.dsv" "DESTINATION" "share/swerve_bringup/environment")
+
+# install(DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_python/swerve_bringup/swerve_bringup.egg-info/" "DESTINATION" "lib/python3.10/site-packages/swerve_bringup-0.1.0-py3.10.egg-info")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_python/swerve_bringup/swerve_bringup.egg-info/" "DESTINATION" "lib/python3.10/site-packages/swerve_bringup-0.1.0-py3.10.egg-info")
+
+# install(DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_generator_py/swerve_bringup/" "DESTINATION" "lib/python3.10/site-packages/swerve_bringup" "PATTERN_EXCLUDE" "*.pyc" "PATTERN_EXCLUDE" "__pycache__")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_generator_py/swerve_bringup/" "DESTINATION" "lib/python3.10/site-packages/swerve_bringup" "PATTERN_EXCLUDE" "*.pyc" "PATTERN_EXCLUDE" "__pycache__")
+
+# install("TARGETS" "swerve_bringup__rosidl_typesupport_fastrtps_c__pyext" "DESTINATION" "lib/python3.10/site-packages/swerve_bringup")
+include("/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_symlink_install_targets_0_${CMAKE_INSTALL_CONFIG_NAME}.cmake")
+
+# install("TARGETS" "swerve_bringup__rosidl_typesupport_introspection_c__pyext" "DESTINATION" "lib/python3.10/site-packages/swerve_bringup")
+include("/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_symlink_install_targets_1_${CMAKE_INSTALL_CONFIG_NAME}.cmake")
+
+# install("TARGETS" "swerve_bringup__rosidl_typesupport_c__pyext" "DESTINATION" "lib/python3.10/site-packages/swerve_bringup")
+include("/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_symlink_install_targets_2_${CMAKE_INSTALL_CONFIG_NAME}.cmake")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_adapter/swerve_bringup/action/GoToTag.idl" "DESTINATION" "share/swerve_bringup/action")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_adapter/swerve_bringup/action/GoToTag.idl" "DESTINATION" "share/swerve_bringup/action")
+
+# install(FILES "/home/yahboom/swerve_bringup/action/GoToTag.action" "DESTINATION" "share/swerve_bringup/action")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/action/GoToTag.action" "DESTINATION" "share/swerve_bringup/action")
+
 # install(DIRECTORY "urdf" "meshes" "launch" "rviz" "worlds" "config" "models" "DESTINATION" "share/swerve_bringup")
 ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "urdf" "meshes" "launch" "rviz" "worlds" "config" "models" "DESTINATION" "share/swerve_bringup")
 
@@ -318,6 +372,9 @@ ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "
 
 # install(FILES "swerve_navigation/launch/navigation.launch.py" "DESTINATION" "share/swerve_bringup/launch")
 ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "swerve_navigation/launch/navigation.launch.py" "DESTINATION" "share/swerve_bringup/launch")
+
+# install(FILES "swerve_controller/tag_navigation_core.py" "DESTINATION" "lib/swerve_bringup")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "swerve_controller/tag_navigation_core.py" "DESTINATION" "lib/swerve_bringup")
 
 # install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/swerve_bringup" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")
 ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/swerve_bringup" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")
@@ -354,6 +411,27 @@ ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/ya
 
 # install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_index/share/ament_index/resource_index/packages/swerve_bringup" "DESTINATION" "share/ament_index/resource_index/packages")
 ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_index/share/ament_index/resource_index/packages/swerve_bringup" "DESTINATION" "share/ament_index/resource_index/packages")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_cmake/rosidl_cmake-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_cmake/rosidl_cmake-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_export_dependencies/ament_cmake_export_dependencies-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_export_dependencies/ament_cmake_export_dependencies-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_export_include_directories/ament_cmake_export_include_directories-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_export_include_directories/ament_cmake_export_include_directories-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_export_libraries/ament_cmake_export_libraries-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_export_libraries/ament_cmake_export_libraries-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_export_targets/ament_cmake_export_targets-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_export_targets/ament_cmake_export_targets-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_cmake/rosidl_cmake_export_typesupport_targets-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_cmake/rosidl_cmake_export_typesupport_targets-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+
+# install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
+ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake" "DESTINATION" "share/swerve_bringup/cmake")
 
 # install(FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_core/swerve_bringupConfig.cmake" "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_core/swerve_bringupConfig-version.cmake" "DESTINATION" "share/swerve_bringup/cmake")
 ament_cmake_symlink_install_files("/home/yahboom/swerve_bringup" FILES "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_core/swerve_bringupConfig.cmake" "/home/yahboom/swerve_bringup/build/swerve_bringup/ament_cmake_core/swerve_bringupConfig-version.cmake" "DESTINATION" "share/swerve_bringup/cmake")

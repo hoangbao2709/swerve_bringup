@@ -1,0 +1,1 @@
+ament_cmake_symlink_install_targets("TARGET_FILES" "/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_generator_py/swerve_bringup/swerve_bringup_s__rosidl_typesupport_c.cpython-310-x86_64-linux-gnu.so" "TARGETS" "swerve_bringup__rosidl_typesupport_c__pyext" "DESTINATION" "lib/python3.10/site-packages/swerve_bringup")

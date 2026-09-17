@@ -1,0 +1,1 @@
+CMake Error: failed to create symbolic link '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/python3.10/site-packages/swerve_bringup-0.1.0-py3.10.egg-info/dependency_links.txt': File exists

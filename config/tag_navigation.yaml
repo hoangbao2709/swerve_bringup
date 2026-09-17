@@ -1,0 +1,18 @@
+tag_route_planner:
+  ros__parameters:
+    tag_graph_file: tag_graph.yaml
+    map_frame: map
+    base_frame: base_footprint
+    navigate_action: /navigate_to_pose
+    tag_id_topic: /v30e/tag_id
+    offset_topic: /v30e/offset
+    cmd_vel_topic: /cmd_vel
+    approach_radius: 0.20
+    approach_speed: 0.05
+    tag_acquire_timeout: 5.0
+    max_approach_distance: 0.30
+    tag_capture_x_tol: 0.10
+    tag_capture_y_tol: 0.10
+    detection_max_age: 0.50
+    offset_max_age: 0.50
+    replan_on_wrong_tag: true

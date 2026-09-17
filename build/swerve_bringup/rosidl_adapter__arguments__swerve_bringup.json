@@ -1,0 +1,6 @@
+{
+  "package_name": "swerve_bringup",
+  "non_idl_tuples": [
+    "/home/yahboom/swerve_bringup:action/GoToTag.action"
+  ]
+}

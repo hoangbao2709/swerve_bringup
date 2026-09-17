@@ -51,6 +51,9 @@
   <xacro:arg name="enable_contact_sensors" default="false"/>
   <xacro:arg name="caster_frictionless" default="false"/>
   <xacro:arg name="proper_caster_test" default="false"/>
+  <!-- Diagnostic switch: lets Gazebo physics be tested independently from
+       gazebo_ros2_control without changing production's default behaviour. -->
+  <xacro:arg name="enable_gazebo_ros2_control" default="true"/>
 
   <xacro:property name="lidar_x" value="$(arg lidar_x)"/>
   <xacro:property name="lidar_y" value="$(arg lidar_y)"/>
@@ -79,7 +82,9 @@
   <xacro:if value="$(arg caster_frictionless)"><xacro:property name="caster_mu" value="0.0"/></xacro:if>
 
   <!-- Test-only physical caster.  The default branch below is intentionally
-       unchanged; this branch adds the missing swivel + rolling DOFs. -->
+       unchanged; this branch adds the missing swivel + rolling DOFs.  CAD and
+       a CFAV2-D50-120 drawing in this workspace do not specify a trail, so
+       this is explicitly a zero-trail passive swivel-wheel approximation. -->
   <xacro:macro name="proper_caster" params="name x y">
     <link name="${name}_fork_link">
       <inertial>
@@ -93,9 +98,15 @@
       <dynamics friction="0.02" damping="0.02"/>
     </joint>
     <link name="${name}_link">
-      <visual><geometry><sphere radius="0.0414"/></geometry><material name="dark"/></visual>
+      <!-- The wheel link frame is its axle centre.  Keep visual and collision
+           co-located so the rendered geometry exposes the actual roll axis. -->
+      <visual>
+        <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+        <geometry><cylinder radius="0.040" length="0.040"/></geometry>
+        <material name="dark"/>
+      </visual>
       <collision>
-        <origin xyz="0 0 -0.0434" rpy="1.5708 0 0"/>
+        <origin xyz="0 0 0" rpy="1.5708 0 0"/>
         <!-- Cylinder axis is Y: this is the rolling DOF of the test caster. -->
         <geometry><cylinder radius="0.040" length="0.040"/></geometry>
       </collision>
@@ -106,7 +117,9 @@
     </link>
     <joint name="${name}_roll_joint" type="continuous">
       <parent link="${name}_fork_link"/><child link="${name}_link"/>
-      <origin xyz="0 0 0"/><axis xyz="0 1 0"/>
+      <!-- With swivel at z=-0.20157 and R=0.040, this puts the caster
+           contact plane at -0.24497 m, matching the driven wheels. -->
+      <origin xyz="0 0 -0.0034"/><axis xyz="0 1 0"/>
       <dynamics friction="0.02" damping="0.02"/>
     </joint>
   </xacro:macro>
@@ -520,6 +533,7 @@
   <!-- Phase 2 - ros2_control hardware exported by Gazebo Classic.  The legacy
        gazebo_ros_joint_state_publisher is intentionally not used here - the
        joint_state_broadcaster below is the single source of /joint_states. -->
+  <xacro:if value="$(arg enable_gazebo_ros2_control)">
   <ros2_control name="GazeboSystem" type="system">
     <hardware>
       <plugin>gazebo_ros2_control/GazeboSystem</plugin>
@@ -552,4 +566,5 @@
       <parameters>$(find swerve_bringup)/config/controllers.yaml</parameters>
     </plugin>
   </gazebo>
+  </xacro:if>
 </robot>

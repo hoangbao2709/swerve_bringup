@@ -39,7 +39,8 @@ def generate_launch_description():
 
     xacro_args = [' enable_contact_sensors:=', LaunchConfiguration('contact_diagnostics'),
                    ' caster_frictionless:=', LaunchConfiguration('caster_frictionless'),
-                   ' proper_caster_test:=', LaunchConfiguration('proper_caster_test')]
+                   ' proper_caster_test:=', LaunchConfiguration('proper_caster_test'),
+                   ' enable_gazebo_ros2_control:=', LaunchConfiguration('enable_gazebo_ros2_control')]
     for name, value in zip(('lidar_x', 'lidar_y', 'lidar_z'), lidar_extrinsics['xyz']):
         xacro_args += xacro_arg(name, value)
     for name, value in zip(('lidar_roll', 'lidar_pitch', 'lidar_yaw'), lidar_extrinsics['rpy']):
@@ -196,6 +197,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'proper_caster_test', default_value='false',
             description='Test-only four-caster swivel+roll model; production default is false.',
+        ),
+        DeclareLaunchArgument(
+            'enable_gazebo_ros2_control', default_value='true',
+            description='Diagnostic switch to isolate Gazebo model physics from ros2_control.',
         ),
         DeclareLaunchArgument(
             'start_state_publisher', default_value='true',

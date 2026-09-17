@@ -1,0 +1,367 @@
+[INFO] [launch]: All log files can be found below /home/yahboom/.ros/log/2026-09-17-22-19-34-773835-yahboom-virtual-machine-211482
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [launch.user]: CONTACT_DIAGNOSTICS=true
+[INFO] [gzserver-1]: process started with pid [211522]
+[INFO] [robot_state_publisher-2]: process started with pid [211524]
+[INFO] [spawn_entity.py-3]: process started with pid [211526]
+[robot_state_publisher-2] [INFO] [1789654777.229300212] [robot_state_publisher]: got segment base_footprint
+[robot_state_publisher-2] [INFO] [1789654777.229510283] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789654777.229535835] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789654777.229546194] [robot_state_publisher]: got segment lidar_link
+[robot_state_publisher-2] [INFO] [1789654777.229554351] [robot_state_publisher]: got segment steer_front_link
+[robot_state_publisher-2] [INFO] [1789654777.229561849] [robot_state_publisher]: got segment steer_rear_link
+[robot_state_publisher-2] [INFO] [1789654777.229569079] [robot_state_publisher]: got segment v30e_link
+[robot_state_publisher-2] [INFO] [1789654777.229576484] [robot_state_publisher]: got segment wheel_front_drive_link
+[robot_state_publisher-2] [INFO] [1789654777.229584621] [robot_state_publisher]: got segment wheel_front_left_fork_link
+[robot_state_publisher-2] [INFO] [1789654777.229592673] [robot_state_publisher]: got segment wheel_front_left_link
+[robot_state_publisher-2] [INFO] [1789654777.229599664] [robot_state_publisher]: got segment wheel_front_right_fork_link
+[robot_state_publisher-2] [INFO] [1789654777.229606556] [robot_state_publisher]: got segment wheel_front_right_link
+[robot_state_publisher-2] [INFO] [1789654777.229613331] [robot_state_publisher]: got segment wheel_rear_drive_link
+[robot_state_publisher-2] [INFO] [1789654777.229620366] [robot_state_publisher]: got segment wheel_rear_left_fork_link
+[robot_state_publisher-2] [INFO] [1789654777.229627358] [robot_state_publisher]: got segment wheel_rear_left_link
+[robot_state_publisher-2] [INFO] [1789654777.229633925] [robot_state_publisher]: got segment wheel_rear_right_fork_link
+[robot_state_publisher-2] [INFO] [1789654777.229640532] [robot_state_publisher]: got segment wheel_rear_right_link
+[spawn_entity.py-3] [INFO] [1789654778.264266162] [spawn_swerve]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1789654778.265860400] [spawn_swerve]: Loading entity published on topic robot_description
+[spawn_entity.py-3] [INFO] [1789654778.268769528] [spawn_swerve]: Waiting for entity xml on robot_description
+[spawn_entity.py-3] [INFO] [1789654780.882565492] [spawn_swerve]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1789654780.882981860] [spawn_swerve]: Waiting for service /spawn_entity
+[spawn_entity.py-3] [INFO] [1789654780.894356093] [spawn_swerve]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1789654781.884317717] [imu.imu_ros]: <initial_orientation_as_reference> is unset, using default value of false to comply with REP 145 (world as orientation reference)
+[gzserver-1] [INFO] [1789654796.111292552] [contact_load.wheel_front_drive_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_drive_link]
+[gzserver-1] [INFO] [1789654796.131224204] [contact_load.wheel_rear_drive_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_drive_link]
+[gzserver-1] [INFO] [1789654796.161169879] [contact_load.wheel_front_left_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_left_link]
+[gzserver-1] [INFO] [1789654796.188691230] [contact_load.wheel_front_right_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_right_link]
+[gzserver-1] [INFO] [1789654796.225917189] [contact_load.wheel_rear_left_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_left_link]
+[spawn_entity.py-3] [INFO] [1789654796.279073201] [spawn_swerve]: Spawn status: SpawnEntity: Successfully spawned entity [swerve_base]
+[gzserver-1] [INFO] [1789654796.305667890] [contact_load.wheel_rear_right_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_right_link]
+[gzserver-1] [INFO] [1789654796.435542964] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[gzserver-1] [INFO] [1789654796.464347935] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1789654796.464452172] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[gzserver-1] [INFO] [1789654796.491297073] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1789654796.494555170] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1789654796.494698425] [gazebo_ros2_control]: Loading parameter files /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/controllers.yaml
+[gzserver-1] [rcutils|error_handling.c:65] an error string (message, file name, or formatted message) will be truncated
+[gzserver-1] [ERROR] [1789654796.495738109] [gazebo_ros2_control]: parser error Couldn't parse parameter override rule: '--param robot_description:=<?xml version="1.0" ?>
+[gzserver-1] <!-- =================================================================================== -->
+[gzserver-1] <!-- |    This document was autogenerated by xacro from /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/urdf/swerve_base.urdf | -->
+[gzserver-1] <!-- |    EDITING THIS FILE BY HAND IS NOT RECOMMENDED                                 | -->
+[gzserver-1] <!-- =================================================================================== -->
+[gzserver-1] <!--
+[gzserver-1]   AGV base URDF - sinh tự động từ file STEP 096626040039-1.STEP
+[gzserver-1]   Quy ước - base_link tại tâm bbox của khung chính (096626040020), X = hướng tới,
+[gzserver-1]   Y = trái, Z = lên (đã remap từ hệ Y-up gốc của SolidWo, at ./src/rcl/arguments.c:343
+[gzserver-1] 
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 211526]
+[INFO] [spawner-4]: process started with pid [211789]
+[spawner-4] [INFO] [1789654797.452683075] [spawn_joint_state_broadcaster]: waiting for service /controller_manager/list_controllers to become available...
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[robot_state_publisher-2] [INFO] [1789654828.760146251] [rclcpp]: signal_handler(signum=2)
+[INFO] [spawner-4]: sending signal 'SIGINT' to process[spawner-4]
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [gzserver-1]: sending signal 'SIGINT' to process[gzserver-1]
+[robot_state_publisher-2] [INFO] [1789654828.772006419] [rclcpp]: signal_handler(signum=2)
+[spawner-4] Traceback (most recent call last):
+[spawner-4]   File "/opt/ros/humble/lib/controller_manager/spawner", line 33, in <module>
+[spawner-4]     sys.exit(load_entry_point('controller-manager==2.52.2', 'console_scripts', 'spawner')())
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/controller_manager/spawner.py", line 361, in main
+[spawner-4]     node.destroy_node()
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1691, in destroy_node
+[spawner-4]     self.destroy_service(self._services[0])
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1615, in destroy_service
+[spawner-4]     service.destroy()
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/service.py", line 93, in destroy
+[spawner-4]     self.__service.destroy_when_not_in_use()
+[spawner-4] KeyboardInterrupt
+[ERROR] [spawner-4]: process has died [pid 211789, exit code -2, cmd '/opt/ros/humble/lib/controller_manager/spawner joint_state_broadcaster --controller-manager /controller_manager --controller-manager-timeout 60 --service-call-timeout 30 --switch-timeout 30 --ros-args -r __node:=spawn_joint_state_broadcaster'].
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 211524]
+[ERROR] [gzserver-1]: process has died [pid 211522, exit code -11, cmd 'gzserver /home/yahboom/swerve_bringup/worlds/test.world -slibgazebo_ros_init.so -slibgazebo_ros_factory.so -slibgazebo_ros_force_system.so'].
+
+launch_exit_code=124
+
+===== D: Gazebo without gazebo_ros2_control (rebuilt corrected geometry) =====
+[INFO] [launch]: All log files can be found below /home/yahboom/.ros/log/2026-09-17-22-21-43-506087-yahboom-virtual-machine-212304
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [launch.user]: CONTACT_DIAGNOSTICS=true
+[INFO] [gzserver-1]: process started with pid [212340]
+[INFO] [robot_state_publisher-2]: process started with pid [212342]
+[INFO] [spawn_entity.py-3]: process started with pid [212344]
+[robot_state_publisher-2] [INFO] [1789654906.103588083] [robot_state_publisher]: got segment base_footprint
+[robot_state_publisher-2] [INFO] [1789654906.103780326] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789654906.103802600] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789654906.103811026] [robot_state_publisher]: got segment lidar_link
+[robot_state_publisher-2] [INFO] [1789654906.103818408] [robot_state_publisher]: got segment steer_front_link
+[robot_state_publisher-2] [INFO] [1789654906.103825510] [robot_state_publisher]: got segment steer_rear_link
+[robot_state_publisher-2] [INFO] [1789654906.103832399] [robot_state_publisher]: got segment v30e_link
+[robot_state_publisher-2] [INFO] [1789654906.103839384] [robot_state_publisher]: got segment wheel_front_drive_link
+[robot_state_publisher-2] [INFO] [1789654906.103847160] [robot_state_publisher]: got segment wheel_front_left_fork_link
+[robot_state_publisher-2] [INFO] [1789654906.103854693] [robot_state_publisher]: got segment wheel_front_left_link
+[robot_state_publisher-2] [INFO] [1789654906.103862069] [robot_state_publisher]: got segment wheel_front_right_fork_link
+[robot_state_publisher-2] [INFO] [1789654906.103869254] [robot_state_publisher]: got segment wheel_front_right_link
+[robot_state_publisher-2] [INFO] [1789654906.103876705] [robot_state_publisher]: got segment wheel_rear_drive_link
+[robot_state_publisher-2] [INFO] [1789654906.103884101] [robot_state_publisher]: got segment wheel_rear_left_fork_link
+[robot_state_publisher-2] [INFO] [1789654906.103891640] [robot_state_publisher]: got segment wheel_rear_left_link
+[robot_state_publisher-2] [INFO] [1789654906.103898655] [robot_state_publisher]: got segment wheel_rear_right_fork_link
+[robot_state_publisher-2] [INFO] [1789654906.103905483] [robot_state_publisher]: got segment wheel_rear_right_link
+[spawn_entity.py-3] [INFO] [1789654907.143633042] [spawn_swerve]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1789654907.144150813] [spawn_swerve]: Loading entity published on topic robot_description
+[spawn_entity.py-3] [INFO] [1789654907.147107963] [spawn_swerve]: Waiting for entity xml on robot_description
+[spawn_entity.py-3] [INFO] [1789654907.160759606] [spawn_swerve]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1789654907.161129176] [spawn_swerve]: Waiting for service /spawn_entity
+[spawn_entity.py-3] [INFO] [1789654908.683656217] [spawn_swerve]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1789654909.514125940] [imu.imu_ros]: <initial_orientation_as_reference> is unset, using default value of false to comply with REP 145 (world as orientation reference)
+[gzserver-1] [INFO] [1789654924.148114742] [contact_load.wheel_front_drive_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_drive_link]
+[gzserver-1] [INFO] [1789654924.160888562] [contact_load.wheel_rear_drive_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_drive_link]
+[gzserver-1] [INFO] [1789654924.183727808] [contact_load.wheel_front_left_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_left_link]
+[gzserver-1] [INFO] [1789654924.232181851] [contact_load.wheel_front_right_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_right_link]
+[gzserver-1] [INFO] [1789654924.253056001] [contact_load.wheel_rear_left_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_left_link]
+[spawn_entity.py-3] [INFO] [1789654924.271883944] [spawn_swerve]: Spawn status: SpawnEntity: Successfully spawned entity [swerve_base]
+[gzserver-1] [INFO] [1789654924.276366773] [contact_load.wheel_rear_right_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_right_link]
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 212344]
+[INFO] [spawner-4]: process started with pid [212460]
+[spawner-4] [INFO] [1789654925.413417213] [spawn_joint_state_broadcaster]: waiting for service /controller_manager/list_controllers to become available...
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [spawner-4]: sending signal 'SIGINT' to process[spawner-4]
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [gzserver-1]: sending signal 'SIGINT' to process[gzserver-1]
+[robot_state_publisher-2] [INFO] [1789654950.610376990] [rclcpp]: signal_handler(signum=2)
+[spawner-4] Traceback (most recent call last):
+[spawner-4]   File "/opt/ros/humble/lib/controller_manager/spawner", line 33, in <module>
+[spawner-4]     sys.exit(load_entry_point('controller-manager==2.52.2', 'console_scripts', 'spawner')())
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/controller_manager/spawner.py", line 361, in main
+[spawner-4]     node.destroy_node()
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1691, in destroy_node
+[spawner-4]     self.destroy_service(self._services[0])
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1615, in destroy_service
+[spawner-4]     service.destroy()
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/service.py", line 93, in destroy
+[spawner-4]     self.__service.destroy_when_not_in_use()
+[spawner-4] KeyboardInterrupt
+[robot_state_publisher-2] [INFO] [1789654950.625859232] [rclcpp]: signal_handler(signum=2)
+[ERROR] [spawner-4]: process has died [pid 212460, exit code -2, cmd '/opt/ros/humble/lib/controller_manager/spawner joint_state_broadcaster --controller-manager /controller_manager --controller-manager-timeout 60 --service-call-timeout 30 --switch-timeout 30 --ros-args -r __node:=spawn_joint_state_broadcaster'].
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 212342]
+[INFO] [gzserver-1]: process has finished cleanly [pid 212340]
+
+no_control_launch_exit_code=124
+
+===== E control baseline (proper_caster_test=false) =====
+[INFO] [launch]: All log files can be found below /home/yahboom/.ros/log/2026-09-17-22-22-56-503888-yahboom-virtual-machine-212724
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [launch.user]: CONTACT_DIAGNOSTICS=false
+[INFO] [gzserver-1]: process started with pid [212746]
+[INFO] [robot_state_publisher-2]: process started with pid [212748]
+[INFO] [spawn_entity.py-3]: process started with pid [212750]
+[robot_state_publisher-2] [INFO] [1789654979.043711634] [robot_state_publisher]: got segment base_footprint
+[robot_state_publisher-2] [INFO] [1789654979.043893700] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789654979.043914993] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789654979.043923410] [robot_state_publisher]: got segment lidar_link
+[robot_state_publisher-2] [INFO] [1789654979.043930942] [robot_state_publisher]: got segment steer_front_link
+[robot_state_publisher-2] [INFO] [1789654979.043938157] [robot_state_publisher]: got segment steer_rear_link
+[robot_state_publisher-2] [INFO] [1789654979.043945185] [robot_state_publisher]: got segment v30e_link
+[robot_state_publisher-2] [INFO] [1789654979.043951991] [robot_state_publisher]: got segment wheel_front_drive_link
+[robot_state_publisher-2] [INFO] [1789654979.043959238] [robot_state_publisher]: got segment wheel_front_left_link
+[robot_state_publisher-2] [INFO] [1789654979.043966410] [robot_state_publisher]: got segment wheel_front_right_link
+[robot_state_publisher-2] [INFO] [1789654979.043974336] [robot_state_publisher]: got segment wheel_rear_drive_link
+[robot_state_publisher-2] [INFO] [1789654979.043981096] [robot_state_publisher]: got segment wheel_rear_left_link
+[robot_state_publisher-2] [INFO] [1789654979.043988186] [robot_state_publisher]: got segment wheel_rear_right_link
+[spawn_entity.py-3] [INFO] [1789654980.043222996] [spawn_swerve]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1789654980.043802151] [spawn_swerve]: Loading entity published on topic robot_description
+[spawn_entity.py-3] [INFO] [1789654980.057255305] [spawn_swerve]: Waiting for entity xml on robot_description
+[spawn_entity.py-3] [INFO] [1789654980.078844217] [spawn_swerve]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1789654980.079353220] [spawn_swerve]: Waiting for service /spawn_entity
+[spawn_entity.py-3] [INFO] [1789654981.597620125] [spawn_swerve]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1789654982.056728832] [imu.imu_ros]: <initial_orientation_as_reference> is unset, using default value of false to comply with REP 145 (world as orientation reference)
+[spawn_entity.py-3] [INFO] [1789654995.605568490] [spawn_swerve]: Spawn status: SpawnEntity: Successfully spawned entity [swerve_base]
+[gzserver-1] [INFO] [1789654995.786206605] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[gzserver-1] [INFO] [1789654995.818824525] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1789654995.818902697] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[gzserver-1] [INFO] [1789654995.841758604] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1789654995.844201088] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1789654995.846702514] [gazebo_ros2_control]: Loading parameter files /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/controllers.yaml
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 212750]
+[INFO] [spawner-4]: process started with pid [213016]
+[gzserver-1] [INFO] [1789654995.917831067] [gazebo_ros2_control]: Loading joint: steer_front_joint
+[gzserver-1] [INFO] [1789654995.917938970] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789654995.917955878] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789654995.917968402] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789654995.917979295] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789654995.917988964] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789654995.921720509] [gazebo_ros2_control]: Loading joint: steer_rear_joint
+[gzserver-1] [INFO] [1789654995.921775441] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789654995.921789654] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789654995.921802474] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789654995.921812790] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789654995.921821677] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789654995.921955780] [gazebo_ros2_control]: Loading joint: wheel_front_drive_joint
+[gzserver-1] [INFO] [1789654995.921979064] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789654995.921989961] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789654995.922003432] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789654995.922013057] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789654995.922026555] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789654995.922121343] [gazebo_ros2_control]: Loading joint: wheel_rear_drive_joint
+[gzserver-1] [INFO] [1789654995.922138777] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789654995.922148292] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789654995.922157422] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789654995.922165964] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789654995.922181623] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789654995.922363224] [resource_manager]: Initialize hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789654995.923295864] [resource_manager]: Successful initialization of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789654995.924552366] [resource_manager]: 'configure' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789654995.924584518] [resource_manager]: Successful 'configure' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789654995.924594457] [resource_manager]: 'activate' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789654995.924601628] [resource_manager]: Successful 'activate' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789654995.924943432] [gazebo_ros2_control]: Loading controller_manager
+[gzserver-1] [WARN] [1789654996.037447996] [gazebo_ros2_control]:  Desired controller update period (0.01 s) is slower than the gazebo simulation period (0.001 s).
+[gzserver-1] [INFO] [1789654996.038047627] [gazebo_ros2_control]: Loaded gazebo_ros2_control.
+[gzserver-1] [INFO] [1789654996.951691393] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[spawner-4] [INFO] [1789654997.157684201] [spawn_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1789654997.166471286] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1789654997.167211441] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-4] [INFO] [1789654997.313501276] [spawn_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[INFO] [spawner-4]: process has finished cleanly [pid 213016]
+[INFO] [spawner-5]: process started with pid [213036]
+[gzserver-1] [INFO] [1789654998.655881876] [controller_manager]: Loading controller 'steering_controller'
+[spawner-5] [INFO] [1789654998.790256169] [spawn_steering_controller]: [94mLoaded [1msteering_controller[0m
+[gzserver-1] [INFO] [1789654998.795216469] [controller_manager]: Configuring controller 'steering_controller'
+[gzserver-1] [INFO] [1789654998.798167380] [steering_controller]: configure successful
+[gzserver-1] [INFO] [1789654998.833524495] [steering_controller]: activate successful
+[spawner-5] [INFO] [1789654998.850544562] [spawn_steering_controller]: [92mConfigured and activated [1msteering_controller[0m
+[INFO] [spawner-5]: process has finished cleanly [pid 213036]
+[INFO] [spawner-6]: process started with pid [213052]
+[spawner-6] [INFO] [1789655000.059765904] [spawn_drive_controller]: waiting for service /controller_manager/list_controllers to become available...
+[gzserver-1] [INFO] [1789655000.825321329] [controller_manager]: Loading controller 'drive_controller'
+[spawner-6] [INFO] [1789655000.869067597] [spawn_drive_controller]: [94mLoaded [1mdrive_controller[0m
+[gzserver-1] [INFO] [1789655000.878636160] [controller_manager]: Configuring controller 'drive_controller'
+[gzserver-1] [INFO] [1789655000.879704902] [drive_controller]: configure successful
+[gzserver-1] [INFO] [1789655000.913533422] [drive_controller]: activate successful
+[spawner-6] [INFO] [1789655000.928579408] [spawn_drive_controller]: [92mConfigured and activated [1mdrive_controller[0m
+[INFO] [spawner-6]: process has finished cleanly [pid 213052]
+[INFO] [swerve_controller_node-7]: process started with pid [213108]
+[INFO] [swerve_odometry_node-8]: process started with pid [213113]
+[INFO] [ekf_node-9]: process started with pid [213115]
+[swerve_controller_node-7] [INFO] [1789655002.298502591] [swerve_controller]: Swerve controller ready: radius=0.0675 m, modules={'front': (0.300042, 0.0), 'rear': (-0.300042, 0.0)}
+[swerve_odometry_node-8] [INFO] [1789655002.401427565] [swerve_odometry]: Encoder odometry ready: radius=0.0637 m, velocity_sign=+1.0
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[ekf_node-9] [INFO] [1789655015.534305708] [rclcpp]: signal_handler(signum=2)
+[INFO] [ekf_node-9]: sending signal 'SIGINT' to process[ekf_node-9]
+[INFO] [swerve_odometry_node-8]: sending signal 'SIGINT' to process[swerve_odometry_node-8]
+[INFO] [swerve_controller_node-7]: sending signal 'SIGINT' to process[swerve_controller_node-7]
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [gzserver-1]: sending signal 'SIGINT' to process[gzserver-1]
+[robot_state_publisher-2] [INFO] [1789655015.539122067] [rclcpp]: signal_handler(signum=2)
+[ekf_node-9] [INFO] [1789655015.545856404] [rclcpp]: signal_handler(signum=2)
+[swerve_odometry_node-8] Traceback (most recent call last):
+[swerve_odometry_node-8]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node", line 221, in <module>
+[swerve_odometry_node-8]     main()
+[swerve_odometry_node-8]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node", line 215, in main
+[swerve_odometry_node-8]     node.destroy_node()
+[swerve_odometry_node-8]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1685, in destroy_node
+[swerve_odometry_node-8]     self.destroy_publisher(self._publishers[0])
+[swerve_odometry_node-8]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1565, in destroy_publisher
+[swerve_odometry_node-8]     publisher.destroy()
+[swerve_odometry_node-8]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 99, in destroy
+[swerve_odometry_node-8]     self.__publisher.destroy_when_not_in_use()
+[swerve_odometry_node-8] KeyboardInterrupt
+[swerve_controller_node-7] Traceback (most recent call last):
+[swerve_controller_node-7]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 192, in <module>
+[swerve_controller_node-7]     main()
+[swerve_controller_node-7]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 187, in main
+[swerve_controller_node-7]     node.destroy_node()
+[swerve_controller_node-7]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1685, in destroy_node
+[swerve_controller_node-7]     self.destroy_publisher(self._publishers[0])
+[swerve_controller_node-7]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1565, in destroy_publisher
+[swerve_controller_node-7]     publisher.destroy()
+[swerve_controller_node-7]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 99, in destroy
+[swerve_controller_node-7]     self.__publisher.destroy_when_not_in_use()
+[swerve_controller_node-7] KeyboardInterrupt
+[robot_state_publisher-2] [INFO] [1789655015.557379432] [rclcpp]: signal_handler(signum=2)
+[ERROR] [swerve_controller_node-7]: process has died [pid 213108, exit code -2, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node --ros-args -r __node:=swerve_controller --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/swerve_controller.yaml --params-file /tmp/launch_params_hvb9q4e2'].
+[ERROR] [swerve_odometry_node-8]: process has died [pid 213113, exit code -2, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node --ros-args -r __node:=swerve_odometry --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/swerve_odometry.yaml --params-file /tmp/launch_params_73hday9c'].
+[INFO] [ekf_node-9]: process has finished cleanly [pid 213115]
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 212748]
+[INFO] [gzserver-1]: process has finished cleanly [pid 212746]
+
+baseline_control_launch_exit_code=124
+
+===== E control corrected proper caster (rebuilt) =====
+[INFO] [launch]: All log files can be found below /home/yahboom/.ros/log/2026-09-17-22-25-00-373254-yahboom-virtual-machine-213628
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [launch.user]: CONTACT_DIAGNOSTICS=true
+[INFO] [gzserver-1]: process started with pid [213652]
+[INFO] [robot_state_publisher-2]: process started with pid [213654]
+[INFO] [spawn_entity.py-3]: process started with pid [213656]
+[robot_state_publisher-2] [INFO] [1789655103.089642689] [robot_state_publisher]: got segment base_footprint
+[robot_state_publisher-2] [INFO] [1789655103.089922063] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789655103.089948845] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789655103.089957490] [robot_state_publisher]: got segment lidar_link
+[robot_state_publisher-2] [INFO] [1789655103.089965348] [robot_state_publisher]: got segment steer_front_link
+[robot_state_publisher-2] [INFO] [1789655103.089972811] [robot_state_publisher]: got segment steer_rear_link
+[robot_state_publisher-2] [INFO] [1789655103.089980057] [robot_state_publisher]: got segment v30e_link
+[robot_state_publisher-2] [INFO] [1789655103.089987026] [robot_state_publisher]: got segment wheel_front_drive_link
+[robot_state_publisher-2] [INFO] [1789655103.089994484] [robot_state_publisher]: got segment wheel_front_left_fork_link
+[robot_state_publisher-2] [INFO] [1789655103.090002021] [robot_state_publisher]: got segment wheel_front_left_link
+[robot_state_publisher-2] [INFO] [1789655103.090009701] [robot_state_publisher]: got segment wheel_front_right_fork_link
+[robot_state_publisher-2] [INFO] [1789655103.090017237] [robot_state_publisher]: got segment wheel_front_right_link
+[robot_state_publisher-2] [INFO] [1789655103.090024512] [robot_state_publisher]: got segment wheel_rear_drive_link
+[robot_state_publisher-2] [INFO] [1789655103.090031522] [robot_state_publisher]: got segment wheel_rear_left_fork_link
+[robot_state_publisher-2] [INFO] [1789655103.090038442] [robot_state_publisher]: got segment wheel_rear_left_link
+[robot_state_publisher-2] [INFO] [1789655103.090045368] [robot_state_publisher]: got segment wheel_rear_right_fork_link
+[robot_state_publisher-2] [INFO] [1789655103.090051945] [robot_state_publisher]: got segment wheel_rear_right_link
+[spawn_entity.py-3] [INFO] [1789655104.187319867] [spawn_swerve]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1789655104.187843317] [spawn_swerve]: Loading entity published on topic robot_description
+[spawn_entity.py-3] [INFO] [1789655104.195272821] [spawn_swerve]: Waiting for entity xml on robot_description
+[spawn_entity.py-3] [INFO] [1789655104.211553809] [spawn_swerve]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1789655104.214836800] [spawn_swerve]: Waiting for service /spawn_entity
+[spawn_entity.py-3] [INFO] [1789655105.986797629] [spawn_swerve]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1789655106.645231917] [imu.imu_ros]: <initial_orientation_as_reference> is unset, using default value of false to comply with REP 145 (world as orientation reference)
+[gzserver-1] [INFO] [1789655121.323550442] [contact_load.wheel_front_drive_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_drive_link]
+[gzserver-1] [INFO] [1789655121.330671803] [contact_load.wheel_rear_drive_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_drive_link]
+[gzserver-1] [INFO] [1789655121.353230789] [contact_load.wheel_front_left_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_left_link]
+[gzserver-1] [INFO] [1789655121.370876146] [contact_load.wheel_front_right_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_front_right_link]
+[gzserver-1] [INFO] [1789655121.421879540] [contact_load.wheel_rear_left_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_left_link]
+[spawn_entity.py-3] [INFO] [1789655121.436904779] [spawn_swerve]: Spawn status: SpawnEntity: Successfully spawned entity [swerve_base]
+[gzserver-1] [INFO] [1789655121.448887679] [contact_load.wheel_rear_right_link_contact_plugin]: Publishing contact states to [/contact_load/wheel_rear_right_link]
+[gzserver-1] [INFO] [1789655121.594757096] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[gzserver-1] [INFO] [1789655121.611652717] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1789655121.611749594] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[gzserver-1] [INFO] [1789655121.628356061] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1789655121.630754709] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1789655121.630883356] [gazebo_ros2_control]: Loading parameter files /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/controllers.yaml
+[gzserver-1] [rcutils|error_handling.c:65] an error string (message, file name, or formatted message) will be truncated
+[gzserver-1] [ERROR] [1789655121.631584909] [gazebo_ros2_control]: parser error Couldn't parse parameter override rule: '--param robot_description:=<?xml version="1.0" ?>
+[gzserver-1] <!-- =================================================================================== -->
+[gzserver-1] <!-- |    This document was autogenerated by xacro from /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/urdf/swerve_base.urdf | -->
+[gzserver-1] <!-- |    EDITING THIS FILE BY HAND IS NOT RECOMMENDED                                 | -->
+[gzserver-1] <!-- =================================================================================== -->
+[gzserver-1] <!--
+[gzserver-1]   AGV base URDF - sinh tự động từ file STEP 096626040039-1.STEP
+[gzserver-1]   Quy ước - base_link tại tâm bbox của khung chính (096626040020), X = hướng tới,
+[gzserver-1]   Y = trái, Z = lên (đã remap từ hệ Y-up gốc của SolidWo, at ./src/rcl/arguments.c:343
+[gzserver-1] 
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 213656]
+[INFO] [spawner-4]: process started with pid [213894]
+[spawner-4] [INFO] [1789655122.646847608] [spawn_joint_state_broadcaster]: waiting for service /controller_manager/list_controllers to become available...
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
+[INFO] [spawner-4]: sending signal 'SIGINT' to process[spawner-4]
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [gzserver-1]: sending signal 'SIGINT' to process[gzserver-1]
+[robot_state_publisher-2] [INFO] [1789655139.392487487] [rclcpp]: signal_handler(signum=2)
+[robot_state_publisher-2] [INFO] [1789655139.401417766] [rclcpp]: signal_handler(signum=2)
+[spawner-4] Traceback (most recent call last):
+[spawner-4]   File "/opt/ros/humble/lib/controller_manager/spawner", line 33, in <module>
+[spawner-4]     sys.exit(load_entry_point('controller-manager==2.52.2', 'console_scripts', 'spawner')())
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/controller_manager/spawner.py", line 361, in main
+[spawner-4]     node.destroy_node()
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1691, in destroy_node
+[spawner-4]     self.destroy_service(self._services[0])
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1615, in destroy_service
+[spawner-4]     service.destroy()
+[spawner-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/service.py", line 93, in destroy
+[spawner-4]     self.__service.destroy_when_not_in_use()
+[spawner-4] KeyboardInterrupt
+[ERROR] [spawner-4]: process has died [pid 213894, exit code -2, cmd '/opt/ros/humble/lib/controller_manager/spawner joint_state_broadcaster --controller-manager /controller_manager --controller-manager-timeout 60 --service-call-timeout 30 --switch-timeout 30 --ros-args -r __node:=spawn_joint_state_broadcaster'].
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 213654]
+[ERROR] [gzserver-1]: process has died [pid 213652, exit code -11, cmd 'gzserver /home/yahboom/swerve_bringup/worlds/test.world -slibgazebo_ros_init.so -slibgazebo_ros_factory.so -slibgazebo_ros_force_system.so'].
+
+proper_control_rebuilt_launch_exit_code=124

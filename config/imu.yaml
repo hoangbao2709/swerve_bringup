@@ -1,0 +1,8 @@
+# ESTIMATE until the physical IMU mounting measurements and datasheet noise
+# densities are known.
+imu:
+  xyz: [0.0, 0.0, 0.30]
+  rpy: [0.0, 0.0, 0.0]
+  update_rate: 100.0
+  gyro_noise_stddev: 0.002
+  accel_noise_stddev: 0.02

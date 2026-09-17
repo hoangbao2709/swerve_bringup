@@ -1,0 +1,4 @@
+[0.038s] Invoking command in '/home/yahboom/swerve_bringup/build/swerve_bridge': /usr/bin/cmake /home/yahboom/swerve_bringup/swerve_bridge -DCATKIN_INSTALL_INTO_PREFIX_ROOT=0 -DCATKIN_SYMLINK_INSTALL=ON -DCMAKE_INSTALL_PREFIX=/home/yahboom/swerve_bringup/install/swerve_bridge
+[0.058s] CMake Error: The source directory "/home/yahboom/swerve_bringup/swerve_bridge" does not appear to contain CMakeLists.txt.
+[0.058s] Specify --help for usage, or press the help button on the CMake GUI.
+[0.069s] Invoked command in '/home/yahboom/swerve_bringup/build/swerve_bridge' returned '1': /usr/bin/cmake /home/yahboom/swerve_bringup/swerve_bridge -DCATKIN_INSTALL_INTO_PREFIX_ROOT=0 -DCATKIN_SYMLINK_INSTALL=ON -DCMAKE_INSTALL_PREFIX=/home/yahboom/swerve_bringup/install/swerve_bridge

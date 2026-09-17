@@ -1,0 +1,15 @@
+package.xml
+setup.cfg
+setup.py
+config/bridge.yaml
+launch/bridge.launch.py
+resource/swerve_bridge
+swerve_bridge/__init__.py
+swerve_bridge/bridge_node.py
+swerve_bridge.egg-info/PKG-INFO
+swerve_bridge.egg-info/SOURCES.txt
+swerve_bridge.egg-info/dependency_links.txt
+swerve_bridge.egg-info/entry_points.txt
+swerve_bridge.egg-info/requires.txt
+swerve_bridge.egg-info/top_level.txt
+swerve_bridge.egg-info/zip-safe

@@ -1,0 +1,22 @@
+lidar_preprocessor:
+  ros__parameters:
+    input_topic: /lidar/points
+    output_topic: /lidar/points_filtered
+    min_range: 0.20
+    max_range: 30.0
+    voxel_size: 0.05
+    # Keep a useful 3D cloud for perception. The scan projection below has
+    # its own narrower height slice for 2D SLAM.
+    min_height: -1.0
+    max_height: 4.0
+    remove_floor: false
+    floor_z: -0.35
+    floor_band: 0.05
+    # Coordinates are in lidar_link. This removes the chassis/wheel envelope
+    # while retaining nearby shelves and obstacles outside the robot body.
+    self_filter.min_x: -0.65
+    self_filter.max_x: 0.65
+    self_filter.min_y: -0.40
+    self_filter.max_y: 0.40
+    self_filter.min_z: -0.40
+    self_filter.max_z: 0.15

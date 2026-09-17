@@ -1,0 +1,45 @@
+ekf_filter_node:
+  ros__parameters:
+    # The robot is constrained to the ground plane. This also prevents the
+    # IMU gravity measurement from creating an unobservable z/roll/pitch state.
+    two_d_mode: true
+    frequency: 50.0
+    sensor_timeout: 0.2
+    print_diagnostics: true
+
+    # This filter is the only owner of odom -> base_footprint.
+    publish_tf: true
+    publish_acceleration: false
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    # Wheel odometry: planar pose and body velocity from swerve encoders.
+    # Config order is x, y, z, roll, pitch, yaw, vx, vy, vz,
+    # vroll, vpitch, vyaw, ax, ay, az.
+    odom0: /odom
+    odom0_config: [true, true, false,
+                   false, false, true,
+                   true, true, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_nodelay: false
+    odom0_differential: false
+    odom0_relative: false
+
+    # IMU: use only yaw-rate from the raw IMU. The Gazebo IMU orientation is
+    # not treated as an absolute heading, and linear acceleration is not used
+    # because it includes gravity/noise and would drift in a 2D filter.
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 20
+    imu0_nodelay: false
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: false

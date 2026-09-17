@@ -1,0 +1,3 @@
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/lidar_preprocessor_node

@@ -1,0 +1,17 @@
+{
+  "orders": [
+    {
+      "order_no": "IN-DEMO-001",
+      "external_ref": "ASN-DEMO-001",
+      "item_code": "SKU-001",
+      "item_name": "Demo inbound item",
+      "quantity": 1,
+      "priority": "HIGH",
+      "dock_code": "INBOUND-1",
+      "shelf_code": "",
+      "payload_weight_kg": 2.5,
+      "due_at": null,
+      "notes": "shelf_code blank = backend selects an available shelf"
+    }
+  ]
+}

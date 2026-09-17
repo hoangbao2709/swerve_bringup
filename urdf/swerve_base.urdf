@@ -1,0 +1,478 @@
+<?xml version="1.0"?>
+<!--
+  AGV base URDF - sinh tự động từ file STEP 096626040039-1.STEP
+  Quy ước - base_link tại tâm bbox của khung chính (096626040020), X = hướng tới,
+  Y = trái, Z = lên (đã remap từ hệ Y-up gốc của SolidWorks sang Z-up chuẩn ROS).
+
+  GIẢ ĐỊNH CẦN NGƯỜI DÙNG KIỂM TRA LẠI -
+  1. Khối lượng & quán tính - ước lượng từ thể tích hình học x mật độ giả định
+     (nhôm 2700 kg/m3 cho khung/cụm xoay, 1500 kg/m3 cho bánh bị động) - KHÔNG
+     phải số liệu vật lý thật, chỉ dùng tạm cho mô phỏng.
+  2. Trục xoay của 2 cụm xoay (steer_front, steer_rear) - giả định trục đứng Z
+     tại đúng tâm bbox của cụm - có thể lệch so với trục xoay cơ khí thật
+     (trục xoay thật thường là tâm ổ bi/bạc đạn, cần xác nhận lại trên CAD).
+  3. Trục lăn của 4 bánh bị động - giả định trục ngang Y (vuông góc hướng đi) -
+     CẦN XÁC NHẬN - bánh CFAV2-D50-120 là bánh lăn cố định 1 bậc tự do, hay là
+     bánh caster tự lựa hướng (2 bậc tự do - xoay quanh Z + lăn quanh trục ngang)?
+     Nếu là caster, cần thêm 1 khớp revolute/continuous quanh Z trước khớp lăn.
+  4. Cụm xoay (096626040011 / 096626040016) trong STEP chỉ chứa driver+heatsink+
+     board, CHƯA thấy bánh xe dẫn động tách biệt trong cây assembly cấp này -
+     có thể bánh nằm trong subassembly con (096626040035 / 096626040018) chưa
+     được tách. Nếu cần khớp lăn của bánh chủ động riêng, tôi cần đào sâu thêm
+     vào 2 subassembly đó.
+-->
+<robot name="agv_base" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Sensor placement/configuration arguments. Defaults are ESTIMATES and
+       are overridden by launch/config when real measurements are available. -->
+  <xacro:arg name="lidar_x" default="0.0"/>
+  <xacro:arg name="lidar_y" default="0.0"/>
+  <xacro:arg name="lidar_z" default="0.35"/>
+  <xacro:arg name="lidar_roll" default="0.0"/>
+  <xacro:arg name="lidar_pitch" default="0.0"/>
+  <xacro:arg name="lidar_yaw" default="0.0"/>
+  <xacro:arg name="lidar_horizontal_fov" default="6.283185307"/>
+  <xacro:arg name="lidar_vertical_fov" default="0.523599"/>
+  <xacro:arg name="lidar_horizontal_samples" default="720"/>
+  <xacro:arg name="lidar_vertical_samples" default="16"/>
+  <xacro:arg name="lidar_min_range" default="0.20"/>
+  <xacro:arg name="lidar_max_range" default="30.0"/>
+  <xacro:arg name="lidar_update_rate" default="10.0"/>
+  <xacro:arg name="lidar_noise_stddev" default="0.01"/>
+  <xacro:arg name="imu_x" default="0.0"/>
+  <xacro:arg name="imu_y" default="0.0"/>
+  <xacro:arg name="imu_z" default="0.30"/>
+  <xacro:arg name="imu_roll" default="0.0"/>
+  <xacro:arg name="imu_pitch" default="0.0"/>
+  <xacro:arg name="imu_yaw" default="0.0"/>
+  <xacro:arg name="imu_update_rate" default="100.0"/>
+  <xacro:arg name="imu_gyro_noise_stddev" default="0.002"/>
+  <xacro:arg name="imu_accel_noise_stddev" default="0.02"/>
+
+  <xacro:property name="lidar_x" value="$(arg lidar_x)"/>
+  <xacro:property name="lidar_y" value="$(arg lidar_y)"/>
+  <xacro:property name="lidar_z" value="$(arg lidar_z)"/>
+  <xacro:property name="lidar_roll" value="$(arg lidar_roll)"/>
+  <xacro:property name="lidar_pitch" value="$(arg lidar_pitch)"/>
+  <xacro:property name="lidar_yaw" value="$(arg lidar_yaw)"/>
+  <xacro:property name="lidar_horizontal_fov" value="$(arg lidar_horizontal_fov)"/>
+  <xacro:property name="lidar_vertical_fov" value="$(arg lidar_vertical_fov)"/>
+  <xacro:property name="lidar_horizontal_samples" value="$(arg lidar_horizontal_samples)"/>
+  <xacro:property name="lidar_vertical_samples" value="$(arg lidar_vertical_samples)"/>
+  <xacro:property name="lidar_min_range" value="$(arg lidar_min_range)"/>
+  <xacro:property name="lidar_max_range" value="$(arg lidar_max_range)"/>
+  <xacro:property name="lidar_update_rate" value="$(arg lidar_update_rate)"/>
+  <xacro:property name="lidar_noise_stddev" value="$(arg lidar_noise_stddev)"/>
+  <xacro:property name="imu_x" value="$(arg imu_x)"/>
+  <xacro:property name="imu_y" value="$(arg imu_y)"/>
+  <xacro:property name="imu_z" value="$(arg imu_z)"/>
+  <xacro:property name="imu_roll" value="$(arg imu_roll)"/>
+  <xacro:property name="imu_pitch" value="$(arg imu_pitch)"/>
+  <xacro:property name="imu_yaw" value="$(arg imu_yaw)"/>
+  <xacro:property name="imu_update_rate" value="$(arg imu_update_rate)"/>
+  <xacro:property name="imu_gyro_noise_stddev" value="$(arg imu_gyro_noise_stddev)"/>
+  <xacro:property name="imu_accel_noise_stddev" value="$(arg imu_accel_noise_stddev)"/>
+
+  <material name="grey"><color rgba="0.6 0.6 0.6 1"/></material>
+  <material name="orange"><color rgba="0.9 0.5 0.1 1"/></material>
+  <material name="dark"><color rgba="0.2 0.2 0.2 1"/></material>
+
+  <link name="lidar_link">
+    <visual>
+      <geometry><cylinder radius="0.055" length="0.07"/></geometry>
+      <material name="dark"/>
+    </visual>
+    <collision>
+      <geometry><cylinder radius="0.055" length="0.07"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.25"/>
+      <inertia ixx="0.0003" ixy="0" ixz="0" iyy="0.0003" iyz="0" izz="0.0003"/>
+    </inertial>
+  </link>
+  <joint name="base_lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <origin xyz="${lidar_x} ${lidar_y} ${lidar_z}"
+            rpy="${lidar_roll} ${lidar_pitch} ${lidar_yaw}"/>
+  </joint>
+
+  <link name="imu_link">
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+    </inertial>
+  </link>
+  <joint name="base_imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="${imu_x} ${imu_y} ${imu_z}"
+            rpy="${imu_roll} ${imu_pitch} ${imu_yaw}"/>
+  </joint>
+
+  <!-- base_footprint - hinh chieu cua robot xuong mat dat (z=0), theo chuan REP-120 cho Nav2.
+       Do cao uoc luong tu diem tiep dat thap nhat trong 2 loai banh (chu dong + bi dong),
+       lech nhau ~3mm giua 2 uoc luong -> lay trung binh. -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0.245" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========================= BASE LINK ========================= -->
+  <link name="base_link">
+    <visual>
+      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/base_frame.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="grey"/>
+    </visual>
+    <!-- Collision follows the measured mesh bbox (X/Y/Z = 1.196/0.596/0.460 m).
+         The former Y/Z-swapped box penetrated the ground at the nominal footprint. -->
+    <collision>
+      <geometry><box size="1.196 0.596 0.460"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.02200 -0.00767 -0.11855" rpy="0 0 0"/>
+      <mass value="73.363"/>
+      <inertia ixx="2.079253" ixy="-0.094130" ixz="-0.013942" iyy="5.825588" iyz="0.050887" izz="7.096724"/>
+    </inertial>
+  </link>
+
+  <!-- ===================== CỤM XOAY PHÍA TRƯỚC (steer_front) ===================== -->
+  <link name="steer_front_link">
+    <visual>
+      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_front_housing_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="orange"/>
+    </visual>
+    <collision>
+      <geometry><box size="0.2296 0.1862 0.2703"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.006446 -0.003031 -0.054617" rpy="0 0 0"/>
+      <mass value="4.6944"/>
+      <inertia ixx="0.025448" ixy="-0.0000348" ixz="-0.000455" iyy="0.018267" iyz="0.002865" izz="0.026107"/>
+    </inertial>
+  </link>
+
+  <joint name="steer_front_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="steer_front_link"/>
+    <origin xyz="0.300042 0.049988 -0.085893" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="100.0" velocity="6.0"/>
+    <dynamics friction="0.1" damping="0.05"/>
+  </joint>
+
+  <!-- ===================== CỤM XOAY PHÍA SAU (steer_rear) ===================== -->
+  <link name="steer_rear_link">
+    <visual>
+      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_rear_housing_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="orange"/>
+    </visual>
+    <collision>
+      <geometry><box size="0.2296 0.1862 0.2834"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.006446 0.003031 -0.054617" rpy="0 0 0"/>
+      <mass value="4.6944"/>
+      <inertia ixx="0.025448" ixy="-0.0000348" ixz="0.000455" iyy="0.018267" iyz="-0.002865" izz="0.026107"/>
+    </inertial>
+  </link>
+
+  <joint name="steer_rear_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="steer_rear_link"/>
+    <origin xyz="-0.300042 0.050013 -0.085893" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="100.0" velocity="6.0"/>
+    <dynamics friction="0.1" damping="0.05"/>
+  </joint>
+
+  <!-- ===================== 4 BÁNH BỊ ĐỘNG (CFAV2-D50-120) ===================== -->
+
+  <!-- Banh bi dong FRONT LEFT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
+  <link name="wheel_front_left_link">
+    <visual>
+      <geometry><sphere radius="0.0414"/></geometry>
+      <material name="dark"/>
+    </visual>
+    <collision>
+      <geometry><sphere radius="0.0414"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.443"/>
+      <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
+    </inertial>
+  </link>
+  <joint name="wheel_front_left_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="wheel_front_left_link"/>
+    <origin xyz="0.505 0.195 -0.20157" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Banh bi dong FRONT RIGHT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
+  <link name="wheel_front_right_link">
+    <visual>
+      <geometry><sphere radius="0.0414"/></geometry>
+      <material name="dark"/>
+    </visual>
+    <collision>
+      <geometry><sphere radius="0.0414"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.443"/>
+      <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
+    </inertial>
+  </link>
+  <joint name="wheel_front_right_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="wheel_front_right_link"/>
+    <origin xyz="0.505 -0.195 -0.20157" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Banh bi dong REAR LEFT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
+  <link name="wheel_rear_left_link">
+    <visual>
+      <geometry><sphere radius="0.043"/></geometry>
+      <material name="dark"/>
+    </visual>
+    <collision>
+      <geometry><sphere radius="0.043"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.443"/>
+      <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
+    </inertial>
+  </link>
+  <joint name="wheel_rear_left_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="wheel_rear_left_link"/>
+    <origin xyz="-0.505 0.195 -0.20157" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Banh bi dong REAR RIGHT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
+  <link name="wheel_rear_right_link">
+    <visual>
+      <geometry><sphere radius="0.043"/></geometry>
+      <material name="dark"/>
+    </visual>
+    <collision>
+      <geometry><sphere radius="0.043"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.443"/>
+      <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
+    </inertial>
+  </link>
+  <joint name="wheel_rear_right_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="wheel_rear_right_link"/>
+    <origin xyz="-0.505 -0.195 -0.20157" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->
+  <link name="wheel_front_drive_link">
+    <visual>
+      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_front_wheel_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="dark"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </visual>
+    <collision>
+      <geometry><cylinder radius="0.0675" length="0.065"/></geometry>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+    </collision>
+    <inertial>
+      <origin xyz="-0.0000522 0.051140 -0.0000062" rpy="0 0 0"/>
+      <mass value="0.5933"/>
+      <inertia ixx="0.000749" ixy="0.0" ixz="0.0" iyy="0.001289" iyz="0.0" izz="0.000749"/>
+    </inertial>
+  </link>
+  <joint name="wheel_front_drive_joint" type="continuous">
+    <parent link="steer_front_link"/>
+    <child link="wheel_front_drive_link"/>
+    <!-- Keep the driven wheel slightly below the passive caster contact plane
+         so it carries load instead of free-spinning above the floor. -->
+    <origin xyz="0.0 -0.0482 -0.093" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="200.0" velocity="30.0"/>
+    <dynamics friction="0.05" damping="0.10"/>
+  </joint>
+
+  <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->
+  <link name="wheel_rear_drive_link">
+    <visual>
+      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_rear_wheel_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="dark"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </visual>
+    <collision>
+      <geometry><cylinder radius="0.0675" length="0.065"/></geometry>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+    </collision>
+    <inertial>
+      <origin xyz="0.0000522 -0.051140 -0.0000062" rpy="0 0 0"/>
+      <mass value="0.5933"/>
+      <inertia ixx="0.000749" ixy="0.0" ixz="0.0" iyy="0.001289" iyz="0.0" izz="0.000749"/>
+    </inertial>
+  </link>
+  <joint name="wheel_rear_drive_joint" type="continuous">
+    <parent link="steer_rear_link"/>
+    <child link="wheel_rear_drive_link"/>
+    <origin xyz="0.0 0.0482 -0.093" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="200.0" velocity="30.0"/>
+    <dynamics friction="0.05" damping="0.10"/>
+  </joint>
+  <!-- Gazebo Classic contact/friction parameters. These are initial values only. -->
+  <gazebo reference="base_link">
+    <mu1>0.6</mu1>
+    <mu2>0.6</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <maxVel>0.1</maxVel>
+    <minDepth>0.0</minDepth>
+  </gazebo>
+  <gazebo reference="steer_front_link">
+    <mu1>0.6</mu1><mu2>0.6</mu2><kp>1000000.0</kp><kd>100.0</kd>
+  </gazebo>
+  <gazebo reference="steer_rear_link">
+    <mu1>0.6</mu1><mu2>0.6</mu2><kp>1000000.0</kp><kd>100.0</kd>
+  </gazebo>
+  <gazebo reference="wheel_front_drive_link">
+    <mu1>2.0</mu1><mu2>2.0</mu2><fdir1>1 0 0</fdir1><kp>1000000.0</kp><kd>100.0</kd>
+    <maxVel>0.05</maxVel><minDepth>0.0</minDepth>
+  </gazebo>
+  <gazebo reference="wheel_rear_drive_link">
+    <mu1>2.0</mu1><mu2>2.0</mu2><fdir1>1 0 0</fdir1><kp>1000000.0</kp><kd>100.0</kd>
+    <maxVel>0.05</maxVel><minDepth>0.0</minDepth>
+  </gazebo>
+  <gazebo reference="wheel_front_left_link">
+    <!-- These CAD caster placeholders are fixed spheres.  Keep their
+         isotropic friction below the driven wheels, but non-zero so the
+         chassis does not skate after a zero drive command. -->
+    <mu1>0.80</mu1><mu2>0.80</mu2><kp>1000000.0</kp><kd>100.0</kd>
+  </gazebo>
+  <gazebo reference="wheel_front_right_link">
+    <mu1>0.80</mu1><mu2>0.80</mu2><kp>1000000.0</kp><kd>100.0</kd>
+  </gazebo>
+  <gazebo reference="wheel_rear_left_link">
+    <mu1>0.80</mu1><mu2>0.80</mu2><kp>1000000.0</kp><kd>100.0</kd>
+  </gazebo>
+  <gazebo reference="wheel_rear_right_link">
+    <mu1>0.80</mu1><mu2>0.80</mu2><kp>1000000.0</kp><kd>100.0</kd>
+  </gazebo>
+
+  <!-- Phase 5 - Gazebo Classic multi-ray 3D LiDAR.  A ray sensor is used
+       instead of gpu_ray because this Gazebo version's gpu_ray supports only
+       one vertical ray. -->
+  <gazebo reference="lidar_link">
+    <sensor name="lidar_3d" type="ray">
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <update_rate>${lidar_update_rate}</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>${lidar_horizontal_samples}</samples>
+            <resolution>1</resolution>
+            <min_angle>${-lidar_horizontal_fov / 2.0}</min_angle>
+            <max_angle>${lidar_horizontal_fov / 2.0}</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>${lidar_vertical_samples}</samples>
+            <resolution>1</resolution>
+            <min_angle>${-lidar_vertical_fov / 2.0}</min_angle>
+            <max_angle>${lidar_vertical_fov / 2.0}</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>${lidar_min_range}</min>
+          <max>${lidar_max_range}</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>${lidar_noise_stddev}</stddev>
+        </noise>
+      </ray>
+      <plugin name="lidar_3d_ros" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <namespace>/lidar</namespace>
+          <remapping>~/out:=points</remapping>
+        </ros>
+        <output_type>sensor_msgs/PointCloud2</output_type>
+        <frame_name>lidar_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- Phase 5 - IMU sensor. Noise is generated by Gazebo's sensor plugin. -->
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <update_rate>${imu_update_rate}</update_rate>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>${imu_gyro_noise_stddev}</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>${imu_gyro_noise_stddev}</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>${imu_gyro_noise_stddev}</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>${imu_accel_noise_stddev}</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>${imu_accel_noise_stddev}</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>${imu_accel_noise_stddev}</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
+      <plugin name="imu_ros" filename="libgazebo_ros_imu_sensor.so">
+        <ros>
+          <namespace>/imu</namespace>
+          <remapping>~/out:=data</remapping>
+        </ros>
+        <frame_name>imu_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- Phase 2 - ros2_control hardware exported by Gazebo Classic.  The legacy
+       gazebo_ros_joint_state_publisher is intentionally not used here - the
+       joint_state_broadcaster below is the single source of /joint_states. -->
+  <ros2_control name="GazeboSystem" type="system">
+    <hardware>
+      <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+    </hardware>
+
+    <joint name="steer_front_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="steer_rear_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="wheel_front_drive_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="wheel_rear_drive_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+  <gazebo>
+    <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so">
+      <parameters>$(find swerve_bringup)/config/controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+</robot>

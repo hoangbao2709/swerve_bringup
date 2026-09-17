@@ -1,0 +1,42 @@
+-- Found ament_cmake: 1.3.12 (/opt/ros/humble/share/ament_cmake/cmake)
+-- Override CMake install command with custom implementation using symlinks instead of copying resources
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/yahboom/swerve_bringup/build/swerve_bringup
+-- Install configuration: ""
+-- Execute custom install script
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/urdf/swerve_base.urdf
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/base_frame.stl
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/steer_front_housing_v2.stl
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/steer_front_wheel_v2.stl
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/steer_rear_housing_v2.stl
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/steer_rear_wheel_v2.stl
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/launch/__pycache__/display.launch.cpython-310.pyc
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/launch/__pycache__/gazebo.launch.cpython-310.pyc
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/launch/display.launch.py
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/launch/gazebo.launch.py
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/rviz/swerve.rviz
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/worlds/test.world
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/controllers.yaml
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/ekf.yaml
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/imu.yaml
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/lidar.yaml
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/swerve_controller.yaml
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/swerve_odometry.yaml
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/ament_index/resource_index/package_run_dependencies/swerve_bringup
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/ament_index/resource_index/parent_prefix_path/swerve_bringup
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/environment/ament_prefix_path.sh
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/environment/ament_prefix_path.dsv
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/environment/path.sh
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/environment/path.dsv
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/local_setup.bash
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/local_setup.sh
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/local_setup.zsh
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/local_setup.dsv
+-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/package.dsv
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/ament_index/resource_index/packages/swerve_bringup
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/cmake/swerve_bringupConfig.cmake
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/cmake/swerve_bringupConfig-version.cmake
+-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/package.xml
+-- Installing: /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node
+-- Installing: /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node

@@ -1,0 +1,12 @@
+# ESTIMATE until the physical LiDAR model and mounting measurements are known.
+lidar:
+  xyz: [0.0, 0.0, 0.35]
+  rpy: [0.0, 0.0, 0.0]
+  horizontal_fov: 6.283185307
+  vertical_fov: 0.523599
+  horizontal_samples: 720
+  vertical_samples: 16
+  min_range: 0.20
+  max_range: 30.0
+  update_rate: 10.0
+  noise_stddev: 0.01

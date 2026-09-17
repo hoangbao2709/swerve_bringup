@@ -1,0 +1,17 @@
+{
+  "orders": [
+    {
+      "order_no": "OUT-DEMO-001",
+      "external_ref": "SO-DEMO-001",
+      "item_code": "SKU-002",
+      "item_name": "Demo outbound item",
+      "quantity": 1,
+      "priority": "NORMAL",
+      "shelf_code": "RACK-A101",
+      "dock_code": "OUTBOUND-1",
+      "payload_weight_kg": 1.8,
+      "due_at": null,
+      "notes": "shelf_code is required for outbound because it is the current goods location"
+    }
+  ]
+}

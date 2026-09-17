@@ -1,0 +1,16 @@
+swerve_odometry:
+  ros__parameters:
+    wheel_radius: 0.0675
+    # URDF wheel axis is +Y. With the wheel contact at -Z, positive joint
+    # rotation produces -X rolling velocity, hence this sign is -1.
+    wheel_velocity_sign: -1.0
+    publish_rate: 50.0
+    joint_state_timeout: 0.3
+    odom_frame: odom
+    base_frame: base_footprint
+    # robot_localization owns odom -> base_footprint in Phase 6.
+    publish_tf: false
+    modules.front.x: 0.300042
+    modules.front.y: 0.049988
+    modules.rear.x: -0.300042
+    modules.rear.y: 0.050013

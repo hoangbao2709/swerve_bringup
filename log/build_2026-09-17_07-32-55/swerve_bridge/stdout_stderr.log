@@ -1,0 +1,15 @@
+running develop
+running egg_info
+writing swerve_bridge.egg-info/PKG-INFO
+writing dependency_links to swerve_bridge.egg-info/dependency_links.txt
+writing entry points to swerve_bridge.egg-info/entry_points.txt
+writing requirements to swerve_bridge.egg-info/requires.txt
+writing top-level names to swerve_bridge.egg-info/top_level.txt
+reading manifest file 'swerve_bridge.egg-info/SOURCES.txt'
+writing manifest file 'swerve_bridge.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/yahboom/swerve_bringup/install/swerve_bridge/lib/python3.10/site-packages/swerve-bridge.egg-link (link to .)
+Installing swerve_bridge_node script to /home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge
+
+Installed /home/yahboom/swerve_bringup/build/swerve_bridge
+running symlink_data

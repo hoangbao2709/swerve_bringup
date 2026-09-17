@@ -1,0 +1,41 @@
+# Single ROS interface contract for Gazebo and the physical robot.
+# Replace the real_topics and extrinsics below after measuring the robot and checking driver names.
+topics:
+    lidar: /lidar/points
+    imu: /imu/data
+    odom: /odom
+    filtered_odom: /odometry/filtered
+frames:
+    base_link: base_link
+    base_footprint: base_footprint
+    lidar: lidar_link
+    imu: imu_link
+
+real_topics:
+    lidar: /lidar/points
+    imu: /imu/data
+    odom: /odom
+
+lidar_extrinsics:
+  xyz: [0.0, 0.0, 0.35]
+  rpy: [0.0, 0.0, 0.0]
+imu_extrinsics:
+  xyz: [0.0, 0.0, 0.30]
+  rpy: [0.0, 0.0, 0.0]
+
+  # Replace from the real LiDAR datasheet during calibration.
+lidar:
+  channels: 16
+  vertical_fov: 0.523599
+  horizontal_fov: 6.283185307
+  scan_frequency: 10.0
+  horizontal_samples: 720
+  vertical_samples: 16
+  min_range: 0.20
+  max_range: 30.0
+  update_rate: 10.0
+  noise_stddev: 0.01
+imu:
+  update_rate: 100.0
+  gyro_noise_stddev: 0.002
+  accel_noise_stddev: 0.02

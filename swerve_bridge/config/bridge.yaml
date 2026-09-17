@@ -1,0 +1,12 @@
+swerve_bridge:
+  ros__parameters:
+    robot_id: R01
+    namespace: ""
+    django_ws_url: ws://127.0.0.1:8000/ws/ros
+    django_token: ""
+    telemetry_rate: 10.0
+    heartbeat_rate: 1.0
+    odom_topic: /odometry/filtered
+    joint_states_topic: /joint_states
+    navigate_action: /navigate_to_pose
+    navigate_server_timeout: 2.0

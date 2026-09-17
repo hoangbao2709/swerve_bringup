@@ -1,0 +1,341 @@
+[0.000000] (-) TimerEvent: {}
+[0.005185] (swerve_bringup) JobQueued: {'identifier': 'swerve_bringup', 'dependencies': OrderedDict()}
+[0.005288] (swerve_bringup) JobStarted: {'identifier': 'swerve_bringup'}
+[0.045883] (swerve_bringup) JobProgress: {'identifier': 'swerve_bringup', 'progress': 'cmake'}
+[0.052056] (swerve_bringup) JobProgress: {'identifier': 'swerve_bringup', 'progress': 'build'}
+[0.052131] (swerve_bringup) Command: {'cmd': ['/usr/bin/cmake', '--build', '/home/yahboom/swerve_bringup/build/swerve_bringup', '--', '-j16', '-l16'], 'cwd': '/home/yahboom/swerve_bringup/build/swerve_bringup', 'env': OrderedDict([('GJS_DEBUG_TOPICS', 'JS ERROR;JS LOG'), ('LESSOPEN', '| /usr/bin/lesspipe %s'), ('CODEX_CI', '1'), ('USER', 'yahboom'), ('LC_TIME', 'zh_CN.UTF-8'), ('ROS_PACKAGE_PATH', '/home/yahboom/yahboomcar_ws/install/champ_gazebo/share:/home/yahboom/ros2_ws/install/champ_description/share'), ('XDG_SESSION_TYPE', 'wayland'), ('GIT_ASKPASS', '/usr/share/code/resources/app/extensions/git/dist/askpass.sh'), ('SHLVL', '1'), ('LD_LIBRARY_PATH', '/opt/ros/humble/include/std_msgs/std_msgs/msg/:/usr/lib/jvm/java-11-openjdk-amd64/lib/:/usr/lib/jvm/java-11-openjdk-amd64/lib/server/:/home/yahboom/cartoros2/install/yahboom_web_savmap_interfaces/lib:/home/yahboom/cartoros2/install/yahboom_msgs/lib:/home/yahboom/cartoros2/install/yahboom_color_identify_interfaces/lib:/home/yahboom/cartoros2/install/yahboom_attitude_record_interfaces/lib:/home/yahboom/cartoros2/install/nav2_smoother/lib:/home/yahboom/cartoros2/install/nav2_graceful_controller/lib:/home/yahboom/cartoros2/install/nav2_controller/lib:/home/yahboom/cartoros2/install/dwb_plugins/lib:/home/yahboom/cartoros2/install/dwb_critics/lib:/home/yahboom/cartoros2/install/dwb_core/lib:/home/yahboom/cartoros2/install/nav_2d_utils/lib:/home/yahboom/cartoros2/install/dwb_msgs/lib:/home/yahboom/cartoros2/install/nav_2d_msgs/lib:/home/yahboom/cartoros2/install/nav2_waypoint_follower/lib:/home/yahboom/cartoros2/install/nav2_theta_star_planner/lib:/home/yahboom/cartoros2/install/nav2_smac_planner/lib:/home/yahboom/cartoros2/install/nav2_rotation_shim_controller/lib:/home/yahboom/cartoros2/install/nav2_regulated_pure_pursuit_controller/lib:/home/yahboom/cartoros2/install/nav2_planner/lib:/home/yahboom/cartoros2/install/nav2_navfn_planner/lib:/home/yahboom/cartoros2/install/nav2_mppi_controller/lib:/home/yahboom/cartoros2/install/nav2_constrained_smoother/lib:/home/yahboom/cartoros2/install/nav2_bt_navigator/lib:/home/yahboom/cartoros2/install/nav2_behaviors/lib:/home/yahboom/cartoros2/install/nav2_collision_monitor/lib:/home/yahboom/cartoros2/install/costmap_queue/lib:/home/yahboom/cartoros2/install/nav2_costmap_2d/lib:/home/yahboom/cartoros2/install/nav2_voxel_grid/lib:/home/yahboom/cartoros2/install/nav2_velocity_smoother/lib:/home/yahboom/cartoros2/install/nav2_rviz_plugins/lib:/home/yahboom/cartoros2/install/nav2_map_server/lib:/home/yahboom/cartoros2/install/nav2_lifecycle_manager/lib:/home/yahboom/cartoros2/install/nav2_behavior_tree/lib:/home/yahboom/cartoros2/install/nav2_amcl/lib:/home/yahboom/cartoros2/install/nav2_util/lib:/home/yahboom/cartoros2/install/nav2_msgs/lib:/home/yahboom/cartoros2/install/image_color_lab/lib:/home/yahboom/cartoros2/install/dynamixel_sdk_custom_interfaces/lib:/home/yahboom/cartoros2/install/dynamixel_sdk/lib:/home/yahboom/cartoros2/install/csm/lib:/home/yahboom/cartoros2/install/champ_msgs/lib:/home/yahboom/cartoros2/install/cartographer_ros_msgs/lib:/home/yahboom/yahboomcar_ws/install/yahboom_dog_msgs/lib:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_custom_interfaces/lib:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk/lib:/home/yahboom/yahboomcar_ws/install/champ_msgs/lib:/usr/lib/x86_64-linux-gnu/gazebo-11/plugins:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib:/opt/ros/humble/include/std_msgs/std_msgs/msg/:/usr/lib/jvm/java-11-openjdk-amd64/lib/:/usr/lib/jvm/java-11-openjdk-amd64/lib/server/:'), ('HOME', '/home/yahboom'), ('CHROME_DESKTOP', 'code.desktop'), ('TERM_PROGRAM_VERSION', '1.106.3'), ('DESKTOP_SESSION', 'ubuntu'), ('NVM_BIN', '/home/yahboom/.nvm/versions/node/v22.23.2/bin'), ('NVM_INC', '/home/yahboom/.nvm/versions/node/v22.23.2/include/node'), ('GIO_LAUNCHED_DESKTOP_FILE', '/usr/share/applications/code.desktop'), ('ROS_PYTHON_VERSION', '3'), ('GNOME_SHELL_SESSION_MODE', 'ubuntu'), ('GTK_MODULES', 'gail:atk-bridge'), ('PAGER', 'cat'), ('VSCODE_GIT_ASKPASS_MAIN', '/usr/share/code/resources/app/extensions/git/dist/askpass-main.js'), ('LC_MONETARY', 'zh_CN.UTF-8'), ('VSCODE_GIT_ASKPASS_NODE', '/usr/share/code/code'), ('MANAGERPID', '2602'), ('LC_CTYPE', 'C.UTF-8'), ('SYSTEMD_EXEC_PID', '2777'), ('IM_CONFIG_CHECK_ENV', '1'), ('VSCODE_PYTHON_AUTOACTIVATE_GUARD', '1'), ('NO_COLOR', '1'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('COLORTERM', 'truecolor'), ('GIO_LAUNCHED_DESKTOP_FILE_PID', '17452'), ('NVM_DIR', '/home/yahboom/.nvm'), ('IM_CONFIG_PHASE', '1'), ('WAYLAND_DISPLAY', 'wayland-0'), ('COLCON_PREFIX_PATH', '/home/yahboom/yahboomcar_ws/install:/home/yahboom/cartoros2/install:/home/yahboom/ros2_ws/install'), ('ROS_DISTRO', 'humble'), ('LOGNAME', 'yahboom'), ('JOURNAL_STREAM', '8:37065'), ('_', '/usr/bin/colcon'), ('ROS_VERSION', '2'), ('PKG_CONFIG_PATH', '/home/yahboom/cartoros2/install/cartographer/lib/x86_64-linux-gnu/pkgconfig:/home/yahboom/cartoros2/install/cartographer/lib/pkgconfig:/home/yahboom/yahboomcar_ws/install/champ_gazebo/lib/x86_64-linux-gnu/pkgconfig:/home/yahboom/yahboomcar_ws/install/champ_gazebo/lib/pkgconfig:/home/yahboom/ros2_ws/install/champ_description/lib/x86_64-linux-gnu/pkgconfig:/home/yahboom/ros2_ws/install/champ_description/lib/pkgconfig'), ('XDG_SESSION_CLASS', 'user'), ('USERNAME', 'yahboom'), ('TERM', 'xterm-256color'), ('GNOME_DESKTOP_SESSION_ID', 'this-is-deprecated'), ('ROS_LOCALHOST_ONLY', '0'), ('PATH', '/home/yahboom/.nvm/versions/node/v22.23.2/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/yahboom/.local/bin:/home/yahboom/.codex/tmp/arg0/codex-arg0qyrkJB:/home/yahboom/.nvm/versions/node/v22.23.2/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/yahboom/.local/bin:/home/yahboom/.nvm/versions/node/v22.23.2/bin:/home/yahboom/cartoros2/install/cartographer/bin:/opt/ros/humble/bin:/home/yahboom/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin'), ('SESSION_MANAGER', 'local/yahboom-virtual-machine:@/tmp/.ICE-unix/2752,unix/yahboom-virtual-machine:/tmp/.ICE-unix/2752'), ('CODEX_VERSION', '0.154.0'), ('CODEX_SESSION_ID', '01a0aacd-a271-7870-804e-42edcde08e5e'), ('INVOCATION_ID', '098d1a12b6d14f079d4e0edc13077df6'), ('XDG_MENU_PREFIX', 'gnome-'), ('LC_ADDRESS', 'zh_CN.UTF-8'), ('GNOME_SETUP_DISPLAY', ':1'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('GDK_BACKEND', 'x11'), ('DISPLAY', ':0'), ('CODEX_SANDBOX_NETWORK_DISABLED', '1'), ('LANG', 'en_US.UTF-8'), ('XDG_CURRENT_DESKTOP', 'Unity'), ('LC_TELEPHONE', 'zh_CN.UTF-8'), ('XMODIFIERS', '@im=ibus'), ('GH_PAGER', 'cat'), ('XDG_SESSION_DESKTOP', 'ubuntu'), ('XAUTHORITY', '/run/user/1000/.mutter-Xwaylandauth.SVASV3'), ('LS_COLORS', 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:'), ('VSCODE_GIT_IPC_HANDLE', '/run/user/1000/vscode-git-de8078a89e.sock'), ('TERM_PROGRAM', 'vscode'), ('SSH_AGENT_LAUNCHER', 'gnome-keyring'), ('SSH_AUTH_SOCK', '/run/user/1000/keyring/ssh'), ('ROS_DOMAIN_ID', '12'), ('AMENT_PREFIX_PATH', '/home/yahboom/cartoros2/install/yahboomcar_nav:/home/yahboom/cartoros2/install/yahboomcar_ctrl:/home/yahboom/cartoros2/install/yahboom_web_savmap_interfaces:/home/yahboom/cartoros2/install/yahboom_visual:/home/yahboom/cartoros2/install/yahboom_qrcode:/home/yahboom/cartoros2/install/yahboom_point:/home/yahboom/cartoros2/install/yahboom_nav2_send_goal:/home/yahboom/cartoros2/install/yahboom_msgs:/home/yahboom/cartoros2/install/yahboom_dog_joint_state:/home/yahboom/cartoros2/install/yahboom_description:/home/yahboom/cartoros2/install/yahboom_config:/home/yahboom/cartoros2/install/yahboom_color_identify_server:/home/yahboom/cartoros2/install/yahboom_color_identify_interfaces:/home/yahboom/cartoros2/install/yahboom_bringup:/home/yahboom/cartoros2/install/yahboom_base:/home/yahboom/cartoros2/install/yahboom_attitude_record_interfaces:/home/yahboom/cartoros2/install/yahboom_app_save_map:/home/yahboom/cartoros2/install/update_map:/home/yahboom/cartoros2/install/turtlebot3_description:/home/yahboom/cartoros2/install/rosboard:/home/yahboom/cartoros2/install/robot_pose_publisher_ros2:/home/yahboom/cartoros2/install/rf2o_laser_odometry:/home/yahboom/cartoros2/install/path_planner_server:/home/yahboom/cartoros2/install/nav2_system_tests:/home/yahboom/cartoros2/install/nav2_bringup:/home/yahboom/cartoros2/install/navigation2:/home/yahboom/cartoros2/install/nav2_smoother:/home/yahboom/cartoros2/install/nav2_graceful_controller:/home/yahboom/cartoros2/install/nav2_dwb_controller:/home/yahboom/cartoros2/install/nav2_controller:/home/yahboom/cartoros2/install/dwb_plugins:/home/yahboom/cartoros2/install/dwb_critics:/home/yahboom/cartoros2/install/dwb_core:/home/yahboom/cartoros2/install/nav_2d_utils:/home/yahboom/cartoros2/install/dwb_msgs:/home/yahboom/cartoros2/install/nav_2d_msgs:/home/yahboom/cartoros2/install/nav2_waypoint_follower:/home/yahboom/cartoros2/install/nav2_theta_star_planner:/home/yahboom/cartoros2/install/nav2_smac_planner:/home/yahboom/cartoros2/install/nav2_rotation_shim_controller:/home/yahboom/cartoros2/install/nav2_regulated_pure_pursuit_controller:/home/yahboom/cartoros2/install/nav2_planner:/home/yahboom/cartoros2/install/nav2_navfn_planner:/home/yahboom/cartoros2/install/nav2_mppi_controller:/home/yahboom/cartoros2/install/nav2_constrained_smoother:/home/yahboom/cartoros2/install/nav2_bt_navigator:/home/yahboom/cartoros2/install/nav2_behaviors:/home/yahboom/cartoros2/install/nav2_core:/home/yahboom/cartoros2/install/nav2_collision_monitor:/home/yahboom/cartoros2/install/costmap_queue:/home/yahboom/cartoros2/install/nav2_costmap_2d:/home/yahboom/cartoros2/install/nav2_voxel_grid:/home/yahboom/cartoros2/install/nav2_velocity_smoother:/home/yahboom/cartoros2/install/nav2_rviz_plugins:/home/yahboom/cartoros2/install/nav2_map_server:/home/yahboom/cartoros2/install/nav2_lifecycle_manager:/home/yahboom/cartoros2/install/nav2_behavior_tree:/home/yahboom/cartoros2/install/nav2_amcl:/home/yahboom/cartoros2/install/nav2_util:/home/yahboom/cartoros2/install/nav2_simple_commander:/home/yahboom/cartoros2/install/nav2_msgs:/home/yahboom/cartoros2/install/nav2_gazebo_spawner:/home/yahboom/cartoros2/install/nav2_common:/home/yahboom/cartoros2/install/localization_server:/home/yahboom/cartoros2/install/laserscan_to_point_pulisher:/home/yahboom/cartoros2/install/image_color_lab:/home/yahboom/cartoros2/install/dynamixel_sdk_examples:/home/yahboom/cartoros2/install/dynamixel_sdk_custom_interfaces:/home/yahboom/cartoros2/install/dynamixel_sdk:/home/yahboom/cartoros2/install/dogzilla_sim:/home/yahboom/cartoros2/install/csm:/home/yahboom/cartoros2/install/champ_msgs:/home/yahboom/cartoros2/install/champ:/home/yahboom/cartoros2/install/cartographer_ros_msgs:/home/yahboom/yahboomcar_ws/install/yahboom_dog_node:/home/yahboom/yahboomcar_ws/install/yahboom_dog_navigation2:/home/yahboom/yahboomcar_ws/install/yahboom_dog_nav:/home/yahboom/yahboomcar_ws/install/yahboom_dog_msgs:/home/yahboom/yahboomcar_ws/install/yahboom_dog_example:/home/yahboom/yahboomcar_ws/install/yahboom_dog_cartographer:/home/yahboom/yahboomcar_ws/install/yahboom_dog:/home/yahboom/yahboomcar_ws/install/yahboom_dog_bringup:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_examples:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_custom_interfaces:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk:/home/yahboom/yahboomcar_ws/install/champ_navigation:/home/yahboom/yahboomcar_ws/install/champ_msgs:/home/yahboom/yahboomcar_ws/install/champ_bringup:/home/yahboom/yahboomcar_ws/install/champ_description:/home/yahboom/yahboomcar_ws/install/champ_config:/home/yahboom/yahboomcar_ws/install/champ:/home/yahboom/ros2_ws/install/your_planner:/home/yahboom/ros2_ws/install/tb3_slam_viewer:/opt/ros/humble'), ('ORIGINAL_XDG_CURRENT_DESKTOP', 'ubuntu:GNOME'), ('SHELL', '/bin/bash'), ('LC_NAME', 'zh_CN.UTF-8'), ('QT_ACCESSIBILITY', '1'), ('GDMSESSION', 'ubuntu'), ('LESSCLOSE', '/usr/bin/lesspipe %s %s'), ('CODEX_THREAD_ID', '01a0aacd-a271-7870-804e-42edcde08e5e'), ('LC_MEASUREMENT', 'zh_CN.UTF-8'), ('GJS_DEBUG_OUTPUT', 'stderr'), ('LC_IDENTIFICATION', 'zh_CN.UTF-8'), ('VSCODE_GIT_ASKPASS_EXTRA_ARGS', ''), ('GIT_PAGER', 'cat'), ('QT_IM_MODULE', 'ibus'), ('PWD', '/home/yahboom/swerve_bringup/build/swerve_bringup'), ('TURTLEBOT3_MODEL', 'burger'), ('LC_ALL', 'C.UTF-8'), ('CODEX_MANAGED_PACKAGE_ROOT', '/home/yahboom/.nvm/versions/node/v22.23.2/lib/node_modules/@openai/codex'), ('XDG_CONFIG_DIRS', '/etc/xdg/xdg-ubuntu:/etc/xdg'), ('GAZEBO_PLUGIN_PATH', ':/opt/ros/humble/lib:/opt/ros/humble/lib'), ('NVM_CD_FLAGS', ''), ('XDG_DATA_DIRS', '/usr/share/ubuntu:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop'), ('PYTHONPATH', '/home/yahboom/cartoros2/install/yahboomcar_nav/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboomcar_ctrl/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_web_savmap_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/yahboom_visual/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/yahboom_dog_joint_state/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_description/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_color_identify_server/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_color_identify_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/yahboom_bringup/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_base/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_attitude_record_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/yahboom_app_save_map/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/update_map/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/rosboard/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/path_planner_server/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/dwb_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/nav_2d_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/nav2_simple_commander/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/nav2_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/nav2_gazebo_spawner/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/nav2_common/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/localization_server/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/laserscan_to_point_pulisher/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/image_color_lab/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/dynamixel_sdk_custom_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/dogzilla_sim/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/champ_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/cartographer_ros_msgs/local/lib/python3.10/dist-packages:/home/yahboom/yahboomcar_ws/install/yahboom_dog_msgs/local/lib/python3.10/dist-packages:/home/yahboom/yahboomcar_ws/build/yahboom_dog_example:/home/yahboom/yahboomcar_ws/install/yahboom_dog_example/lib/python3.10/site-packages:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_custom_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/yahboomcar_ws/install/champ_msgs/local/lib/python3.10/dist-packages:/home/yahboom/yahboomcar_ws/install/champ_bringup/local/lib/python3.10/dist-packages:/home/yahboom/ros2_ws/install/tb3_slam_viewer/lib/python3.10/site-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages'), ('LC_NUMERIC', 'zh_CN.UTF-8'), ('LC_PAPER', 'zh_CN.UTF-8'), ('COLCON', '1'), ('CODEX_MANAGED_BY_NPM', '1'), ('CMAKE_PREFIX_PATH', '/home/yahboom/cartoros2/install/yahboom_web_savmap_interfaces:/home/yahboom/cartoros2/install/yahboom_qrcode:/home/yahboom/cartoros2/install/yahboom_point:/home/yahboom/cartoros2/install/yahboom_nav2_send_goal:/home/yahboom/cartoros2/install/yahboom_msgs:/home/yahboom/cartoros2/install/yahboom_config:/home/yahboom/cartoros2/install/yahboom_color_identify_interfaces:/home/yahboom/cartoros2/install/yahboom_attitude_record_interfaces:/home/yahboom/cartoros2/install/turtlebot3_description:/home/yahboom/cartoros2/install/robot_pose_publisher_ros2:/home/yahboom/cartoros2/install/rf2o_laser_odometry:/home/yahboom/cartoros2/install/nav2_system_tests:/home/yahboom/cartoros2/install/nav2_bringup:/home/yahboom/cartoros2/install/navigation2:/home/yahboom/cartoros2/install/nav2_smoother:/home/yahboom/cartoros2/install/nav2_graceful_controller:/home/yahboom/cartoros2/install/nav2_dwb_controller:/home/yahboom/cartoros2/install/nav2_controller:/home/yahboom/cartoros2/install/dwb_plugins:/home/yahboom/cartoros2/install/dwb_critics:/home/yahboom/cartoros2/install/dwb_core:/home/yahboom/cartoros2/install/nav_2d_utils:/home/yahboom/cartoros2/install/dwb_msgs:/home/yahboom/cartoros2/install/nav_2d_msgs:/home/yahboom/cartoros2/install/nav2_waypoint_follower:/home/yahboom/cartoros2/install/nav2_theta_star_planner:/home/yahboom/cartoros2/install/nav2_smac_planner:/home/yahboom/cartoros2/install/nav2_rotation_shim_controller:/home/yahboom/cartoros2/install/nav2_regulated_pure_pursuit_controller:/home/yahboom/cartoros2/install/nav2_planner:/home/yahboom/cartoros2/install/nav2_navfn_planner:/home/yahboom/cartoros2/install/nav2_mppi_controller:/home/yahboom/cartoros2/install/nav2_constrained_smoother:/home/yahboom/cartoros2/install/nav2_bt_navigator:/home/yahboom/cartoros2/install/nav2_behaviors:/home/yahboom/cartoros2/install/nav2_core:/home/yahboom/cartoros2/install/nav2_collision_monitor:/home/yahboom/cartoros2/install/costmap_queue:/home/yahboom/cartoros2/install/nav2_costmap_2d:/home/yahboom/cartoros2/install/nav2_voxel_grid:/home/yahboom/cartoros2/install/nav2_velocity_smoother:/home/yahboom/cartoros2/install/nav2_rviz_plugins:/home/yahboom/cartoros2/install/nav2_map_server:/home/yahboom/cartoros2/install/nav2_lifecycle_manager:/home/yahboom/cartoros2/install/nav2_behavior_tree:/home/yahboom/cartoros2/install/nav2_amcl:/home/yahboom/cartoros2/install/nav2_util:/home/yahboom/cartoros2/install/nav2_msgs:/home/yahboom/cartoros2/install/nav2_common:/home/yahboom/cartoros2/install/image_color_lab:/home/yahboom/cartoros2/install/dynamixel_sdk_examples:/home/yahboom/cartoros2/install/dynamixel_sdk_custom_interfaces:/home/yahboom/cartoros2/install/dynamixel_sdk:/home/yahboom/cartoros2/install/csm:/home/yahboom/cartoros2/install/champ_msgs:/home/yahboom/cartoros2/install/champ:/home/yahboom/cartoros2/install/cartographer_ros_msgs:/home/yahboom/cartoros2/install/cartographer:/home/yahboom/yahboomcar_ws/install/yahboom_dog_node:/home/yahboom/yahboomcar_ws/install/yahboom_dog_navigation2:/home/yahboom/yahboomcar_ws/install/yahboom_dog_nav:/home/yahboom/yahboomcar_ws/install/yahboom_dog_msgs:/home/yahboom/yahboomcar_ws/install/yahboom_dog_cartographer:/home/yahboom/yahboomcar_ws/install/yahboom_dog:/home/yahboom/yahboomcar_ws/install/yahboom_dog_bringup:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_examples:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_custom_interfaces:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk:/home/yahboom/yahboomcar_ws/install/champ_navigation:/home/yahboom/yahboomcar_ws/install/champ_msgs:/home/yahboom/cartoros2/install/yahboomcar_nav:/home/yahboom/cartoros2/install/yahboomcar_ctrl:/home/yahboom/cartoros2/install/yahboom_visual:/home/yahboom/cartoros2/install/yahboom_dog_joint_state:/home/yahboom/cartoros2/install/yahboom_description:/home/yahboom/cartoros2/install/yahboom_color_identify_server:/home/yahboom/cartoros2/install/yahboom_bringup:/home/yahboom/cartoros2/install/yahboom_base:/home/yahboom/cartoros2/install/yahboom_app_save_map:/home/yahboom/cartoros2/install/update_map:/home/yahboom/cartoros2/install/rosboard:/home/yahboom/cartoros2/install/path_planner_server:/home/yahboom/cartoros2/install/nav2_simple_commander:/home/yahboom/cartoros2/install/nav2_gazebo_spawner:/home/yahboom/cartoros2/install/localization_server:/home/yahboom/cartoros2/install/laserscan_to_point_pulisher:/home/yahboom/cartoros2/install/dogzilla_sim:/home/yahboom/yahboomcar_ws/install/yahboom_dog_example:/home/yahboom/ros2_ws/install/tb3_slam_viewer:/opt/ros/humble:/home/yahboom/yahboomcar_ws/install/champ_gazebo:/home/yahboom/yahboomcar_ws/install/champ_bringup:/home/yahboom/yahboomcar_ws/install/champ_description:/home/yahboom/yahboomcar_ws/install/champ_config:/home/yahboom/yahboomcar_ws/install/champ:/home/yahboom/ros2_ws/install/your_planner:/home/yahboom/ros2_ws/install/champ_description')]), 'shell': False}
+[0.101517] (-) TimerEvent: {}
+[0.122332] (swerve_bringup) StdoutLine: {'line': b'-- Found ament_cmake: 1.3.12 (/opt/ros/humble/share/ament_cmake/cmake)\n'}
+[0.202021] (-) TimerEvent: {}
+[0.302346] (-) TimerEvent: {}
+[0.403064] (-) TimerEvent: {}
+[0.505766] (-) TimerEvent: {}
+[0.577458] (swerve_bringup) StdoutLine: {'line': b'-- Override CMake install command with custom implementation using symlinks instead of copying resources\n'}
+[0.607790] (-) TimerEvent: {}
+[0.711587] (-) TimerEvent: {}
+[0.810925] (swerve_bringup) StdoutLine: {'line': b'-- Configuring done\n'}
+[0.811625] (-) TimerEvent: {}
+[0.821956] (swerve_bringup) StdoutLine: {'line': b'-- Generating done\n'}
+[0.823076] (swerve_bringup) StdoutLine: {'line': b'-- Build files have been written to: /home/yahboom/swerve_bringup/build/swerve_bringup\n'}
+[0.912183] (-) TimerEvent: {}
+[1.013055] (-) TimerEvent: {}
+[1.115549] (-) TimerEvent: {}
+[1.215871] (-) TimerEvent: {}
+[1.316827] (-) TimerEvent: {}
+[1.417519] (-) TimerEvent: {}
+[1.518849] (-) TimerEvent: {}
+[1.619708] (-) TimerEvent: {}
+[1.722631] (-) TimerEvent: {}
+[1.824191] (-) TimerEvent: {}
+[1.924573] (-) TimerEvent: {}
+[2.027828] (-) TimerEvent: {}
+[2.128698] (-) TimerEvent: {}
+[2.229527] (-) TimerEvent: {}
+[2.330141] (-) TimerEvent: {}
+[2.431445] (-) TimerEvent: {}
+[2.533078] (-) TimerEvent: {}
+[2.634262] (-) TimerEvent: {}
+[2.735766] (-) TimerEvent: {}
+[2.836182] (-) TimerEvent: {}
+[2.937867] (-) TimerEvent: {}
+[3.038353] (-) TimerEvent: {}
+[3.141421] (-) TimerEvent: {}
+[3.242075] (-) TimerEvent: {}
+[3.342348] (-) TimerEvent: {}
+[3.445944] (-) TimerEvent: {}
+[3.546269] (-) TimerEvent: {}
+[3.647803] (-) TimerEvent: {}
+[3.752534] (-) TimerEvent: {}
+[3.852843] (-) TimerEvent: {}
+[3.953333] (-) TimerEvent: {}
+[4.054506] (-) TimerEvent: {}
+[4.158098] (-) TimerEvent: {}
+[4.265343] (-) TimerEvent: {}
+[4.367303] (-) TimerEvent: {}
+[4.468054] (-) TimerEvent: {}
+[4.569183] (-) TimerEvent: {}
+[4.669534] (-) TimerEvent: {}
+[4.770180] (-) TimerEvent: {}
+[4.871233] (-) TimerEvent: {}
+[4.972341] (-) TimerEvent: {}
+[5.073215] (-) TimerEvent: {}
+[5.173559] (-) TimerEvent: {}
+[5.274780] (-) TimerEvent: {}
+[5.375061] (-) TimerEvent: {}
+[5.475813] (-) TimerEvent: {}
+[5.577755] (-) TimerEvent: {}
+[5.678957] (-) TimerEvent: {}
+[5.779311] (-) TimerEvent: {}
+[5.880267] (-) TimerEvent: {}
+[5.980822] (-) TimerEvent: {}
+[6.083831] (-) TimerEvent: {}
+[6.184429] (-) TimerEvent: {}
+[6.288042] (-) TimerEvent: {}
+[6.389127] (-) TimerEvent: {}
+[6.492754] (-) TimerEvent: {}
+[6.593728] (-) TimerEvent: {}
+[6.694230] (-) TimerEvent: {}
+[6.795065] (-) TimerEvent: {}
+[6.895716] (-) TimerEvent: {}
+[6.996383] (-) TimerEvent: {}
+[7.097576] (-) TimerEvent: {}
+[7.198449] (-) TimerEvent: {}
+[7.300810] (-) TimerEvent: {}
+[7.402436] (-) TimerEvent: {}
+[7.502790] (-) TimerEvent: {}
+[7.614530] (-) TimerEvent: {}
+[7.716728] (-) TimerEvent: {}
+[7.817497] (-) TimerEvent: {}
+[7.918912] (-) TimerEvent: {}
+[8.019495] (-) TimerEvent: {}
+[8.120583] (-) TimerEvent: {}
+[8.221139] (-) TimerEvent: {}
+[8.321561] (-) TimerEvent: {}
+[8.422538] (-) TimerEvent: {}
+[8.523317] (-) TimerEvent: {}
+[8.625544] (-) TimerEvent: {}
+[8.726543] (-) TimerEvent: {}
+[8.827113] (-) TimerEvent: {}
+[8.928545] (-) TimerEvent: {}
+[9.029361] (-) TimerEvent: {}
+[9.134528] (-) TimerEvent: {}
+[9.236202] (-) TimerEvent: {}
+[9.337720] (-) TimerEvent: {}
+[9.438745] (-) TimerEvent: {}
+[9.539171] (-) TimerEvent: {}
+[9.639613] (-) TimerEvent: {}
+[9.739872] (-) TimerEvent: {}
+[9.841171] (-) TimerEvent: {}
+[9.941997] (-) TimerEvent: {}
+[10.043430] (-) TimerEvent: {}
+[10.144656] (-) TimerEvent: {}
+[10.246598] (-) TimerEvent: {}
+[10.348009] (-) TimerEvent: {}
+[10.448629] (-) TimerEvent: {}
+[10.549305] (-) TimerEvent: {}
+[10.649841] (-) TimerEvent: {}
+[10.752146] (-) TimerEvent: {}
+[10.856138] (-) TimerEvent: {}
+[10.967167] (-) TimerEvent: {}
+[11.067651] (-) TimerEvent: {}
+[11.168696] (-) TimerEvent: {}
+[11.272879] (-) TimerEvent: {}
+[11.373483] (-) TimerEvent: {}
+[11.475755] (-) TimerEvent: {}
+[11.579999] (-) TimerEvent: {}
+[11.680348] (-) TimerEvent: {}
+[11.781685] (-) TimerEvent: {}
+[11.882389] (-) TimerEvent: {}
+[11.985069] (-) TimerEvent: {}
+[12.086727] (-) TimerEvent: {}
+[12.187381] (-) TimerEvent: {}
+[12.288110] (-) TimerEvent: {}
+[12.388933] (-) TimerEvent: {}
+[12.490818] (-) TimerEvent: {}
+[12.593338] (-) TimerEvent: {}
+[12.693774] (-) TimerEvent: {}
+[12.794082] (-) TimerEvent: {}
+[12.895132] (-) TimerEvent: {}
+[12.996066] (-) TimerEvent: {}
+[13.096592] (-) TimerEvent: {}
+[13.197046] (-) TimerEvent: {}
+[13.302257] (-) TimerEvent: {}
+[13.403390] (-) TimerEvent: {}
+[13.505319] (-) TimerEvent: {}
+[13.607237] (-) TimerEvent: {}
+[13.708388] (-) TimerEvent: {}
+[13.808912] (-) TimerEvent: {}
+[13.909680] (-) TimerEvent: {}
+[14.010649] (-) TimerEvent: {}
+[14.111650] (-) TimerEvent: {}
+[14.213186] (-) TimerEvent: {}
+[14.321037] (-) TimerEvent: {}
+[14.422207] (-) TimerEvent: {}
+[14.523160] (-) TimerEvent: {}
+[14.624560] (-) TimerEvent: {}
+[14.725167] (-) TimerEvent: {}
+[14.826731] (-) TimerEvent: {}
+[14.927892] (-) TimerEvent: {}
+[15.029181] (-) TimerEvent: {}
+[15.131315] (-) TimerEvent: {}
+[15.232507] (-) TimerEvent: {}
+[15.334328] (-) TimerEvent: {}
+[15.436222] (-) TimerEvent: {}
+[15.537152] (-) TimerEvent: {}
+[15.637788] (-) TimerEvent: {}
+[15.740386] (-) TimerEvent: {}
+[15.840745] (-) TimerEvent: {}
+[15.941103] (-) TimerEvent: {}
+[16.041783] (-) TimerEvent: {}
+[16.142432] (-) TimerEvent: {}
+[16.244713] (-) TimerEvent: {}
+[16.356353] (-) TimerEvent: {}
+[16.457322] (-) TimerEvent: {}
+[16.557784] (-) TimerEvent: {}
+[16.660889] (-) TimerEvent: {}
+[16.764656] (-) TimerEvent: {}
+[16.865662] (-) TimerEvent: {}
+[16.966626] (-) TimerEvent: {}
+[17.068602] (-) TimerEvent: {}
+[17.169311] (-) TimerEvent: {}
+[17.269766] (-) TimerEvent: {}
+[17.370667] (-) TimerEvent: {}
+[17.471250] (-) TimerEvent: {}
+[17.572415] (-) TimerEvent: {}
+[17.673604] (-) TimerEvent: {}
+[17.780333] (-) TimerEvent: {}
+[17.882893] (-) TimerEvent: {}
+[17.983134] (-) TimerEvent: {}
+[18.083879] (-) TimerEvent: {}
+[18.187546] (-) TimerEvent: {}
+[18.289023] (-) TimerEvent: {}
+[18.389951] (-) TimerEvent: {}
+[18.490543] (-) TimerEvent: {}
+[18.593100] (-) TimerEvent: {}
+[18.694082] (-) TimerEvent: {}
+[18.794554] (-) TimerEvent: {}
+[18.898716] (-) TimerEvent: {}
+[19.000943] (-) TimerEvent: {}
+[19.101570] (-) TimerEvent: {}
+[19.203743] (-) TimerEvent: {}
+[19.304492] (-) TimerEvent: {}
+[19.404837] (-) TimerEvent: {}
+[19.505314] (-) TimerEvent: {}
+[19.605931] (-) TimerEvent: {}
+[19.707744] (-) TimerEvent: {}
+[19.809004] (-) TimerEvent: {}
+[19.912100] (-) TimerEvent: {}
+[20.014466] (-) TimerEvent: {}
+[20.116559] (-) TimerEvent: {}
+[20.218716] (-) TimerEvent: {}
+[20.320448] (-) TimerEvent: {}
+[20.421023] (-) TimerEvent: {}
+[20.521468] (-) TimerEvent: {}
+[20.624083] (-) TimerEvent: {}
+[20.729861] (-) TimerEvent: {}
+[20.831221] (-) TimerEvent: {}
+[20.932836] (-) TimerEvent: {}
+[21.036488] (-) TimerEvent: {}
+[21.140808] (-) TimerEvent: {}
+[21.243291] (-) TimerEvent: {}
+[21.344129] (-) TimerEvent: {}
+[21.445566] (-) TimerEvent: {}
+[21.546001] (-) TimerEvent: {}
+[21.648652] (-) TimerEvent: {}
+[21.749182] (-) TimerEvent: {}
+[21.849902] (-) TimerEvent: {}
+[21.950209] (-) TimerEvent: {}
+[22.054822] (-) TimerEvent: {}
+[22.155923] (-) TimerEvent: {}
+[22.256889] (-) TimerEvent: {}
+[22.359505] (-) TimerEvent: {}
+[22.462494] (-) TimerEvent: {}
+[22.563121] (-) TimerEvent: {}
+[22.663865] (-) TimerEvent: {}
+[22.764293] (-) TimerEvent: {}
+[22.864914] (-) TimerEvent: {}
+[22.966856] (-) TimerEvent: {}
+[23.069875] (-) TimerEvent: {}
+[23.172318] (-) TimerEvent: {}
+[23.276808] (-) TimerEvent: {}
+[23.388704] (-) TimerEvent: {}
+[23.489790] (-) TimerEvent: {}
+[23.592389] (-) TimerEvent: {}
+[23.701166] (-) TimerEvent: {}
+[23.801838] (-) TimerEvent: {}
+[23.902165] (-) TimerEvent: {}
+[24.005663] (-) TimerEvent: {}
+[24.106537] (-) TimerEvent: {}
+[24.207983] (-) TimerEvent: {}
+[24.308680] (-) TimerEvent: {}
+[24.409808] (-) TimerEvent: {}
+[24.511093] (-) TimerEvent: {}
+[24.612252] (-) TimerEvent: {}
+[24.712981] (-) TimerEvent: {}
+[24.813659] (-) TimerEvent: {}
+[24.915464] (-) TimerEvent: {}
+[25.017859] (-) TimerEvent: {}
+[25.118650] (-) TimerEvent: {}
+[25.220204] (-) TimerEvent: {}
+[25.323037] (-) TimerEvent: {}
+[25.424146] (-) TimerEvent: {}
+[25.527085] (-) TimerEvent: {}
+[25.635614] (-) TimerEvent: {}
+[25.736698] (-) TimerEvent: {}
+[25.836927] (-) TimerEvent: {}
+[25.937926] (-) TimerEvent: {}
+[26.038385] (-) TimerEvent: {}
+[26.139396] (-) TimerEvent: {}
+[26.239854] (-) TimerEvent: {}
+[26.341577] (-) TimerEvent: {}
+[26.441871] (-) TimerEvent: {}
+[26.542728] (-) TimerEvent: {}
+[26.645796] (-) TimerEvent: {}
+[26.749711] (-) TimerEvent: {}
+[26.852090] (-) TimerEvent: {}
+[26.953503] (-) TimerEvent: {}
+[27.054902] (-) TimerEvent: {}
+[27.163332] (-) TimerEvent: {}
+[27.266004] (-) TimerEvent: {}
+[27.366571] (-) TimerEvent: {}
+[27.467018] (-) TimerEvent: {}
+[27.567694] (-) TimerEvent: {}
+[27.668891] (-) TimerEvent: {}
+[27.770876] (-) TimerEvent: {}
+[27.872116] (-) TimerEvent: {}
+[27.973316] (-) TimerEvent: {}
+[28.074866] (-) TimerEvent: {}
+[28.175354] (-) TimerEvent: {}
+[28.276460] (-) TimerEvent: {}
+[28.379252] (-) TimerEvent: {}
+[28.480322] (-) TimerEvent: {}
+[28.580921] (-) TimerEvent: {}
+[28.682777] (-) TimerEvent: {}
+[28.783286] (-) TimerEvent: {}
+[28.884279] (-) TimerEvent: {}
+[28.985204] (-) TimerEvent: {}
+[29.092510] (-) TimerEvent: {}
+[29.193176] (-) TimerEvent: {}
+[29.295529] (-) TimerEvent: {}
+[29.396919] (-) TimerEvent: {}
+[29.498701] (-) TimerEvent: {}
+[29.600041] (-) TimerEvent: {}
+[29.701199] (-) TimerEvent: {}
+[29.802629] (-) TimerEvent: {}
+[29.905713] (-) TimerEvent: {}
+[30.006439] (-) TimerEvent: {}
+[30.017798] (swerve_bringup) CommandEnded: {'returncode': 0}
+[30.018412] (swerve_bringup) JobProgress: {'identifier': 'swerve_bringup', 'progress': 'install'}
+[30.048959] (swerve_bringup) Command: {'cmd': ['/usr/bin/cmake', '--install', '/home/yahboom/swerve_bringup/build/swerve_bringup'], 'cwd': '/home/yahboom/swerve_bringup/build/swerve_bringup', 'env': OrderedDict([('GJS_DEBUG_TOPICS', 'JS ERROR;JS LOG'), ('LESSOPEN', '| /usr/bin/lesspipe %s'), ('CODEX_CI', '1'), ('USER', 'yahboom'), ('LC_TIME', 'zh_CN.UTF-8'), ('ROS_PACKAGE_PATH', '/home/yahboom/yahboomcar_ws/install/champ_gazebo/share:/home/yahboom/ros2_ws/install/champ_description/share'), ('XDG_SESSION_TYPE', 'wayland'), ('GIT_ASKPASS', '/usr/share/code/resources/app/extensions/git/dist/askpass.sh'), ('SHLVL', '1'), ('LD_LIBRARY_PATH', '/opt/ros/humble/include/std_msgs/std_msgs/msg/:/usr/lib/jvm/java-11-openjdk-amd64/lib/:/usr/lib/jvm/java-11-openjdk-amd64/lib/server/:/home/yahboom/cartoros2/install/yahboom_web_savmap_interfaces/lib:/home/yahboom/cartoros2/install/yahboom_msgs/lib:/home/yahboom/cartoros2/install/yahboom_color_identify_interfaces/lib:/home/yahboom/cartoros2/install/yahboom_attitude_record_interfaces/lib:/home/yahboom/cartoros2/install/nav2_smoother/lib:/home/yahboom/cartoros2/install/nav2_graceful_controller/lib:/home/yahboom/cartoros2/install/nav2_controller/lib:/home/yahboom/cartoros2/install/dwb_plugins/lib:/home/yahboom/cartoros2/install/dwb_critics/lib:/home/yahboom/cartoros2/install/dwb_core/lib:/home/yahboom/cartoros2/install/nav_2d_utils/lib:/home/yahboom/cartoros2/install/dwb_msgs/lib:/home/yahboom/cartoros2/install/nav_2d_msgs/lib:/home/yahboom/cartoros2/install/nav2_waypoint_follower/lib:/home/yahboom/cartoros2/install/nav2_theta_star_planner/lib:/home/yahboom/cartoros2/install/nav2_smac_planner/lib:/home/yahboom/cartoros2/install/nav2_rotation_shim_controller/lib:/home/yahboom/cartoros2/install/nav2_regulated_pure_pursuit_controller/lib:/home/yahboom/cartoros2/install/nav2_planner/lib:/home/yahboom/cartoros2/install/nav2_navfn_planner/lib:/home/yahboom/cartoros2/install/nav2_mppi_controller/lib:/home/yahboom/cartoros2/install/nav2_constrained_smoother/lib:/home/yahboom/cartoros2/install/nav2_bt_navigator/lib:/home/yahboom/cartoros2/install/nav2_behaviors/lib:/home/yahboom/cartoros2/install/nav2_collision_monitor/lib:/home/yahboom/cartoros2/install/costmap_queue/lib:/home/yahboom/cartoros2/install/nav2_costmap_2d/lib:/home/yahboom/cartoros2/install/nav2_voxel_grid/lib:/home/yahboom/cartoros2/install/nav2_velocity_smoother/lib:/home/yahboom/cartoros2/install/nav2_rviz_plugins/lib:/home/yahboom/cartoros2/install/nav2_map_server/lib:/home/yahboom/cartoros2/install/nav2_lifecycle_manager/lib:/home/yahboom/cartoros2/install/nav2_behavior_tree/lib:/home/yahboom/cartoros2/install/nav2_amcl/lib:/home/yahboom/cartoros2/install/nav2_util/lib:/home/yahboom/cartoros2/install/nav2_msgs/lib:/home/yahboom/cartoros2/install/image_color_lab/lib:/home/yahboom/cartoros2/install/dynamixel_sdk_custom_interfaces/lib:/home/yahboom/cartoros2/install/dynamixel_sdk/lib:/home/yahboom/cartoros2/install/csm/lib:/home/yahboom/cartoros2/install/champ_msgs/lib:/home/yahboom/cartoros2/install/cartographer_ros_msgs/lib:/home/yahboom/yahboomcar_ws/install/yahboom_dog_msgs/lib:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_custom_interfaces/lib:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk/lib:/home/yahboom/yahboomcar_ws/install/champ_msgs/lib:/usr/lib/x86_64-linux-gnu/gazebo-11/plugins:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib:/opt/ros/humble/include/std_msgs/std_msgs/msg/:/usr/lib/jvm/java-11-openjdk-amd64/lib/:/usr/lib/jvm/java-11-openjdk-amd64/lib/server/:'), ('HOME', '/home/yahboom'), ('CHROME_DESKTOP', 'code.desktop'), ('TERM_PROGRAM_VERSION', '1.106.3'), ('DESKTOP_SESSION', 'ubuntu'), ('NVM_BIN', '/home/yahboom/.nvm/versions/node/v22.23.2/bin'), ('NVM_INC', '/home/yahboom/.nvm/versions/node/v22.23.2/include/node'), ('GIO_LAUNCHED_DESKTOP_FILE', '/usr/share/applications/code.desktop'), ('ROS_PYTHON_VERSION', '3'), ('GNOME_SHELL_SESSION_MODE', 'ubuntu'), ('GTK_MODULES', 'gail:atk-bridge'), ('PAGER', 'cat'), ('VSCODE_GIT_ASKPASS_MAIN', '/usr/share/code/resources/app/extensions/git/dist/askpass-main.js'), ('LC_MONETARY', 'zh_CN.UTF-8'), ('VSCODE_GIT_ASKPASS_NODE', '/usr/share/code/code'), ('MANAGERPID', '2602'), ('LC_CTYPE', 'C.UTF-8'), ('SYSTEMD_EXEC_PID', '2777'), ('IM_CONFIG_CHECK_ENV', '1'), ('VSCODE_PYTHON_AUTOACTIVATE_GUARD', '1'), ('NO_COLOR', '1'), ('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus'), ('COLORTERM', 'truecolor'), ('GIO_LAUNCHED_DESKTOP_FILE_PID', '17452'), ('NVM_DIR', '/home/yahboom/.nvm'), ('IM_CONFIG_PHASE', '1'), ('WAYLAND_DISPLAY', 'wayland-0'), ('COLCON_PREFIX_PATH', '/home/yahboom/yahboomcar_ws/install:/home/yahboom/cartoros2/install:/home/yahboom/ros2_ws/install'), ('ROS_DISTRO', 'humble'), ('LOGNAME', 'yahboom'), ('JOURNAL_STREAM', '8:37065'), ('_', '/usr/bin/colcon'), ('ROS_VERSION', '2'), ('PKG_CONFIG_PATH', '/home/yahboom/cartoros2/install/cartographer/lib/x86_64-linux-gnu/pkgconfig:/home/yahboom/cartoros2/install/cartographer/lib/pkgconfig:/home/yahboom/yahboomcar_ws/install/champ_gazebo/lib/x86_64-linux-gnu/pkgconfig:/home/yahboom/yahboomcar_ws/install/champ_gazebo/lib/pkgconfig:/home/yahboom/ros2_ws/install/champ_description/lib/x86_64-linux-gnu/pkgconfig:/home/yahboom/ros2_ws/install/champ_description/lib/pkgconfig'), ('XDG_SESSION_CLASS', 'user'), ('USERNAME', 'yahboom'), ('TERM', 'xterm-256color'), ('GNOME_DESKTOP_SESSION_ID', 'this-is-deprecated'), ('ROS_LOCALHOST_ONLY', '0'), ('PATH', '/home/yahboom/.nvm/versions/node/v22.23.2/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/yahboom/.local/bin:/home/yahboom/.codex/tmp/arg0/codex-arg0qyrkJB:/home/yahboom/.nvm/versions/node/v22.23.2/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/yahboom/.local/bin:/home/yahboom/.nvm/versions/node/v22.23.2/bin:/home/yahboom/cartoros2/install/cartographer/bin:/opt/ros/humble/bin:/home/yahboom/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin'), ('SESSION_MANAGER', 'local/yahboom-virtual-machine:@/tmp/.ICE-unix/2752,unix/yahboom-virtual-machine:/tmp/.ICE-unix/2752'), ('CODEX_VERSION', '0.154.0'), ('CODEX_SESSION_ID', '01a0aacd-a271-7870-804e-42edcde08e5e'), ('INVOCATION_ID', '098d1a12b6d14f079d4e0edc13077df6'), ('XDG_MENU_PREFIX', 'gnome-'), ('LC_ADDRESS', 'zh_CN.UTF-8'), ('GNOME_SETUP_DISPLAY', ':1'), ('XDG_RUNTIME_DIR', '/run/user/1000'), ('GDK_BACKEND', 'x11'), ('DISPLAY', ':0'), ('CODEX_SANDBOX_NETWORK_DISABLED', '1'), ('LANG', 'en_US.UTF-8'), ('XDG_CURRENT_DESKTOP', 'Unity'), ('LC_TELEPHONE', 'zh_CN.UTF-8'), ('XMODIFIERS', '@im=ibus'), ('GH_PAGER', 'cat'), ('XDG_SESSION_DESKTOP', 'ubuntu'), ('XAUTHORITY', '/run/user/1000/.mutter-Xwaylandauth.SVASV3'), ('LS_COLORS', 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:'), ('VSCODE_GIT_IPC_HANDLE', '/run/user/1000/vscode-git-de8078a89e.sock'), ('TERM_PROGRAM', 'vscode'), ('SSH_AGENT_LAUNCHER', 'gnome-keyring'), ('SSH_AUTH_SOCK', '/run/user/1000/keyring/ssh'), ('ROS_DOMAIN_ID', '12'), ('AMENT_PREFIX_PATH', '/home/yahboom/cartoros2/install/yahboomcar_nav:/home/yahboom/cartoros2/install/yahboomcar_ctrl:/home/yahboom/cartoros2/install/yahboom_web_savmap_interfaces:/home/yahboom/cartoros2/install/yahboom_visual:/home/yahboom/cartoros2/install/yahboom_qrcode:/home/yahboom/cartoros2/install/yahboom_point:/home/yahboom/cartoros2/install/yahboom_nav2_send_goal:/home/yahboom/cartoros2/install/yahboom_msgs:/home/yahboom/cartoros2/install/yahboom_dog_joint_state:/home/yahboom/cartoros2/install/yahboom_description:/home/yahboom/cartoros2/install/yahboom_config:/home/yahboom/cartoros2/install/yahboom_color_identify_server:/home/yahboom/cartoros2/install/yahboom_color_identify_interfaces:/home/yahboom/cartoros2/install/yahboom_bringup:/home/yahboom/cartoros2/install/yahboom_base:/home/yahboom/cartoros2/install/yahboom_attitude_record_interfaces:/home/yahboom/cartoros2/install/yahboom_app_save_map:/home/yahboom/cartoros2/install/update_map:/home/yahboom/cartoros2/install/turtlebot3_description:/home/yahboom/cartoros2/install/rosboard:/home/yahboom/cartoros2/install/robot_pose_publisher_ros2:/home/yahboom/cartoros2/install/rf2o_laser_odometry:/home/yahboom/cartoros2/install/path_planner_server:/home/yahboom/cartoros2/install/nav2_system_tests:/home/yahboom/cartoros2/install/nav2_bringup:/home/yahboom/cartoros2/install/navigation2:/home/yahboom/cartoros2/install/nav2_smoother:/home/yahboom/cartoros2/install/nav2_graceful_controller:/home/yahboom/cartoros2/install/nav2_dwb_controller:/home/yahboom/cartoros2/install/nav2_controller:/home/yahboom/cartoros2/install/dwb_plugins:/home/yahboom/cartoros2/install/dwb_critics:/home/yahboom/cartoros2/install/dwb_core:/home/yahboom/cartoros2/install/nav_2d_utils:/home/yahboom/cartoros2/install/dwb_msgs:/home/yahboom/cartoros2/install/nav_2d_msgs:/home/yahboom/cartoros2/install/nav2_waypoint_follower:/home/yahboom/cartoros2/install/nav2_theta_star_planner:/home/yahboom/cartoros2/install/nav2_smac_planner:/home/yahboom/cartoros2/install/nav2_rotation_shim_controller:/home/yahboom/cartoros2/install/nav2_regulated_pure_pursuit_controller:/home/yahboom/cartoros2/install/nav2_planner:/home/yahboom/cartoros2/install/nav2_navfn_planner:/home/yahboom/cartoros2/install/nav2_mppi_controller:/home/yahboom/cartoros2/install/nav2_constrained_smoother:/home/yahboom/cartoros2/install/nav2_bt_navigator:/home/yahboom/cartoros2/install/nav2_behaviors:/home/yahboom/cartoros2/install/nav2_core:/home/yahboom/cartoros2/install/nav2_collision_monitor:/home/yahboom/cartoros2/install/costmap_queue:/home/yahboom/cartoros2/install/nav2_costmap_2d:/home/yahboom/cartoros2/install/nav2_voxel_grid:/home/yahboom/cartoros2/install/nav2_velocity_smoother:/home/yahboom/cartoros2/install/nav2_rviz_plugins:/home/yahboom/cartoros2/install/nav2_map_server:/home/yahboom/cartoros2/install/nav2_lifecycle_manager:/home/yahboom/cartoros2/install/nav2_behavior_tree:/home/yahboom/cartoros2/install/nav2_amcl:/home/yahboom/cartoros2/install/nav2_util:/home/yahboom/cartoros2/install/nav2_simple_commander:/home/yahboom/cartoros2/install/nav2_msgs:/home/yahboom/cartoros2/install/nav2_gazebo_spawner:/home/yahboom/cartoros2/install/nav2_common:/home/yahboom/cartoros2/install/localization_server:/home/yahboom/cartoros2/install/laserscan_to_point_pulisher:/home/yahboom/cartoros2/install/image_color_lab:/home/yahboom/cartoros2/install/dynamixel_sdk_examples:/home/yahboom/cartoros2/install/dynamixel_sdk_custom_interfaces:/home/yahboom/cartoros2/install/dynamixel_sdk:/home/yahboom/cartoros2/install/dogzilla_sim:/home/yahboom/cartoros2/install/csm:/home/yahboom/cartoros2/install/champ_msgs:/home/yahboom/cartoros2/install/champ:/home/yahboom/cartoros2/install/cartographer_ros_msgs:/home/yahboom/yahboomcar_ws/install/yahboom_dog_node:/home/yahboom/yahboomcar_ws/install/yahboom_dog_navigation2:/home/yahboom/yahboomcar_ws/install/yahboom_dog_nav:/home/yahboom/yahboomcar_ws/install/yahboom_dog_msgs:/home/yahboom/yahboomcar_ws/install/yahboom_dog_example:/home/yahboom/yahboomcar_ws/install/yahboom_dog_cartographer:/home/yahboom/yahboomcar_ws/install/yahboom_dog:/home/yahboom/yahboomcar_ws/install/yahboom_dog_bringup:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_examples:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_custom_interfaces:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk:/home/yahboom/yahboomcar_ws/install/champ_navigation:/home/yahboom/yahboomcar_ws/install/champ_msgs:/home/yahboom/yahboomcar_ws/install/champ_bringup:/home/yahboom/yahboomcar_ws/install/champ_description:/home/yahboom/yahboomcar_ws/install/champ_config:/home/yahboom/yahboomcar_ws/install/champ:/home/yahboom/ros2_ws/install/your_planner:/home/yahboom/ros2_ws/install/tb3_slam_viewer:/opt/ros/humble'), ('ORIGINAL_XDG_CURRENT_DESKTOP', 'ubuntu:GNOME'), ('SHELL', '/bin/bash'), ('LC_NAME', 'zh_CN.UTF-8'), ('QT_ACCESSIBILITY', '1'), ('GDMSESSION', 'ubuntu'), ('LESSCLOSE', '/usr/bin/lesspipe %s %s'), ('CODEX_THREAD_ID', '01a0aacd-a271-7870-804e-42edcde08e5e'), ('LC_MEASUREMENT', 'zh_CN.UTF-8'), ('GJS_DEBUG_OUTPUT', 'stderr'), ('LC_IDENTIFICATION', 'zh_CN.UTF-8'), ('VSCODE_GIT_ASKPASS_EXTRA_ARGS', ''), ('GIT_PAGER', 'cat'), ('QT_IM_MODULE', 'ibus'), ('PWD', '/home/yahboom/swerve_bringup/build/swerve_bringup'), ('TURTLEBOT3_MODEL', 'burger'), ('LC_ALL', 'C.UTF-8'), ('CODEX_MANAGED_PACKAGE_ROOT', '/home/yahboom/.nvm/versions/node/v22.23.2/lib/node_modules/@openai/codex'), ('XDG_CONFIG_DIRS', '/etc/xdg/xdg-ubuntu:/etc/xdg'), ('GAZEBO_PLUGIN_PATH', ':/opt/ros/humble/lib:/opt/ros/humble/lib'), ('NVM_CD_FLAGS', ''), ('XDG_DATA_DIRS', '/usr/share/ubuntu:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop'), ('PYTHONPATH', '/home/yahboom/cartoros2/install/yahboomcar_nav/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboomcar_ctrl/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_web_savmap_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/yahboom_visual/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/yahboom_dog_joint_state/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_description/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_color_identify_server/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_color_identify_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/yahboom_bringup/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_base/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/yahboom_attitude_record_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/yahboom_app_save_map/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/update_map/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/rosboard/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/path_planner_server/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/dwb_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/nav_2d_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/nav2_simple_commander/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/nav2_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/nav2_gazebo_spawner/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/nav2_common/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/localization_server/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/laserscan_to_point_pulisher/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/image_color_lab/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/dynamixel_sdk_custom_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/dogzilla_sim/lib/python3.10/site-packages:/home/yahboom/cartoros2/install/champ_msgs/local/lib/python3.10/dist-packages:/home/yahboom/cartoros2/install/cartographer_ros_msgs/local/lib/python3.10/dist-packages:/home/yahboom/yahboomcar_ws/install/yahboom_dog_msgs/local/lib/python3.10/dist-packages:/home/yahboom/yahboomcar_ws/build/yahboom_dog_example:/home/yahboom/yahboomcar_ws/install/yahboom_dog_example/lib/python3.10/site-packages:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_custom_interfaces/local/lib/python3.10/dist-packages:/home/yahboom/yahboomcar_ws/install/champ_msgs/local/lib/python3.10/dist-packages:/home/yahboom/yahboomcar_ws/install/champ_bringup/local/lib/python3.10/dist-packages:/home/yahboom/ros2_ws/install/tb3_slam_viewer/lib/python3.10/site-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages'), ('LC_NUMERIC', 'zh_CN.UTF-8'), ('LC_PAPER', 'zh_CN.UTF-8'), ('COLCON', '1'), ('CODEX_MANAGED_BY_NPM', '1'), ('CMAKE_PREFIX_PATH', '/home/yahboom/cartoros2/install/yahboom_web_savmap_interfaces:/home/yahboom/cartoros2/install/yahboom_qrcode:/home/yahboom/cartoros2/install/yahboom_point:/home/yahboom/cartoros2/install/yahboom_nav2_send_goal:/home/yahboom/cartoros2/install/yahboom_msgs:/home/yahboom/cartoros2/install/yahboom_config:/home/yahboom/cartoros2/install/yahboom_color_identify_interfaces:/home/yahboom/cartoros2/install/yahboom_attitude_record_interfaces:/home/yahboom/cartoros2/install/turtlebot3_description:/home/yahboom/cartoros2/install/robot_pose_publisher_ros2:/home/yahboom/cartoros2/install/rf2o_laser_odometry:/home/yahboom/cartoros2/install/nav2_system_tests:/home/yahboom/cartoros2/install/nav2_bringup:/home/yahboom/cartoros2/install/navigation2:/home/yahboom/cartoros2/install/nav2_smoother:/home/yahboom/cartoros2/install/nav2_graceful_controller:/home/yahboom/cartoros2/install/nav2_dwb_controller:/home/yahboom/cartoros2/install/nav2_controller:/home/yahboom/cartoros2/install/dwb_plugins:/home/yahboom/cartoros2/install/dwb_critics:/home/yahboom/cartoros2/install/dwb_core:/home/yahboom/cartoros2/install/nav_2d_utils:/home/yahboom/cartoros2/install/dwb_msgs:/home/yahboom/cartoros2/install/nav_2d_msgs:/home/yahboom/cartoros2/install/nav2_waypoint_follower:/home/yahboom/cartoros2/install/nav2_theta_star_planner:/home/yahboom/cartoros2/install/nav2_smac_planner:/home/yahboom/cartoros2/install/nav2_rotation_shim_controller:/home/yahboom/cartoros2/install/nav2_regulated_pure_pursuit_controller:/home/yahboom/cartoros2/install/nav2_planner:/home/yahboom/cartoros2/install/nav2_navfn_planner:/home/yahboom/cartoros2/install/nav2_mppi_controller:/home/yahboom/cartoros2/install/nav2_constrained_smoother:/home/yahboom/cartoros2/install/nav2_bt_navigator:/home/yahboom/cartoros2/install/nav2_behaviors:/home/yahboom/cartoros2/install/nav2_core:/home/yahboom/cartoros2/install/nav2_collision_monitor:/home/yahboom/cartoros2/install/costmap_queue:/home/yahboom/cartoros2/install/nav2_costmap_2d:/home/yahboom/cartoros2/install/nav2_voxel_grid:/home/yahboom/cartoros2/install/nav2_velocity_smoother:/home/yahboom/cartoros2/install/nav2_rviz_plugins:/home/yahboom/cartoros2/install/nav2_map_server:/home/yahboom/cartoros2/install/nav2_lifecycle_manager:/home/yahboom/cartoros2/install/nav2_behavior_tree:/home/yahboom/cartoros2/install/nav2_amcl:/home/yahboom/cartoros2/install/nav2_util:/home/yahboom/cartoros2/install/nav2_msgs:/home/yahboom/cartoros2/install/nav2_common:/home/yahboom/cartoros2/install/image_color_lab:/home/yahboom/cartoros2/install/dynamixel_sdk_examples:/home/yahboom/cartoros2/install/dynamixel_sdk_custom_interfaces:/home/yahboom/cartoros2/install/dynamixel_sdk:/home/yahboom/cartoros2/install/csm:/home/yahboom/cartoros2/install/champ_msgs:/home/yahboom/cartoros2/install/champ:/home/yahboom/cartoros2/install/cartographer_ros_msgs:/home/yahboom/cartoros2/install/cartographer:/home/yahboom/yahboomcar_ws/install/yahboom_dog_node:/home/yahboom/yahboomcar_ws/install/yahboom_dog_navigation2:/home/yahboom/yahboomcar_ws/install/yahboom_dog_nav:/home/yahboom/yahboomcar_ws/install/yahboom_dog_msgs:/home/yahboom/yahboomcar_ws/install/yahboom_dog_cartographer:/home/yahboom/yahboomcar_ws/install/yahboom_dog:/home/yahboom/yahboomcar_ws/install/yahboom_dog_bringup:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_examples:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk_custom_interfaces:/home/yahboom/yahboomcar_ws/install/dynamixel_sdk:/home/yahboom/yahboomcar_ws/install/champ_navigation:/home/yahboom/yahboomcar_ws/install/champ_msgs:/home/yahboom/cartoros2/install/yahboomcar_nav:/home/yahboom/cartoros2/install/yahboomcar_ctrl:/home/yahboom/cartoros2/install/yahboom_visual:/home/yahboom/cartoros2/install/yahboom_dog_joint_state:/home/yahboom/cartoros2/install/yahboom_description:/home/yahboom/cartoros2/install/yahboom_color_identify_server:/home/yahboom/cartoros2/install/yahboom_bringup:/home/yahboom/cartoros2/install/yahboom_base:/home/yahboom/cartoros2/install/yahboom_app_save_map:/home/yahboom/cartoros2/install/update_map:/home/yahboom/cartoros2/install/rosboard:/home/yahboom/cartoros2/install/path_planner_server:/home/yahboom/cartoros2/install/nav2_simple_commander:/home/yahboom/cartoros2/install/nav2_gazebo_spawner:/home/yahboom/cartoros2/install/localization_server:/home/yahboom/cartoros2/install/laserscan_to_point_pulisher:/home/yahboom/cartoros2/install/dogzilla_sim:/home/yahboom/yahboomcar_ws/install/yahboom_dog_example:/home/yahboom/ros2_ws/install/tb3_slam_viewer:/opt/ros/humble:/home/yahboom/yahboomcar_ws/install/champ_gazebo:/home/yahboom/yahboomcar_ws/install/champ_bringup:/home/yahboom/yahboomcar_ws/install/champ_description:/home/yahboom/yahboomcar_ws/install/champ_config:/home/yahboom/yahboomcar_ws/install/champ:/home/yahboom/ros2_ws/install/your_planner:/home/yahboom/ros2_ws/install/champ_description')]), 'shell': False}
+[30.049868] (swerve_bringup) StdoutLine: {'line': b'-- Install configuration: ""\n'}
+[30.053038] (swerve_bringup) StdoutLine: {'line': b'-- Execute custom install script\n'}
+[30.053202] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/urdf/swerve_base.urdf\n'}
+[30.061210] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/base_frame.stl\n'}
+[30.061478] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/steer_front_housing_v2.stl\n'}
+[30.061592] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/steer_front_wheel_v2.stl\n'}
+[30.061672] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/steer_rear_housing_v2.stl\n'}
+[30.061748] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/meshes/steer_rear_wheel_v2.stl\n'}
+[30.061837] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/launch/display.launch.py\n'}
+[30.061908] (swerve_bringup) StdoutLine: {'line': b'-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/launch/gazebo.launch.py\n'}
+[30.104184] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/rviz/swerve.rviz\n'}
+[30.104459] (swerve_bringup) StdoutLine: {'line': b'-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/worlds/test.world\n'}
+[30.109311] (-) TimerEvent: {}
+[30.137157] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/ament_index/resource_index/package_run_dependencies/swerve_bringup\n'}
+[30.137354] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/ament_index/resource_index/parent_prefix_path/swerve_bringup\n'}
+[30.137536] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/environment/ament_prefix_path.sh\n'}
+[30.137624] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/environment/ament_prefix_path.dsv\n'}
+[30.137692] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/environment/path.sh\n'}
+[30.137758] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/environment/path.dsv\n'}
+[30.137824] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/local_setup.bash\n'}
+[30.137888] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/local_setup.sh\n'}
+[30.137950] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/local_setup.zsh\n'}
+[30.138012] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/local_setup.dsv\n'}
+[30.138073] (swerve_bringup) StdoutLine: {'line': b'-- Symlinking: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/package.dsv\n'}
+[30.179524] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/ament_index/resource_index/packages/swerve_bringup\n'}
+[30.179775] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/cmake/swerve_bringupConfig.cmake\n'}
+[30.179867] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/cmake/swerve_bringupConfig-version.cmake\n'}
+[30.179946] (swerve_bringup) StdoutLine: {'line': b'-- Up-to-date symlink: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/package.xml\n'}
+[30.189445] (swerve_bringup) CommandEnded: {'returncode': 0}
+[30.217315] (-) TimerEvent: {}
+[30.236546] (swerve_bringup) JobEnded: {'identifier': 'swerve_bringup', 'rc': 0}
+[30.239684] (-) EventReactorShutdown: {}

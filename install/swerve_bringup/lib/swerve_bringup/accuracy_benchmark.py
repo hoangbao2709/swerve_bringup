@@ -11,6 +11,10 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Odometry, Path
+from rclpy.parameter import Parameter
+from rosgraph_msgs.msg import Clock
+from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -32,9 +36,13 @@ def stats(values):
 
 class Benchmark(Node):
     def __init__(self, model, timeout):
-        super().__init__('swerve_accuracy_benchmark')
+        super().__init__('swerve_accuracy_benchmark', parameter_overrides=[
+            Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        if not self.get_parameter('use_sim_time').value:
+            raise RuntimeError('FAIL: accuracy benchmark use_sim_time is false')
         self.model, self.timeout = model, timeout
-        self.gt = self.odom = self.v30e = None
+        self.gt = self.odom = self.v30e = self.local_ekf = self.global_ekf = self.imu = None
+        self.clock_samples = []
         self.plan_received = False
         self.last_cmd = None
         self.cmd_vel_seen_nonzero = False
@@ -43,6 +51,10 @@ class Benchmark(Node):
         self.tfl = TransformListener(self.tfbuf, self)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(Odometry, '/odom', self.odom_cb, 20)
+        self.create_subscription(Odometry, '/odometry/filtered', lambda m: setattr(self, 'local_ekf', self.odom_msg(m)), 20)
+        self.create_subscription(Odometry, '/odometry/v30e', lambda m: setattr(self, 'global_ekf', self.odom_msg(m)), 20)
+        self.create_subscription(Imu, '/imu/data', lambda m: setattr(self, 'imu', (m.angular_velocity.z, yaw(m.orientation))), 20)
+        self.create_subscription(Clock, '/clock', self.clock_cb, 20)
         self.create_subscription(PoseWithCovarianceStamped, '/v30e/pose', self.v30e_cb, 20)
         self.create_subscription(Path, '/plan', self.plan_cb, 10)
         self.create_subscription(Twist, '/cmd_vel', self.cmd_cb, 20)
@@ -53,12 +65,35 @@ class Benchmark(Node):
         """Current ROS time in seconds (Gazebo /clock when use_sim_time=true)."""
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def clock_cb(self, msg):
+        value = msg.clock.sec + msg.clock.nanosec * 1e-9
+        self.clock_samples.append((value, time.monotonic()))
+        self.clock_samples = self.clock_samples[-20:]
+
+    def wait_for_sim_clock(self):
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if len(self.clock_samples) >= 3 and self.clock_samples[-1][0] > self.clock_samples[0][0]:
+                result = {'ros_clock_start': self.clock_samples[0][0],
+                        'ros_clock_end': self.clock_samples[-1][0],
+                        'sim_elapsed': self.clock_samples[-1][0] - self.clock_samples[0][0],
+                        'wall_elapsed': self.clock_samples[-1][1] - self.clock_samples[0][1]}
+                self.get_logger().info('use_sim_time=true first_clock=%.9f second_clock=%.9f clock_delta=%.9f wall_delta=%.9f measured_RTF=%.6f' %
+                                       (result['ros_clock_start'], result['ros_clock_end'], result['sim_elapsed'], result['wall_elapsed'],
+                                        result['sim_elapsed'] / result['wall_elapsed'] if result['wall_elapsed'] else 0.0))
+                return result
+            time.sleep(0.02)
+        raise RuntimeError('FAIL: /clock did not advance while use_sim_time=true')
+
     @staticmethod
     def elapsed(start, end):
         return max(0.0, end - start)
 
-    def odom_cb(self, m):
-        p=m.pose.pose; self.odom=(p.position.x,p.position.y,yaw(p.orientation))
+    @staticmethod
+    def odom_msg(m):
+        p=m.pose.pose
+        return (p.position.x,p.position.y,yaw(p.orientation),m.twist.twist.linear.x,m.twist.twist.linear.y,m.twist.twist.angular.z)
+    def odom_cb(self, m): self.odom=self.odom_msg(m)[:3]
     def v30e_cb(self, m):
         p=m.pose.pose; self.v30e=(p.position.x,p.position.y,yaw(p.orientation))
     def plan_cb(self, _): self.plan_received = True
@@ -126,6 +161,14 @@ class Benchmark(Node):
                           'odom_y': odom[1] if odom else None,
                           'odom_yaw': odom[2] if odom else None,
                           'cmd_vel_x': cmd[0], 'cmd_vel_y': cmd[1], 'cmd_vel_yaw': cmd[2],
+                          'local_ekf_x': self.local_ekf[0] if self.local_ekf else None,
+                          'local_ekf_y': self.local_ekf[1] if self.local_ekf else None,
+                          'local_ekf_yaw': self.local_ekf[2] if self.local_ekf else None,
+                          'global_ekf_x': self.global_ekf[0] if self.global_ekf else None,
+                          'global_ekf_y': self.global_ekf[1] if self.global_ekf else None,
+                          'global_ekf_yaw': self.global_ekf[2] if self.global_ekf else None,
+                          'imu_wz': self.imu[0] if self.imu else None,
+                          'imu_yaw': self.imu[1] if self.imu else None,
                           'distance_remaining': self.feedback_distance,
                           'action_state': action_state})
             time.sleep(.10)
@@ -160,6 +203,7 @@ class Benchmark(Node):
         return result
 
     def run(self, repeats, outdir):
+        clock_validation = self.wait_for_sim_clock()
         start_sim, start_wall = self.sim_time(), time.monotonic()
         sim_deadline=start_sim+30.0
         wall_deadline=start_wall+300.0
@@ -217,10 +261,33 @@ class Benchmark(Node):
         with open(os.path.join(outdir,'motion_trace.csv'),'w',newline='') as f:
             fields=['run','test','sim_time','gt_x','gt_y','gt_yaw','localization_x','localization_y',
                     'localization_yaw','odom_x','odom_y','odom_yaw','cmd_vel_x','cmd_vel_y',
-                    'cmd_vel_yaw','distance_remaining','action_state']
+                    'cmd_vel_yaw','local_ekf_x','local_ekf_y','local_ekf_yaw','global_ekf_x',
+                    'global_ekf_y','global_ekf_yaw','imu_wz','imu_yaw','distance_remaining','action_state']
             w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(traces)
+        if rows:
+            r=rows[-1]; last=traces[-2] if len(traces)>1 else traces[-1]
+            with open(os.path.join(outdir,'nav_xplus_diagnostic.csv'),'w',newline='') as f:
+                fields=['run','test','gt_goal_error','localization_error_xy','final_yaw_error','action_status',
+                        'gt_x','gt_y','gt_yaw','raw_odom_x','raw_odom_y','raw_odom_yaw',
+                        'local_ekf_x','local_ekf_y','local_ekf_yaw','global_ekf_x','global_ekf_y',
+                        'global_ekf_yaw','imu_wz','imu_yaw','v30e_x','v30e_y','v30e_yaw']
+                w=csv.DictWriter(f,fieldnames=fields); w.writeheader()
+                w.writerow({'run':r['run'],'test':r['test'],'gt_goal_error':r['gt_goal_error'],
+                    'localization_error_xy':r['localization_error_xy'],'final_yaw_error':r['final_yaw_error'],
+                    'action_status':r['action_status'],'gt_x':last.get('gt_x'),'gt_y':last.get('gt_y'),'gt_yaw':last.get('gt_yaw'),
+                    'raw_odom_x':last.get('odom_x'),'raw_odom_y':last.get('odom_y'),'raw_odom_yaw':last.get('odom_yaw'),
+                    'local_ekf_x':last.get('local_ekf_x'),'local_ekf_y':last.get('local_ekf_y'),'local_ekf_yaw':last.get('local_ekf_yaw'),
+                    'global_ekf_x':last.get('global_ekf_x'),'global_ekf_y':last.get('global_ekf_y'),'global_ekf_yaw':last.get('global_ekf_yaw'),
+                    'imu_wz':last.get('imu_wz'),'imu_yaw':last.get('imu_yaw'),
+                    'v30e_x':end_v30e[0] if end_v30e else None,'v30e_y':end_v30e[1] if end_v30e else None,
+                    'v30e_yaw':end_v30e[2] if end_v30e else None})
         metrics={k:stats([r[k] for r in rows if r[k] is not None]) for k in ('gt_goal_error','localization_error_xy','localization_error_yaw','odom_error_xy','final_navigation_error_xy','final_yaw_error','travelled_distance')}
-        summary={'runs':len(rows),'metrics':metrics,'passed':len(rows)==repeats and all(
+        clock_validation['use_sim_time'] = bool(self.get_parameter('use_sim_time').value)
+        clock_validation['clock_topic_seen'] = bool(self.clock_samples)
+        clock_validation['rtf'] = clock_validation['sim_elapsed'] / clock_validation['wall_elapsed'] if clock_validation['wall_elapsed'] else None
+        clock_validation['clock_verified'] = clock_validation['use_sim_time'] and clock_validation['clock_topic_seen'] and clock_validation['sim_elapsed'] > 0
+        with open(os.path.join(outdir,'clock_validation.json'),'w') as f: json.dump(clock_validation,f,indent=2)
+        summary={'runs':len(rows),'metrics':metrics,'clock_validation':clock_validation,'passed':len(rows)==repeats and all(
             r['action_status']=='SUCCEEDED' and r['motion_ok'] and r['final_navigation_error_xy']<=.05
             and r['localization_error_xy']<=.03 and r['final_yaw_error']<=.05
             for r in rows),'rows':rows}

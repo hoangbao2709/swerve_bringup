@@ -1,0 +1,83 @@
+{
+  "runs": 1,
+  "metrics": {
+    "gt_goal_error": {
+      "mean": 0.0799677463091989,
+      "max": 0.0799677463091989,
+      "rmse": 0.0799677463091989,
+      "stddev": 0.0
+    },
+    "localization_error_xy": {
+      "mean": 0.06622694529799357,
+      "max": 0.06622694529799357,
+      "rmse": 0.06622694529799357,
+      "stddev": 0.0
+    },
+    "localization_error_yaw": {
+      "mean": 0.006161776081068826,
+      "max": 0.006161776081068826,
+      "rmse": 0.006161776081068826,
+      "stddev": 0.0
+    },
+    "odom_error_xy": {
+      "mean": 0.07229390656210875,
+      "max": 0.07229390656210875,
+      "rmse": 0.07229390656210875,
+      "stddev": 0.0
+    },
+    "final_navigation_error_xy": {
+      "mean": 0.0799677463091989,
+      "max": 0.0799677463091989,
+      "rmse": 0.0799677463091989,
+      "stddev": 0.0
+    },
+    "final_yaw_error": {
+      "mean": 0.029663186438055877,
+      "max": 0.029663186438055877,
+      "rmse": 0.029663186438055877,
+      "stddev": 0.0
+    },
+    "travelled_distance": {
+      "mean": 0.9205350558041239,
+      "max": 0.9205350558041239,
+      "rmse": 0.9205350558041239,
+      "stddev": 0.0
+    }
+  },
+  "clock_validation": {
+    "ros_clock_start": 2.8,
+    "ros_clock_end": 3.0,
+    "sim_elapsed": 0.20000000000000018,
+    "wall_elapsed": 1.0442002740019234,
+    "use_sim_time": true,
+    "clock_topic_seen": true,
+    "rtf": 0.19153413859344742,
+    "clock_verified": true
+  },
+  "passed": false,
+  "rows": [
+    {
+      "run": 1,
+      "test": "X+",
+      "alignment_error_xy_initial": 5.224687914994974e-05,
+      "alignment_error_yaw_initial": 2.6736434797225428e-05,
+      "gt_goal_error": 0.0799677463091989,
+      "localization_error_xy": 0.06622694529799357,
+      "localization_error_yaw": 0.006161776081068826,
+      "odom_error_xy": 0.07229390656210875,
+      "v30e_error_xy": 0.7790705610519989,
+      "final_navigation_error_xy": 0.0799677463091989,
+      "final_yaw_error": 0.029663186438055877,
+      "travelled_distance": 0.9205350558041239,
+      "action_status": "SUCCEEDED",
+      "gt_yaw_displacement": 0.029663186438055433,
+      "motion_ok": true,
+      "path_generated": true,
+      "cmd_vel_nonzero": true,
+      "distance_remaining_last": 0.0,
+      "elapsed_sim_time": 5.5,
+      "elapsed_wall_time": 33.01144661700164,
+      "real_time_factor": 0.16660887551554243
+    }
+  ]
+}

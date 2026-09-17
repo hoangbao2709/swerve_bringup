@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Raw motion evaluator with ROS-time duration and command-to-contact tracing."""
 import csv
+import json
 import math
 import os
 import time
@@ -10,8 +11,10 @@ from gazebo_msgs.srv import GetEntityState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import Float64MultiArray
+from rosgraph_msgs.msg import Clock
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -34,17 +37,43 @@ MODULE_X = 0.300042
 
 class Raw(Node):
     def __init__(self):
-        super().__init__('raw_motion_evaluator')
+        super().__init__('raw_motion_evaluator', parameter_overrides=[
+            Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        if not self.get_parameter('use_sim_time').value:
+            raise RuntimeError('FAIL: raw evaluator use_sim_time is false')
         self.gt = self.odom = self.imu = self.local = None
         self.steer = self.drive = self.joints = None
+        self.clock_samples = []
         self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(Odometry, '/odom', self.odom_cb, 20)
         self.create_subscription(Imu, '/imu/data', self.imu_cb, 20)
         self.create_subscription(Float64MultiArray, '/steering_controller/commands', self.steer_cb, 20)
         self.create_subscription(Float64MultiArray, '/drive_controller/commands', self.drive_cb, 20)
         self.create_subscription(JointState, '/joint_states', self.joint_cb, 20)
+        self.create_subscription(Clock, '/clock', self.clock_cb, 20)
         self.tf = Buffer(); self.listener = TransformListener(self.tf, self)
         self.state = self.create_client(GetEntityState, '/get_entity_state')
+
+    def clock_cb(self, msg):
+        value = msg.clock.sec + msg.clock.nanosec * 1e-9
+        self.clock_samples.append((value, time.monotonic()))
+        self.clock_samples = self.clock_samples[-20:]
+
+    def wait_for_sim_clock(self):
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            if len(self.clock_samples) >= 3:
+                first = self.clock_samples[0][0]
+                if self.clock_samples[-1][0] > first and self.get_clock().now().nanoseconds > 0:
+                    result = {'first_clock': first, 'second_clock': self.clock_samples[-1][0],
+                            'clock_delta': self.clock_samples[-1][0] - first,
+                            'wall_delta': self.clock_samples[-1][1] - self.clock_samples[0][1]}
+                    self.get_logger().info('use_sim_time=true first_clock=%.9f second_clock=%.9f clock_delta=%.9f wall_delta=%.9f measured_RTF=%.6f' %
+                                           (result['first_clock'], result['second_clock'], result['clock_delta'], result['wall_delta'],
+                                            result['clock_delta'] / result['wall_delta'] if result['wall_delta'] else 0.0))
+                    return result
+        raise RuntimeError('FAIL: /clock did not advance while use_sim_time=true')
 
     def odom_cb(self, msg):
         p = msg.pose.pose
@@ -86,21 +115,25 @@ class Raw(Node):
         while time.monotonic() < end: rclpy.spin_once(self, timeout_sec=0.01)
 
     def run(self, name, command, duration=8.0):
+        clock_validation = self.wait_for_sim_clock()
         self.spin_for(1.0); start = None; deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
             self.spin_for(0.05); start = self.snapshot()
             if all(start) and self.get_clock().now().nanoseconds > 0: break
         if not start or not all(start): raise RuntimeError('missing GT/odom/local pose before raw motion')
         start_sim = self.get_clock().now().nanoseconds * 1e-9; start_wall = time.monotonic(); trace = []
+        publish_times = []
         watchdog = start_wall + max(60.0, duration * 12.0)
         while time.monotonic() < watchdog:
             now_sim = self.get_clock().now().nanoseconds * 1e-9; elapsed_sim = now_sim - start_sim
             if elapsed_sim >= duration: break
             msg = Twist(); msg.linear.x, msg.linear.y, msg.angular.z = command; self.pub.publish(msg)
+            publish_times.append(now_sim)
             self.spin_for(0.02); gt, odom, loc = self.snapshot()
             pos = self.joints.get('position', {}) if self.joints else {}; vel = self.joints.get('velocity', {}) if self.joints else {}
             trace.append({'case': name, 'sim_time': now_sim, 'elapsed_sim_time': elapsed_sim,
                 'elapsed_wall_time': time.monotonic() - start_wall,
+                'cmd_publish_gap_sim': now_sim - publish_times[-2] if len(publish_times) > 1 else None,
                 'gt_x': gt['x'] if gt else None, 'gt_y': gt['y'] if gt else None, 'gt_yaw': gt['yaw'] if gt else None,
                 'gt_vx_world': gt['vx_world'] if gt else None, 'gt_vy_world': gt['vy_world'] if gt else None, 'gt_wz': gt['wz'] if gt else None,
                 'odom_x': odom['x'] if odom else None, 'odom_y': odom['y'] if odom else None, 'odom_yaw': odom['yaw'] if odom else None,
@@ -115,30 +148,55 @@ class Raw(Node):
                 'wheel_vel_front': vel.get('wheel_front_drive_joint'), 'wheel_vel_rear': vel.get('wheel_rear_drive_joint'),
                 'imu_wz': self.imu['wz'] if self.imu else None, 'imu_yaw': self.imu['yaw'] if self.imu else None})
         command_elapsed_sim = min(duration, max(0.0, self.get_clock().now().nanoseconds * 1e-9 - start_sim))
+        motion_finish = self.snapshot()
         self.pub.publish(Twist()); self.spin_for(0.5); finish = self.snapshot()
         elapsed_sim = command_elapsed_sim; elapsed_wall = time.monotonic() - start_wall
 
         def delta(a, b): return (a['x'] - b['x'], a['y'] - b['y'], wrap(a['yaw'] - b['yaw'])) if a and b else (None, None, None)
-        gt_d, odom_d, local_d = delta(finish[0], start[0]), delta(finish[1], start[1]), delta(finish[2], start[2])
+        gt_d, odom_d, local_d = delta(motion_finish[0], start[0]), delta(motion_finish[1], start[1]), delta(motion_finish[2], start[2])
         expected = (command[0] * elapsed_sim, command[1] * elapsed_sim, command[2] * elapsed_sim)
         gt_disp = math.hypot(gt_d[0], gt_d[1]) if gt_d[0] is not None else None; expected_disp = math.hypot(expected[0], expected[1])
         active = trace[max(0, len(trace) * 3 // 4):]
+        gt_integral_x = gt_integral_y = 0.0
+        for before, after in zip(trace, trace[1:]):
+            dt = float(after['sim_time']) - float(before['sim_time'])
+            if dt > 0 and before.get('gt_vx_world') is not None and after.get('gt_vx_world') is not None:
+                gt_integral_x += 0.5 * (float(before['gt_vx_world']) + float(after['gt_vx_world'])) * dt
+                gt_integral_y += 0.5 * (float(before['gt_vy_world']) + float(after['gt_vy_world'])) * dt
+        gt_integral = math.hypot(gt_integral_x, gt_integral_y)
+        publish_gaps = [b - a for a, b in zip(publish_times, publish_times[1:])]
         def mean(key):
             vals = [float(r[key]) for r in active if r.get(key) is not None and math.isfinite(float(r[key]))]
             return sum(vals) / len(vals) if vals else None
         expected_wheel = math.hypot(command[0], command[1]) / WHEEL_RADIUS if command[2] == 0 else abs(command[2] * MODULE_X) / WHEEL_RADIUS
         actual_wheel = (abs(mean('wheel_vel_front') or 0.0) + abs(mean('wheel_vel_rear') or 0.0)) / 2.0
+        gt_cmd_speed = []
+        for row in active:
+            if row.get('gt_vx_world') is None or row.get('gt_vy_world') is None or row.get('gt_yaw') is None:
+                continue
+            c, s = math.cos(float(row['gt_yaw'])), math.sin(float(row['gt_yaw']))
+            bx = c * float(row['gt_vx_world']) + s * float(row['gt_vy_world'])
+            by = -s * float(row['gt_vx_world']) + c * float(row['gt_vy_world'])
+            gt_cmd_speed.append(bx if abs(command[0]) >= abs(command[1]) else by)
+        steady_gt_cmd_speed = sum(gt_cmd_speed) / len(gt_cmd_speed) if gt_cmd_speed else None
         result = {'case': name, 'cmd_linear': math.hypot(command[0], command[1]), 'cmd_wz': command[2],
             'elapsed_sim_time': elapsed_sim, 'elapsed_wall_time': elapsed_wall, 'rtf': elapsed_sim / elapsed_wall if elapsed_wall else None,
+            'clock_first': clock_validation['first_clock'], 'clock_second': clock_validation['second_clock'],
+            'clock_delta': clock_validation['clock_delta'], 'clock_wall_delta': clock_validation['wall_delta'],
             'gt_dx': gt_d[0], 'gt_dy': gt_d[1], 'gt_dyaw': gt_d[2], 'odom_dx': odom_d[0], 'odom_dy': odom_d[1], 'odom_dyaw': odom_d[2],
             'local_dx': local_d[0], 'local_dy': local_d[1], 'local_dyaw': local_d[2], 'expected_dx': expected[0], 'expected_dy': expected[1], 'expected_dyaw': expected[2],
             'actual_displacement': gt_disp, 'expected_displacement': expected_disp,
+            'gt_velocity_integral': gt_integral, 'integration_error': abs(gt_disp - gt_integral),
             'velocity_efficiency': gt_disp / expected_disp if expected_disp > 1e-9 else abs(gt_d[2] / expected[2]) if abs(expected[2]) > 1e-9 else None,
-            'steady_gt_body_speed': math.hypot(mean('gt_vx_world') or 0.0, mean('gt_vy_world') or 0.0), 'steady_gt_wz': mean('gt_wz'),
+            'steady_gt_body_speed': math.hypot(mean('gt_vx_world') or 0.0, mean('gt_vy_world') or 0.0),
+            'steady_gt_cmd_speed': steady_gt_cmd_speed, 'steady_gt_wz': mean('gt_wz'),
             'steady_odom_speed': math.hypot(mean('odom_vx') or 0.0, mean('odom_vy') or 0.0), 'command_wheel_rad_s': expected_wheel,
             'actual_wheel_rad_s': actual_wheel, 'wheel_surface_m_s': actual_wheel * WHEEL_RADIUS,
-            'traction_ratio': (mean('gt_vx_world') or 0.0) / (actual_wheel * WHEEL_RADIUS) if actual_wheel > 1e-9 else None,
+            'traction_ratio': steady_gt_cmd_speed / (actual_wheel * WHEEL_RADIUS) if actual_wheel > 1e-9 and steady_gt_cmd_speed is not None else None,
             'steer_error': max(abs((mean('steer_pos_front') or 0.0) - (mean('steer_cmd_front') or 0.0)), abs((mean('steer_pos_rear') or 0.0) - (mean('steer_cmd_rear') or 0.0))),
+            'max_cmd_publish_gap_sim': max(publish_gaps) if publish_gaps else None,
+            'mean_cmd_publish_gap_sim': sum(publish_gaps) / len(publish_gaps) if publish_gaps else None,
+            'clock_verified': True,
             'direction_correct': bool(gt_d[0] * command[0] > 0 if abs(command[0]) > 0 else gt_d[1] * command[1] > 0 if abs(command[1]) > 0 else gt_d[2] * command[2] > 0)}
         return result, trace
 
@@ -155,6 +213,14 @@ def main():
         writer = csv.DictWriter(stream, fieldnames=fields); writer.writeheader(); writer.writerows(trace)
     with open(os.path.join(outdir, 'raw_motion_result.csv'), 'w', newline='', encoding='utf-8') as stream:
         writer = csv.DictWriter(stream, fieldnames=result.keys()); writer.writeheader(); writer.writerow(result)
+    with open(os.path.join(outdir, 'clock_validation.json'), 'w', encoding='utf-8') as stream:
+        json.dump({'use_sim_time': bool(node.get_parameter('use_sim_time').value),
+                   'clock_topic_seen': bool(node.clock_samples),
+                   'ros_clock_start': result['clock_first'], 'ros_clock_end': result['clock_second'],
+                   'sim_elapsed': result['clock_delta'], 'wall_elapsed': result['clock_wall_delta'],
+                   'rtf': result['clock_delta'] / result['clock_wall_delta'] if result['clock_wall_delta'] else None,
+                   'max_cmd_publish_gap_sim': result['max_cmd_publish_gap_sim'],
+                   'clock_verified': bool(node.get_parameter('use_sim_time').value and node.clock_samples)}, stream, indent=2)
     print(result, flush=True); return 0 if result['direction_correct'] else 1
 
 

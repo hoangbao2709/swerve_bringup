@@ -1,0 +1,11 @@
+[WARN] [1789639935.869115895] [raw_motion_evaluator]: New publisher discovered on topic '/clock', offering incompatible QoS. No messages will be received from it. Last incompatible policy: RELIABILITY
+Traceback (most recent call last):
+  File "/home/yahboom/swerve_bringup/scripts/raw_motion.py", line 227, in <module>
+    if __name__ == '__main__': raise SystemExit(main())
+  File "/home/yahboom/swerve_bringup/scripts/raw_motion.py", line 209, in main
+    try: result, trace = node.run(name, CASES[name])
+  File "/home/yahboom/swerve_bringup/scripts/raw_motion.py", line 118, in run
+    clock_validation = self.wait_for_sim_clock()
+  File "/home/yahboom/swerve_bringup/scripts/raw_motion.py", line 76, in wait_for_sim_clock
+    raise RuntimeError('FAIL: /clock did not advance while use_sim_time=true')
+RuntimeError: FAIL: /clock did not advance while use_sim_time=true

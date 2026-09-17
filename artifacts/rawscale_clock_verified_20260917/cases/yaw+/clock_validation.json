@@ -1,0 +1,11 @@
+{
+  "use_sim_time": true,
+  "clock_topic_seen": true,
+  "ros_clock_start": 2.4,
+  "ros_clock_end": 2.6,
+  "sim_elapsed": 0.20000000000000018,
+  "wall_elapsed": 0.9545081949981977,
+  "rtf": 0.20953198835592796,
+  "max_cmd_publish_gap_sim": 0.10000000000000142,
+  "clock_verified": true
+}

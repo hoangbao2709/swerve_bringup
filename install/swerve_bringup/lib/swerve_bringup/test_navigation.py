@@ -17,6 +17,7 @@ from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -31,7 +32,10 @@ def distance(a, b):
 
 class NavigationTest(Node):
     def __init__(self, distance_m, tolerance, timeout):
-        super().__init__('navigation_live_test')
+        super().__init__('navigation_live_test', parameter_overrides=[
+            Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        if not self.get_parameter('use_sim_time').value:
+            raise RuntimeError('FAIL: navigation test use_sim_time is false')
         self.tf = Buffer()
         self.listener = TransformListener(self.tf, self)
         self.client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
@@ -103,8 +107,11 @@ class NavigationTest(Node):
         self.accepted = True
         self.get_logger().info('goal ACCEPTED')
         result_future = handle.get_result_async()
-        deadline = time.monotonic() + self.timeout
-        while not result_future.done() and time.monotonic() < deadline and rclpy.ok():
+        start_sim = self.get_clock().now().nanoseconds * 1e-9
+        wall_deadline = time.monotonic() + max(300.0, self.timeout * 10.0)
+        while (not result_future.done() and
+               self.get_clock().now().nanoseconds * 1e-9 - start_sim < self.timeout and
+               time.monotonic() < wall_deadline and rclpy.ok()):
             time.sleep(0.1)
         if not result_future.done():
             handle.cancel_goal_async()

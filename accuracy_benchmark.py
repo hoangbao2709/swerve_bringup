@@ -11,6 +11,10 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Odometry, Path
+from rclpy.parameter import Parameter
+from rosgraph_msgs.msg import Clock
+from sensor_msgs.msg import Imu
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Imu
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
@@ -33,9 +37,13 @@ def stats(values):
 
 class Benchmark(Node):
     def __init__(self, model, timeout):
-        super().__init__('swerve_accuracy_benchmark')
+        super().__init__('swerve_accuracy_benchmark', parameter_overrides=[
+            Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        if not self.get_parameter('use_sim_time').value:
+            raise RuntimeError('FAIL: accuracy benchmark use_sim_time is false')
         self.model, self.timeout = model, timeout
         self.gt = self.odom = self.v30e = self.local_ekf = self.global_ekf = self.imu = None
+        self.clock_samples = []
         self.plan_received = False
         self.last_cmd = None
         self.cmd_vel_seen_nonzero = False
@@ -47,6 +55,9 @@ class Benchmark(Node):
         self.create_subscription(Odometry, '/odometry/filtered', lambda m: setattr(self, 'local_ekf', self.odom_msg(m)), 20)
         self.create_subscription(Odometry, '/odometry/v30e', lambda m: setattr(self, 'global_ekf', self.odom_msg(m)), 20)
         self.create_subscription(Imu, '/imu/data', lambda m: setattr(self, 'imu', (m.angular_velocity.z, yaw(m.orientation))), 20)
+        clock_qos = QoSProfile(depth=20, reliability=ReliabilityPolicy.BEST_EFFORT,
+                               durability=DurabilityPolicy.VOLATILE)
+        self.create_subscription(Clock, '/clock', self.clock_cb, clock_qos)
         self.create_subscription(PoseWithCovarianceStamped, '/v30e/pose', self.v30e_cb, 20)
         self.create_subscription(Path, '/plan', self.plan_cb, 10)
         self.create_subscription(Twist, '/cmd_vel', self.cmd_cb, 20)
@@ -56,6 +67,26 @@ class Benchmark(Node):
     def sim_time(self):
         """Current ROS time in seconds (Gazebo /clock when use_sim_time=true)."""
         return self.get_clock().now().nanoseconds * 1e-9
+
+    def clock_cb(self, msg):
+        value = msg.clock.sec + msg.clock.nanosec * 1e-9
+        self.clock_samples.append((value, time.monotonic()))
+        self.clock_samples = self.clock_samples[-20:]
+
+    def wait_for_sim_clock(self):
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if len(self.clock_samples) >= 3 and self.clock_samples[-1][0] > self.clock_samples[0][0]:
+                result = {'ros_clock_start': self.clock_samples[0][0],
+                        'ros_clock_end': self.clock_samples[-1][0],
+                        'sim_elapsed': self.clock_samples[-1][0] - self.clock_samples[0][0],
+                        'wall_elapsed': self.clock_samples[-1][1] - self.clock_samples[0][1]}
+                self.get_logger().info('use_sim_time=true first_clock=%.9f second_clock=%.9f clock_delta=%.9f wall_delta=%.9f measured_RTF=%.6f' %
+                                       (result['ros_clock_start'], result['ros_clock_end'], result['sim_elapsed'], result['wall_elapsed'],
+                                        result['sim_elapsed'] / result['wall_elapsed'] if result['wall_elapsed'] else 0.0))
+                return result
+            time.sleep(0.02)
+        raise RuntimeError('FAIL: /clock did not advance while use_sim_time=true')
 
     @staticmethod
     def elapsed(start, end):
@@ -175,6 +206,7 @@ class Benchmark(Node):
         return result
 
     def run(self, repeats, outdir):
+        clock_validation = self.wait_for_sim_clock()
         start_sim, start_wall = self.sim_time(), time.monotonic()
         sim_deadline=start_sim+30.0
         wall_deadline=start_wall+300.0
@@ -253,7 +285,12 @@ class Benchmark(Node):
                     'v30e_x':end_v30e[0] if end_v30e else None,'v30e_y':end_v30e[1] if end_v30e else None,
                     'v30e_yaw':end_v30e[2] if end_v30e else None})
         metrics={k:stats([r[k] for r in rows if r[k] is not None]) for k in ('gt_goal_error','localization_error_xy','localization_error_yaw','odom_error_xy','final_navigation_error_xy','final_yaw_error','travelled_distance')}
-        summary={'runs':len(rows),'metrics':metrics,'passed':len(rows)==repeats and all(
+        clock_validation['use_sim_time'] = bool(self.get_parameter('use_sim_time').value)
+        clock_validation['clock_topic_seen'] = bool(self.clock_samples)
+        clock_validation['rtf'] = clock_validation['sim_elapsed'] / clock_validation['wall_elapsed'] if clock_validation['wall_elapsed'] else None
+        clock_validation['clock_verified'] = clock_validation['use_sim_time'] and clock_validation['clock_topic_seen'] and clock_validation['sim_elapsed'] > 0
+        with open(os.path.join(outdir,'clock_validation.json'),'w') as f: json.dump(clock_validation,f,indent=2)
+        summary={'runs':len(rows),'metrics':metrics,'clock_validation':clock_validation,'passed':len(rows)==repeats and all(
             r['action_status']=='SUCCEEDED' and r['motion_ok'] and r['final_navigation_error_xy']<=.05
             and r['localization_error_xy']<=.03 and r['final_yaw_error']<=.05
             for r in rows),'rows':rows}

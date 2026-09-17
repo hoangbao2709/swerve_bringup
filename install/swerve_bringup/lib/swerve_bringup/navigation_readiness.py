@@ -14,6 +14,7 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
@@ -23,7 +24,10 @@ from tf2_ros import Buffer, TransformException, TransformListener
 class Readiness(Node):
     """Checks live data and state, never just graph membership."""
     def __init__(self, model):
-        super().__init__('navigation_readiness_probe')
+        super().__init__('navigation_readiness_probe', parameter_overrides=[
+            Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        if not self.get_parameter('use_sim_time').value:
+            raise RuntimeError('FAIL: readiness probe use_sim_time is false')
         self.model = model
         self.clock_seen = self.joints_seen = self.odom_seen = self.v30e_seen = False
         clock_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT,

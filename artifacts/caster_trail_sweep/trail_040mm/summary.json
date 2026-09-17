@@ -1,0 +1,45 @@
+{
+  "runs": [
+    {
+      "run": "yaw+",
+      "startup_wall_time": 40.45387038899935,
+      "startup_sim_time": 3.0,
+      "controller_ready": true,
+      "local_tf_ready": true,
+      "global_tf_ready": true,
+      "nav2_ready": true,
+      "action_ready": true,
+      "shutdown_clean": true,
+      "no_old_gzserver": true,
+      "no_old_test_launch": true,
+      "no_old_evaluator": true,
+      "evaluator_rc": 0,
+      "direction_correct": true,
+      "physics_acceptance_pass": false,
+      "direction_status": "PASS",
+      "physics_status": "FAIL",
+      "status": "FAIL"
+    },
+    {
+      "run": "yaw-",
+      "startup_wall_time": 69.92440152500058,
+      "startup_sim_time": 9.4,
+      "controller_ready": true,
+      "local_tf_ready": true,
+      "global_tf_ready": true,
+      "nav2_ready": true,
+      "action_ready": true,
+      "shutdown_clean": true,
+      "no_old_gzserver": true,
+      "no_old_test_launch": true,
+      "no_old_evaluator": true,
+      "evaluator_rc": 0,
+      "direction_correct": true,
+      "physics_acceptance_pass": false,
+      "direction_status": "PASS",
+      "physics_status": "FAIL",
+      "status": "FAIL"
+    }
+  ],
+  "passed": false
+}

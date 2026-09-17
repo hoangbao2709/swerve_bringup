@@ -1,0 +1,23 @@
+# Authoritative record for the physical CFAV2-D50-120 caster geometry.
+# Do not infer these values from simulation performance.  Measure the planar
+# horizontal vector from the vertical swivel-axis centreline to the wheel axle
+# centre, expressed in each caster's local +X/+Y axes.  It is not wheel
+# radius/diameter, swivel height, or mounting-bolt spacing.
+caster:
+  model: CFAV2-D50-120
+  wheel_radius_m: 0.040
+  axle_offset_x_m: null
+  axle_offset_y_m: 0.0
+  source: measurement_required
+  measured_units: mm
+  measurement_definition: horizontal_planar_offset_swivel_axis_centerline_to_wheel_axle_center
+  sign_convention: caster_local_plus_x_and_plus_y; verify orientation from hardware_or_CAD
+  measured_values_mm:
+    front_left: null
+    front_right: null
+    rear_left: null
+    rear_right: null
+  measurement_notes: >-
+    Record all four raw values and their local-axis orientation.  If hardware
+    is common, report mean and range only after checking spread; do not average
+    differing geometry automatically.

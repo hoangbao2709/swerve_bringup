@@ -1,0 +1,19 @@
+{
+  "stages": {
+    "CLOCK_READY": true,
+    "GAZEBO_READY": true,
+    "ROBOT_SPAWNED": true,
+    "CONTROLLERS_READY": true,
+    "JOINT_STATES_READY": true,
+    "ODOM_READY": true,
+    "LOCAL_TF_READY": true,
+    "V30E_READY": true,
+    "GLOBAL_TF_READY": true,
+    "NAV2_LIFECYCLE_READY": true,
+    "ACTION_SERVER_READY": true
+  },
+  "startup_wall_time": 39.77546068099764,
+  "nav_ready": true,
+  "reason": null,
+  "startup_sim_time": 3.1
+}

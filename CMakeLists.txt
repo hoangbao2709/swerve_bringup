@@ -75,6 +75,12 @@ install(
 )
 
 install(
+  PROGRAMS scripts/validate_caster_geometry.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME validate_caster_geometry.py
+)
+
+install(
   PROGRAMS scripts/nav_accuracy_case.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME nav_accuracy_case.py

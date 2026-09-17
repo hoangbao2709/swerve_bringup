@@ -1,0 +1,177 @@
+{
+  "wheels": [
+    {
+      "link": "wheel_front_drive_link",
+      "collision": "wheel_front_drive_link_collision",
+      "collision_origin_base_footprint_m": [
+        0.300042,
+        0.001787999999999998,
+        0.067507
+      ],
+      "collision_orientation_rpy": [
+        1.5708,
+        -0.0,
+        0.0
+      ],
+      "radius_m": 0.0675,
+      "length_m": 0.065,
+      "calculated_lowest_z_base_footprint_m": 6.880621289506728e-06,
+      "calculated_lowest_z_base_link_m": -0.2449931193787105
+    },
+    {
+      "link": "wheel_rear_drive_link",
+      "collision": "wheel_rear_drive_link_collision",
+      "collision_origin_base_footprint_m": [
+        -0.300042,
+        0.0018130000000000021,
+        0.067507
+      ],
+      "collision_orientation_rpy": [
+        1.5708,
+        -0.0,
+        0.0
+      ],
+      "radius_m": 0.0675,
+      "length_m": 0.065,
+      "calculated_lowest_z_base_footprint_m": 6.880621289506728e-06,
+      "calculated_lowest_z_base_link_m": -0.2449931193787105
+    },
+    {
+      "link": "wheel_front_left_link",
+      "collision": "wheel_front_left_link_collision",
+      "collision_origin_base_footprint_m": [
+        0.475,
+        0.195,
+        0.04003
+      ],
+      "collision_orientation_rpy": [
+        1.5708,
+        -0.0,
+        0.0
+      ],
+      "radius_m": 0.04,
+      "length_m": 0.04,
+      "calculated_lowest_z_base_footprint_m": 2.9926536167790285e-05,
+      "calculated_lowest_z_base_link_m": -0.2449700734638322,
+      "swivel_axis_position_base_footprint_m": [
+        0.505,
+        0.195,
+        0.04343
+      ],
+      "wheel_axle_position_base_footprint_m": [
+        0.475,
+        0.195,
+        0.04003
+      ],
+      "horizontal_offset_vector_local_m": [
+        -0.03,
+        0.0
+      ],
+      "trail_m": 0.03
+    },
+    {
+      "link": "wheel_front_right_link",
+      "collision": "wheel_front_right_link_collision",
+      "collision_origin_base_footprint_m": [
+        0.475,
+        -0.195,
+        0.04003
+      ],
+      "collision_orientation_rpy": [
+        1.5708,
+        -0.0,
+        0.0
+      ],
+      "radius_m": 0.04,
+      "length_m": 0.04,
+      "calculated_lowest_z_base_footprint_m": 2.9926536167790285e-05,
+      "calculated_lowest_z_base_link_m": -0.2449700734638322,
+      "swivel_axis_position_base_footprint_m": [
+        0.505,
+        -0.195,
+        0.04343
+      ],
+      "wheel_axle_position_base_footprint_m": [
+        0.475,
+        -0.195,
+        0.04003
+      ],
+      "horizontal_offset_vector_local_m": [
+        -0.03,
+        0.0
+      ],
+      "trail_m": 0.03
+    },
+    {
+      "link": "wheel_rear_left_link",
+      "collision": "wheel_rear_left_link_collision",
+      "collision_origin_base_footprint_m": [
+        -0.535,
+        0.195,
+        0.04003
+      ],
+      "collision_orientation_rpy": [
+        1.5708,
+        -0.0,
+        0.0
+      ],
+      "radius_m": 0.04,
+      "length_m": 0.04,
+      "calculated_lowest_z_base_footprint_m": 2.9926536167790285e-05,
+      "calculated_lowest_z_base_link_m": -0.2449700734638322,
+      "swivel_axis_position_base_footprint_m": [
+        -0.505,
+        0.195,
+        0.04343
+      ],
+      "wheel_axle_position_base_footprint_m": [
+        -0.535,
+        0.195,
+        0.04003
+      ],
+      "horizontal_offset_vector_local_m": [
+        -0.03,
+        0.0
+      ],
+      "trail_m": 0.03
+    },
+    {
+      "link": "wheel_rear_right_link",
+      "collision": "wheel_rear_right_link_collision",
+      "collision_origin_base_footprint_m": [
+        -0.535,
+        -0.195,
+        0.04003
+      ],
+      "collision_orientation_rpy": [
+        1.5708,
+        -0.0,
+        0.0
+      ],
+      "radius_m": 0.04,
+      "length_m": 0.04,
+      "calculated_lowest_z_base_footprint_m": 2.9926536167790285e-05,
+      "calculated_lowest_z_base_link_m": -0.2449700734638322,
+      "swivel_axis_position_base_footprint_m": [
+        -0.505,
+        -0.195,
+        0.04343
+      ],
+      "wheel_axle_position_base_footprint_m": [
+        -0.535,
+        -0.195,
+        0.04003
+      ],
+      "horizontal_offset_vector_local_m": [
+        -0.03,
+        0.0
+      ],
+      "trail_m": 0.03
+    }
+  ],
+  "drive_contact_z_base_link_m": -0.2449931193787105,
+  "max_caster_delta_mm": 0.023045914878283558,
+  "acceptance_max_delta_mm": 0.5,
+  "current_model_trail_m": 0.03,
+  "pass": true
+}

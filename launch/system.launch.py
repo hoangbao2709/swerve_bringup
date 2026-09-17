@@ -36,6 +36,8 @@ def generate_launch_description():
     contact_diagnostics = LaunchConfiguration('contact_diagnostics')
     caster_frictionless = LaunchConfiguration('caster_frictionless')
     proper_caster_test = LaunchConfiguration('proper_caster_test')
+    caster_axle_offset_x_m = LaunchConfiguration('caster_axle_offset_x_m')
+    caster_axle_offset_y_m = LaunchConfiguration('caster_axle_offset_y_m')
     mode = LaunchConfiguration('mode')
     mapping_mode = IfCondition(PythonExpression(["'", mode, "' == 'mapping'"]))
     navigation_mode = IfCondition(PythonExpression(["'", mode, "' == 'navigation'"]))
@@ -64,6 +66,8 @@ def generate_launch_description():
     for name, value in zip(('lidar_roll', 'lidar_pitch', 'lidar_yaw'), lidar_extrinsics['rpy']): args += xacro_arg(name, value)
     for name, value in zip(('imu_x', 'imu_y', 'imu_z'), imu_extrinsics['xyz']): args += xacro_arg(name, value)
     for name, value in zip(('imu_roll', 'imu_pitch', 'imu_yaw'), imu_extrinsics['rpy']): args += xacro_arg(name, value)
+    args += [' caster_axle_offset_x_m:=', caster_axle_offset_x_m]
+    args += [' caster_axle_offset_y_m:=', caster_axle_offset_y_m]
     robot_description = ParameterValue(Command(['xacro ', urdf] + args), value_type=str)
 
     # gazebo.launch.py owns Gazebo, spawn, ros2_control and simulated sensors.
@@ -75,6 +79,8 @@ def generate_launch_description():
                           'contact_diagnostics': contact_diagnostics,
                           'caster_frictionless': caster_frictionless,
                           'proper_caster_test': proper_caster_test,
+                          'caster_axle_offset_x_m': caster_axle_offset_x_m,
+                          'caster_axle_offset_y_m': caster_axle_offset_y_m,
                           'start_ekf': 'false',
                           'start_state_publisher': 'true'}.items())
     real_driver = OpaqueFunction(function=lambda context: _real_driver(context, pkg), condition=UnlessCondition(use_sim))
@@ -114,6 +120,8 @@ def generate_launch_description():
         DeclareLaunchArgument('contact_diagnostics', default_value='false', description='Enable temporary Gazebo contact sensors'),
         DeclareLaunchArgument('caster_frictionless', default_value='false', description='Test-only caster friction A/B variant'),
         DeclareLaunchArgument('proper_caster_test', default_value='false', description='Test-only four-caster swivel+roll model'),
+        DeclareLaunchArgument('caster_axle_offset_x_m', default_value='0.0', description='Test-only caster axle offset in local +X (m)'),
+        DeclareLaunchArgument('caster_axle_offset_y_m', default_value='0.0', description='Test-only caster axle offset in local +Y (m)'),
         DeclareLaunchArgument('real_sensor_launch', default_value='', description='Vendor sensor launch file for use_sim=false'),
         DeclareLaunchArgument('real_lidar_topic', default_value='/lidar/points'),
         DeclareLaunchArgument('real_imu_topic', default_value='/imu/data'),

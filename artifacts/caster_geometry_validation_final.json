@@ -1,0 +1,9 @@
+{
+  "real_trail_required": true,
+  "real_trail_available": false,
+  "current_model_trail_m": 0.0,
+  "configured_axle_offset_x_m": null,
+  "configured_axle_offset_y_m": 0.0,
+  "raw_measurements_complete": false,
+  "status": "REAL_CASTER_TRAIL_REQUIRED"
+}

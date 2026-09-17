@@ -51,6 +51,10 @@
   <xacro:arg name="enable_contact_sensors" default="false"/>
   <xacro:arg name="caster_frictionless" default="false"/>
   <xacro:arg name="proper_caster_test" default="false"/>
+  <!-- Test-only physical-caster geometry.  Defaults intentionally reproduce
+       the audited zero-trail prototype until a real measurement is supplied. -->
+  <xacro:arg name="caster_axle_offset_x_m" default="0.0"/>
+  <xacro:arg name="caster_axle_offset_y_m" default="0.0"/>
   <!-- Diagnostic switch: lets Gazebo physics be tested independently from
        gazebo_ros2_control without changing production's default behaviour. -->
   <xacro:arg name="enable_gazebo_ros2_control" default="true"/>
@@ -78,6 +82,8 @@
   <xacro:property name="imu_update_rate" value="$(arg imu_update_rate)"/>
   <xacro:property name="imu_gyro_noise_stddev" value="$(arg imu_gyro_noise_stddev)"/>
   <xacro:property name="imu_accel_noise_stddev" value="$(arg imu_accel_noise_stddev)"/>
+  <xacro:property name="caster_axle_offset_x_m" value="$(arg caster_axle_offset_x_m)"/>
+  <xacro:property name="caster_axle_offset_y_m" value="$(arg caster_axle_offset_y_m)"/>
   <xacro:property name="caster_mu" value="0.01"/>
   <xacro:if value="$(arg caster_frictionless)"><xacro:property name="caster_mu" value="0.0"/></xacro:if>
 
@@ -85,7 +91,7 @@
        unchanged; this branch adds the missing swivel + rolling DOFs.  CAD and
        a CFAV2-D50-120 drawing in this workspace do not specify a trail, so
        this is explicitly a zero-trail passive swivel-wheel approximation. -->
-  <xacro:macro name="proper_caster" params="name x y">
+  <xacro:macro name="proper_caster" params="name x y axle_offset_x axle_offset_y">
     <link name="${name}_fork_link">
       <inertial>
         <mass value="0.08"/>
@@ -117,9 +123,11 @@
     </link>
     <joint name="${name}_roll_joint" type="continuous">
       <parent link="${name}_fork_link"/><child link="${name}_link"/>
-      <!-- With swivel at z=-0.20157 and R=0.040, this puts the caster
-           contact plane at -0.24497 m, matching the driven wheels. -->
-      <origin xyz="0 0 -0.0034"/><axis xyz="0 1 0"/>
+      <!-- Wheel axle centre relative to the vertical swivel axis.  X/Y are
+           an explicit local planar vector, not a calibration scale.  The
+           sign must come from CAD/measurement in caster local axes.  Keeping
+           Z unchanged preserves contact height when only trail is added. -->
+      <origin xyz="${axle_offset_x} ${axle_offset_y} -0.0034"/><axis xyz="0 1 0"/>
       <dynamics friction="0.02" damping="0.02"/>
     </joint>
   </xacro:macro>
@@ -349,10 +357,10 @@
   </xacro:unless>
 
   <xacro:if value="$(arg proper_caster_test)">
-    <xacro:proper_caster name="wheel_front_left" x="0.505" y="0.195"/>
-    <xacro:proper_caster name="wheel_front_right" x="0.505" y="-0.195"/>
-    <xacro:proper_caster name="wheel_rear_left" x="-0.505" y="0.195"/>
-    <xacro:proper_caster name="wheel_rear_right" x="-0.505" y="-0.195"/>
+    <xacro:proper_caster name="wheel_front_left" x="0.505" y="0.195" axle_offset_x="${caster_axle_offset_x_m}" axle_offset_y="${caster_axle_offset_y_m}"/>
+    <xacro:proper_caster name="wheel_front_right" x="0.505" y="-0.195" axle_offset_x="${caster_axle_offset_x_m}" axle_offset_y="${caster_axle_offset_y_m}"/>
+    <xacro:proper_caster name="wheel_rear_left" x="-0.505" y="0.195" axle_offset_x="${caster_axle_offset_x_m}" axle_offset_y="${caster_axle_offset_y_m}"/>
+    <xacro:proper_caster name="wheel_rear_right" x="-0.505" y="-0.195" axle_offset_x="${caster_axle_offset_x_m}" axle_offset_y="${caster_axle_offset_y_m}"/>
   </xacro:if>
 
   <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->

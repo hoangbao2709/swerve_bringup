@@ -74,10 +74,27 @@ def main():
         'stall_correlation': {case: {'t_stall': alignment[case]['t_stall'], 'at_stall': alignment[case]['at_stall'],
                                      'evidence': alignment[case]['evidence']} for case in alignment},
         'zero_trail_confirmed_as_blocker': blocker,
+        'real_trail_required': True,
+        'real_trail_available': False,
+        'current_model_trail_m': 0.0,
         'actual_trail_dimension_available': False,
         'trail_search': {'result': 'not found in workspace source/CAD/drawing search',
                          'model_source': 'urdf/swerve_base.urdf:84-87 explicitly documents a zero-trail approximation',
                          'measurement_required': 'horizontal distance from vertical swivel axis to caster wheel axle center'},
+        'zero_trail_refactor_regression': {
+            'xacro_parameter_parser': 'PASS', 'check_urdf': 'PASS', 'gz_sdf_p': 'PASS',
+            'contact_geometry_source': 'artifacts/proper_caster_zero_trail_geometry.json',
+            'gazebo_ros2_control': 'PASS',
+            'startup_source': 'artifacts/caster_zero_trail_startup_regression/summary.json'},
+        'test_only_trail_sweep': {
+            'classification': 'NOT PHYSICAL CALIBRATION',
+            'simulation_assumption_values_m': [0.0, 0.020, 0.030, 0.040],
+            'source': 'artifacts/caster_trail_sweep/caster_trail_sweep_summary.json',
+            'result': 'all yaw cases fail the <=15% encoder/GT target; do not select or promote a sweep value'},
+        'if_real_trail_or_test_only_sensitivity_still_fails_investigate_in_order': [
+            'swivel bearing friction/damping', 'caster wheel rolling friction/contact',
+            'drive-wheel torque/traction', 'drive module steering-contact offset (~48.2 mm)',
+            'swerve odometry geometry'],
         'model_comparison': {
             'simplified_baseline': {'yaw+_gt_integrated_yaw_rad': 0.193, 'yaw-_gt_integrated_yaw_rad': -0.178,
                                     'encoder_to_gt_yaw_ratio': {'yaw+': 3.12, 'yaw-': 3.73}},
@@ -86,7 +103,7 @@ def main():
             'proper_2dof_zero_trail': {'yaw+_gt_integrated_yaw_rad': 0.127, 'yaw-_gt_integrated_yaw_rad': -0.115,
                                        'encoder_to_gt_yaw_ratio': {'yaw+': 9.34, 'yaw-': 10.14},
                                        'verdict': 'FAIL'}},
-        'NEXT BLOCKER': 'Measure the real caster trail (swivel-axis to wheel-axle horizontal offset); do not tune odom/EKF/Nav2 or run translation until a physically justified caster model passes yaw.'
+        'NEXT BLOCKER': 'REAL_CASTER_TRAIL_MEASUREMENT'
     }
     with open(os.path.join(OUT, 'proper_caster_yaw_summary.json'), 'w', encoding='utf-8') as stream:
         json.dump(summary, stream, indent=2)

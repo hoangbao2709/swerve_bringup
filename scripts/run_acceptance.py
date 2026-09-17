@@ -88,6 +88,12 @@ def run_case(args, case_name, domain, outdir):
         launch_command.append('caster_frictionless:=true')
     if env.get('ACCEPTANCE_PROPER_CASTER_TEST', '').lower() in ('1', 'true', 'yes'):
         launch_command.append('proper_caster_test:=true')
+    # Test-only engineering assumptions are deliberately explicit.  The
+    # production launch defaults remain zero/unknown in the URDF/config.
+    for name in ('X', 'Y'):
+        value = env.get(f'ACCEPTANCE_CASTER_AXLE_OFFSET_{name}_M')
+        if value is not None:
+            launch_command.append(f'caster_axle_offset_{name.lower()}_m:={value}')
     proc = subprocess.Popen(
         launch_command,
         cwd=ROOT, env=env, stdout=launch_log, stderr=subprocess.STDOUT,
@@ -164,6 +170,8 @@ def main():
     parser.add_argument('--evaluator', nargs='+', help='command run only after NAV_READY')
     parser.add_argument('--cases', nargs='+', help='case names exported as ACCEPTANCE_CASE')
     parser.add_argument('--outdir', help='timestamped output root')
+    parser.add_argument('--continue-on-failure', action='store_true',
+                        help='diagnostic sweeps collect later cases even when an earlier physics gate fails')
     args = parser.parse_args()
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     root = args.outdir or os.path.join(ROOT, 'artifacts', f'acceptance_{stamp}')
@@ -176,7 +184,7 @@ def main():
         row = run_case(args, case, args.domain + index, case_dir)
         rows.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
-        if row['status'] != 'PASS':
+        if row['status'] != 'PASS' and not args.continue_on_failure:
             print('STOP: case failed; no next case is launched', flush=True)
             break
     with open(os.path.join(root, 'summary.csv'), 'w', newline='', encoding='utf-8') as stream:

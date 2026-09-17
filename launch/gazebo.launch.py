@@ -40,6 +40,8 @@ def generate_launch_description():
     xacro_args = [' enable_contact_sensors:=', LaunchConfiguration('contact_diagnostics'),
                    ' caster_frictionless:=', LaunchConfiguration('caster_frictionless'),
                    ' proper_caster_test:=', LaunchConfiguration('proper_caster_test'),
+                   ' caster_axle_offset_x_m:=', LaunchConfiguration('caster_axle_offset_x_m'),
+                   ' caster_axle_offset_y_m:=', LaunchConfiguration('caster_axle_offset_y_m'),
                    ' enable_gazebo_ros2_control:=', LaunchConfiguration('enable_gazebo_ros2_control')]
     for name, value in zip(('lidar_x', 'lidar_y', 'lidar_z'), lidar_extrinsics['xyz']):
         xacro_args += xacro_arg(name, value)
@@ -197,6 +199,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'proper_caster_test', default_value='false',
             description='Test-only four-caster swivel+roll model; production default is false.',
+        ),
+        DeclareLaunchArgument(
+            'caster_axle_offset_x_m', default_value='0.0',
+            description='Test-only caster wheel-axle offset from swivel axis in caster local +X (m).',
+        ),
+        DeclareLaunchArgument(
+            'caster_axle_offset_y_m', default_value='0.0',
+            description='Test-only caster wheel-axle offset from swivel axis in caster local +Y (m).',
         ),
         DeclareLaunchArgument(
             'enable_gazebo_ros2_control', default_value='true',

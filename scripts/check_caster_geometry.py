@@ -71,7 +71,7 @@ def main():
         # projection of axial and radial components onto world Z.
         axis_z = frame[1][2][2]
         vertical_extent = abs(axis_z) * length / 2 + math.sqrt(1 - axis_z * axis_z) * radius
-        records.append({
+        record = {
             "link": name, "collision": collision.get("name"),
             "collision_origin_base_footprint_m": list(frame[0]),
             "collision_orientation_rpy": pose(collision)[3:],
@@ -79,20 +79,38 @@ def main():
             "calculated_lowest_z_base_footprint_m": frame[0][2] - vertical_extent,
             # base_link is 0.245 m above base_footprint in this generated model.
             "calculated_lowest_z_base_link_m": frame[0][2] - vertical_extent - 0.245,
-        })
+        }
+        if "drive" not in name:
+            prefix = name.removesuffix("_link")
+            fork = f"{prefix}_fork_link"
+            axle_frame, swivel_frame = link_frame(name), link_frame(fork)
+            roll_joint = joints[name]
+            offset = pose(roll_joint)[0:2]
+            record.update({
+                "swivel_axis_position_base_footprint_m": list(swivel_frame[0]),
+                "wheel_axle_position_base_footprint_m": list(axle_frame[0]),
+                "horizontal_offset_vector_local_m": offset,
+                "trail_m": math.hypot(*offset),
+            })
+        records.append(record)
     drives = [r["calculated_lowest_z_base_link_m"] for r in records if "drive" in r["link"]]
     casters = [r["calculated_lowest_z_base_link_m"] for r in records if "drive" not in r["link"]]
     drive_reference = sum(drives) / len(drives)
     max_delta_m = max(abs(z - drive_reference) for z in casters)
+    trails = [r["trail_m"] for r in records if "trail_m" in r]
     result = {"wheels": records, "drive_contact_z_base_link_m": drive_reference,
               "max_caster_delta_mm": max_delta_m * 1000,
-              "acceptance_max_delta_mm": 0.5, "pass": max_delta_m <= 0.0005}
+              "acceptance_max_delta_mm": 0.5, "current_model_trail_m": max(trails) if trails else None,
+              "pass": max_delta_m <= 0.0005}
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
     for record in records:
         print(f"{record['link']}: collision={record['collision']} origin={record['collision_origin_base_footprint_m']} "
               f"rpy={record['collision_orientation_rpy']} radius={record['radius_m']} length={record['length_m']} "
               f"lowest_z_base_link={record['calculated_lowest_z_base_link_m']:.6f}")
+        if "trail_m" in record:
+            print(f"  swivel_axis={record['swivel_axis_position_base_footprint_m']} axle={record['wheel_axle_position_base_footprint_m']} "
+                  f"offset_local_xy={record['horizontal_offset_vector_local_m']} trail={record['trail_m']:.6f} m")
     print(f"max caster-drive delta: {result['max_caster_delta_mm']:.3f} mm; pass={result['pass']}")
     raise SystemExit(0 if result["pass"] else 2)
 

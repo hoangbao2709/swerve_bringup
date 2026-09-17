@@ -1,0 +1,10 @@
+# Engineering-sensitivity experiment only.  These magnitudes are not CAD,
+# measurement, production geometry, or a calibration target.
+simulation_assumption: NOT_PHYSICAL_CALIBRATION
+real_measurement_required: true
+trail_magnitudes_m: [0.0, 0.020, 0.030, 0.040]
+local_frame_sign_rule: >-
+  Wheel rolling direction is local +X at zero swivel.  A trailing axle is on
+  the local -X side of the vertical swivel axis, therefore launch offset_x is
+  negative magnitude.  This is a frame/geometry convention, not a benchmark
+  selection.

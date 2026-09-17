@@ -29,6 +29,7 @@ CASTERS = {
     'RL': ('wheel_rear_left', -0.505, 0.195),
     'RR': ('wheel_rear_right', -0.505, -0.195),
 }
+DRIVE_LINKS = ('wheel_front_drive_link', 'wheel_rear_drive_link')
 WHEEL_RADIUS = 0.0675
 MODULE_X = 0.300042
 
@@ -51,6 +52,22 @@ def percentile(values, percentile_value):
     return values[lo] if lo == hi else values[lo] + (values[hi] - values[lo]) * (index - lo)
 
 
+def rate_integral(rows, key):
+    total = 0.0
+    for before, after in zip(rows, rows[1:]):
+        try:
+            dt, a, b = float(after['sim_time']) - float(before['sim_time']), float(before[key]), float(after[key])
+        except (TypeError, ValueError):
+            continue
+        if dt > 0.0 and math.isfinite(a) and math.isfinite(b): total += 0.5 * (a + b) * dt
+    return total
+
+
+def heading_delta(rows, key):
+    values = [float(r[key]) for r in rows if r.get(key) is not None]
+    return sum(wrap(after - before) for before, after in zip(values, values[1:]))
+
+
 class CasterYawProbe(Node):
     def __init__(self):
         super().__init__('caster_yaw_probe', parameter_overrides=[
@@ -60,7 +77,7 @@ class CasterYawProbe(Node):
         self.imu = None
         self.odom = None
         self.steer_command = self.drive_command = None
-        self.contacts = {prefix: (0, 0.0, 0.0) for prefix, _, _ in CASTERS.values()}
+        self.contacts = {name: (0, 0.0, 0.0) for name in (*DRIVE_LINKS, *(prefix + '_link' for prefix, _, _ in CASTERS.values()))}
         qos = QoSProfile(depth=50, reliability=ReliabilityPolicy.BEST_EFFORT,
                          durability=DurabilityPolicy.VOLATILE)
         self.create_subscription(Clock, '/clock', self.clock_cb, qos)
@@ -69,9 +86,9 @@ class CasterYawProbe(Node):
         self.create_subscription(Odometry, '/odom', self.odom_cb, 50)
         self.create_subscription(Float64MultiArray, '/steering_controller/commands', self.steer_cb, 20)
         self.create_subscription(Float64MultiArray, '/drive_controller/commands', self.drive_cb, 20)
-        for prefix, _, _ in CASTERS.values():
-            self.create_subscription(ContactsState, f'/contact_load/{prefix}_link',
-                                     lambda message, p=prefix: self.contact_cb(p, message), qos)
+        for link in self.contacts:
+            self.create_subscription(ContactsState, f'/contact_load/{link}',
+                                     lambda message, n=link: self.contact_cb(n, message), qos)
         self.command = self.create_publisher(Twist, '/cmd_vel', 10)
         self.entity_client = self.create_client(GetEntityState, '/get_entity_state')
         # Gazebo Classic ROS 2 normally exposes the root endpoint; some
@@ -102,13 +119,13 @@ class CasterYawProbe(Node):
     def steer_cb(self, message): self.steer_command = list(message.data)
     def drive_cb(self, message): self.drive_command = list(message.data)
 
-    def contact_cb(self, prefix, message):
+    def contact_cb(self, link, message):
         normal = tangential = 0.0
         for state in message.states:
             force = state.total_wrench.force
             normal += abs(force.z)
             tangential += math.hypot(force.x, force.y)
-        self.contacts[prefix] = (len(message.states), normal, tangential)
+        self.contacts[link] = (len(message.states), normal, tangential)
 
     def now(self): return self.get_clock().now().nanoseconds * 1e-9
 
@@ -185,6 +202,10 @@ class CasterYawProbe(Node):
             'wheel_front_command': self.drive_command[0] if self.drive_command else None,
             'wheel_rear_command': self.drive_command[1] if self.drive_command and len(self.drive_command) > 1 else None,
         }
+        for link in DRIVE_LINKS:
+            count, normal, tangential = self.contacts[link]
+            row.update({f'{link}_contact_count': count, f'{link}_normal_metric': normal,
+                        f'{link}_tangential_metric': tangential})
         for label, (prefix, x, y) in CASTERS.items():
             swivel = self.joint_properties(f'{prefix}_swivel_joint')
             roll = self.joint_properties(f'{prefix}_roll_joint')
@@ -196,7 +217,7 @@ class CasterYawProbe(Node):
             # A rolling wheel can use heading theta or theta+pi.  wrap(2*d)/2
             # is its signed axis-equivalent error in [-pi/2, pi/2].
             error = wrap(2.0 * (swivel_position - desired)) / 2.0 if desired is not None and swivel_position is not None else None
-            count, normal, tangential = self.contacts[prefix]
+            count, normal, tangential = self.contacts[prefix + '_link']
             row.update({
                 f'{label}_swivel_position': swivel_position, f'{label}_swivel_velocity': swivel_velocity,
                 f'{label}_roll_velocity': roll_velocity, f'{label}_desired_heading': desired,
@@ -232,6 +253,9 @@ def main():
                         help='defaults to ACCEPTANCE_CASE_DIR for run_acceptance integration')
     parser.add_argument('--duration', type=float, default=8.0)
     parser.add_argument('--sample-period', type=float, default=0.15, help='simulation seconds; 5-10 Hz only')
+    parser.add_argument('--trail-test-value-m', type=float,
+                        default=float(os.environ.get('ACCEPTANCE_CASTER_TRAIL_TEST_VALUE_M', '0.0')),
+                        help='positive trail magnitude for TEST-ONLY reporting; not a physical calibration')
     args = parser.parse_args()
     if args.case not in ('yaw+', 'yaw-'):
         parser.error('--case must be yaw+ or yaw-')
@@ -266,6 +290,13 @@ def main():
     if len(rows) < 10:
         raise RuntimeError(f'insufficient caster samples: {len(rows)}')
     casters = {label: caster_summary(rows, label) for label in CASTERS}
+    integrated_gt_yaw = heading_delta(rows, 'gt_yaw')
+    integrated_odom_yaw = heading_delta(rows, 'odom_yaw')
+    integrated_encoder_yaw = rate_integral(rows, 'encoder_wz')
+    integrated_imu_yaw = rate_integral(rows, 'imu_wz')
+    ratio = integrated_encoder_yaw / integrated_gt_yaw if abs(integrated_gt_yaw) > 1e-9 else None
+    direction_correct = integrated_gt_yaw * command[2] > 0.0
+    physics_acceptance = bool(direction_correct and abs(integrated_gt_yaw) >= .05 and ratio is not None and abs(ratio - 1.0) <= .15)
     # Stall means the chassis is below 10% of requested yaw while commanded
     # drive-derived yaw remains materially active, sustained for three samples.
     stall = None
@@ -286,14 +317,30 @@ def main():
         blocker = True
     else:
         blocker = False
+    normal_total = sum(r[f'{link}_normal_metric'] for r in rows for link in DRIVE_LINKS) + \
+                   sum(r[f'{label}_normal_metric'] for r in rows for label in CASTERS)
+    drive_normal = sum(r[f'{link}_normal_metric'] for r in rows for link in DRIVE_LINKS)
     summary = {
         'case': args.case, 'samples': len(rows), 'sim_duration': rows[-1]['elapsed_sim_time'],
         'clock_verified': True, 'telemetry_valid': telemetry_valid,
         'joint_properties_service': node.joint_service_name,
+        'classification': 'NOT PHYSICAL CALIBRATION',
+        'simulation_assumption_caster_trail_m': args.trail_test_value_m,
+        'caster_axle_offset_x_m': os.environ.get('ACCEPTANCE_CASTER_AXLE_OFFSET_X_M', '0.0'),
+        'caster_axle_offset_y_m': os.environ.get('ACCEPTANCE_CASTER_AXLE_OFFSET_Y_M', '0.0'),
+        'real_measurement_required': True,
+        'integrated_gt_yaw': integrated_gt_yaw,
+        'integrated_encoder_yaw': integrated_encoder_yaw,
+        'integrated_odom_yaw': integrated_odom_yaw,
+        'integrated_imu_yaw': integrated_imu_yaw,
+        'encoder_to_gt_yaw_ratio': ratio,
+        'direction_correct': direction_correct,
+        'physics_acceptance_pass': physics_acceptance,
         'mean_gt_wz': sum(r['gt_wz'] for r in rows) / len(rows),
         'mean_encoder_wz': sum(r['encoder_wz'] for r in rows) / len(rows),
         'mean_odom_wz': sum(r['odom_wz'] for r in rows if r['odom_wz'] is not None) / max(1, sum(r['odom_wz'] is not None for r in rows)),
         'mean_imu_wz': sum(r['imu_wz'] for r in rows if r['imu_wz'] is not None) / max(1, sum(r['imu_wz'] is not None for r in rows)),
+        'drive_load_share': drive_normal / normal_total if normal_total else None,
         'casters': casters,
         't_stall': stall['elapsed_sim_time'] if stall else None,
         'at_stall': {label: {'heading_error': stall.get(label + '_heading_error'),
@@ -306,6 +353,11 @@ def main():
         writer = csv.DictWriter(stream, fieldnames=rows[0].keys(), lineterminator='\n'); writer.writeheader(); writer.writerows(rows)
     with open(os.path.join(args.output_dir, 'caster_alignment_summary.json'), 'w', encoding='utf-8') as stream:
         json.dump(summary, stream, indent=2)
+    result = {key: summary[key] for key in ('case', 'clock_verified', 'direction_correct', 'physics_acceptance_pass',
+              'integrated_gt_yaw', 'integrated_encoder_yaw', 'integrated_odom_yaw', 'integrated_imu_yaw',
+              'encoder_to_gt_yaw_ratio')}
+    with open(os.path.join(args.output_dir, 'raw_motion_result.csv'), 'w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=result.keys(), lineterminator='\n'); writer.writeheader(); writer.writerow(result)
     print(json.dumps(summary, indent=2))
     return 0 if telemetry_valid else 2
 

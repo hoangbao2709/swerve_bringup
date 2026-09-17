@@ -1,0 +1,21 @@
+{
+  "runs": [
+    {
+      "run": "bringup_01",
+      "startup_wall_time": null,
+      "startup_sim_time": null,
+      "controller_ready": false,
+      "local_tf_ready": false,
+      "global_tf_ready": false,
+      "nav2_ready": false,
+      "action_ready": false,
+      "shutdown_clean": true,
+      "no_old_gzserver": true,
+      "no_old_test_launch": true,
+      "no_old_evaluator": true,
+      "evaluator_rc": null,
+      "status": "FAIL"
+    }
+  ],
+  "passed": false
+}

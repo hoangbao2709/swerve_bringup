@@ -108,21 +108,21 @@ def generate_launch_description():
             executable='spawner',
             name='spawn_joint_state_broadcaster',
             output='screen',
-            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
+            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60', '--service-call-timeout', '30', '--switch-timeout', '30'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_steering_controller',
             output='screen',
-            arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
+            arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60', '--service-call-timeout', '30', '--switch-timeout', '30'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_drive_controller',
             output='screen',
-            arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
+            arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60', '--service-call-timeout', '30', '--switch-timeout', '30'],
         ),
     ]
 

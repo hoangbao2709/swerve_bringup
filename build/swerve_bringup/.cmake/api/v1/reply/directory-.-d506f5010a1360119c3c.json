@@ -183,6 +183,78 @@
 				"file" : 6,
 				"line" : 39,
 				"parent" : 27
+			},
+			{
+				"command" : 1,
+				"file" : 5,
+				"line" : 59,
+				"parent" : 0
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 34,
+				"parent" : 29
+			},
+			{
+				"command" : 0,
+				"file" : 6,
+				"line" : 39,
+				"parent" : 30
+			},
+			{
+				"command" : 1,
+				"file" : 5,
+				"line" : 65,
+				"parent" : 0
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 34,
+				"parent" : 32
+			},
+			{
+				"command" : 0,
+				"file" : 6,
+				"line" : 39,
+				"parent" : 33
+			},
+			{
+				"command" : 1,
+				"file" : 5,
+				"line" : 71,
+				"parent" : 0
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 34,
+				"parent" : 35
+			},
+			{
+				"command" : 0,
+				"file" : 6,
+				"line" : 39,
+				"parent" : 36
+			},
+			{
+				"command" : 1,
+				"file" : 5,
+				"line" : 77,
+				"parent" : 0
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 34,
+				"parent" : 38
+			},
+			{
+				"command" : 0,
+				"file" : 6,
+				"line" : 39,
+				"parent" : 39
 			}
 		]
 	},
@@ -263,6 +335,46 @@
 			"paths" : 
 			[
 				"accuracy_benchmark.py"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 31,
+			"component" : "Unspecified",
+			"destination" : "lib/swerve_bringup",
+			"paths" : 
+			[
+				"scripts/navigation_readiness.py"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 34,
+			"component" : "Unspecified",
+			"destination" : "lib/swerve_bringup",
+			"paths" : 
+			[
+				"scripts/run_acceptance.py"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 37,
+			"component" : "Unspecified",
+			"destination" : "lib/swerve_bringup",
+			"paths" : 
+			[
+				"scripts/raw_motion.py"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 40,
+			"component" : "Unspecified",
+			"destination" : "lib/swerve_bringup",
+			"paths" : 
+			[
+				"scripts/nav_accuracy_case.py"
 			],
 			"type" : "file"
 		}

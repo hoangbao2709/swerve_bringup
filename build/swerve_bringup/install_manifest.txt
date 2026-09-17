@@ -4,3 +4,7 @@
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/test_navigation.py
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/accuracy_benchmark.py
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/navigation_readiness.py
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/run_acceptance.py
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/raw_motion.py
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/nav_accuracy_case.py

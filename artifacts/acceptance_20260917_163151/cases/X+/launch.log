@@ -1,0 +1,465 @@
+[INFO] [launch]: All log files can be found below /home/yahboom/.ros/log/2026-09-17-16-31-52-497455-yahboom-virtual-machine-139431
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [139449]
+[INFO] [robot_state_publisher-2]: process started with pid [139451]
+[INFO] [spawn_entity.py-3]: process started with pid [139453]
+[INFO] [ekf_node-4]: process started with pid [139455]
+[INFO] [v30e_sim_node-5]: process started with pid [139457]
+[INFO] [ekf_node-6]: process started with pid [139459]
+[INFO] [map_server-7]: process started with pid [139462]
+[INFO] [controller_server-8]: process started with pid [139474]
+[INFO] [planner_server-9]: process started with pid [139487]
+[INFO] [behavior_server-10]: process started with pid [139496]
+[INFO] [bt_navigator-11]: process started with pid [139503]
+[INFO] [waypoint_follower-12]: process started with pid [139507]
+[INFO] [lifecycle_manager-13]: process started with pid [139514]
+[INFO] [swerve_bridge_node-14]: process started with pid [139521]
+[robot_state_publisher-2] [INFO] [1789633915.445188235] [robot_state_publisher]: got segment base_footprint
+[robot_state_publisher-2] [INFO] [1789633915.445328392] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789633915.445342672] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789633915.445350788] [robot_state_publisher]: got segment lidar_link
+[robot_state_publisher-2] [INFO] [1789633915.445358522] [robot_state_publisher]: got segment steer_front_link
+[robot_state_publisher-2] [INFO] [1789633915.445365702] [robot_state_publisher]: got segment steer_rear_link
+[robot_state_publisher-2] [INFO] [1789633915.445372790] [robot_state_publisher]: got segment v30e_link
+[robot_state_publisher-2] [INFO] [1789633915.445379693] [robot_state_publisher]: got segment wheel_front_drive_link
+[robot_state_publisher-2] [INFO] [1789633915.445386949] [robot_state_publisher]: got segment wheel_front_left_link
+[robot_state_publisher-2] [INFO] [1789633915.445393832] [robot_state_publisher]: got segment wheel_front_right_link
+[robot_state_publisher-2] [INFO] [1789633915.445400527] [robot_state_publisher]: got segment wheel_rear_drive_link
+[robot_state_publisher-2] [INFO] [1789633915.445407137] [robot_state_publisher]: got segment wheel_rear_left_link
+[robot_state_publisher-2] [INFO] [1789633915.445414102] [robot_state_publisher]: got segment wheel_rear_right_link
+[controller_server-8] [INFO] [1789633915.463304687] [controller_server]: 
+[controller_server-8] 	controller_server lifecycle node launched. 
+[controller_server-8] 	Waiting on external lifecycle transitions to activate
+[controller_server-8] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-8] [INFO] [1789633915.534419017] [controller_server]: Creating controller server
+[controller_server-8] [INFO] [1789633915.640366288] [local_costmap.local_costmap]: 
+[controller_server-8] 	local_costmap lifecycle node launched. 
+[controller_server-8] 	Waiting on external lifecycle transitions to activate
+[controller_server-8] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-8] [INFO] [1789633915.640930978] [local_costmap.local_costmap]: Creating Costmap
+[waypoint_follower-12] [INFO] [1789633915.708981341] [waypoint_follower]: 
+[waypoint_follower-12] 	waypoint_follower lifecycle node launched. 
+[waypoint_follower-12] 	Waiting on external lifecycle transitions to activate
+[waypoint_follower-12] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[bt_navigator-11] [INFO] [1789633915.713649640] [bt_navigator]: 
+[bt_navigator-11] 	bt_navigator lifecycle node launched. 
+[bt_navigator-11] 	Waiting on external lifecycle transitions to activate
+[bt_navigator-11] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[bt_navigator-11] [INFO] [1789633915.713812071] [bt_navigator]: Creating
+[waypoint_follower-12] [INFO] [1789633915.716417849] [waypoint_follower]: Creating
+[map_server-7] [INFO] [1789633915.764752761] [map_server]: 
+[map_server-7] 	map_server lifecycle node launched. 
+[map_server-7] 	Waiting on external lifecycle transitions to activate
+[map_server-7] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[map_server-7] [INFO] [1789633915.764937254] [map_server]: Creating
+[lifecycle_manager-13] [INFO] [1789633915.884810488] [lifecycle_manager_navigation]: Creating
+[swerve_bridge_node-14] Traceback (most recent call last):
+[swerve_bridge_node-14]   File "/home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node", line 33, in <module>
+[swerve_bridge_node-14]     sys.exit(load_entry_point('swerve-bridge', 'console_scripts', 'swerve_bridge_node')())
+[swerve_bridge_node-14]   File "/home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node", line 22, in importlib_load_entry_point
+[swerve_bridge_node-14]     for entry_point in distribution(dist_name).entry_points
+[swerve_bridge_node-14]   File "/usr/lib/python3.10/importlib/metadata/__init__.py", line 969, in distribution
+[swerve_bridge_node-14]     return Distribution.from_name(distribution_name)
+[swerve_bridge_node-14]   File "/usr/lib/python3.10/importlib/metadata/__init__.py", line 548, in from_name
+[swerve_bridge_node-14]     raise PackageNotFoundError(name)
+[swerve_bridge_node-14] importlib.metadata.PackageNotFoundError: No package metadata was found for swerve-bridge
+[behavior_server-10] [INFO] [1789633915.913845794] [behavior_server]: 
+[behavior_server-10] 	behavior_server lifecycle node launched. 
+[behavior_server-10] 	Waiting on external lifecycle transitions to activate
+[behavior_server-10] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[ERROR] [swerve_bridge_node-14]: process has died [pid 139521, exit code 1, cmd '/home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node --ros-args -r __node:=swerve_bridge --params-file /home/yahboom/swerve_bringup/install/swerve_bridge/share/swerve_bridge/config/bridge.yaml --params-file /tmp/launch_params_adzk34dq'].
+[planner_server-9] [INFO] [1789633915.957504982] [planner_server]: 
+[planner_server-9] 	planner_server lifecycle node launched. 
+[planner_server-9] 	Waiting on external lifecycle transitions to activate
+[planner_server-9] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[lifecycle_manager-13] [INFO] [1789633915.962875544] [lifecycle_manager_navigation]: [34m[1mCreating and initializing lifecycle service clients[0m[0m
+[planner_server-9] [INFO] [1789633915.964022583] [planner_server]: Creating
+[planner_server-9] [INFO] [1789633916.106401833] [global_costmap.global_costmap]: 
+[planner_server-9] 	global_costmap lifecycle node launched. 
+[planner_server-9] 	Waiting on external lifecycle transitions to activate
+[planner_server-9] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-9] [INFO] [1789633916.109382038] [global_costmap.global_costmap]: Creating Costmap
+[lifecycle_manager-13] [INFO] [1789633916.477888096] [lifecycle_manager_navigation]: [34m[1mStarting managed nodes bringup...[0m[0m
+[lifecycle_manager-13] [INFO] [1789633916.477982154] [lifecycle_manager_navigation]: [34m[1mConfiguring map_server[0m[0m
+[map_server-7] [INFO] [1789633916.489771926] [map_server]: Configuring
+[map_server-7] [INFO] [1789633916.489891111] [map_io]: Loading yaml file: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.yaml
+[map_server-7] [INFO] [1789633916.490223627] [map_io]: resolution: 0.05
+[map_server-7] [INFO] [1789633916.490241041] [map_io]: origin[0]: -17.2
+[map_server-7] [INFO] [1789633916.490247601] [map_io]: origin[1]: -17.4
+[map_server-7] [INFO] [1789633916.490253309] [map_io]: origin[2]: 0
+[map_server-7] [INFO] [1789633916.490259211] [map_io]: free_thresh: 0.25
+[map_server-7] [INFO] [1789633916.490264795] [map_io]: occupied_thresh: 0.65
+[map_server-7] [INFO] [1789633916.490270822] [map_io]: mode: trinary
+[map_server-7] [INFO] [1789633916.490277245] [map_io]: negate: 0
+[map_server-7] [INFO] [1789633916.539709013] [map_io]: Loading image_file: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.pgm
+[map_server-7] [INFO] [1789633916.702430931] [map_io]: Read map /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.pgm: 676 X 680 map @ 0.05 m/cell
+[lifecycle_manager-13] [INFO] [1789633916.887390808] [lifecycle_manager_navigation]: [34m[1mConfiguring controller_server[0m[0m
+[controller_server-8] [INFO] [1789633916.888547799] [controller_server]: Configuring controller interface
+[controller_server-8] [INFO] [1789633916.945149988] [controller_server]: getting goal checker plugins..
+[controller_server-8] [INFO] [1789633916.950654847] [controller_server]: Controller frequency set to 10.0000Hz
+[controller_server-8] [INFO] [1789633916.951276513] [local_costmap.local_costmap]: Configuring
+[spawn_entity.py-3] [INFO] [1789633916.953817394] [spawn_swerve]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1789633916.959081654] [spawn_swerve]: Loading entity published on topic robot_description
+[spawn_entity.py-3] [INFO] [1789633917.000414154] [spawn_swerve]: Waiting for entity xml on robot_description
+[controller_server-8] [INFO] [1789633917.078914625] [local_costmap.local_costmap]: Using plugin "voxel_layer"
+[controller_server-8] [INFO] [1789633917.098276061] [local_costmap.local_costmap]: Subscribed to Topics: lidar3d scan
+[controller_server-8] [INFO] [1789633917.215752877] [local_costmap.local_costmap]: Initialized plugin "voxel_layer"
+[controller_server-8] [INFO] [1789633917.215808623] [local_costmap.local_costmap]: Using plugin "inflation_layer"
+[controller_server-8] [INFO] [1789633917.216368903] [local_costmap.local_costmap]: Initialized plugin "inflation_layer"
+[controller_server-8] [INFO] [1789633917.300955864] [controller_server]: Created progress_checker : progress_checker of type nav2_controller::SimpleProgressChecker
+[controller_server-8] [INFO] [1789633917.308786938] [controller_server]: Created goal checker : general_goal_checker of type nav2_controller::SimpleGoalChecker
+[controller_server-8] [INFO] [1789633917.309606040] [controller_server]: Controller Server has general_goal_checker  goal checkers available.
+[controller_server-8] [INFO] [1789633917.316493263] [controller_server]: Created controller : FollowPath of type dwb_core::DWBLocalPlanner
+[controller_server-8] [INFO] [1789633917.345708855] [controller_server]: Setting transform_tolerance to 0.200000
+[v30e_sim_node-5] [INFO] [1789633917.390078071] [v30e_sim_node]: Using Gazebo /get_entity_state internally; odometry is not a V30E measurement input
+[controller_server-8] [INFO] [1789633917.485612713] [controller_server]: Using critic "RotateToGoal" (dwb_critics::RotateToGoalCritic)
+[controller_server-8] [INFO] [1789633917.487283508] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789633917.487390211] [controller_server]: Using critic "Oscillation" (dwb_critics::OscillationCritic)
+[controller_server-8] [INFO] [1789633917.487607215] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789633917.487670972] [controller_server]: Using critic "BaseObstacle" (dwb_critics::BaseObstacleCritic)
+[controller_server-8] [INFO] [1789633917.487847413] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789633917.488674401] [controller_server]: Using critic "GoalAlign" (dwb_critics::GoalAlignCritic)
+[controller_server-8] [INFO] [1789633917.497734265] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789633917.502051757] [controller_server]: Using critic "PathAlign" (dwb_critics::PathAlignCritic)
+[controller_server-8] [INFO] [1789633917.502741299] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789633917.505262847] [controller_server]: Using critic "PathDist" (dwb_critics::PathDistCritic)
+[controller_server-8] [INFO] [1789633917.508508005] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789633917.508807087] [controller_server]: Using critic "GoalDist" (dwb_critics::GoalDistCritic)
+[controller_server-8] [INFO] [1789633917.509353746] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789633917.509385394] [controller_server]: Controller Server has FollowPath  controllers available.
+[lifecycle_manager-13] [INFO] [1789633917.539607671] [lifecycle_manager_navigation]: [34m[1mConfiguring planner_server[0m[0m
+[planner_server-9] [INFO] [1789633917.542858548] [planner_server]: Configuring
+[planner_server-9] [INFO] [1789633917.542943740] [global_costmap.global_costmap]: Configuring
+[planner_server-9] [INFO] [1789633917.588201091] [global_costmap.global_costmap]: Using plugin "static_layer"
+[planner_server-9] [INFO] [1789633917.605979701] [global_costmap.global_costmap]: Subscribing to the map topic (/map) with transient local durability
+[planner_server-9] [INFO] [1789633917.613832981] [global_costmap.global_costmap]: Initialized plugin "static_layer"
+[planner_server-9] [INFO] [1789633917.613878564] [global_costmap.global_costmap]: Using plugin "obstacle_layer"
+[planner_server-9] [INFO] [1789633917.620466621] [global_costmap.global_costmap]: Subscribed to Topics: scan
+[planner_server-9] [INFO] [1789633917.634680882] [global_costmap.global_costmap]: Initialized plugin "obstacle_layer"
+[planner_server-9] [INFO] [1789633917.634767299] [global_costmap.global_costmap]: Using plugin "inflation_layer"
+[planner_server-9] [INFO] [1789633917.648944717] [global_costmap.global_costmap]: Initialized plugin "inflation_layer"
+[planner_server-9] [INFO] [1789633917.749228087] [planner_server]: Created global planner plugin GridBased of type nav2_navfn_planner/NavfnPlanner
+[planner_server-9] [INFO] [1789633917.749275553] [planner_server]: Configuring plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789633917.749482520] [planner_server]: Planner Server has GridBased  planners available.
+[lifecycle_manager-13] [INFO] [1789633917.873496290] [lifecycle_manager_navigation]: [34m[1mConfiguring behavior_server[0m[0m
+[behavior_server-10] [INFO] [1789633917.876660447] [behavior_server]: Configuring
+[behavior_server-10] [INFO] [1789633917.922783714] [behavior_server]: Creating behavior plugin spin of type nav2_behaviors/Spin
+[behavior_server-10] [INFO] [1789633917.927228989] [behavior_server]: Configuring spin
+[behavior_server-10] [INFO] [1789633917.955423441] [behavior_server]: Creating behavior plugin backup of type nav2_behaviors/BackUp
+[behavior_server-10] [INFO] [1789633917.961389335] [behavior_server]: Configuring backup
+[behavior_server-10] [INFO] [1789633918.007650579] [behavior_server]: Creating behavior plugin drive_on_heading of type nav2_behaviors/DriveOnHeading
+[behavior_server-10] [INFO] [1789633918.012241175] [behavior_server]: Configuring drive_on_heading
+[behavior_server-10] [INFO] [1789633918.064954985] [behavior_server]: Creating behavior plugin wait of type nav2_behaviors/Wait
+[behavior_server-10] [INFO] [1789633918.067788439] [behavior_server]: Configuring wait
+[lifecycle_manager-13] [INFO] [1789633918.111359068] [lifecycle_manager_navigation]: [34m[1mConfiguring bt_navigator[0m[0m
+[bt_navigator-11] [INFO] [1789633918.112819079] [bt_navigator]: Configuring
+[lifecycle_manager-13] [INFO] [1789633918.539046378] [lifecycle_manager_navigation]: [34m[1mConfiguring waypoint_follower[0m[0m
+[waypoint_follower-12] [INFO] [1789633918.543017391] [waypoint_follower]: Configuring
+[waypoint_follower-12] [INFO] [1789633918.635250258] [waypoint_follower]: Created waypoint_task_executor : wait_at_waypoint of type nav2_waypoint_follower::WaitAtWaypoint
+[waypoint_follower-12] [INFO] [1789633918.639920173] [waypoint_follower]: Waypoint pause duration is set to zero, disabling task executor plugin.
+[lifecycle_manager-13] [INFO] [1789633918.641736914] [lifecycle_manager_navigation]: [34m[1mActivating map_server[0m[0m
+[map_server-7] [INFO] [1789633918.645370416] [map_server]: Activating
+[map_server-7] [INFO] [1789633918.646309893] [map_server]: Creating bond (map_server) to lifecycle manager.
+[planner_server-9] [INFO] [1789633918.647180182] [global_costmap.global_costmap]: StaticLayer: Resizing costmap to 676 X 680 at 0.050000 m/pix
+[lifecycle_manager-13] [INFO] [1789633918.768953398] [lifecycle_manager_navigation]: Server map_server connected with bond.
+[lifecycle_manager-13] [INFO] [1789633918.769022530] [lifecycle_manager_navigation]: [34m[1mActivating controller_server[0m[0m
+[controller_server-8] [INFO] [1789633918.771167772] [controller_server]: Activating
+[controller_server-8] [INFO] [1789633918.771247513] [local_costmap.local_costmap]: Activating
+[controller_server-8] [INFO] [1789633918.771270061] [local_costmap.local_costmap]: Checking transform
+[controller_server-8] [INFO] [1789633918.771305917] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[spawn_entity.py-3] [INFO] [1789633918.922988745] [spawn_swerve]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1789633918.923598367] [spawn_swerve]: Waiting for service /spawn_entity
+[controller_server-8] [INFO] [1789633919.271985579] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633919.771684107] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633920.272048917] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633920.773181855] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633921.271886777] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633921.771591707] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633922.272208173] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633922.772862027] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[spawn_entity.py-3] [INFO] [1789633923.027569462] [spawn_swerve]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1789633923.217646082] [gazebo_ros_state]: Publishing states of gazebo models at [/model_states]
+[gzserver-1] [INFO] [1789633923.230908285] [gazebo_ros_state]: Publishing states of gazebo links at [/link_states]
+[controller_server-8] [INFO] [1789633923.272618996] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633923.771443845] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[gzserver-1] [INFO] [1789633923.774076344] [imu.imu_ros]: <initial_orientation_as_reference> is unset, using default value of false to comply with REP 145 (world as orientation reference)
+[controller_server-8] [INFO] [1789633924.272106910] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633924.771850772] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633925.272167054] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633925.772366062] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633926.272117867] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633926.773039072] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633927.271842409] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633927.772168109] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633928.271732266] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633928.772026594] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633929.272513527] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633929.772259445] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633930.271471796] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633930.773294519] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633931.274926392] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633931.771966736] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633932.272839916] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633932.771760897] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633933.272171029] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633933.771637029] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633934.272535427] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633934.772126804] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633935.272606009] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633935.774609395] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633936.271340884] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633936.771661052] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789633937.274194221] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[spawn_entity.py-3] [INFO] [1789633937.370556841] [spawn_swerve]: Spawn status: SpawnEntity: Successfully spawned entity [swerve_base]
+[gzserver-1] [INFO] [1789633937.627666944] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 139453]
+[gzserver-1] [INFO] [1789633937.719254118] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1789633937.719334215] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[INFO] [spawner-15]: process started with pid [139698]
+[controller_server-8] [INFO] [1789633937.772158945] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[gzserver-1] [INFO] [1789633937.797653320] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1789633937.802891357] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1789633937.803030988] [gazebo_ros2_control]: Loading parameter files /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/controllers.yaml
+[gzserver-1] [INFO] [1789633937.847749077] [gazebo_ros2_control]: Loading joint: steer_front_joint
+[gzserver-1] [INFO] [1789633937.847854032] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789633937.847875236] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789633937.847888658] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789633937.849214234] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789633937.849269312] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789633937.855173983] [gazebo_ros2_control]: Loading joint: steer_rear_joint
+[gzserver-1] [INFO] [1789633937.855222170] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789633937.855235231] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789633937.855247592] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789633937.855257512] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789633937.855267394] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789633937.874687908] [gazebo_ros2_control]: Loading joint: wheel_front_drive_joint
+[gzserver-1] [INFO] [1789633937.874746887] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789633937.874758960] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789633937.874769995] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789633937.874779173] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789633937.874795289] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789633937.875096180] [gazebo_ros2_control]: Loading joint: wheel_rear_drive_joint
+[gzserver-1] [INFO] [1789633937.875124797] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789633937.875135072] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789633937.875144776] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789633937.875153701] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789633937.875172856] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789633937.875428705] [resource_manager]: Initialize hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789633937.875735978] [resource_manager]: Successful initialization of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789633937.875893462] [resource_manager]: 'configure' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789633937.875909515] [resource_manager]: Successful 'configure' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789633937.875916830] [resource_manager]: 'activate' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789633937.875923438] [resource_manager]: Successful 'activate' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789633937.876029670] [gazebo_ros2_control]: Loading controller_manager
+[gzserver-1] [WARN] [1789633938.190302799] [gazebo_ros2_control]:  Desired controller update period (0.01 s) is slower than the gazebo simulation period (0.001 s).
+[gzserver-1] [INFO] [1789633938.194081404] [gazebo_ros2_control]: Loaded gazebo_ros2_control.
+[controller_server-8] [INFO] [1789633938.274449123] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[spawner-15] [INFO] [1789633938.667860806] [spawn_joint_state_broadcaster]: waiting for service /controller_manager/list_controllers to become available...
+[controller_server-8] [INFO] [1789633938.772944331] [local_costmap.local_costmap]: start
+[controller_server-8] [INFO] [1789633938.941397327] [controller_server]: Creating bond (controller_server) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789633939.061152316] [lifecycle_manager_navigation]: Server controller_server connected with bond.
+[lifecycle_manager-13] [INFO] [1789633939.061684676] [lifecycle_manager_navigation]: [34m[1mActivating planner_server[0m[0m
+[planner_server-9] [INFO] [1789633939.063774424] [planner_server]: Activating
+[planner_server-9] [INFO] [1789633939.063845594] [global_costmap.global_costmap]: Activating
+[planner_server-9] [INFO] [1789633939.063864761] [global_costmap.global_costmap]: Checking transform
+[planner_server-9] [INFO] [1789633939.064101511] [global_costmap.global_costmap]: start
+[planner_server-9] [INFO] [1789633939.123876396] [planner_server]: Activating plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789633939.166948789] [planner_server]: Creating bond (planner_server) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789633939.288428319] [lifecycle_manager_navigation]: Server planner_server connected with bond.
+[lifecycle_manager-13] [INFO] [1789633939.288504729] [lifecycle_manager_navigation]: [34m[1mActivating behavior_server[0m[0m
+[behavior_server-10] [INFO] [1789633939.290264354] [behavior_server]: Activating
+[behavior_server-10] [INFO] [1789633939.291266383] [behavior_server]: Activating spin
+[behavior_server-10] [INFO] [1789633939.291291399] [behavior_server]: Activating backup
+[behavior_server-10] [INFO] [1789633939.291303941] [behavior_server]: Activating drive_on_heading
+[behavior_server-10] [INFO] [1789633939.291314935] [behavior_server]: Activating wait
+[behavior_server-10] [INFO] [1789633939.291333208] [behavior_server]: Creating bond (behavior_server) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789633939.422064720] [lifecycle_manager_navigation]: Server behavior_server connected with bond.
+[lifecycle_manager-13] [INFO] [1789633939.425670976] [lifecycle_manager_navigation]: [34m[1mActivating bt_navigator[0m[0m
+[bt_navigator-11] [INFO] [1789633939.428271832] [bt_navigator]: Activating
+[bt_navigator-11] [INFO] [1789633940.059968665] [bt_navigator]: Creating bond (bt_navigator) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789633940.310384927] [lifecycle_manager_navigation]: Server bt_navigator connected with bond.
+[lifecycle_manager-13] [INFO] [1789633940.310514485] [lifecycle_manager_navigation]: [34m[1mActivating waypoint_follower[0m[0m
+[waypoint_follower-12] [INFO] [1789633940.322041394] [waypoint_follower]: Activating
+[waypoint_follower-12] [INFO] [1789633940.322131551] [waypoint_follower]: Creating bond (waypoint_follower) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789633940.448065580] [lifecycle_manager_navigation]: Server waypoint_follower connected with bond.
+[lifecycle_manager-13] [INFO] [1789633940.448152587] [lifecycle_manager_navigation]: [34m[1mManaged nodes are active[0m[0m
+[lifecycle_manager-13] [INFO] [1789633940.448171801] [lifecycle_manager_navigation]: [34m[1mCreating bond timer...[0m[0m
+[gzserver-1] [INFO] [1789633941.793847689] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[spawner-15] [INFO] [1789633942.202047371] [spawn_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1789633942.213846978] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1789633942.214359062] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-15] [INFO] [1789633942.304442606] [spawn_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[INFO] [spawner-15]: process has finished cleanly [pid 139698]
+[INFO] [spawner-16]: process started with pid [139732]
+[spawner-16] [INFO] [1789633944.011417148] [spawn_steering_controller]: waiting for service /controller_manager/list_controllers to become available...
+[gzserver-1] [INFO] [1789633944.959901594] [controller_manager]: Loading controller 'steering_controller'
+[spawner-16] [INFO] [1789633945.313012108] [spawn_steering_controller]: [94mLoaded [1msteering_controller[0m
+[gzserver-1] [INFO] [1789633945.327237391] [controller_manager]: Configuring controller 'steering_controller'
+[gzserver-1] [INFO] [1789633945.344807285] [steering_controller]: configure successful
+[gzserver-1] [INFO] [1789633945.378877361] [steering_controller]: activate successful
+[spawner-16] [INFO] [1789633945.400026464] [spawn_steering_controller]: [92mConfigured and activated [1msteering_controller[0m
+[INFO] [spawner-16]: process has finished cleanly [pid 139732]
+[INFO] [spawner-17]: process started with pid [139744]
+[spawner-17] [INFO] [1789633946.880208506] [spawn_drive_controller]: waiting for service /controller_manager/list_controllers to become available...
+[gzserver-1] [INFO] [1789633947.405951559] [controller_manager]: Loading controller 'drive_controller'
+[spawner-17] [INFO] [1789633947.567591960] [spawn_drive_controller]: [94mLoaded [1mdrive_controller[0m
+[gzserver-1] [INFO] [1789633947.668974995] [controller_manager]: Configuring controller 'drive_controller'
+[gzserver-1] [INFO] [1789633947.675095612] [drive_controller]: configure successful
+[gzserver-1] [INFO] [1789633947.888033793] [drive_controller]: activate successful
+[spawner-17] [INFO] [1789633947.907477025] [spawn_drive_controller]: [92mConfigured and activated [1mdrive_controller[0m
+[INFO] [spawner-17]: process has finished cleanly [pid 139744]
+[INFO] [swerve_controller_node-18]: process started with pid [139756]
+[INFO] [swerve_odometry_node-19]: process started with pid [139758]
+[swerve_controller_node-18] [INFO] [1789633949.964863500] [swerve_controller]: Swerve controller ready: radius=0.0675 m, modules={'front': (0.300042, 0.0), 'rear': (-0.300042, 0.0)}
+[swerve_odometry_node-19] [INFO] [1789633950.068793045] [swerve_odometry]: Encoder odometry ready: radius=0.0637 m, velocity_sign=+1.0
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[ekf_node-6] [INFO] [1789633963.744671897] [rclcpp]: signal_handler(signum=2)
+[ekf_node-4] [INFO] [1789633963.744903445] [rclcpp]: signal_handler(signum=2)
+[bt_navigator-11] [INFO] [1789633963.745041058] [rclcpp]: signal_handler(signum=2)
+[robot_state_publisher-2] [INFO] [1789633963.745101310] [rclcpp]: signal_handler(signum=2)
+[lifecycle_manager-13] [INFO] [1789633963.745207237] [rclcpp]: signal_handler(signum=2)
+[planner_server-9] [INFO] [1789633963.745540303] [rclcpp]: signal_handler(signum=2)
+[INFO] [swerve_odometry_node-19]: sending signal 'SIGINT' to process[swerve_odometry_node-19]
+[INFO] [swerve_controller_node-18]: sending signal 'SIGINT' to process[swerve_controller_node-18]
+[INFO] [lifecycle_manager-13]: sending signal 'SIGINT' to process[lifecycle_manager-13]
+[INFO] [waypoint_follower-12]: sending signal 'SIGINT' to process[waypoint_follower-12]
+[INFO] [bt_navigator-11]: sending signal 'SIGINT' to process[bt_navigator-11]
+[INFO] [behavior_server-10]: sending signal 'SIGINT' to process[behavior_server-10]
+[INFO] [planner_server-9]: sending signal 'SIGINT' to process[planner_server-9]
+[INFO] [controller_server-8]: sending signal 'SIGINT' to process[controller_server-8]
+[INFO] [map_server-7]: sending signal 'SIGINT' to process[map_server-7]
+[INFO] [ekf_node-6]: sending signal 'SIGINT' to process[ekf_node-6]
+[INFO] [v30e_sim_node-5]: sending signal 'SIGINT' to process[v30e_sim_node-5]
+[INFO] [ekf_node-4]: sending signal 'SIGINT' to process[ekf_node-4]
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [gzserver-1]: sending signal 'SIGINT' to process[gzserver-1]
+[bt_navigator-11] [INFO] [1789633963.745841512] [bt_navigator]: Running Nav2 LifecycleNode rcl preshutdown (bt_navigator)
+[bt_navigator-11] [INFO] [1789633963.745943925] [bt_navigator]: Deactivating
+[bt_navigator-11] [INFO] [1789633963.745984000] [bt_navigator]: Destroying bond (bt_navigator) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789633963.749946813] [lifecycle_manager_navigation]: Running Nav2 LifecycleManager rcl preshutdown (lifecycle_manager_navigation)
+[lifecycle_manager-13] [INFO] [1789633963.750072184] [lifecycle_manager_navigation]: [34m[1mTerminating bond timer...[0m[0m
+[behavior_server-10] [INFO] [1789633963.751800145] [rclcpp]: signal_handler(signum=2)
+[behavior_server-10] [INFO] [1789633963.758187679] [behavior_server]: Running Nav2 LifecycleNode rcl preshutdown (behavior_server)
+[behavior_server-10] [INFO] [1789633963.758338572] [behavior_server]: Deactivating
+[behavior_server-10] [INFO] [1789633963.758381890] [behavior_server]: Destroying bond (behavior_server) to lifecycle manager.
+[ERROR] [ekf_node-4]: process has died [pid 139455, exit code -2, cmd '/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/ekf.yaml --params-file /tmp/launch_params_uy0rgnip -r /odom:=/odom -r /imu/data:=/imu/data'].
+[map_server-7] [INFO] [1789633963.751880166] [rclcpp]: signal_handler(signum=2)
+[map_server-7] [INFO] [1789633963.754638413] [map_server]: Running Nav2 LifecycleNode rcl preshutdown (map_server)
+[map_server-7] [INFO] [1789633963.754729520] [map_server]: Deactivating
+[map_server-7] [INFO] [1789633963.754763061] [map_server]: Destroying bond (map_server) to lifecycle manager.
+[waypoint_follower-12] [INFO] [1789633963.752388726] [rclcpp]: signal_handler(signum=2)
+[waypoint_follower-12] [INFO] [1789633963.764289871] [waypoint_follower]: Running Nav2 LifecycleNode rcl preshutdown (waypoint_follower)
+[waypoint_follower-12] [INFO] [1789633963.764397607] [waypoint_follower]: Deactivating
+[waypoint_follower-12] [INFO] [1789633963.764428704] [waypoint_follower]: Destroying bond (waypoint_follower) to lifecycle manager.
+[planner_server-9] [INFO] [1789633963.754108113] [planner_server]: Running Nav2 LifecycleNode rcl preshutdown (planner_server)
+[planner_server-9] [INFO] [1789633963.754217293] [planner_server]: Deactivating
+[planner_server-9] [INFO] [1789633963.754268012] [global_costmap.global_costmap]: Deactivating
+[controller_server-8] [INFO] [1789633963.755929350] [rclcpp]: signal_handler(signum=2)
+[controller_server-8] [INFO] [1789633963.756102214] [controller_server]: Running Nav2 LifecycleNode rcl preshutdown (controller_server)
+[controller_server-8] [INFO] [1789633963.768708035] [controller_server]: Deactivating
+[controller_server-8] [INFO] [1789633963.768853997] [local_costmap.local_costmap]: Deactivating
+[swerve_controller_node-18] Traceback (most recent call last):
+[swerve_controller_node-18]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 192, in <module>
+[swerve_controller_node-18]     main()
+[swerve_controller_node-18]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 184, in main
+[swerve_controller_node-18]     node.steer_pub.publish(Float64MultiArray(data=[
+[swerve_controller_node-18]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 70, in publish
+[swerve_controller_node-18]     self.__publisher.publish(msg)
+[swerve_controller_node-18] rclpy._rclpy_pybind11.RCLError: Failed to publish: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[swerve_controller_node-18] Error in sys.excepthook:
+[swerve_controller_node-18] Traceback (most recent call last):
+[swerve_controller_node-18]   File "/usr/lib/python3/dist-packages/apport_python_hook.py", line 66, in apport_excepthook
+[swerve_controller_node-18]     from cStringIO import StringIO
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap>", line 1027, in _find_and_load
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap>", line 1002, in _find_and_load_unlocked
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap>", line 945, in _find_spec
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap_external>", line 1439, in find_spec
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap_external>", line 1411, in _get_spec
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap_external>", line 1544, in find_spec
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap_external>", line 147, in _path_stat
+[swerve_controller_node-18] KeyboardInterrupt
+[swerve_controller_node-18] 
+[swerve_controller_node-18] Original exception was:
+[swerve_controller_node-18] Traceback (most recent call last):
+[swerve_controller_node-18]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 192, in <module>
+[swerve_controller_node-18]     main()
+[swerve_controller_node-18]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 184, in main
+[swerve_controller_node-18]     node.steer_pub.publish(Float64MultiArray(data=[
+[swerve_controller_node-18]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 70, in publish
+[swerve_controller_node-18]     self.__publisher.publish(msg)
+[swerve_controller_node-18] rclpy._rclpy_pybind11.RCLError: Failed to publish: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[waypoint_follower-12] [INFO] [1789633963.798486367] [waypoint_follower]: Cleaning up
+[controller_server-8] [INFO] [1789633963.800320312] [controller_server]: Destroying bond (controller_server) to lifecycle manager.
+[waypoint_follower-12] [INFO] [1789633963.811173017] [rclcpp]: signal_handler(signum=2)
+[bt_navigator-11] [INFO] [1789633963.812474756] [rclcpp]: signal_handler(signum=2)
+[lifecycle_manager-13] [INFO] [1789633963.817629205] [rclcpp]: signal_handler(signum=2)
+[behavior_server-10] [INFO] [1789633963.819024673] [rclcpp]: signal_handler(signum=2)
+[planner_server-9] [INFO] [1789633963.822555885] [rclcpp]: signal_handler(signum=2)
+[swerve_odometry_node-19] Traceback (most recent call last):
+[swerve_odometry_node-19]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node", line 221, in <module>
+[swerve_odometry_node-19]     main()
+[swerve_odometry_node-19]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node", line 215, in main
+[swerve_odometry_node-19]     node.destroy_node()
+[swerve_odometry_node-19]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1685, in destroy_node
+[swerve_odometry_node-19]     self.destroy_publisher(self._publishers[0])
+[swerve_odometry_node-19]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1565, in destroy_publisher
+[swerve_odometry_node-19]     publisher.destroy()
+[swerve_odometry_node-19]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 99, in destroy
+[swerve_odometry_node-19]     self.__publisher.destroy_when_not_in_use()
+[swerve_odometry_node-19] KeyboardInterrupt
+[map_server-7] [INFO] [1789633963.828591414] [map_server]: Cleaning up
+[map_server-7] [INFO] [1789633963.828705220] [map_server]: Destroying bond (map_server) to lifecycle manager.
+[behavior_server-10] [INFO] [1789633963.838813529] [behavior_server]: Cleaning up
+[controller_server-8] [INFO] [1789633963.841263028] [rclcpp]: signal_handler(signum=2)
+[bt_navigator-11] [INFO] [1789633963.845831495] [bt_navigator]: Cleaning up
+[map_server-7] [INFO] [1789633963.849679900] [rclcpp]: signal_handler(signum=2)
+[controller_server-8] [INFO] [1789633963.862666147] [controller_server]: Cleaning up
+[controller_server-8] [INFO] [1789633963.862828862] [local_costmap.local_costmap]: Cleaning up
+[ekf_node-6] [INFO] [1789633963.864103501] [rclcpp]: signal_handler(signum=2)
+[robot_state_publisher-2] [INFO] [1789633963.880707371] [rclcpp]: signal_handler(signum=2)
+[v30e_sim_node-5] Traceback (most recent call last):
+[v30e_sim_node-5]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node", line 188, in <module>
+[v30e_sim_node-5]     if __name__ == '__main__': main()
+[v30e_sim_node-5]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node", line 185, in main
+[v30e_sim_node-5]     node.destroy_node(); rclpy.shutdown()
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1691, in destroy_node
+[v30e_sim_node-5]     self.destroy_service(self._services[0])
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1615, in destroy_service
+[v30e_sim_node-5]     service.destroy()
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/service.py", line 93, in destroy
+[v30e_sim_node-5]     self.__service.destroy_when_not_in_use()
+[v30e_sim_node-5] KeyboardInterrupt
+[map_server-7] [INFO] [1789633964.018250098] [map_server]: Destroying
+[waypoint_follower-12] [INFO] [1789633964.078784422] [waypoint_follower]: Destroying bond (waypoint_follower) to lifecycle manager.
+[planner_server-9] [INFO] [1789633964.079556241] [planner_server]: Deactivating plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789633964.079601446] [planner_server]: Destroying bond (planner_server) to lifecycle manager.
+[waypoint_follower-12] [INFO] [1789633964.100165349] [waypoint_follower]: Destroying
+[planner_server-9] [INFO] [1789633964.101307303] [planner_server]: Cleaning up
+[ERROR] [v30e_sim_node-5]: process has died [pid 139457, exit code -2, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node --ros-args -r __node:=v30e_sim_node --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/v30e_sim.yaml --params-file /tmp/launch_params_7ox3sgn2'].
+[behavior_server-10] [INFO] [1789633964.294679424] [behavior_server]: Destroying bond (behavior_server) to lifecycle manager.
+[ERROR] [swerve_odometry_node-19]: process has died [pid 139758, exit code -2, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node --ros-args -r __node:=swerve_odometry --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/swerve_odometry.yaml --params-file /tmp/launch_params_kkgj8jv4'].
+[planner_server-9] [INFO] [1789633964.308547079] [global_costmap.global_costmap]: Cleaning up
+[lifecycle_manager-13] [INFO] [1789633964.323666693] [lifecycle_manager_navigation]: Destroying lifecycle_manager_navigation
+[ERROR] [swerve_controller_node-18]: process has died [pid 139756, exit code 1, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node --ros-args -r __node:=swerve_controller --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/swerve_controller.yaml --params-file /tmp/launch_params_ne7eh11_'].
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 139451]
+[planner_server-9] [INFO] [1789633964.374057188] [planner_server]: Cleaning up plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789633964.374186860] [planner_server]: Destroying plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789633964.387624826] [planner_server]: Destroying bond (planner_server) to lifecycle manager.
+[planner_server-9] [INFO] [1789633964.391442280] [global_costmap.global_costmap]: Destroying
+[controller_server-8] [INFO] [1789633964.392725388] [controller_server]: Destroying bond (controller_server) to lifecycle manager.
+[planner_server-9] [INFO] [1789633964.407653168] [planner_server]: Destroying
+[controller_server-8] [INFO] [1789633964.430471292] [local_costmap.local_costmap]: Destroying
+[INFO] [ekf_node-6]: process has finished cleanly [pid 139459]
+[INFO] [map_server-7]: process has finished cleanly [pid 139462]
+[behavior_server-10] [INFO] [1789633964.459794407] [behavior_server]: Destroying
+[controller_server-8] [INFO] [1789633964.491230346] [controller_server]: Destroying
+[INFO] [lifecycle_manager-13]: process has finished cleanly [pid 139514]
+[INFO] [waypoint_follower-12]: process has finished cleanly [pid 139507]
+[bt_navigator-11] [INFO] [1789633964.556250379] [bt_navigator]: Completed Cleaning up
+[bt_navigator-11] [INFO] [1789633964.556743464] [bt_navigator]: Destroying bond (bt_navigator) to lifecycle manager.
+[bt_navigator-11] [INFO] [1789633964.571182162] [bt_navigator]: Destroying
+[INFO] [planner_server-9]: process has finished cleanly [pid 139487]
+[INFO] [controller_server-8]: process has finished cleanly [pid 139474]
+[INFO] [behavior_server-10]: process has finished cleanly [pid 139496]
+[INFO] [bt_navigator-11]: process has finished cleanly [pid 139503]
+[INFO] [gzserver-1]: process has finished cleanly [pid 139449]

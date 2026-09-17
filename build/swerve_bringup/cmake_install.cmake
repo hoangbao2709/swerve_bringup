@@ -70,6 +70,22 @@ if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "accuracy_benchmark.py" FILES "/home/yahboom/swerve_bringup/accuracy_benchmark.py")
 endif()
 
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "navigation_readiness.py" FILES "/home/yahboom/swerve_bringup/scripts/navigation_readiness.py")
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "run_acceptance.py" FILES "/home/yahboom/swerve_bringup/scripts/run_acceptance.py")
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "raw_motion.py" FILES "/home/yahboom/swerve_bringup/scripts/raw_motion.py")
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "nav_accuracy_case.py" FILES "/home/yahboom/swerve_bringup/scripts/nav_accuracy_case.py")
+endif()
+
 if(CMAKE_INSTALL_COMPONENT)
   set(CMAKE_INSTALL_MANIFEST "install_manifest_${CMAKE_INSTALL_COMPONENT}.txt")
 else()

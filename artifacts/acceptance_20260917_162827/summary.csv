@@ -1,0 +1,4 @@
+run,startup_wall_time,startup_sim_time,controller_ready,local_tf_ready,global_tf_ready,nav2_ready,action_ready,shutdown_clean,no_old_gzserver,no_old_test_launch,no_old_evaluator,evaluator_rc,status
+bringup_01,37.66869985399899,,True,True,True,True,True,True,True,True,True,,PASS
+bringup_02,37.45395389600162,,True,True,True,True,True,True,True,True,True,,PASS
+bringup_03,34.76403993799977,,True,True,True,True,True,True,True,True,True,,PASS

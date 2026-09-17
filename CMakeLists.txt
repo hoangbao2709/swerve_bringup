@@ -56,4 +56,34 @@ install(
   RENAME accuracy_benchmark.py
 )
 
+install(
+  PROGRAMS scripts/navigation_readiness.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME navigation_readiness.py
+)
+
+install(
+  PROGRAMS scripts/run_acceptance.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME run_acceptance.py
+)
+
+install(
+  PROGRAMS scripts/raw_motion.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME raw_motion.py
+)
+
+install(
+  PROGRAMS scripts/nav_accuracy_case.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME nav_accuracy_case.py
+)
+
+install(
+  PROGRAMS scripts/run_full_acceptance.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME run_full_acceptance.py
+)
+
 ament_package()

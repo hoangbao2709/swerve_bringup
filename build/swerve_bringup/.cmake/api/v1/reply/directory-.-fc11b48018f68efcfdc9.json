@@ -255,6 +255,24 @@
 				"file" : 6,
 				"line" : 39,
 				"parent" : 39
+			},
+			{
+				"command" : 1,
+				"file" : 5,
+				"line" : 83,
+				"parent" : 0
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 34,
+				"parent" : 41
+			},
+			{
+				"command" : 0,
+				"file" : 6,
+				"line" : 39,
+				"parent" : 42
 			}
 		]
 	},
@@ -375,6 +393,16 @@
 			"paths" : 
 			[
 				"scripts/nav_accuracy_case.py"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 43,
+			"component" : "Unspecified",
+			"destination" : "lib/swerve_bringup",
+			"paths" : 
+			[
+				"scripts/run_full_acceptance.py"
 			],
 			"type" : "file"
 		}

@@ -96,6 +96,7 @@ def run_case(args, case_name, domain, outdir):
     nav_ready = readiness.returncode == 0
     evaluator_rc = None
     evaluator_log = ''
+    evaluator_passed = True
     if nav_ready and args.evaluator:
         evaluator_command = [value.replace('{case_dir}', outdir) for value in args.evaluator]
         evaluator = subprocess.run(evaluator_command, cwd=ROOT, env=env,
@@ -104,6 +105,14 @@ def run_case(args, case_name, domain, outdir):
         evaluator_rc, evaluator_log = evaluator.returncode, evaluator.stdout
         with open(os.path.join(outdir, 'evaluator.log'), 'w', encoding='utf-8') as stream:
             stream.write(evaluator_log)
+        summary_path = os.path.join(outdir, 'accuracy_summary.json')
+        if os.path.exists(summary_path):
+            with open(summary_path, encoding='utf-8') as stream:
+                evaluator_passed = bool(json.load(stream).get('passed', False))
+        result_path = os.path.join(outdir, 'raw_motion_result.csv')
+        if os.path.exists(result_path):
+            with open(result_path, encoding='utf-8') as stream:
+                evaluator_passed = evaluator_passed and next(csv.DictReader(stream), {}).get('direction_correct') == 'True'
     shutdown_clean = stop_group(proc, args.shutdown_grace)
     quiet = graph_quiet(env)
     launch_log.close()
@@ -120,7 +129,7 @@ def run_case(args, case_name, domain, outdir):
         'no_old_test_launch': bool(shutdown_clean),
         'no_old_evaluator': evaluator_rc is not None or not args.evaluator,
         'evaluator_rc': evaluator_rc,
-        'status': 'PASS' if nav_ready and shutdown_clean and quiet and (evaluator_rc in (None, 0)) else 'FAIL',
+        'status': 'PASS' if nav_ready and shutdown_clean and quiet and evaluator_rc in (None, 0) and evaluator_passed else 'FAIL',
     }
 
 

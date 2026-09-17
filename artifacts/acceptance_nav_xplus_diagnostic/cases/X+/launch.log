@@ -1,0 +1,656 @@
+[INFO] [launch]: All log files can be found below /home/yahboom/.ros/log/2026-09-17-17-15-02-995299-yahboom-virtual-machine-160844
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [160872]
+[INFO] [robot_state_publisher-2]: process started with pid [160874]
+[INFO] [spawn_entity.py-3]: process started with pid [160876]
+[INFO] [ekf_node-4]: process started with pid [160878]
+[INFO] [v30e_sim_node-5]: process started with pid [160880]
+[INFO] [ekf_node-6]: process started with pid [160882]
+[INFO] [map_server-7]: process started with pid [160900]
+[INFO] [controller_server-8]: process started with pid [160902]
+[INFO] [planner_server-9]: process started with pid [160906]
+[INFO] [behavior_server-10]: process started with pid [160912]
+[INFO] [bt_navigator-11]: process started with pid [160928]
+[INFO] [waypoint_follower-12]: process started with pid [160932]
+[INFO] [lifecycle_manager-13]: process started with pid [160940]
+[INFO] [swerve_bridge_node-14]: process started with pid [160949]
+[robot_state_publisher-2] [INFO] [1789636506.166809156] [robot_state_publisher]: got segment base_footprint
+[robot_state_publisher-2] [INFO] [1789636506.175925774] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789636506.176427764] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789636506.176855675] [robot_state_publisher]: got segment lidar_link
+[robot_state_publisher-2] [INFO] [1789636506.177358985] [robot_state_publisher]: got segment steer_front_link
+[robot_state_publisher-2] [INFO] [1789636506.177773302] [robot_state_publisher]: got segment steer_rear_link
+[robot_state_publisher-2] [INFO] [1789636506.178148727] [robot_state_publisher]: got segment v30e_link
+[robot_state_publisher-2] [INFO] [1789636506.185706162] [robot_state_publisher]: got segment wheel_front_drive_link
+[robot_state_publisher-2] [INFO] [1789636506.185733481] [robot_state_publisher]: got segment wheel_front_left_link
+[robot_state_publisher-2] [INFO] [1789636506.185743295] [robot_state_publisher]: got segment wheel_front_right_link
+[robot_state_publisher-2] [INFO] [1789636506.185771983] [robot_state_publisher]: got segment wheel_rear_drive_link
+[robot_state_publisher-2] [INFO] [1789636506.185785423] [robot_state_publisher]: got segment wheel_rear_left_link
+[robot_state_publisher-2] [INFO] [1789636506.185793025] [robot_state_publisher]: got segment wheel_rear_right_link
+[controller_server-8] [INFO] [1789636506.282729703] [controller_server]: 
+[controller_server-8] 	controller_server lifecycle node launched. 
+[controller_server-8] 	Waiting on external lifecycle transitions to activate
+[controller_server-8] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[behavior_server-10] [INFO] [1789636506.307987674] [behavior_server]: 
+[behavior_server-10] 	behavior_server lifecycle node launched. 
+[behavior_server-10] 	Waiting on external lifecycle transitions to activate
+[behavior_server-10] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-8] [INFO] [1789636506.325744871] [controller_server]: Creating controller server
+[bt_navigator-11] [INFO] [1789636506.346698137] [bt_navigator]: 
+[bt_navigator-11] 	bt_navigator lifecycle node launched. 
+[bt_navigator-11] 	Waiting on external lifecycle transitions to activate
+[bt_navigator-11] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[bt_navigator-11] [INFO] [1789636506.346882931] [bt_navigator]: Creating
+[lifecycle_manager-13] [INFO] [1789636506.408781183] [lifecycle_manager_navigation]: Creating
+[planner_server-9] [INFO] [1789636506.460559752] [planner_server]: 
+[planner_server-9] 	planner_server lifecycle node launched. 
+[planner_server-9] 	Waiting on external lifecycle transitions to activate
+[planner_server-9] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-9] [INFO] [1789636506.462057204] [planner_server]: Creating
+[map_server-7] [INFO] [1789636506.558331508] [map_server]: 
+[map_server-7] 	map_server lifecycle node launched. 
+[map_server-7] 	Waiting on external lifecycle transitions to activate
+[map_server-7] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[map_server-7] [INFO] [1789636506.561499308] [map_server]: Creating
+[lifecycle_manager-13] [INFO] [1789636506.588833766] [lifecycle_manager_navigation]: [34m[1mCreating and initializing lifecycle service clients[0m[0m
+[swerve_bridge_node-14] Traceback (most recent call last):
+[swerve_bridge_node-14]   File "/home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node", line 33, in <module>
+[swerve_bridge_node-14]     sys.exit(load_entry_point('swerve-bridge', 'console_scripts', 'swerve_bridge_node')())
+[swerve_bridge_node-14]   File "/home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node", line 22, in importlib_load_entry_point
+[swerve_bridge_node-14]     for entry_point in distribution(dist_name).entry_points
+[swerve_bridge_node-14]   File "/usr/lib/python3.10/importlib/metadata/__init__.py", line 969, in distribution
+[swerve_bridge_node-14]     return Distribution.from_name(distribution_name)
+[swerve_bridge_node-14]   File "/usr/lib/python3.10/importlib/metadata/__init__.py", line 548, in from_name
+[swerve_bridge_node-14]     raise PackageNotFoundError(name)
+[swerve_bridge_node-14] importlib.metadata.PackageNotFoundError: No package metadata was found for swerve-bridge
+[ERROR] [swerve_bridge_node-14]: process has died [pid 160949, exit code 1, cmd '/home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node --ros-args -r __node:=swerve_bridge --params-file /home/yahboom/swerve_bringup/install/swerve_bridge/share/swerve_bridge/config/bridge.yaml --params-file /tmp/launch_params_ct4sewkq'].
+[controller_server-8] [INFO] [1789636506.693013173] [local_costmap.local_costmap]: 
+[controller_server-8] 	local_costmap lifecycle node launched. 
+[controller_server-8] 	Waiting on external lifecycle transitions to activate
+[controller_server-8] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-8] [INFO] [1789636506.697062426] [local_costmap.local_costmap]: Creating Costmap
+[waypoint_follower-12] [INFO] [1789636506.727585507] [waypoint_follower]: 
+[waypoint_follower-12] 	waypoint_follower lifecycle node launched. 
+[waypoint_follower-12] 	Waiting on external lifecycle transitions to activate
+[waypoint_follower-12] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[waypoint_follower-12] [INFO] [1789636506.728152719] [waypoint_follower]: Creating
+[planner_server-9] [INFO] [1789636506.741051112] [global_costmap.global_costmap]: 
+[planner_server-9] 	global_costmap lifecycle node launched. 
+[planner_server-9] 	Waiting on external lifecycle transitions to activate
+[planner_server-9] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-9] [INFO] [1789636506.741720005] [global_costmap.global_costmap]: Creating Costmap
+[lifecycle_manager-13] [INFO] [1789636507.174642514] [lifecycle_manager_navigation]: [34m[1mStarting managed nodes bringup...[0m[0m
+[lifecycle_manager-13] [INFO] [1789636507.174732836] [lifecycle_manager_navigation]: [34m[1mConfiguring map_server[0m[0m
+[map_server-7] [INFO] [1789636507.175191207] [map_server]: Configuring
+[map_server-7] [INFO] [1789636507.175291248] [map_io]: Loading yaml file: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.yaml
+[map_server-7] [INFO] [1789636507.175639720] [map_io]: resolution: 0.05
+[map_server-7] [INFO] [1789636507.175656137] [map_io]: origin[0]: -17.2
+[map_server-7] [INFO] [1789636507.175663286] [map_io]: origin[1]: -17.4
+[map_server-7] [INFO] [1789636507.175669226] [map_io]: origin[2]: 0
+[map_server-7] [INFO] [1789636507.175674926] [map_io]: free_thresh: 0.25
+[map_server-7] [INFO] [1789636507.175680661] [map_io]: occupied_thresh: 0.65
+[map_server-7] [INFO] [1789636507.175686797] [map_io]: mode: trinary
+[map_server-7] [INFO] [1789636507.175693286] [map_io]: negate: 0
+[map_server-7] [INFO] [1789636507.175946723] [map_io]: Loading image_file: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.pgm
+[map_server-7] [INFO] [1789636507.294419700] [map_io]: Read map /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.pgm: 676 X 680 map @ 0.05 m/cell
+[lifecycle_manager-13] [INFO] [1789636507.441563166] [lifecycle_manager_navigation]: [34m[1mConfiguring controller_server[0m[0m
+[controller_server-8] [INFO] [1789636507.441996782] [controller_server]: Configuring controller interface
+[controller_server-8] [INFO] [1789636507.453265870] [controller_server]: getting goal checker plugins..
+[controller_server-8] [INFO] [1789636507.456685669] [controller_server]: Controller frequency set to 10.0000Hz
+[controller_server-8] [INFO] [1789636507.456763574] [local_costmap.local_costmap]: Configuring
+[controller_server-8] [INFO] [1789636507.814412765] [local_costmap.local_costmap]: Using plugin "voxel_layer"
+[spawn_entity.py-3] [INFO] [1789636507.856811927] [spawn_swerve]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1789636507.857244322] [spawn_swerve]: Loading entity published on topic robot_description
+[controller_server-8] [INFO] [1789636507.859087220] [local_costmap.local_costmap]: Subscribed to Topics: lidar3d scan
+[spawn_entity.py-3] [INFO] [1789636507.888176853] [spawn_swerve]: Waiting for entity xml on robot_description
+[spawn_entity.py-3] [INFO] [1789636507.904849825] [spawn_swerve]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1789636507.907366601] [spawn_swerve]: Waiting for service /spawn_entity
+[controller_server-8] [INFO] [1789636507.999559822] [local_costmap.local_costmap]: Initialized plugin "voxel_layer"
+[controller_server-8] [INFO] [1789636507.999611054] [local_costmap.local_costmap]: Using plugin "inflation_layer"
+[controller_server-8] [INFO] [1789636508.004743875] [local_costmap.local_costmap]: Initialized plugin "inflation_layer"
+[controller_server-8] [INFO] [1789636508.068087144] [controller_server]: Created progress_checker : progress_checker of type nav2_controller::SimpleProgressChecker
+[controller_server-8] [INFO] [1789636508.072855176] [controller_server]: Created goal checker : general_goal_checker of type nav2_controller::SimpleGoalChecker
+[controller_server-8] [INFO] [1789636508.079546469] [controller_server]: Controller Server has general_goal_checker  goal checkers available.
+[controller_server-8] [INFO] [1789636508.085210626] [controller_server]: Created controller : FollowPath of type dwb_core::DWBLocalPlanner
+[controller_server-8] [INFO] [1789636508.089498468] [controller_server]: Setting transform_tolerance to 0.200000
+[v30e_sim_node-5] [INFO] [1789636508.145136304] [v30e_sim_node]: Using Gazebo /get_entity_state internally; odometry is not a V30E measurement input
+[controller_server-8] [INFO] [1789636508.197108930] [controller_server]: Using critic "RotateToGoal" (dwb_critics::RotateToGoalCritic)
+[controller_server-8] [INFO] [1789636508.211204260] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789636508.214870133] [controller_server]: Using critic "Oscillation" (dwb_critics::OscillationCritic)
+[controller_server-8] [INFO] [1789636508.226875933] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789636508.230148555] [controller_server]: Using critic "BaseObstacle" (dwb_critics::BaseObstacleCritic)
+[controller_server-8] [INFO] [1789636508.234051096] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789636508.237755368] [controller_server]: Using critic "GoalAlign" (dwb_critics::GoalAlignCritic)
+[controller_server-8] [INFO] [1789636508.242871917] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789636508.246606284] [controller_server]: Using critic "PathAlign" (dwb_critics::PathAlignCritic)
+[controller_server-8] [INFO] [1789636508.255277784] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789636508.255560511] [controller_server]: Using critic "PathDist" (dwb_critics::PathDistCritic)
+[controller_server-8] [INFO] [1789636508.257559015] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789636508.260921247] [controller_server]: Using critic "GoalDist" (dwb_critics::GoalDistCritic)
+[controller_server-8] [INFO] [1789636508.262799965] [controller_server]: Critic plugin initialized
+[controller_server-8] [INFO] [1789636508.264254197] [controller_server]: Controller Server has FollowPath  controllers available.
+[lifecycle_manager-13] [INFO] [1789636508.333623910] [lifecycle_manager_navigation]: [34m[1mConfiguring planner_server[0m[0m
+[planner_server-9] [INFO] [1789636508.333981229] [planner_server]: Configuring
+[planner_server-9] [INFO] [1789636508.334031087] [global_costmap.global_costmap]: Configuring
+[planner_server-9] [INFO] [1789636508.388149815] [global_costmap.global_costmap]: Using plugin "static_layer"
+[planner_server-9] [INFO] [1789636508.400552995] [global_costmap.global_costmap]: Subscribing to the map topic (/map) with transient local durability
+[planner_server-9] [INFO] [1789636508.416638052] [global_costmap.global_costmap]: Initialized plugin "static_layer"
+[planner_server-9] [INFO] [1789636508.419497499] [global_costmap.global_costmap]: Using plugin "obstacle_layer"
+[planner_server-9] [INFO] [1789636508.425583706] [global_costmap.global_costmap]: Subscribed to Topics: scan
+[planner_server-9] [INFO] [1789636508.466081543] [global_costmap.global_costmap]: Initialized plugin "obstacle_layer"
+[planner_server-9] [INFO] [1789636508.466145337] [global_costmap.global_costmap]: Using plugin "inflation_layer"
+[planner_server-9] [INFO] [1789636508.466842468] [global_costmap.global_costmap]: Initialized plugin "inflation_layer"
+[planner_server-9] [INFO] [1789636508.564562559] [planner_server]: Created global planner plugin GridBased of type nav2_navfn_planner/NavfnPlanner
+[planner_server-9] [INFO] [1789636508.564613757] [planner_server]: Configuring plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789636508.564914418] [planner_server]: Planner Server has GridBased  planners available.
+[lifecycle_manager-13] [INFO] [1789636508.665358418] [lifecycle_manager_navigation]: [34m[1mConfiguring behavior_server[0m[0m
+[behavior_server-10] [INFO] [1789636508.667160478] [behavior_server]: Configuring
+[behavior_server-10] [INFO] [1789636508.721108633] [behavior_server]: Creating behavior plugin spin of type nav2_behaviors/Spin
+[behavior_server-10] [INFO] [1789636508.722421367] [behavior_server]: Configuring spin
+[behavior_server-10] [INFO] [1789636508.777643063] [behavior_server]: Creating behavior plugin backup of type nav2_behaviors/BackUp
+[behavior_server-10] [INFO] [1789636508.778528398] [behavior_server]: Configuring backup
+[behavior_server-10] [INFO] [1789636508.799007357] [behavior_server]: Creating behavior plugin drive_on_heading of type nav2_behaviors/DriveOnHeading
+[behavior_server-10] [INFO] [1789636508.799482225] [behavior_server]: Configuring drive_on_heading
+[behavior_server-10] [INFO] [1789636508.836673575] [behavior_server]: Creating behavior plugin wait of type nav2_behaviors/Wait
+[behavior_server-10] [INFO] [1789636508.838601706] [behavior_server]: Configuring wait
+[lifecycle_manager-13] [INFO] [1789636508.882085409] [lifecycle_manager_navigation]: [34m[1mConfiguring bt_navigator[0m[0m
+[bt_navigator-11] [INFO] [1789636508.883509356] [bt_navigator]: Configuring
+[lifecycle_manager-13] [INFO] [1789636509.280713026] [lifecycle_manager_navigation]: [34m[1mConfiguring waypoint_follower[0m[0m
+[waypoint_follower-12] [INFO] [1789636509.283553850] [waypoint_follower]: Configuring
+[waypoint_follower-12] [INFO] [1789636509.380256829] [waypoint_follower]: Created waypoint_task_executor : wait_at_waypoint of type nav2_waypoint_follower::WaitAtWaypoint
+[waypoint_follower-12] [INFO] [1789636509.381600066] [waypoint_follower]: Waypoint pause duration is set to zero, disabling task executor plugin.
+[lifecycle_manager-13] [INFO] [1789636509.388049402] [lifecycle_manager_navigation]: [34m[1mActivating map_server[0m[0m
+[map_server-7] [INFO] [1789636509.389295549] [map_server]: Activating
+[map_server-7] [INFO] [1789636509.390293039] [map_server]: Creating bond (map_server) to lifecycle manager.
+[planner_server-9] [INFO] [1789636509.392289296] [global_costmap.global_costmap]: StaticLayer: Resizing costmap to 676 X 680 at 0.050000 m/pix
+[lifecycle_manager-13] [INFO] [1789636509.516094504] [lifecycle_manager_navigation]: Server map_server connected with bond.
+[lifecycle_manager-13] [INFO] [1789636509.518446471] [lifecycle_manager_navigation]: [34m[1mActivating controller_server[0m[0m
+[controller_server-8] [INFO] [1789636509.518826252] [controller_server]: Activating
+[controller_server-8] [INFO] [1789636509.518881470] [local_costmap.local_costmap]: Activating
+[controller_server-8] [INFO] [1789636509.518899870] [local_costmap.local_costmap]: Checking transform
+[controller_server-8] [INFO] [1789636509.518934506] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636510.019140184] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636510.519293326] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636511.019058222] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636511.519830513] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636512.019029012] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636512.519652097] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636513.019720398] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636513.519179972] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636514.019127813] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[spawn_entity.py-3] [INFO] [1789636514.224794053] [spawn_swerve]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1789636514.300653049] [gazebo_ros_state]: Publishing states of gazebo models at [/model_states]
+[gzserver-1] [INFO] [1789636514.308349278] [gazebo_ros_state]: Publishing states of gazebo links at [/link_states]
+[gzserver-1] [ERROR] [1789636514.456897855] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[v30e_sim_node-5] [WARN] [1789636514.459260060] [v30e_sim_node]: get_entity_state failed: entity not available
+[gzserver-1] [ERROR] [1789636514.514215520] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[controller_server-8] [INFO] [1789636514.519851687] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[gzserver-1] [ERROR] [1789636514.569639422] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789636514.627413700] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789636514.680942683] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789636514.738376528] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789636514.792968965] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789636514.849140093] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [INFO] [1789636514.996930305] [imu.imu_ros]: <initial_orientation_as_reference> is unset, using default value of false to comply with REP 145 (world as orientation reference)
+[controller_server-8] [INFO] [1789636515.023695273] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636515.522758773] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636516.020177430] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636516.519627056] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636517.019672952] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636517.521115378] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636518.020639537] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636518.521386969] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636519.019857259] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636519.521884659] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636520.019359648] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636520.519454756] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636521.020401036] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636521.519010007] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636522.019586375] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636522.519355962] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636523.022048507] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636523.519522970] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636524.020123476] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636524.519911130] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636525.019042393] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636525.519154902] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636526.019551408] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636526.519292949] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636527.019152889] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636527.519532571] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636528.019555673] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636528.521232290] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-8] [INFO] [1789636529.020872860] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[spawn_entity.py-3] [INFO] [1789636529.216643008] [spawn_swerve]: Spawn status: SpawnEntity: Successfully spawned entity [swerve_base]
+[gzserver-1] [INFO] [1789636529.437099692] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[controller_server-8] [INFO] [1789636529.519420808] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 160876]
+[gzserver-1] [INFO] [1789636529.551440840] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1789636529.551509820] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[INFO] [spawner-15]: process started with pid [161133]
+[gzserver-1] [INFO] [1789636529.676036467] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1789636529.689315436] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1789636529.692861379] [gazebo_ros2_control]: Loading parameter files /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/controllers.yaml
+[gzserver-1] [INFO] [1789636529.738102034] [gazebo_ros2_control]: Loading joint: steer_front_joint
+[gzserver-1] [INFO] [1789636529.743179690] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789636529.743207658] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789636529.743221237] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789636529.743231080] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789636529.743240113] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789636529.750859106] [gazebo_ros2_control]: Loading joint: steer_rear_joint
+[gzserver-1] [INFO] [1789636529.751085731] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789636529.751116818] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789636529.751128571] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789636529.751138039] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789636529.751147154] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789636529.753253013] [gazebo_ros2_control]: Loading joint: wheel_front_drive_joint
+[gzserver-1] [INFO] [1789636529.753289314] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789636529.753302090] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789636529.753313361] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789636529.753323552] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789636529.753341744] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789636529.753514724] [gazebo_ros2_control]: Loading joint: wheel_rear_drive_joint
+[gzserver-1] [INFO] [1789636529.753545960] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789636529.753556945] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789636529.753567175] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789636529.753576051] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789636529.753596049] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789636529.753938355] [resource_manager]: Initialize hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789636529.755825864] [resource_manager]: Successful initialization of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789636529.756015854] [resource_manager]: 'configure' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789636529.756034102] [resource_manager]: Successful 'configure' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789636529.756043269] [resource_manager]: 'activate' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789636529.756050504] [resource_manager]: Successful 'activate' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789636529.756162595] [gazebo_ros2_control]: Loading controller_manager
+[controller_server-8] [INFO] [1789636530.020976993] [local_costmap.local_costmap]: Timed out waiting for transform from base_footprint to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[gzserver-1] [WARN] [1789636530.038425079] [gazebo_ros2_control]:  Desired controller update period (0.01 s) is slower than the gazebo simulation period (0.001 s).
+[gzserver-1] [INFO] [1789636530.040645788] [gazebo_ros2_control]: Loaded gazebo_ros2_control.
+[controller_server-8] [INFO] [1789636530.519871296] [local_costmap.local_costmap]: start
+[controller_server-8] [INFO] [1789636530.688414869] [controller_server]: Creating bond (controller_server) to lifecycle manager.
+[spawner-15] [INFO] [1789636530.763445412] [spawn_joint_state_broadcaster]: waiting for service /controller_manager/list_controllers to become available...
+[lifecycle_manager-13] [INFO] [1789636530.826980761] [lifecycle_manager_navigation]: Server controller_server connected with bond.
+[lifecycle_manager-13] [INFO] [1789636530.827046829] [lifecycle_manager_navigation]: [34m[1mActivating planner_server[0m[0m
+[planner_server-9] [INFO] [1789636530.827726383] [planner_server]: Activating
+[planner_server-9] [INFO] [1789636530.827784594] [global_costmap.global_costmap]: Activating
+[planner_server-9] [INFO] [1789636530.827802919] [global_costmap.global_costmap]: Checking transform
+[planner_server-9] [INFO] [1789636530.827962407] [global_costmap.global_costmap]: start
+[planner_server-9] [INFO] [1789636531.402142034] [planner_server]: Activating plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789636531.412538450] [planner_server]: Creating bond (planner_server) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789636531.551755415] [lifecycle_manager_navigation]: Server planner_server connected with bond.
+[lifecycle_manager-13] [INFO] [1789636531.551855331] [lifecycle_manager_navigation]: [34m[1mActivating behavior_server[0m[0m
+[behavior_server-10] [INFO] [1789636531.553841802] [behavior_server]: Activating
+[behavior_server-10] [INFO] [1789636531.553939959] [behavior_server]: Activating spin
+[behavior_server-10] [INFO] [1789636531.553962897] [behavior_server]: Activating backup
+[behavior_server-10] [INFO] [1789636531.553974951] [behavior_server]: Activating drive_on_heading
+[behavior_server-10] [INFO] [1789636531.553986554] [behavior_server]: Activating wait
+[behavior_server-10] [INFO] [1789636531.554002952] [behavior_server]: Creating bond (behavior_server) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789636531.683771496] [lifecycle_manager_navigation]: Server behavior_server connected with bond.
+[lifecycle_manager-13] [INFO] [1789636531.683847611] [lifecycle_manager_navigation]: [34m[1mActivating bt_navigator[0m[0m
+[bt_navigator-11] [INFO] [1789636531.685763408] [bt_navigator]: Activating
+[gzserver-1] [INFO] [1789636532.297715432] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[bt_navigator-11] [INFO] [1789636532.419254808] [bt_navigator]: Creating bond (bt_navigator) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789636532.551569570] [lifecycle_manager_navigation]: Server bt_navigator connected with bond.
+[lifecycle_manager-13] [INFO] [1789636532.551685137] [lifecycle_manager_navigation]: [34m[1mActivating waypoint_follower[0m[0m
+[waypoint_follower-12] [INFO] [1789636532.552844247] [waypoint_follower]: Activating
+[waypoint_follower-12] [INFO] [1789636532.552896508] [waypoint_follower]: Creating bond (waypoint_follower) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789636532.675468298] [lifecycle_manager_navigation]: Server waypoint_follower connected with bond.
+[lifecycle_manager-13] [INFO] [1789636532.675541029] [lifecycle_manager_navigation]: [34m[1mManaged nodes are active[0m[0m
+[lifecycle_manager-13] [INFO] [1789636532.675557916] [lifecycle_manager_navigation]: [34m[1mCreating bond timer...[0m[0m
+[spawner-15] [INFO] [1789636533.034161553] [spawn_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1789636533.047500361] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1789636533.049636298] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-15] [INFO] [1789636533.149011113] [spawn_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[INFO] [spawner-15]: process has finished cleanly [pid 161133]
+[INFO] [spawner-16]: process started with pid [161151]
+[spawner-16] [INFO] [1789636535.031584505] [spawn_steering_controller]: waiting for service /controller_manager/list_controllers to become available...
+[gzserver-1] [INFO] [1789636535.333299876] [controller_manager]: Loading controller 'steering_controller'
+[spawner-16] [INFO] [1789636535.666356897] [spawn_steering_controller]: [94mLoaded [1msteering_controller[0m
+[gzserver-1] [INFO] [1789636535.683545935] [controller_manager]: Configuring controller 'steering_controller'
+[gzserver-1] [INFO] [1789636535.697362317] [steering_controller]: configure successful
+[gzserver-1] [INFO] [1789636535.761041639] [steering_controller]: activate successful
+[spawner-16] [INFO] [1789636535.774121788] [spawn_steering_controller]: [92mConfigured and activated [1msteering_controller[0m
+[INFO] [spawner-16]: process has finished cleanly [pid 161151]
+[INFO] [spawner-17]: process started with pid [161163]
+[spawner-17] [INFO] [1789636537.571598534] [spawn_drive_controller]: waiting for service /controller_manager/list_controllers to become available...
+[gzserver-1] [INFO] [1789636538.331794275] [controller_manager]: Loading controller 'drive_controller'
+[spawner-17] [INFO] [1789636538.521324440] [spawn_drive_controller]: [94mLoaded [1mdrive_controller[0m
+[gzserver-1] [INFO] [1789636538.528782607] [controller_manager]: Configuring controller 'drive_controller'
+[gzserver-1] [INFO] [1789636538.538401443] [drive_controller]: configure successful
+[gzserver-1] [INFO] [1789636539.023191428] [drive_controller]: activate successful
+[spawner-17] [INFO] [1789636539.049894299] [spawn_drive_controller]: [92mConfigured and activated [1mdrive_controller[0m
+[INFO] [spawner-17]: process has finished cleanly [pid 161163]
+[INFO] [swerve_controller_node-18]: process started with pid [161175]
+[INFO] [swerve_odometry_node-19]: process started with pid [161177]
+[swerve_controller_node-18] [INFO] [1789636541.115441092] [swerve_controller]: Swerve controller ready: radius=0.0675 m, modules={'front': (0.300042, 0.0), 'rear': (-0.300042, 0.0)}
+[swerve_odometry_node-19] [INFO] [1789636541.181519095] [swerve_odometry]: Encoder odometry ready: radius=0.0637 m, velocity_sign=+1.0
+[bt_navigator-11] [INFO] [1789636547.514098969] [bt_navigator]: Begin navigating from current location (-0.00, -0.00) to (1.00, -0.00)
+[controller_server-8] [INFO] [1789636547.551753853] [controller_server]: Received a goal, begin computing control effort.
+[controller_server-8] [WARN] [1789636547.551858383] [controller_server]: No goal checker was specified in parameter 'current_goal_checker'. Server will use only plugin loaded general_goal_checker . This warning will appear once.
+[bt_navigator-11] [WARN] [1789636547.836055673] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636548.606178587] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636548.634823614] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636548.657407830] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636548.762911137] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636548.770286334] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636548.775943018] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636549.164671879] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636549.652944820] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636549.780974259] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636549.784677876] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636549.878173869] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636549.885228475] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636550.125896071] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636550.524583031] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636550.652994553] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636550.886194717] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636550.925187955] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636550.948039063] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636551.235759467] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636551.578652613] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636551.591235799] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636551.605151975] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636551.609225713] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636551.649549020] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636551.754521645] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636552.080197004] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636552.102963334] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636552.396240969] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636552.427522522] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636552.486162447] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636552.753397883] [controller_server]: Passing new path to controller.
+[controller_server-8] [INFO] [1789636553.753721051] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636553.870502139] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636554.262028576] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636554.312708347] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636554.363783714] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636554.854967003] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636555.212946139] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636555.467213236] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636555.473782198] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636555.614488422] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636555.853612914] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636555.892946758] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636556.533871628] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636556.550967668] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636556.552723326] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636556.569603001] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636556.576898894] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636556.619444344] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636556.633060864] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636556.684343885] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636556.853320954] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636557.604806445] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636557.766975254] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636557.845198355] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636557.925842662] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636557.955255909] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636558.274655117] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636558.667419239] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636558.758431716] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636558.884085214] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636558.891849718] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636558.901386255] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636558.954208759] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636559.165287997] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636559.470351243] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636559.961786270] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636560.003179267] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636560.053074030] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636560.373113666] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636560.628856130] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636561.056680323] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636561.570029608] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636562.053359358] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636562.163485120] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636562.281993063] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636562.289229723] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636562.659165373] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636563.049394326] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636563.155605662] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636563.620936580] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636563.671334656] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636564.153474317] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636564.474161072] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636564.952595170] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636564.974226569] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636564.993702863] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.076784055] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.127457542] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.185388863] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636565.253223775] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636565.296958855] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.347865563] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.374135780] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.387135837] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.460278463] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.557867288] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.580032540] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.591585812] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636565.878090605] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.051792127] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.091868778] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.107938224] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636566.253303000] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636566.460726397] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.473533283] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.567994170] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.620440348] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.653150565] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.684148907] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636566.734256526] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636567.253933388] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636567.756856621] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636567.784103855] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636568.254869749] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636568.399908393] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636568.736221003] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636569.221004466] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636569.273647327] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636569.354397482] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636569.640043851] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636570.075722262] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636570.096786963] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636570.101092097] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636570.353094542] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636570.843650927] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636571.198884910] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636571.267011875] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636571.353036211] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636571.618516763] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636572.055669692] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636572.316218063] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636572.360428968] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636572.386405381] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636572.453107143] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636573.414619376] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636573.452934740] [controller_server]: Passing new path to controller.
+[controller_server-8] [INFO] [1789636574.453386212] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636574.574368434] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636574.604881845] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636575.045236722] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636575.157260161] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636575.333259415] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636575.554120554] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636576.426863100] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636576.465752197] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636576.552954198] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636576.567470220] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636576.704736173] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636576.753689592] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636576.776347749] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636577.552837688] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636577.856176350] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636577.863581284] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636577.916333661] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636577.927471194] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636578.068397534] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636578.223373054] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636578.438649561] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636578.554440546] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636578.634857604] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636578.723939778] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636579.273483024] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636579.414320567] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636579.653711435] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636580.174585043] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636580.653154178] [controller_server]: Passing new path to controller.
+[bt_navigator-11] [WARN] [1789636581.273930710] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636581.323647024] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[bt_navigator-11] [WARN] [1789636581.659339461] [BehaviorTreeEngine]: Behavior Tree tick rate 100.00 was exceeded!
+[controller_server-8] [INFO] [1789636581.659684096] [controller_server]: Passing new path to controller.
+[controller_server-8] [INFO] [1789636581.706598857] [controller_server]: Reached the goal!
+[bt_navigator-11] [INFO] [1789636581.740225998] [bt_navigator]: Goal succeeded
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[planner_server-9] [INFO] [1789636583.047551535] [rclcpp]: signal_handler(signum=2)
+[planner_server-9] [INFO] [1789636583.054066525] [planner_server]: Running Nav2 LifecycleNode rcl preshutdown (planner_server)
+[planner_server-9] [INFO] [1789636583.054150819] [planner_server]: Deactivating
+[planner_server-9] [INFO] [1789636583.054194559] [global_costmap.global_costmap]: Deactivating
+[behavior_server-10] [INFO] [1789636583.047932452] [rclcpp]: signal_handler(signum=2)
+[behavior_server-10] [INFO] [1789636583.053565793] [behavior_server]: Running Nav2 LifecycleNode rcl preshutdown (behavior_server)
+[behavior_server-10] [INFO] [1789636583.053650920] [behavior_server]: Deactivating
+[behavior_server-10] [INFO] [1789636583.053691369] [behavior_server]: Destroying bond (behavior_server) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789636583.047948777] [rclcpp]: signal_handler(signum=2)
+[lifecycle_manager-13] [INFO] [1789636583.048112442] [lifecycle_manager_navigation]: Running Nav2 LifecycleManager rcl preshutdown (lifecycle_manager_navigation)
+[lifecycle_manager-13] [INFO] [1789636583.048165491] [lifecycle_manager_navigation]: [34m[1mTerminating bond timer...[0m[0m
+[map_server-7] [INFO] [1789636583.047948657] [rclcpp]: signal_handler(signum=2)
+[map_server-7] [INFO] [1789636583.048090537] [map_server]: Running Nav2 LifecycleNode rcl preshutdown (map_server)
+[map_server-7] [INFO] [1789636583.048180367] [map_server]: Deactivating
+[map_server-7] [INFO] [1789636583.048209342] [map_server]: Destroying bond (map_server) to lifecycle manager.
+[bt_navigator-11] [INFO] [1789636583.049617258] [rclcpp]: signal_handler(signum=2)
+[bt_navigator-11] [INFO] [1789636583.053643208] [bt_navigator]: Running Nav2 LifecycleNode rcl preshutdown (bt_navigator)
+[bt_navigator-11] [INFO] [1789636583.053721289] [bt_navigator]: Deactivating
+[bt_navigator-11] [INFO] [1789636583.053790428] [bt_navigator]: Destroying bond (bt_navigator) to lifecycle manager.
+[ekf_node-6] [INFO] [1789636583.049823620] [rclcpp]: signal_handler(signum=2)
+[ekf_node-4] [INFO] [1789636583.051626102] [rclcpp]: signal_handler(signum=2)
+[robot_state_publisher-2] [INFO] [1789636583.051928044] [rclcpp]: signal_handler(signum=2)
+[INFO] [swerve_odometry_node-19]: sending signal 'SIGINT' to process[swerve_odometry_node-19]
+[INFO] [swerve_controller_node-18]: sending signal 'SIGINT' to process[swerve_controller_node-18]
+[INFO] [lifecycle_manager-13]: sending signal 'SIGINT' to process[lifecycle_manager-13]
+[INFO] [waypoint_follower-12]: sending signal 'SIGINT' to process[waypoint_follower-12]
+[INFO] [bt_navigator-11]: sending signal 'SIGINT' to process[bt_navigator-11]
+[INFO] [behavior_server-10]: sending signal 'SIGINT' to process[behavior_server-10]
+[INFO] [planner_server-9]: sending signal 'SIGINT' to process[planner_server-9]
+[INFO] [controller_server-8]: sending signal 'SIGINT' to process[controller_server-8]
+[INFO] [map_server-7]: sending signal 'SIGINT' to process[map_server-7]
+[INFO] [ekf_node-6]: sending signal 'SIGINT' to process[ekf_node-6]
+[INFO] [v30e_sim_node-5]: sending signal 'SIGINT' to process[v30e_sim_node-5]
+[INFO] [ekf_node-4]: sending signal 'SIGINT' to process[ekf_node-4]
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [gzserver-1]: sending signal 'SIGINT' to process[gzserver-1]
+[ERROR] [ekf_node-6]: process has died [pid 160882, exit code -2, cmd '/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_v30e --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/v30e_localization_ekf.yaml --params-file /tmp/launch_params_l9fkja7k -r odometry/filtered:=/odometry/v30e'].
+[controller_server-8] [INFO] [1789636583.056921453] [rclcpp]: signal_handler(signum=2)
+[controller_server-8] [INFO] [1789636583.059042615] [controller_server]: Running Nav2 LifecycleNode rcl preshutdown (controller_server)
+[controller_server-8] [INFO] [1789636583.059147333] [controller_server]: Deactivating
+[controller_server-8] [INFO] [1789636583.059217698] [local_costmap.local_costmap]: Deactivating
+[map_server-7] [INFO] [1789636583.069872831] [map_server]: Cleaning up
+[map_server-7] [INFO] [1789636583.070004456] [map_server]: Destroying bond (map_server) to lifecycle manager.
+[bt_navigator-11] [INFO] [1789636583.094996645] [bt_navigator]: Cleaning up
+[waypoint_follower-12] [INFO] [1789636583.095316809] [waypoint_follower]: Cleaning up
+[behavior_server-10] [INFO] [1789636583.113957143] [behavior_server]: Cleaning up
+[swerve_controller_node-18] Traceback (most recent call last):
+[swerve_controller_node-18]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 192, in <module>
+[swerve_controller_node-18]     main()
+[swerve_controller_node-18]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 184, in main
+[swerve_controller_node-18]     node.steer_pub.publish(Float64MultiArray(data=[
+[swerve_controller_node-18]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 70, in publish
+[swerve_controller_node-18]     self.__publisher.publish(msg)
+[swerve_controller_node-18] rclpy._rclpy_pybind11.RCLError: Failed to publish: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[swerve_controller_node-18] Error in sys.excepthook:
+[swerve_controller_node-18] Traceback (most recent call last):
+[swerve_controller_node-18]   File "/usr/lib/python3/dist-packages/apport_python_hook.py", line 72, in apport_excepthook
+[swerve_controller_node-18]     from apport.fileutils import likely_packaged, get_recent_crashes
+[swerve_controller_node-18]   File "/usr/lib/python3/dist-packages/apport/__init__.py", line 5, in <module>
+[swerve_controller_node-18]     from apport.report import Report
+[swerve_controller_node-18]   File "/usr/lib/python3/dist-packages/apport/report.py", line 21, in <module>
+[swerve_controller_node-18]     from urllib.request import urlopen
+[swerve_controller_node-18]   File "/usr/lib/python3.10/urllib/request.py", line 88, in <module>
+[swerve_controller_node-18]     import http.client
+[swerve_controller_node-18]   File "/usr/lib/python3.10/http/client.py", line 72, in <module>
+[swerve_controller_node-18]     import email.message
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap>", line 1027, in _find_and_load
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap>", line 1002, in _find_and_load_unlocked
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap>", line 945, in _find_spec
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap_external>", line 1439, in find_spec
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap_external>", line 1411, in _get_spec
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap_external>", line 1577, in find_spec
+[swerve_odometry_node-19] Traceback (most recent call last):
+[swerve_odometry_node-19]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node", line 221, in <module>
+[swerve_odometry_node-19]     main()
+[swerve_odometry_node-19]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node", line 215, in main
+[swerve_odometry_node-19]     node.destroy_node()
+[swerve_odometry_node-19]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1685, in destroy_node
+[swerve_odometry_node-19]     self.destroy_publisher(self._publishers[0])
+[swerve_odometry_node-19]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1565, in destroy_publisher
+[swerve_odometry_node-19]     publisher.destroy()
+[swerve_odometry_node-19]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 99, in destroy
+[swerve_odometry_node-19]     self.__publisher.destroy_when_not_in_use()
+[swerve_odometry_node-19] KeyboardInterrupt
+[ERROR] [ekf_node-4]: process has died [pid 160878, exit code -2, cmd '/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/ekf.yaml --params-file /tmp/launch_params_0goowf11 -r /odom:=/odom -r /imu/data:=/imu/data'].
+[swerve_controller_node-18]   File "<frozen importlib._bootstrap_external>", line 159, in _path_isfile
+[swerve_controller_node-18] KeyboardInterrupt
+[swerve_controller_node-18] 
+[swerve_controller_node-18] Original exception was:
+[swerve_controller_node-18] Traceback (most recent call last):
+[swerve_controller_node-18]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 192, in <module>
+[swerve_controller_node-18]     main()
+[swerve_controller_node-18]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node", line 184, in main
+[swerve_controller_node-18]     node.steer_pub.publish(Float64MultiArray(data=[
+[swerve_controller_node-18]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 70, in publish
+[swerve_controller_node-18]     self.__publisher.publish(msg)
+[swerve_controller_node-18] rclpy._rclpy_pybind11.RCLError: Failed to publish: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[lifecycle_manager-13] [INFO] [1789636583.138424679] [rclcpp]: signal_handler(signum=2)
+[waypoint_follower-12] [INFO] [1789636583.144046648] [rclcpp]: signal_handler(signum=2)
+[controller_server-8] [INFO] [1789636583.150342256] [controller_server]: Destroying bond (controller_server) to lifecycle manager.
+[bt_navigator-11] [INFO] [1789636583.164969505] [rclcpp]: signal_handler(signum=2)
+[behavior_server-10] [INFO] [1789636583.170832131] [rclcpp]: signal_handler(signum=2)
+[planner_server-9] [INFO] [1789636583.178707916] [rclcpp]: signal_handler(signum=2)
+[controller_server-8] [INFO] [1789636583.183199961] [rclcpp]: signal_handler(signum=2)
+[map_server-7] [INFO] [1789636583.194038241] [rclcpp]: signal_handler(signum=2)
+[controller_server-8] [INFO] [1789636583.202127981] [controller_server]: Cleaning up
+[controller_server-8] [INFO] [1789636583.214075039] [local_costmap.local_costmap]: Cleaning up
+[robot_state_publisher-2] [INFO] [1789636583.226614892] [rclcpp]: signal_handler(signum=2)
+[planner_server-9] [INFO] [1789636583.328342345] [planner_server]: Deactivating plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789636583.328427703] [planner_server]: Destroying bond (planner_server) to lifecycle manager.
+[v30e_sim_node-5] Traceback (most recent call last):
+[v30e_sim_node-5]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node", line 188, in <module>
+[v30e_sim_node-5]     if __name__ == '__main__': main()
+[v30e_sim_node-5]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node", line 185, in main
+[v30e_sim_node-5]     node.destroy_node(); rclpy.shutdown()
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1685, in destroy_node
+[v30e_sim_node-5]     self.destroy_publisher(self._publishers[0])
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1565, in destroy_publisher
+[v30e_sim_node-5]     publisher.destroy()
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/publisher.py", line 99, in destroy
+[v30e_sim_node-5]     self.__publisher.destroy_when_not_in_use()
+[v30e_sim_node-5] KeyboardInterrupt
+[ERROR] [v30e_sim_node-5]: process has died [pid 160880, exit code -2, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node --ros-args -r __node:=v30e_sim_node --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/v30e_sim.yaml --params-file /tmp/launch_params_m0njn3_d'].
+[ERROR] [swerve_controller_node-18]: process has died [pid 161175, exit code -11, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node --ros-args -r __node:=swerve_controller --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/swerve_controller.yaml --params-file /tmp/launch_params_o9h4vbuw'].
+[map_server-7] [INFO] [1789636585.158863123] [map_server]: Destroying
+[waypoint_follower-12] [INFO] [1789636585.195323880] [waypoint_follower]: Destroying bond (waypoint_follower) to lifecycle manager.
+[planner_server-9] [INFO] [1789636585.215787753] [planner_server]: Cleaning up
+[ERROR] [swerve_odometry_node-19]: process has died [pid 161177, exit code -2, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node --ros-args -r __node:=swerve_odometry --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/swerve_odometry.yaml --params-file /tmp/launch_params__jgjgjm7'].
+[waypoint_follower-12] [INFO] [1789636585.235868029] [waypoint_follower]: Destroying
+[behavior_server-10] [INFO] [1789636585.314773863] [behavior_server]: Destroying bond (behavior_server) to lifecycle manager.
+[planner_server-9] [INFO] [1789636585.326463687] [global_costmap.global_costmap]: Cleaning up
+[planner_server-9] [INFO] [1789636585.362190245] [planner_server]: Cleaning up plugin GridBased of type NavfnPlanner
+[planner_server-9] [INFO] [1789636585.363656714] [planner_server]: Destroying plugin GridBased of type NavfnPlanner
+[controller_server-8] [INFO] [1789636585.406236178] [controller_server]: Destroying bond (controller_server) to lifecycle manager.
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 160874]
+[behavior_server-10] [INFO] [1789636585.429969751] [behavior_server]: Destroying
+[planner_server-9] [INFO] [1789636585.438463826] [planner_server]: Destroying bond (planner_server) to lifecycle manager.
+[planner_server-9] [INFO] [1789636585.446585498] [global_costmap.global_costmap]: Destroying
+[INFO] [map_server-7]: process has finished cleanly [pid 160900]
+[INFO] [waypoint_follower-12]: process has finished cleanly [pid 160932]
+[lifecycle_manager-13] [INFO] [1789636585.483108127] [lifecycle_manager_navigation]: Destroying lifecycle_manager_navigation
+[controller_server-8] [INFO] [1789636585.490692993] [local_costmap.local_costmap]: Destroying
+[planner_server-9] [INFO] [1789636585.514061518] [planner_server]: Destroying
+[controller_server-8] [INFO] [1789636585.562898465] [controller_server]: Destroying
+[bt_navigator-11] [INFO] [1789636585.616871363] [bt_navigator]: Completed Cleaning up
+[bt_navigator-11] [INFO] [1789636585.616972530] [bt_navigator]: Destroying bond (bt_navigator) to lifecycle manager.
+[bt_navigator-11] [INFO] [1789636585.623779907] [bt_navigator]: Destroying
+[INFO] [behavior_server-10]: process has finished cleanly [pid 160912]
+[INFO] [lifecycle_manager-13]: process has finished cleanly [pid 160940]
+[INFO] [planner_server-9]: process has finished cleanly [pid 160906]
+[INFO] [controller_server-8]: process has finished cleanly [pid 160902]
+[INFO] [bt_navigator-11]: process has finished cleanly [pid 160928]
+[INFO] [gzserver-1]: process has finished cleanly [pid 160872]

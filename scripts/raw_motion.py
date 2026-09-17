@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Raw motion primitive evaluator; no Nav2 goals and no GT injection."""
+"""Raw motion evaluator with ROS-time duration and command-to-contact tracing."""
 import csv
 import math
 import os
@@ -28,99 +28,144 @@ CASES = {
     'Y+': (0.0, 0.2, 0.0), 'Y-': (0.0, -0.2, 0.0),
     'yaw+': (0.0, 0.0, 0.2), 'yaw-': (0.0, 0.0, -0.2),
 }
+WHEEL_RADIUS = 0.0675
+MODULE_X = 0.300042
 
 
 class Raw(Node):
     def __init__(self):
         super().__init__('raw_motion_evaluator')
-        self.gt = self.odom = self.local = self.imu = None
-        self.steer = self.drive = self.joints = self.last_stamp = None
+        self.gt = self.odom = self.imu = self.local = None
+        self.steer = self.drive = self.joints = None
         self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.create_subscription(Odometry, '/odom', self.odom_cb, 10)
-        self.create_subscription(Imu, '/imu/data', self.imu_cb, 10)
-        self.create_subscription(Float64MultiArray, '/steering_controller/commands', lambda m: setattr(self, 'steer', list(m.data)), 10)
-        self.create_subscription(Float64MultiArray, '/drive_controller/commands', lambda m: setattr(self, 'drive', list(m.data)), 10)
-        self.create_subscription(JointState, '/joint_states', lambda m: setattr(self, 'joints', dict(zip(m.name, m.position))), 10)
+        self.create_subscription(Odometry, '/odom', self.odom_cb, 20)
+        self.create_subscription(Imu, '/imu/data', self.imu_cb, 20)
+        self.create_subscription(Float64MultiArray, '/steering_controller/commands', self.steer_cb, 20)
+        self.create_subscription(Float64MultiArray, '/drive_controller/commands', self.drive_cb, 20)
+        self.create_subscription(JointState, '/joint_states', self.joint_cb, 20)
         self.tf = Buffer(); self.listener = TransformListener(self.tf, self)
         self.state = self.create_client(GetEntityState, '/get_entity_state')
 
     def odom_cb(self, msg):
-        p = msg.pose.pose; self.odom = (p.position.x, p.position.y, yaw(p.orientation))
+        p = msg.pose.pose
+        self.odom = {'x': p.position.x, 'y': p.position.y, 'yaw': yaw(p.orientation),
+                     'vx': msg.twist.twist.linear.x, 'vy': msg.twist.twist.linear.y,
+                     'wz': msg.twist.twist.angular.z}
 
     def imu_cb(self, msg):
-        self.imu = (msg.angular_velocity.z,)
+        self.imu = {'wz': msg.angular_velocity.z, 'yaw': yaw(msg.orientation)}
 
-    def spin(self, seconds):
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            rclpy.spin_once(self, timeout_sec=0.02)
+    def steer_cb(self, msg): self.steer = list(msg.data)
+    def drive_cb(self, msg): self.drive = list(msg.data)
+
+    def joint_cb(self, msg):
+        self.joints = {'position': dict(zip(msg.name, msg.position)),
+                       'velocity': dict(zip(msg.name, msg.velocity))}
 
     def get_gt(self):
-        if not self.state.service_is_ready():
-            return None
+        if not self.state.service_is_ready(): return None
         req = GetEntityState.Request(); req.name = 'swerve_base'; req.reference_frame = 'world'
-        future = self.state.call_async(req); deadline = time.monotonic() + 0.5
-        while not future.done() and time.monotonic() < deadline: rclpy.spin_once(self, timeout_sec=0.02)
+        future = self.state.call_async(req); deadline = time.monotonic() + 0.2
+        while not future.done() and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.005)
         if not future.done() or not future.result().success: return None
-        p = future.result().state.pose; return (p.position.x, p.position.y, yaw(p.orientation))
+        state = future.result().state; p = state.pose; t = state.twist
+        return {'x': p.position.x, 'y': p.position.y, 'yaw': yaw(p.orientation),
+                'vx_world': t.linear.x, 'vy_world': t.linear.y, 'wz': t.angular.z}
 
     def local_pose(self):
         try:
             t = self.tf.lookup_transform('map', 'base_footprint', rclpy.time.Time()).transform
-            return (t.translation.x, t.translation.y, yaw(t.rotation))
+            return {'x': t.translation.x, 'y': t.translation.y, 'yaw': yaw(t.rotation)}
         except TransformException: return None
 
+    def snapshot(self): return self.get_gt(), self.odom, self.local_pose()
+
+    def spin_for(self, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end: rclpy.spin_once(self, timeout_sec=0.01)
+
     def run(self, name, command, duration=8.0):
-        self.spin(1.0)
-        start_gt = start_odom = start_local = None
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and (start_gt is None or start_odom is None or start_local is None):
-            self.spin(0.1)
-            start_gt, start_odom, start_local = self.get_gt(), self.odom, self.local_pose()
-        trace = []; end = time.monotonic() + duration
-        while time.monotonic() < end:
+        self.spin_for(1.0); start = None; deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            self.spin_for(0.05); start = self.snapshot()
+            if all(start) and self.get_clock().now().nanoseconds > 0: break
+        if not start or not all(start): raise RuntimeError('missing GT/odom/local pose before raw motion')
+        start_sim = self.get_clock().now().nanoseconds * 1e-9; start_wall = time.monotonic(); trace = []
+        watchdog = start_wall + max(60.0, duration * 12.0)
+        while time.monotonic() < watchdog:
+            now_sim = self.get_clock().now().nanoseconds * 1e-9; elapsed_sim = now_sim - start_sim
+            if elapsed_sim >= duration: break
             msg = Twist(); msg.linear.x, msg.linear.y, msg.angular.z = command; self.pub.publish(msg)
-            gt = self.get_gt(); loc = self.local_pose(); now = self.get_clock().now().nanoseconds * 1e-9
-            trace.append({'case': name, 'sim_time': now, 'gt_x': gt[0] if gt else None, 'gt_y': gt[1] if gt else None, 'gt_yaw': gt[2] if gt else None,
-                          'odom_x': self.odom[0] if self.odom else None, 'odom_y': self.odom[1] if self.odom else None, 'odom_yaw': self.odom[2] if self.odom else None,
-                          'local_x': loc[0] if loc else None, 'local_y': loc[1] if loc else None, 'local_yaw': loc[2] if loc else None,
-                          'cmd_x': command[0], 'cmd_y': command[1], 'cmd_yaw': command[2], 'steer': repr(self.steer), 'drive': repr(self.drive), 'imu_wz': self.imu[0] if self.imu else None})
-            self.spin(0.08)
-        self.pub.publish(Twist()); self.spin(0.5)
-        finish_gt = finish_odom = finish_local = None
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and (finish_gt is None or finish_odom is None or finish_local is None):
-            self.spin(0.1)
-            finish_gt, finish_odom, finish_local = self.get_gt(), self.odom, self.local_pose()
-        def delta(a, b): return (a[0] - b[0], a[1] - b[1], wrap(a[2] - b[2])) if a and b else (None, None, None)
-        gt_d, odom_d, local_d = delta(finish_gt, start_gt), delta(finish_odom, start_odom), delta(finish_local, start_local)
-        expected = (command[0] * duration, command[1] * duration, command[2] * duration)
-        direction_correct = False
-        if gt_d and all(value is not None for value in gt_d):
-            if abs(command[0]) > 0:
-                direction_correct = gt_d[0] > 0 if command[0] > 0 else gt_d[0] < 0
-            elif abs(command[1]) > 0:
-                direction_correct = gt_d[1] > 0 if command[1] > 0 else gt_d[1] < 0
-            else:
-                direction_correct = gt_d[2] > 0 if command[2] > 0 else gt_d[2] < 0
-        result = {'case': name, 'duration_s': duration, 'gt_dx': gt_d[0], 'gt_dy': gt_d[1], 'gt_dyaw': gt_d[2], 'odom_dx': odom_d[0], 'odom_dy': odom_d[1], 'odom_dyaw': odom_d[2], 'local_dx': local_d[0], 'local_dy': local_d[1], 'local_dyaw': local_d[2], 'expected_dx': expected[0], 'expected_dy': expected[1], 'expected_dyaw': expected[2], 'direction_correct': direction_correct}
+            self.spin_for(0.02); gt, odom, loc = self.snapshot()
+            pos = self.joints.get('position', {}) if self.joints else {}; vel = self.joints.get('velocity', {}) if self.joints else {}
+            trace.append({'case': name, 'sim_time': now_sim, 'elapsed_sim_time': elapsed_sim,
+                'elapsed_wall_time': time.monotonic() - start_wall,
+                'gt_x': gt['x'] if gt else None, 'gt_y': gt['y'] if gt else None, 'gt_yaw': gt['yaw'] if gt else None,
+                'gt_vx_world': gt['vx_world'] if gt else None, 'gt_vy_world': gt['vy_world'] if gt else None, 'gt_wz': gt['wz'] if gt else None,
+                'odom_x': odom['x'] if odom else None, 'odom_y': odom['y'] if odom else None, 'odom_yaw': odom['yaw'] if odom else None,
+                'odom_vx': odom['vx'] if odom else None, 'odom_vy': odom['vy'] if odom else None, 'odom_wz': odom['wz'] if odom else None,
+                'local_x': loc['x'] if loc else None, 'local_y': loc['y'] if loc else None, 'local_yaw': loc['yaw'] if loc else None,
+                'cmd_x': command[0], 'cmd_y': command[1], 'cmd_yaw': command[2],
+                'steer_cmd_front': self.steer[0] if self.steer and len(self.steer) > 0 else None,
+                'steer_cmd_rear': self.steer[1] if self.steer and len(self.steer) > 1 else None,
+                'drive_cmd_front': self.drive[0] if self.drive and len(self.drive) > 0 else None,
+                'drive_cmd_rear': self.drive[1] if self.drive and len(self.drive) > 1 else None,
+                'steer_pos_front': pos.get('steer_front_joint'), 'steer_pos_rear': pos.get('steer_rear_joint'),
+                'wheel_vel_front': vel.get('wheel_front_drive_joint'), 'wheel_vel_rear': vel.get('wheel_rear_drive_joint'),
+                'imu_wz': self.imu['wz'] if self.imu else None, 'imu_yaw': self.imu['yaw'] if self.imu else None})
+        command_elapsed_sim = min(duration, max(0.0, self.get_clock().now().nanoseconds * 1e-9 - start_sim))
+        self.pub.publish(Twist()); self.spin_for(0.5); finish = self.snapshot()
+        elapsed_sim = command_elapsed_sim; elapsed_wall = time.monotonic() - start_wall
+
+        def delta(a, b): return (a['x'] - b['x'], a['y'] - b['y'], wrap(a['yaw'] - b['yaw'])) if a and b else (None, None, None)
+        gt_d, odom_d, local_d = delta(finish[0], start[0]), delta(finish[1], start[1]), delta(finish[2], start[2])
+        expected = (command[0] * elapsed_sim, command[1] * elapsed_sim, command[2] * elapsed_sim)
+        gt_disp = math.hypot(gt_d[0], gt_d[1]) if gt_d[0] is not None else None; expected_disp = math.hypot(expected[0], expected[1])
+        active = trace[max(0, len(trace) * 3 // 4):]
+        def mean(key):
+            vals = [float(r[key]) for r in active if r.get(key) is not None and math.isfinite(float(r[key]))]
+            return sum(vals) / len(vals) if vals else None
+        expected_wheel = math.hypot(command[0], command[1]) / WHEEL_RADIUS if command[2] == 0 else abs(command[2] * MODULE_X) / WHEEL_RADIUS
+        actual_wheel = (abs(mean('wheel_vel_front') or 0.0) + abs(mean('wheel_vel_rear') or 0.0)) / 2.0
+        gt_cmd_speed = []
+        for row in active:
+            if row.get('gt_vx_world') is None or row.get('gt_vy_world') is None or row.get('gt_yaw') is None:
+                continue
+            c, s = math.cos(float(row['gt_yaw'])), math.sin(float(row['gt_yaw']))
+            bx = c * float(row['gt_vx_world']) + s * float(row['gt_vy_world'])
+            by = -s * float(row['gt_vx_world']) + c * float(row['gt_vy_world'])
+            gt_cmd_speed.append(bx if abs(command[0]) >= abs(command[1]) else by)
+        steady_gt_cmd_speed = sum(gt_cmd_speed) / len(gt_cmd_speed) if gt_cmd_speed else None
+        result = {'case': name, 'cmd_linear': math.hypot(command[0], command[1]), 'cmd_wz': command[2],
+            'elapsed_sim_time': elapsed_sim, 'elapsed_wall_time': elapsed_wall, 'rtf': elapsed_sim / elapsed_wall if elapsed_wall else None,
+            'gt_dx': gt_d[0], 'gt_dy': gt_d[1], 'gt_dyaw': gt_d[2], 'odom_dx': odom_d[0], 'odom_dy': odom_d[1], 'odom_dyaw': odom_d[2],
+            'local_dx': local_d[0], 'local_dy': local_d[1], 'local_dyaw': local_d[2], 'expected_dx': expected[0], 'expected_dy': expected[1], 'expected_dyaw': expected[2],
+            'actual_displacement': gt_disp, 'expected_displacement': expected_disp,
+            'velocity_efficiency': gt_disp / expected_disp if expected_disp > 1e-9 else abs(gt_d[2] / expected[2]) if abs(expected[2]) > 1e-9 else None,
+            'steady_gt_body_speed': math.hypot(mean('gt_vx_world') or 0.0, mean('gt_vy_world') or 0.0),
+            'steady_gt_cmd_speed': steady_gt_cmd_speed, 'steady_gt_wz': mean('gt_wz'),
+            'steady_odom_speed': math.hypot(mean('odom_vx') or 0.0, mean('odom_vy') or 0.0), 'command_wheel_rad_s': expected_wheel,
+            'actual_wheel_rad_s': actual_wheel, 'wheel_surface_m_s': actual_wheel * WHEEL_RADIUS,
+            'traction_ratio': steady_gt_cmd_speed / (actual_wheel * WHEEL_RADIUS) if actual_wheel > 1e-9 and steady_gt_cmd_speed is not None else None,
+            'steer_error': max(abs((mean('steer_pos_front') or 0.0) - (mean('steer_cmd_front') or 0.0)), abs((mean('steer_pos_rear') or 0.0) - (mean('steer_cmd_rear') or 0.0))),
+            'direction_correct': bool(gt_d[0] * command[0] > 0 if abs(command[0]) > 0 else gt_d[1] * command[1] > 0 if abs(command[1]) > 0 else gt_d[2] * command[2] > 0)}
         return result, trace
 
 
 def main():
-    name = os.environ.get('ACCEPTANCE_CASE', os.environ.get('ACCEPTANCE_CASE_INDEX', 'X+'))
+    name = os.environ.get('ACCEPTANCE_CASE', 'X+')
     if name not in CASES: raise SystemExit(f'unknown raw case {name}')
-    outdir = os.environ.get('ACCEPTANCE_CASE_DIR', 'artifacts/raw_motion')
-    os.makedirs(outdir, exist_ok=True)
+    outdir = os.environ.get('ACCEPTANCE_CASE_DIR', 'artifacts/raw_motion'); os.makedirs(outdir, exist_ok=True)
     rclpy.init(); node = Raw()
     try: result, trace = node.run(name, CASES[name])
     finally: node.destroy_node(); rclpy.shutdown()
+    fields = list(trace[0].keys()) if trace else list(result.keys())
     with open(os.path.join(outdir, 'raw_motion.csv'), 'w', newline='', encoding='utf-8') as stream:
-        fields = list(trace[0].keys()) if trace else list(result.keys()); writer = csv.DictWriter(stream, fieldnames=fields); writer.writeheader(); writer.writerows(trace)
+        writer = csv.DictWriter(stream, fieldnames=fields); writer.writeheader(); writer.writerows(trace)
     with open(os.path.join(outdir, 'raw_motion_result.csv'), 'w', newline='', encoding='utf-8') as stream:
         writer = csv.DictWriter(stream, fieldnames=result.keys()); writer.writeheader(); writer.writerow(result)
-    print(result, flush=True)
-    return 0 if result['direction_correct'] else 1
+    print(result, flush=True); return 0 if result['direction_correct'] else 1
 
 
 if __name__ == '__main__': raise SystemExit(main())

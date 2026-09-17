@@ -8,3 +8,4 @@
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/run_acceptance.py
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/raw_motion.py
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/nav_accuracy_case.py
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/run_full_acceptance.py

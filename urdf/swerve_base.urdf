@@ -49,6 +49,8 @@
   <xacro:arg name="imu_gyro_noise_stddev" default="0.002"/>
   <xacro:arg name="imu_accel_noise_stddev" default="0.02"/>
   <xacro:arg name="enable_contact_sensors" default="false"/>
+  <xacro:arg name="caster_frictionless" default="false"/>
+  <xacro:arg name="proper_caster_test" default="false"/>
 
   <xacro:property name="lidar_x" value="$(arg lidar_x)"/>
   <xacro:property name="lidar_y" value="$(arg lidar_y)"/>
@@ -73,12 +75,47 @@
   <xacro:property name="imu_update_rate" value="$(arg imu_update_rate)"/>
   <xacro:property name="imu_gyro_noise_stddev" value="$(arg imu_gyro_noise_stddev)"/>
   <xacro:property name="imu_accel_noise_stddev" value="$(arg imu_accel_noise_stddev)"/>
+  <xacro:property name="caster_mu" value="0.01"/>
+  <xacro:if value="$(arg caster_frictionless)"><xacro:property name="caster_mu" value="0.0"/></xacro:if>
 
-  <xacro:macro name="contact_sensor" params="link">
+  <!-- Test-only physical caster.  The default branch below is intentionally
+       unchanged; this branch adds the missing swivel + rolling DOFs. -->
+  <xacro:macro name="proper_caster" params="name x y">
+    <link name="${name}_fork_link">
+      <inertial>
+        <mass value="0.08"/>
+        <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+      </inertial>
+    </link>
+    <joint name="${name}_swivel_joint" type="continuous">
+      <parent link="base_link"/><child link="${name}_fork_link"/>
+      <origin xyz="${x} ${y} -0.20157"/><axis xyz="0 0 1"/>
+      <dynamics friction="0.02" damping="0.02"/>
+    </joint>
+    <link name="${name}_link">
+      <visual><geometry><sphere radius="0.0414"/></geometry><material name="dark"/></visual>
+      <collision>
+        <origin xyz="0 0 -0.0434" rpy="1.5708 0 0"/>
+        <!-- Cylinder axis is Y: this is the rolling DOF of the test caster. -->
+        <geometry><cylinder radius="0.040" length="0.040"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="0.443"/>
+        <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
+      </inertial>
+    </link>
+    <joint name="${name}_roll_joint" type="continuous">
+      <parent link="${name}_fork_link"/><child link="${name}_link"/>
+      <origin xyz="0 0 0"/><axis xyz="0 1 0"/>
+      <dynamics friction="0.02" damping="0.02"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="contact_sensor" params="link collision_name">
     <gazebo reference="${link}">
       <sensor name="${link}_contact_sensor" type="contact">
         <always_on>true</always_on><update_rate>50.0</update_rate>
-        <contact><collision>collision</collision></contact>
+        <contact><collision>${collision_name}</collision></contact>
         <plugin name="${link}_contact_plugin" filename="libgazebo_ros_bumper.so">
           <ros><namespace>/contact_load</namespace><remapping>bumper_states:=${link}</remapping></ros>
           <frame_name>${link}</frame_name>
@@ -214,6 +251,7 @@
 
   <!-- ===================== 4 BÁNH BỊ ĐỘNG (CFAV2-D50-120) ===================== -->
 
+  <xacro:unless value="$(arg proper_caster_test)">
   <!-- Banh bi dong FRONT LEFT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
   <link name="wheel_front_left_link">
     <visual>
@@ -295,6 +333,14 @@
     <origin xyz="-0.505 -0.195 -0.20157" rpy="0 0 0"/>
     <axis xyz="0 0 1"/><dynamics friction="0.02" damping="0.05"/>
   </joint>
+  </xacro:unless>
+
+  <xacro:if value="$(arg proper_caster_test)">
+    <xacro:proper_caster name="wheel_front_left" x="0.505" y="0.195"/>
+    <xacro:proper_caster name="wheel_front_right" x="0.505" y="-0.195"/>
+    <xacro:proper_caster name="wheel_rear_left" x="-0.505" y="0.195"/>
+    <xacro:proper_caster name="wheel_rear_right" x="-0.505" y="-0.195"/>
+  </xacro:if>
 
   <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->
   <link name="wheel_front_drive_link">
@@ -343,12 +389,12 @@
   </link>
 
   <xacro:if value="$(arg enable_contact_sensors)">
-    <xacro:contact_sensor link="wheel_front_drive_link"/>
-    <xacro:contact_sensor link="wheel_rear_drive_link"/>
-    <xacro:contact_sensor link="wheel_front_left_link"/>
-    <xacro:contact_sensor link="wheel_front_right_link"/>
-    <xacro:contact_sensor link="wheel_rear_left_link"/>
-    <xacro:contact_sensor link="wheel_rear_right_link"/>
+    <xacro:contact_sensor link="wheel_front_drive_link" collision_name="wheel_front_drive_link_collision"/>
+    <xacro:contact_sensor link="wheel_rear_drive_link" collision_name="wheel_rear_drive_link_collision"/>
+    <xacro:contact_sensor link="wheel_front_left_link" collision_name="wheel_front_left_link_collision"/>
+    <xacro:contact_sensor link="wheel_front_right_link" collision_name="wheel_front_right_link_collision"/>
+    <xacro:contact_sensor link="wheel_rear_left_link" collision_name="wheel_rear_left_link_collision"/>
+    <xacro:contact_sensor link="wheel_rear_right_link" collision_name="wheel_rear_right_link_collision"/>
   </xacro:if>
   <joint name="wheel_rear_drive_joint" type="continuous">
     <parent link="steer_rear_link"/>
@@ -386,16 +432,16 @@
   </gazebo>
   <gazebo reference="wheel_front_left_link">
     <!-- Passive support has a free swivel DOF; it is not a fixed skid. -->
-    <mu1>0.01</mu1><mu2>0.01</mu2><kp>1000000.0</kp><kd>100.0</kd>
+    <mu1>${caster_mu}</mu1><mu2>${caster_mu}</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
   <gazebo reference="wheel_front_right_link">
-    <mu1>0.01</mu1><mu2>0.01</mu2><kp>1000000.0</kp><kd>100.0</kd>
+    <mu1>${caster_mu}</mu1><mu2>${caster_mu}</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
   <gazebo reference="wheel_rear_left_link">
-    <mu1>0.01</mu1><mu2>0.01</mu2><kp>1000000.0</kp><kd>100.0</kd>
+    <mu1>${caster_mu}</mu1><mu2>${caster_mu}</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
   <gazebo reference="wheel_rear_right_link">
-    <mu1>0.01</mu1><mu2>0.01</mu2><kp>1000000.0</kp><kd>100.0</kd>
+    <mu1>${caster_mu}</mu1><mu2>${caster_mu}</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
 
   <!-- Phase 5 - Gazebo Classic multi-ray 3D LiDAR.  A ray sensor is used

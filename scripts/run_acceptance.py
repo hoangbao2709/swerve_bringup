@@ -84,6 +84,10 @@ def run_case(args, case_name, domain, outdir):
                       'use_sim:=true', 'mode:=navigation', 'gui:=false']
     if env.get('ACCEPTANCE_CONTACT_DIAGNOSTICS', '').lower() in ('1', 'true', 'yes'):
         launch_command.append('contact_diagnostics:=true')
+    if env.get('ACCEPTANCE_CASTER_FRICTIONLESS', '').lower() in ('1', 'true', 'yes'):
+        launch_command.append('caster_frictionless:=true')
+    if env.get('ACCEPTANCE_PROPER_CASTER_TEST', '').lower() in ('1', 'true', 'yes'):
+        launch_command.append('proper_caster_test:=true')
     proc = subprocess.Popen(
         launch_command,
         cwd=ROOT, env=env, stdout=launch_log, stderr=subprocess.STDOUT,

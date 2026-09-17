@@ -5,7 +5,7 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler, LogInfo
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -37,7 +37,9 @@ def generate_launch_description():
     def xacro_arg(name, value):
         return [f' {name}:={value}']
 
-    xacro_args = [' enable_contact_sensors:=', LaunchConfiguration('contact_diagnostics')]
+    xacro_args = [' enable_contact_sensors:=', LaunchConfiguration('contact_diagnostics'),
+                   ' caster_frictionless:=', LaunchConfiguration('caster_frictionless'),
+                   ' proper_caster_test:=', LaunchConfiguration('proper_caster_test')]
     for name, value in zip(('lidar_x', 'lidar_y', 'lidar_z'), lidar_extrinsics['xyz']):
         xacro_args += xacro_arg(name, value)
     for name, value in zip(('lidar_roll', 'lidar_pitch', 'lidar_yaw'), lidar_extrinsics['rpy']):
@@ -165,6 +167,7 @@ def generate_launch_description():
                       on_exit=[swerve_controller, swerve_odometry, ekf]))
 
     return LaunchDescription([
+        LogInfo(msg=['CONTACT_DIAGNOSTICS=', LaunchConfiguration('contact_diagnostics')]),
         DeclareLaunchArgument(
             'use_sim_time', default_value='true',
             description='Use the Gazebo /clock for every ROS node.',
@@ -185,6 +188,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'contact_diagnostics', default_value='false',
             description='Enable temporary Gazebo contact sensors for load auditing.',
+        ),
+        DeclareLaunchArgument(
+            'caster_frictionless', default_value='false',
+            description='Test-only caster friction A/B variant; production default is false.',
+        ),
+        DeclareLaunchArgument(
+            'proper_caster_test', default_value='false',
+            description='Test-only four-caster swivel+roll model; production default is false.',
         ),
         DeclareLaunchArgument(
             'start_state_publisher', default_value='true',

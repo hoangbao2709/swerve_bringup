@@ -1,0 +1,69 @@
+{
+  "runs": [
+    {
+      "run": "stationary",
+      "startup_wall_time": 37.739828559999296,
+      "startup_sim_time": 1.6,
+      "controller_ready": true,
+      "local_tf_ready": true,
+      "global_tf_ready": true,
+      "nav2_ready": true,
+      "action_ready": true,
+      "shutdown_clean": true,
+      "no_old_gzserver": true,
+      "no_old_test_launch": true,
+      "no_old_evaluator": true,
+      "evaluator_rc": 0,
+      "status": "PASS"
+    },
+    {
+      "run": "X+",
+      "startup_wall_time": 68.7888093290021,
+      "startup_sim_time": 6.7,
+      "controller_ready": true,
+      "local_tf_ready": true,
+      "global_tf_ready": true,
+      "nav2_ready": true,
+      "action_ready": true,
+      "shutdown_clean": true,
+      "no_old_gzserver": true,
+      "no_old_test_launch": true,
+      "no_old_evaluator": true,
+      "evaluator_rc": 0,
+      "status": "PASS"
+    },
+    {
+      "run": "Y+",
+      "startup_wall_time": 39.322887668000476,
+      "startup_sim_time": 1.8,
+      "controller_ready": true,
+      "local_tf_ready": true,
+      "global_tf_ready": true,
+      "nav2_ready": true,
+      "action_ready": true,
+      "shutdown_clean": true,
+      "no_old_gzserver": true,
+      "no_old_test_launch": true,
+      "no_old_evaluator": true,
+      "evaluator_rc": 0,
+      "status": "PASS"
+    },
+    {
+      "run": "yaw+",
+      "startup_wall_time": 35.28631685700384,
+      "startup_sim_time": 1.3,
+      "controller_ready": true,
+      "local_tf_ready": true,
+      "global_tf_ready": true,
+      "nav2_ready": true,
+      "action_ready": true,
+      "shutdown_clean": true,
+      "no_old_gzserver": true,
+      "no_old_test_launch": true,
+      "no_old_evaluator": true,
+      "evaluator_rc": 0,
+      "status": "PASS"
+    }
+  ],
+  "passed": true
+}

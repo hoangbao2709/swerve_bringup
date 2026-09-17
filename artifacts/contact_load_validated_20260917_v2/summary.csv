@@ -1,0 +1,5 @@
+run,startup_wall_time,startup_sim_time,controller_ready,local_tf_ready,global_tf_ready,nav2_ready,action_ready,shutdown_clean,no_old_gzserver,no_old_test_launch,no_old_evaluator,evaluator_rc,status
+stationary,39.85818237700005,2.0,True,True,True,True,True,True,True,True,True,0,PASS
+X+,38.55677926399949,1.7000000000000002,True,True,True,True,True,True,True,True,True,0,PASS
+Y+,41.97129890100041,2.4000000000000004,True,True,True,True,True,True,True,True,True,0,PASS
+yaw+,40.19213519599725,1.9000000000000001,True,True,True,True,True,True,True,True,True,0,PASS

@@ -33,6 +33,9 @@ def generate_launch_description():
     pkg = get_package_share_directory('swerve_bringup')
     use_sim = LaunchConfiguration('use_sim')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    contact_diagnostics = LaunchConfiguration('contact_diagnostics')
+    caster_frictionless = LaunchConfiguration('caster_frictionless')
+    proper_caster_test = LaunchConfiguration('proper_caster_test')
     mode = LaunchConfiguration('mode')
     mapping_mode = IfCondition(PythonExpression(["'", mode, "' == 'mapping'"]))
     navigation_mode = IfCondition(PythonExpression(["'", mode, "' == 'navigation'"]))
@@ -69,6 +72,9 @@ def generate_launch_description():
         condition=IfCondition(use_sim),
         launch_arguments={'world': LaunchConfiguration('world'), 'gui': LaunchConfiguration('gui'),
                           'use_sim_time': use_sim_time,
+                          'contact_diagnostics': contact_diagnostics,
+                          'caster_frictionless': caster_frictionless,
+                          'proper_caster_test': proper_caster_test,
                           'start_ekf': 'false',
                           'start_state_publisher': 'true'}.items())
     real_driver = OpaqueFunction(function=lambda context: _real_driver(context, pkg), condition=UnlessCondition(use_sim))
@@ -105,6 +111,9 @@ def generate_launch_description():
                               description='mapping=SLAM owns map->odom; navigation=static map + V30E owns map->odom'),
         DeclareLaunchArgument('world', default_value=os.path.join(pkg, 'worlds', 'warehouse.world')),
         DeclareLaunchArgument('gui', default_value='true', description='Start the Gazebo client window'),
+        DeclareLaunchArgument('contact_diagnostics', default_value='false', description='Enable temporary Gazebo contact sensors'),
+        DeclareLaunchArgument('caster_frictionless', default_value='false', description='Test-only caster friction A/B variant'),
+        DeclareLaunchArgument('proper_caster_test', default_value='false', description='Test-only four-caster swivel+roll model'),
         DeclareLaunchArgument('real_sensor_launch', default_value='', description='Vendor sensor launch file for use_sim=false'),
         DeclareLaunchArgument('real_lidar_topic', default_value='/lidar/points'),
         DeclareLaunchArgument('real_imu_topic', default_value='/imu/data'),

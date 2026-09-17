@@ -19,11 +19,12 @@ class Probe(Node):
         self.data={link:{'count':0,'normal':0.0,'tangential':0.0} for link in LINKS}; self.clocks=[]
         qos=QoSProfile(depth=20,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
         self.create_subscription(Clock,'/clock',self.clock_cb,qos)
-        for link in LINKS: self.create_subscription(ContactsState,f'/contact_load/{link}',lambda m,l=link:self.contact_cb(l,m),20)
+        for link in LINKS: self.create_subscription(ContactsState,f'/contact_load/{link}',lambda m,l=link:self.contact_cb(l,m),qos)
         self.pub=self.create_publisher(Twist,'/cmd_vel',10)
     def clock_cb(self,m): self.clocks.append(m.clock.sec+m.clock.nanosec*1e-9); self.clocks=self.clocks[-20:]
     def contact_cb(self,link,msg):
-        d=self.data[link]; d['count']+=len(msg.states)
+        d=self.data[link]
+        d['count']=len(msg.states); d['normal']=0.0; d['tangential']=0.0
         for s in msg.states:
             f=s.total_wrench.force; d['normal']+=abs(f.z); d['tangential']+=math.hypot(f.x,f.y)
     def spin_wall(self,s):
@@ -41,7 +42,8 @@ class Probe(Node):
             row={'case':case,'phase':'motion' if active else 'stationary','sim_time':sim,'cmd_x':m.linear.x,'cmd_y':m.linear.y,'cmd_wz':m.angular.z}
             for link,d in self.data.items():
                 row[f'{link}_contact_count']=d['count']; row[f'{link}_normal_force_sum']=d['normal']; row[f'{link}_tangential_force_sum']=d['tangential']
-                d['count']=0;d['normal']=0.;d['tangential']=0.
+                # Values represent the latest ContactsState sample. Do not
+                # reset here: callback cadence is independent of probe rows.
             rows.append(row)
         self.pub.publish(Twist()); self.spin_wall(.5); return rows
 

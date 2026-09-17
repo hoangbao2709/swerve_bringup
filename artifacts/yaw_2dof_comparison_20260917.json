@@ -1,0 +1,30 @@
+{
+  "variant": "proper_caster_test",
+  "model": "four passive casters with continuous Z swivel and continuous Y roll",
+  "orientation_fix": "source now sets caster wheel cylinder axis to Y (collision rpy=1.5708 0 0)",
+  "measurement_note": "The recorded runs were made before the orientation correction and are diagnostic-only; the corrected variant did not reach controller/odom readiness because gazebo_ros2_control rejected robot_description parameter parsing.",
+  "runs": {
+    "yaw+": {
+      "sim_duration_s": 8.0,
+      "gt_dyaw_rad": -8.117707572807831e-08,
+      "odom_dyaw_rad": 1.2710756622352228,
+      "encoder_wz_rad_s": 0.1799,
+      "steady_gt_wz_rad_s": -2.225980885453302e-05,
+      "steady_wheel_rad_s": 0.7811515946485457,
+      "direction_correct": false,
+      "valid_run": false
+    },
+    "yaw-": {
+      "sim_duration_s": 8.0,
+      "gt_dyaw_rad": -1.3017555078320697e-07,
+      "odom_dyaw_rad": -1.3102949694599364,
+      "encoder_wz_rad_s": -0.1799,
+      "steady_gt_wz_rad_s": -2.112286666283343e-05,
+      "steady_wheel_rad_s": 0.781402739171604,
+      "direction_correct": true,
+      "valid_run": false
+    }
+  },
+  "verdict": "BLOCKED: pre-correction prototype stalled; corrected test requires a clean controller/odom-ready launch",
+  "next": "resolve gazebo_ros2_control robot_description parse failure, then rerun corrected 2-DOF yaw A/B"
+}

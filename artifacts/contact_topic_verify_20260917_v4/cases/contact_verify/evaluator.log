@@ -1,0 +1,166 @@
+[INFO] [1789650401.251045188] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.307564827] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.358665515] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.411396237] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.464490748] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.471004589] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.484065120] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.510976741] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.518776305] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.529349157] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.536295920] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.538943868] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.556135816] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.562753848] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.575495614] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.615935288] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.621957259] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.637890338] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.654600342] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.660183945] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.669706139] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.721133377] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.773271776] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.825092918] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.884163394] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.938892050] [contact_topic_verify]: waiting /clock
+[INFO] [1789650401.991764803] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.042732668] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.048322916] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.059832312] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.070147936] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.082542907] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.096446703] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.105213633] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.110625274] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.121824616] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.131998229] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.142416711] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.150605041] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.151593842] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.153226779] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.157160897] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.159045933] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.167766323] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.179222429] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.191037915] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.204674756] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.211441157] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.219350355] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.229780874] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.241096706] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.249992879] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.258435057] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.265034876] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.271891227] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.289870255] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.341065586] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.393902031] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.447223337] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.498667104] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.550542235] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.601991180] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.652037541] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.658542576] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.663177653] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.678832280] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.690170367] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.711614211] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.720159925] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.730787782] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.743808902] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.750642383] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.762424131] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.771969353] [contact_topic_verify]: waiting /clock
+[INFO] [1789650402.775064098] [contact_topic_verify]: waiting /clock
+{
+  "use_sim_time": true,
+  "topics": {
+    "wheel_front_drive_link": {
+      "publisher_count": 1,
+      "publishers": [
+        {
+          "node_name": "wheel_front_drive_link_contact_plugin",
+          "node_namespace": "/contact_load",
+          "topic_type": "gazebo_msgs/msg/ContactsState",
+          "reliability": "ReliabilityPolicy.RELIABLE",
+          "durability": "DurabilityPolicy.VOLATILE"
+        }
+      ],
+      "messages_received": 262,
+      "nonempty_messages": 262
+    },
+    "wheel_rear_drive_link": {
+      "publisher_count": 1,
+      "publishers": [
+        {
+          "node_name": "wheel_rear_drive_link_contact_plugin",
+          "node_namespace": "/contact_load",
+          "topic_type": "gazebo_msgs/msg/ContactsState",
+          "reliability": "ReliabilityPolicy.RELIABLE",
+          "durability": "DurabilityPolicy.VOLATILE"
+        }
+      ],
+      "messages_received": 262,
+      "nonempty_messages": 262
+    },
+    "wheel_front_left_link": {
+      "publisher_count": 1,
+      "publishers": [
+        {
+          "node_name": "wheel_front_left_link_contact_plugin",
+          "node_namespace": "/contact_load",
+          "topic_type": "gazebo_msgs/msg/ContactsState",
+          "reliability": "ReliabilityPolicy.RELIABLE",
+          "durability": "DurabilityPolicy.VOLATILE"
+        }
+      ],
+      "messages_received": 262,
+      "nonempty_messages": 262
+    },
+    "wheel_front_right_link": {
+      "publisher_count": 1,
+      "publishers": [
+        {
+          "node_name": "wheel_front_right_link_contact_plugin",
+          "node_namespace": "/contact_load",
+          "topic_type": "gazebo_msgs/msg/ContactsState",
+          "reliability": "ReliabilityPolicy.RELIABLE",
+          "durability": "DurabilityPolicy.VOLATILE"
+        }
+      ],
+      "messages_received": 257,
+      "nonempty_messages": 257
+    },
+    "wheel_rear_left_link": {
+      "publisher_count": 1,
+      "publishers": [
+        {
+          "node_name": "wheel_rear_left_link_contact_plugin",
+          "node_namespace": "/contact_load",
+          "topic_type": "gazebo_msgs/msg/ContactsState",
+          "reliability": "ReliabilityPolicy.RELIABLE",
+          "durability": "DurabilityPolicy.VOLATILE"
+        }
+      ],
+      "messages_received": 257,
+      "nonempty_messages": 257
+    },
+    "wheel_rear_right_link": {
+      "publisher_count": 1,
+      "publishers": [
+        {
+          "node_name": "wheel_rear_right_link_contact_plugin",
+          "node_namespace": "/contact_load",
+          "topic_type": "gazebo_msgs/msg/ContactsState",
+          "reliability": "ReliabilityPolicy.RELIABLE",
+          "durability": "DurabilityPolicy.VOLATILE"
+        }
+      ],
+      "messages_received": 256,
+      "nonempty_messages": 256
+    }
+  },
+  "clock_seen": true,
+  "contact_telemetry_valid": true
+}

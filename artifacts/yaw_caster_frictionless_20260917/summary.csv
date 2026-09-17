@@ -1,0 +1,3 @@
+run,startup_wall_time,startup_sim_time,controller_ready,local_tf_ready,global_tf_ready,nav2_ready,action_ready,shutdown_clean,no_old_gzserver,no_old_test_launch,no_old_evaluator,evaluator_rc,status
+yaw+,39.99962171399966,2.4000000000000004,True,True,True,True,True,True,True,True,True,0,PASS
+yaw-,37.85771768799896,2.0,True,True,True,True,True,True,True,True,True,0,PASS

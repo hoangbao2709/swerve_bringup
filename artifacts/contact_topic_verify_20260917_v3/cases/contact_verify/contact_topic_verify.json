@@ -1,0 +1,43 @@
+{
+  "use_sim_time": true,
+  "topics": {
+    "wheel_front_drive_link": {
+      "publisher_count": 0,
+      "publishers": [],
+      "messages_received": 260,
+      "nonempty_messages": 260
+    },
+    "wheel_rear_drive_link": {
+      "publisher_count": 0,
+      "publishers": [],
+      "messages_received": 260,
+      "nonempty_messages": 260
+    },
+    "wheel_front_left_link": {
+      "publisher_count": 0,
+      "publishers": [],
+      "messages_received": 260,
+      "nonempty_messages": 260
+    },
+    "wheel_front_right_link": {
+      "publisher_count": 0,
+      "publishers": [],
+      "messages_received": 259,
+      "nonempty_messages": 259
+    },
+    "wheel_rear_left_link": {
+      "publisher_count": 0,
+      "publishers": [],
+      "messages_received": 259,
+      "nonempty_messages": 259
+    },
+    "wheel_rear_right_link": {
+      "publisher_count": 0,
+      "publishers": [],
+      "messages_received": 258,
+      "nonempty_messages": 258
+    }
+  },
+  "clock_seen": true,
+  "contact_telemetry_valid": false
+}

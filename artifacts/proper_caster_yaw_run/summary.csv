@@ -1,3 +1,3 @@
-run,startup_wall_time,startup_sim_time,controller_ready,local_tf_ready,global_tf_ready,nav2_ready,action_ready,shutdown_clean,no_old_gzserver,no_old_test_launch,no_old_evaluator,evaluator_rc,status
-yaw+,44.67830359900108,2.5,True,True,True,True,True,True,True,True,True,0,PASS
-yaw-,38.03469889299595,1.8,True,True,True,True,True,True,True,True,True,0,PASS
+run,startup_wall_time,startup_sim_time,controller_ready,local_tf_ready,global_tf_ready,nav2_ready,action_ready,shutdown_clean,no_old_gzserver,no_old_test_launch,no_old_evaluator,evaluator_rc,status,direction_correct,physics_acceptance_pass,direction_status,physics_status
+yaw+,44.67830359900108,2.5,True,True,True,True,True,True,True,True,True,0,FAIL,True,False,PASS,FAIL
+yaw-,38.03469889299595,1.8,True,True,True,True,True,True,True,True,True,0,FAIL,True,False,PASS,FAIL

@@ -1,0 +1,91 @@
+{
+  "case": "yaw-",
+  "samples": 54,
+  "sim_duration": 8.0,
+  "clock_verified": true,
+  "telemetry_valid": true,
+  "joint_properties_service": "/get_joint_properties",
+  "mean_gt_wz": -0.015579930643377189,
+  "mean_encoder_wz": -0.1491676205809399,
+  "mean_imu_wz": -0.015923531629154667,
+  "casters": {
+    "FL": {
+      "initial_swivel": 0.0006718559772584953,
+      "desired_heading": 2.081378839387008,
+      "actual_heading": 0.13301595904923147,
+      "mean_equivalent_heading_error": 0.9477222473309493,
+      "p95_heading_error": 1.322595690236665,
+      "final_heading_error": 1.1932297732520167,
+      "swivel_travel": 0.13276532658793538,
+      "mean_abs_swivel_velocity": 0.0012046165445977277,
+      "mean_abs_roll_velocity": 0.06626911028580526,
+      "mean_tangential_metric": 491.0163989713791,
+      "p95_tangential_metric": 739.9821970999964
+    },
+    "FR": {
+      "initial_swivel": 0.00043754019307584713,
+      "desired_heading": 1.9572375672510678,
+      "actual_heading": 0.1301874929166793,
+      "mean_equivalent_heading_error": 0.862962955165739,
+      "p95_heading_error": 1.3104698824976981,
+      "final_heading_error": 1.3145425792554049,
+      "swivel_travel": 0.1303760426907754,
+      "mean_abs_swivel_velocity": 0.002303923991620557,
+      "mean_abs_roll_velocity": 0.14638363916646885,
+      "mean_tangential_metric": 1506.2429562503637,
+      "p95_tangential_metric": 2358.1879209029566
+    },
+    "RL": {
+      "initial_swivel": 0.0005483386280928926,
+      "desired_heading": 2.3191892701692987,
+      "actual_heading": 0.13301701984057157,
+      "mean_equivalent_heading_error": 1.22352104080872,
+      "p95_heading_error": 1.4560987688385458,
+      "final_heading_error": 0.955420403261066,
+      "swivel_travel": 0.13247909091669374,
+      "mean_abs_swivel_velocity": 0.00042854488212869,
+      "mean_abs_roll_velocity": 0.09283523511771727,
+      "mean_tangential_metric": 757.541184203059,
+      "p95_tangential_metric": 1247.4031979507395
+    },
+    "RR": {
+      "initial_swivel": -0.004598953763246705,
+      "desired_heading": 2.1642568770134214,
+      "actual_heading": 0.12186227672212002,
+      "mean_equivalent_heading_error": 1.1975219795322454,
+      "p95_heading_error": 1.439886544199391,
+      "final_heading_error": 1.0991980532984917,
+      "swivel_travel": 0.12983781966659258,
+      "mean_abs_swivel_velocity": 0.000752438495233111,
+      "mean_abs_roll_velocity": 0.15276160132879357,
+      "mean_tangential_metric": 1244.5259651527492,
+      "p95_tangential_metric": 2001.0403779179117
+    }
+  },
+  "t_stall": 2.6,
+  "at_stall": {
+    "FL": {
+      "heading_error": 0.07106184464384446,
+      "tangential_metric": 500.74008203225117
+    },
+    "FR": {
+      "heading_error": 0.2044070567929026,
+      "tangential_metric": 1476.240801229404
+    },
+    "RL": {
+      "heading_error": 1.3242466317366868,
+      "tangential_metric": 669.771933323863
+    },
+    "RR": {
+      "heading_error": 1.4399911861153587,
+      "tangential_metric": 1400.0321338536953
+    }
+  },
+  "zero_trail_confirmed_as_blocker": true,
+  "evidence": {
+    "caster_heading_error_large": true,
+    "caster_swivel_nearly_stationary": true,
+    "drive_wheels_active": true,
+    "gt_stall_detected": true
+  }
+}

@@ -25,6 +25,9 @@
     </scene>
     <include><uri>model://sun</uri></include>
     <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so"/>
+    <!-- Diagnostic API only: exposes GetJointProperties for passive caster
+         joints, which are correctly absent from ros2_control /joint_states. -->
+    <plugin name="gazebo_ros_properties" filename="libgazebo_ros_properties.so"/>
 
     <!-- 30 m x 20 m floor; wall envelope is x=[-15,15], y=[-10,10]. -->
     <model name="floor">

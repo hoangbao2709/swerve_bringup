@@ -2,8 +2,8 @@
   "runs": [
     {
       "run": "yaw+",
-      "startup_wall_time": 44.67830359900108,
-      "startup_sim_time": 2.5,
+      "startup_wall_time": 39.829259139005444,
+      "startup_sim_time": 2.8000000000000003,
       "controller_ready": true,
       "local_tf_ready": true,
       "global_tf_ready": true,
@@ -14,16 +14,17 @@
       "no_old_test_launch": true,
       "no_old_evaluator": true,
       "evaluator_rc": 0,
-      "status": "FAIL",
       "direction_correct": true,
       "physics_acceptance_pass": false,
       "direction_status": "PASS",
-      "physics_status": "FAIL"
+      "physics_status": "FAIL",
+      "status": "FAIL",
+      "status_basis": "raw_motion named yaw physics metrics; caster probe is telemetry-only"
     },
     {
       "run": "yaw-",
-      "startup_wall_time": 38.03469889299595,
-      "startup_sim_time": 1.8,
+      "startup_wall_time": 42.590399838998565,
+      "startup_sim_time": 3.2,
       "controller_ready": true,
       "local_tf_ready": true,
       "global_tf_ready": true,
@@ -34,13 +35,14 @@
       "no_old_test_launch": true,
       "no_old_evaluator": true,
       "evaluator_rc": 0,
-      "status": "FAIL",
       "direction_correct": true,
       "physics_acceptance_pass": false,
       "direction_status": "PASS",
-      "physics_status": "FAIL"
+      "physics_status": "FAIL",
+      "status": "FAIL",
+      "status_basis": "raw_motion named yaw physics metrics; caster probe is telemetry-only"
     }
   ],
   "passed": false,
-  "semantics": "status is physics acceptance, not command-direction-only"
+  "semantics": "status is physics acceptance, not telemetry collection success"
 }

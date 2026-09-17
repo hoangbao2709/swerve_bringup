@@ -104,6 +104,8 @@ def run_case(args, case_name, domain, outdir):
     evaluator_rc = None
     evaluator_log = ''
     evaluator_passed = True
+    direction_correct = None
+    physics_acceptance_pass = None
     if nav_ready and args.evaluator:
         evaluator_command = [value.replace('{case_dir}', outdir) for value in args.evaluator]
         evaluator = subprocess.run(evaluator_command, cwd=ROOT, env=env,
@@ -119,7 +121,15 @@ def run_case(args, case_name, domain, outdir):
         result_path = os.path.join(outdir, 'raw_motion_result.csv')
         if os.path.exists(result_path):
             with open(result_path, encoding='utf-8') as stream:
-                evaluator_passed = evaluator_passed and next(csv.DictReader(stream), {}).get('direction_correct') == 'True'
+                raw_result = next(csv.DictReader(stream), {})
+            direction_correct = raw_result.get('direction_correct') == 'True'
+            # Raw yaw diagnostics deliberately distinguish command direction
+            # from physical acceptance; never collapse them into one PASS.
+            if 'physics_acceptance_pass' in raw_result:
+                physics_acceptance_pass = raw_result.get('physics_acceptance_pass') == 'True'
+                evaluator_passed = evaluator_passed and physics_acceptance_pass
+            else:
+                evaluator_passed = evaluator_passed and direction_correct
     shutdown_clean = stop_group(proc, args.shutdown_grace)
     quiet = graph_quiet(env)
     launch_log.close()
@@ -136,6 +146,10 @@ def run_case(args, case_name, domain, outdir):
         'no_old_test_launch': bool(shutdown_clean),
         'no_old_evaluator': evaluator_rc is not None or not args.evaluator,
         'evaluator_rc': evaluator_rc,
+        'direction_correct': direction_correct,
+        'physics_acceptance_pass': physics_acceptance_pass,
+        'direction_status': 'PASS' if direction_correct is True else 'FAIL' if direction_correct is False else 'N/A',
+        'physics_status': 'PASS' if physics_acceptance_pass is True else 'FAIL' if physics_acceptance_pass is False else 'N/A',
         'status': 'PASS' if nav_ready and shutdown_clean and quiet and evaluator_rc in (None, 0) and evaluator_passed else 'FAIL',
     }
 

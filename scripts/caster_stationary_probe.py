@@ -38,7 +38,9 @@ class Probe(Node):
         for name in WHEELS:
             self.create_subscription(ContactsState, f'/contact_load/{name}', lambda msg, n=name: self.contact_cb(n, msg), qos)
         self.entity = self.create_client(GetEntityState, '/get_entity_state')
-        self.joint_service = self.create_client(GetJointProperties, '/gazebo/get_joint_properties')
+        self.joint_services = [
+            self.create_client(GetJointProperties, '/get_joint_properties'),
+            self.create_client(GetJointProperties, '/gazebo/get_joint_properties')]
 
     def clock_cb(self, msg): self.clock.append(msg.clock.sec + msg.clock.nanosec * 1e-9); self.clock = self.clock[-20:]
     def joint_cb(self, msg): self.joints = {'position': dict(zip(msg.name, msg.position)), 'velocity': dict(zip(msg.name, msg.velocity))}
@@ -53,6 +55,12 @@ class Probe(Node):
         future = client.call_async(request); end = time.monotonic() + timeout
         while not future.done() and time.monotonic() < end: rclpy.spin_once(self, timeout_sec=.002)
         return future.result() if future.done() else None
+    def joint_properties(self, joint):
+        request = GetJointProperties.Request(joint_name=joint)
+        for service in self.joint_services:
+            response = self.call(service, request, .08)
+            if response is not None: return response
+        return None
     def snapshot(self):
         entity = self.call(self.entity, GetEntityState.Request(name='swerve_base', reference_frame='world'))
         if not entity or not entity.success: return None
@@ -65,7 +73,7 @@ class Probe(Node):
         for joint in ('steer_front_joint', 'steer_rear_joint', 'wheel_front_drive_joint', 'wheel_rear_drive_joint'):
             row[f'{joint}_position'] = self.joints['position'].get(joint); row[f'{joint}_velocity'] = self.joints['velocity'].get(joint)
         for joint in PASSIVE:
-            response = self.call(self.joint_service, GetJointProperties.Request(joint_name=joint), .08)
+            response = self.joint_properties(joint)
             row[f'{joint}_position'] = response.position[0] if response and response.success and response.position else None
             row[f'{joint}_velocity'] = response.rate[0] if response and response.success and response.rate else None
         return row

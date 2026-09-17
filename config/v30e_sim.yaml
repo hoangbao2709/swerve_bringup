@@ -1,0 +1,22 @@
+v30e_sim_node:
+  ros__parameters:
+    marker_map: datamatrix_map.yaml
+    get_entity_state_service: /get_entity_state
+    model_name: swerve_base
+    map_frame: map
+    camera_frame: v30e_link
+    # V30E working distance is checked against base_footprint->v30e_link.
+    working_height: 0.10
+    working_height_tolerance: 0.02
+    ground_z: 0.0
+    camera_height_from_base: 0.10
+    camera_x: 0.0
+    camera_y: 0.0
+    camera_yaw: 0.0
+    horizontal_fov: 1.04719755
+    vertical_fov: 1.04719755
+    marker_size: 0.20
+    publish_rate: 20.0
+    # V30E convention: +X/+Y are camera offsets expressed in marker axes;
+    # AgvAngle is camera yaw minus marker yaw, wrapped to [-pi, pi].
+    offset_angle_in_degrees: false

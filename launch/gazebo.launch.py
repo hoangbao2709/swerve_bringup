@@ -5,7 +5,7 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -71,6 +71,8 @@ def generate_launch_description():
             'gui': LaunchConfiguration('gui'),
         }.items(),
     )
+    model_path = AppendEnvironmentVariable(
+        name='GAZEBO_MODEL_PATH', value=os.path.join(pkg_share, 'models'))
 
     state_publisher = Node(
         package='robot_state_publisher',
@@ -89,11 +91,10 @@ def generate_launch_description():
         arguments=[
             '-entity', 'swerve_base',
             '-topic', 'robot_description',
-            # Start at the centre of the warehouse map, heading along +X.
-            # The lowest drive-wheel collision is about 1.4 mm below the
-            # nominal base pose.  Start just above the floor so Gazebo can
-            # settle the model without an initial collision impulse.
-            '-x', '0.0', '-y', '0.0', '-z', '0.003',
+            # Start at the centre of the warehouse map.  The lowest CAD
+            # collision is 1.4 mm below the floor at z=0; 2 mm is the
+            # geometry-derived contact clearance, not a dynamics fudge.
+            '-x', '0.0', '-y', '0.0', '-z', '0.002',
             '-R', '0.0', '-P', '0.0', '-Y', '0.0',
         ],
     )
@@ -107,21 +108,21 @@ def generate_launch_description():
             executable='spawner',
             name='spawn_joint_state_broadcaster',
             output='screen',
-            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager'],
+            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_steering_controller',
             output='screen',
-            arguments=['steering_controller', '--controller-manager', '/controller_manager'],
+            arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_drive_controller',
             output='screen',
-            arguments=['drive_controller', '--controller-manager', '/controller_manager'],
+            arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
     ]
 
@@ -150,12 +151,18 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('start_ekf')),
     )
 
-    start_controllers = RegisterEventHandler(
-        OnProcessExit(
-            target_action=spawn,
-            on_exit=controller_spawners + [swerve_controller, swerve_odometry, ekf],
-        )
-    )
+    # Load controllers serially.  gazebo_ros2_control only creates the
+    # controller manager while the spawned entity is being inserted, so a
+    # parallel spawner race leaves /joint_states and /odom silent.
+    start_joint_state = RegisterEventHandler(
+        OnProcessExit(target_action=spawn, on_exit=[controller_spawners[0]]))
+    start_steering = RegisterEventHandler(
+        OnProcessExit(target_action=controller_spawners[0], on_exit=[controller_spawners[1]]))
+    start_drive = RegisterEventHandler(
+        OnProcessExit(target_action=controller_spawners[1], on_exit=[controller_spawners[2]]))
+    start_nodes = RegisterEventHandler(
+        OnProcessExit(target_action=controller_spawners[2],
+                      on_exit=[swerve_controller, swerve_odometry, ekf]))
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -179,8 +186,12 @@ def generate_launch_description():
             'start_state_publisher', default_value='true',
             description='Start robot_state_publisher; disable when an outer bringup owns it.',
         ),
+        model_path,
         gazebo,
         state_publisher,
         spawn,
-        start_controllers,
+        start_joint_state,
+        start_steering,
+        start_drive,
+        start_nodes,
     ])

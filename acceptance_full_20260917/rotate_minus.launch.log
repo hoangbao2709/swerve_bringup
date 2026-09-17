@@ -1,0 +1,118 @@
+[INFO] [launch]: All log files can be found below /home/yahboom/.ros/log/2026-09-17-15-47-17-089584-yahboom-virtual-machine-126366
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [126405]
+[INFO] [robot_state_publisher-2]: process started with pid [126407]
+[INFO] [spawn_entity.py-3]: process started with pid [126409]
+[INFO] [ekf_node-4]: process started with pid [126411]
+[INFO] [v30e_sim_node-5]: process started with pid [126413]
+[INFO] [ekf_node-6]: process started with pid [126415]
+[INFO] [map_server-7]: process started with pid [126417]
+[INFO] [controller_server-8]: process started with pid [126419]
+[INFO] [planner_server-9]: process started with pid [126421]
+[INFO] [behavior_server-10]: process started with pid [126424]
+[INFO] [bt_navigator-11]: process started with pid [126427]
+[INFO] [waypoint_follower-12]: process started with pid [126432]
+[INFO] [lifecycle_manager-13]: process started with pid [126439]
+[INFO] [swerve_bridge_node-14]: process started with pid [126446]
+[map_server-7] [INFO] [1789631247.294029157] [map_server]: 
+[map_server-7] 	map_server lifecycle node launched. 
+[map_server-7] 	Waiting on external lifecycle transitions to activate
+[map_server-7] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[map_server-7] [INFO] [1789631247.373784521] [map_server]: Creating
+[planner_server-9] [INFO] [1789631247.391479997] [planner_server]: 
+[planner_server-9] 	planner_server lifecycle node launched. 
+[planner_server-9] 	Waiting on external lifecycle transitions to activate
+[planner_server-9] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-9] [INFO] [1789631247.415869983] [planner_server]: Creating
+[behavior_server-10] [INFO] [1789631248.058131347] [behavior_server]: 
+[behavior_server-10] 	behavior_server lifecycle node launched. 
+[behavior_server-10] 	Waiting on external lifecycle transitions to activate
+[behavior_server-10] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[lifecycle_manager-13] [INFO] [1789631248.323410054] [lifecycle_manager_navigation]: Creating
+[ERROR] [gzserver-1]: process has died [pid 126405, exit code 255, cmd 'gzserver /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/worlds/warehouse.world -slibgazebo_ros_init.so -slibgazebo_ros_factory.so -slibgazebo_ros_force_system.so'].
+[robot_state_publisher-2] [INFO] [1789631248.530512545] [robot_state_publisher]: got segment base_footprint
+[robot_state_publisher-2] [INFO] [1789631248.530693404] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789631248.530707992] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789631248.530715821] [robot_state_publisher]: got segment lidar_link
+[robot_state_publisher-2] [INFO] [1789631248.530722866] [robot_state_publisher]: got segment steer_front_link
+[robot_state_publisher-2] [INFO] [1789631248.530730075] [robot_state_publisher]: got segment steer_rear_link
+[robot_state_publisher-2] [INFO] [1789631248.530736957] [robot_state_publisher]: got segment v30e_link
+[robot_state_publisher-2] [INFO] [1789631248.530743491] [robot_state_publisher]: got segment wheel_front_drive_link
+[robot_state_publisher-2] [INFO] [1789631248.530750588] [robot_state_publisher]: got segment wheel_front_left_link
+[robot_state_publisher-2] [INFO] [1789631248.530772968] [robot_state_publisher]: got segment wheel_front_right_link
+[robot_state_publisher-2] [INFO] [1789631248.530787203] [robot_state_publisher]: got segment wheel_rear_drive_link
+[robot_state_publisher-2] [INFO] [1789631248.530794095] [robot_state_publisher]: got segment wheel_rear_left_link
+[robot_state_publisher-2] [INFO] [1789631248.530800847] [robot_state_publisher]: got segment wheel_rear_right_link
+[lifecycle_manager-13] [INFO] [1789631248.666899020] [lifecycle_manager_navigation]: [34m[1mCreating and initializing lifecycle service clients[0m[0m
+[waypoint_follower-12] [INFO] [1789631248.968105720] [waypoint_follower]: 
+[waypoint_follower-12] 	waypoint_follower lifecycle node launched. 
+[waypoint_follower-12] 	Waiting on external lifecycle transitions to activate
+[waypoint_follower-12] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[waypoint_follower-12] [INFO] [1789631248.968748261] [waypoint_follower]: Creating
+[bt_navigator-11] [INFO] [1789631249.018966437] [bt_navigator]: 
+[bt_navigator-11] 	bt_navigator lifecycle node launched. 
+[bt_navigator-11] 	Waiting on external lifecycle transitions to activate
+[bt_navigator-11] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[bt_navigator-11] [INFO] [1789631249.019146113] [bt_navigator]: Creating
+[planner_server-9] [INFO] [1789631249.060290749] [global_costmap.global_costmap]: 
+[planner_server-9] 	global_costmap lifecycle node launched. 
+[planner_server-9] 	Waiting on external lifecycle transitions to activate
+[planner_server-9] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-9] [INFO] [1789631249.061300057] [global_costmap.global_costmap]: Creating Costmap
+[controller_server-8] [INFO] [1789631250.106651152] [controller_server]: 
+[controller_server-8] 	controller_server lifecycle node launched. 
+[controller_server-8] 	Waiting on external lifecycle transitions to activate
+[controller_server-8] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-8] [INFO] [1789631250.119543677] [controller_server]: Creating controller server
+[lifecycle_manager-13] [INFO] [1789631251.377762395] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[spawn_entity.py-3] [INFO] [1789631253.207464544] [spawn_swerve]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1789631253.208021842] [spawn_swerve]: Loading entity published on topic robot_description
+[lifecycle_manager-13] [INFO] [1789631253.383897476] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[spawn_entity.py-3] [INFO] [1789631253.613053178] [spawn_swerve]: Waiting for entity xml on robot_description
+[v30e_sim_node-5] [INFO] [1789631253.679500754] [v30e_sim_node]: Using Gazebo /get_entity_state internally; odometry is not a V30E measurement input
+[lifecycle_manager-13] [INFO] [1789631255.391418169] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631256.048840219] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631257.395159828] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631258.061676929] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631259.398841078] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[spawn_entity.py-3] [INFO] [1789631259.402215551] [spawn_swerve]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1789631259.421594796] [spawn_swerve]: Waiting for service /spawn_entity
+[swerve_bridge_node-14] [WARN] [1789631260.084068571] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631261.419896161] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631262.116384099] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[controller_server-8] [INFO] [1789631262.724504204] [local_costmap.local_costmap]: 
+[controller_server-8] 	local_costmap lifecycle node launched. 
+[controller_server-8] 	Waiting on external lifecycle transitions to activate
+[controller_server-8] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-8] [INFO] [1789631262.725664566] [local_costmap.local_costmap]: Creating Costmap
+[lifecycle_manager-13] [INFO] [1789631263.437768892] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631264.124590016] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631265.443350210] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631266.136148278] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631267.444813420] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631268.144590140] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631270.147706252] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631272.154152118] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631273.279020477] [lifecycle_manager_navigation]: Waiting for service controller_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631274.159415144] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631275.289755376] [lifecycle_manager_navigation]: Waiting for service controller_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631276.167150036] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631277.294804633] [lifecycle_manager_navigation]: Waiting for service controller_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631278.188887066] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631279.295262861] [lifecycle_manager_navigation]: Waiting for service controller_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631280.224355920] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631281.313424694] [lifecycle_manager_navigation]: Waiting for service controller_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631282.242173775] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631283.317076887] [lifecycle_manager_navigation]: Waiting for service controller_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631284.253818831] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631285.321425283] [lifecycle_manager_navigation]: Waiting for service controller_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631286.270737939] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631287.323706229] [lifecycle_manager_navigation]: Waiting for service controller_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631288.273529356] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[spawn_entity.py-3] [INFO] [1789631288.668565425] [spawn_swerve]: Calling service /spawn_entity
+[swerve_bridge_node-14] [WARN] [1789631290.276188490] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631292.283648271] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[spawn_entity.py-3] [INFO] [1789631293.180320823] [spawn_swerve]: Spawn status: Entity [swerve_base] already exists.
+[spawn_entity.py-3] [ERROR] [1789631293.192891177] [spawn_swerve]: Spawn service failed. Exiting.
+[lifecycle_manager-13] [INFO] [1789631294.075377275] [lifecycle_manager_navigation]: [34m[1mStarting managed nodes bringup...[0m[0m
+[lifecycle_manager-13] [INFO] [1789631294.086452033] [lifecycle_manager_navigation]: [34m[1mConfiguring map_server[0m[0m

@@ -1,0 +1,63 @@
+{
+  "runs": 1,
+  "metrics": {
+    "gt_goal_error": {
+      "mean": 0.9999980257696427,
+      "max": 0.9999980257696427,
+      "rmse": 0.9999980257696427,
+      "stddev": 0.0
+    },
+    "localization_error_xy": {
+      "mean": 1.6490361715360002e-05,
+      "max": 1.6490361715360002e-05,
+      "rmse": 1.6490361715360002e-05,
+      "stddev": 0.0
+    },
+    "localization_error_yaw": {
+      "mean": 1.4606717435583505e-06,
+      "max": 1.4606717435583505e-06,
+      "rmse": 1.4606717435583505e-06,
+      "stddev": 0.0
+    },
+    "odom_error_xy": {
+      "mean": 0.0012013951712851792,
+      "max": 0.0012013951712851792,
+      "rmse": 0.0012013951712851792,
+      "stddev": 0.0
+    },
+    "final_navigation_error_xy": {
+      "mean": 0.9999980257696427,
+      "max": 0.9999980257696427,
+      "rmse": 0.9999980257696427,
+      "stddev": 0.0
+    },
+    "final_yaw_error": {
+      "mean": 8.930446013799553e-07,
+      "max": 8.930446013799553e-07,
+      "rmse": 8.930446013799553e-07,
+      "stddev": 0.0
+    },
+    "travelled_distance": {
+      "mean": 1.975211131525717e-06,
+      "max": 1.975211131525717e-06,
+      "rmse": 1.975211131525717e-06,
+      "stddev": 0.0
+    }
+  },
+  "passed": false,
+  "rows": [
+    {
+      "run": 1,
+      "test": "X+",
+      "gt_goal_error": 0.9999980257696427,
+      "localization_error_xy": 1.6490361715360002e-05,
+      "localization_error_yaw": 1.4606717435583505e-06,
+      "odom_error_xy": 0.0012013951712851792,
+      "v30e_error_xy": 4.867405683676292e-07,
+      "final_navigation_error_xy": 0.9999980257696427,
+      "final_yaw_error": 8.930446013799553e-07,
+      "travelled_distance": 1.975211131525717e-06,
+      "action_status": "TIMEOUT"
+    }
+  ]
+}

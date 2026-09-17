@@ -6,6 +6,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -14,6 +15,7 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('swerve_bringup')
     use_sim_time = LaunchConfiguration('use_sim_time')
     input_topic = LaunchConfiguration('input_topic')
+    start_slam = LaunchConfiguration('start_slam')
     preprocess_config = os.path.join(pkg_share, 'config', 'lidar_preprocessing.yaml')
     scan_config = os.path.join(pkg_share, 'config', 'pointcloud_to_laserscan.yaml')
     slam_config = os.path.join(pkg_share, 'config', 'slam_toolbox.yaml')
@@ -39,6 +41,7 @@ def generate_launch_description():
         name='slam_toolbox',
         output='screen',
         parameters=[slam_config, {'use_sim_time': use_sim_time}],
+        condition=IfCondition(start_slam),
     )
 
     return LaunchDescription([
@@ -47,6 +50,8 @@ def generate_launch_description():
             description='Use the Gazebo clock'),
         DeclareLaunchArgument('input_topic', default_value='/lidar/points',
                               description='Raw 3D cloud topic, normalized for sim or real driver'),
+        DeclareLaunchArgument('start_slam', default_value='true',
+                              description='Start SLAM map->odom owner; disable when V30E EKF owns map->odom'),
         preprocessor,
         cloud_to_scan,
         slam,

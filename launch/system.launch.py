@@ -17,7 +17,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, Command, EnvironmentVariable
+from launch.substitutions import LaunchConfiguration, Command, EnvironmentVariable, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -33,6 +33,9 @@ def generate_launch_description():
     pkg = get_package_share_directory('swerve_bringup')
     use_sim = LaunchConfiguration('use_sim')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    mode = LaunchConfiguration('mode')
+    mapping_mode = IfCondition(PythonExpression(["'", mode, "' == 'mapping'"]))
+    navigation_mode = IfCondition(PythonExpression(["'", mode, "' == 'navigation'"]))
     lidar_topic = LaunchConfiguration('real_lidar_topic')
     imu_topic = LaunchConfiguration('real_imu_topic')
     odom_topic = LaunchConfiguration('real_odom_topic')
@@ -78,18 +81,28 @@ def generate_launch_description():
                parameters=[os.path.join(pkg, 'config', 'ekf.yaml'), {'use_sim_time': use_sim_time}],
                remappings=[('/odom', odom_topic), ('/imu/data', imu_topic)])
     slam = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'slam.launch.py')),
-                                   launch_arguments={'use_sim_time': use_sim_time, 'input_topic': lidar_topic}.items())
+                                   launch_arguments={'use_sim_time': use_sim_time, 'input_topic': lidar_topic,
+                                                     'start_slam': 'true'}.items(),
+                                   condition=mapping_mode)
     nav = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'navigation.launch.py')),
-                                  launch_arguments={'use_sim_time': use_sim_time}.items())
+                                  launch_arguments={'use_sim_time': use_sim_time,
+                                                    'map_file': os.path.join(pkg, 'swerve_navigation', 'maps', 'warehouse.yaml')}.items(),
+                                  condition=navigation_mode)
     bridge = Node(package='swerve_bridge', executable='swerve_bridge_node', name='swerve_bridge', output='screen',
                   parameters=[os.path.join(get_package_share_directory('swerve_bridge'), 'config', 'bridge.yaml'),
                               {'use_sim_time': use_sim_time,
                                'django_token': LaunchConfiguration('bridge_token'),
                                'django_ws_url': LaunchConfiguration('bridge_ws_url')}])
+    v30e = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'v30e_sim.launch.py')),
+        launch_arguments={'enable_v30e_sim': 'true', 'use_sim_time': use_sim_time}.items(),
+        condition=navigation_mode)
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim', default_value='true', description='true=Gazebo, false=physical robot drivers'),
         DeclareLaunchArgument('use_sim_time', default_value='true', description='Use Gazebo clock; set false for real robot'),
+        DeclareLaunchArgument('mode', default_value='mapping',
+                              description='mapping=SLAM owns map->odom; navigation=static map + V30E owns map->odom'),
         DeclareLaunchArgument('world', default_value=os.path.join(pkg, 'worlds', 'warehouse.world')),
         DeclareLaunchArgument('gui', default_value='true', description='Start the Gazebo client window'),
         DeclareLaunchArgument('real_sensor_launch', default_value='', description='Vendor sensor launch file for use_sim=false'),
@@ -101,5 +114,5 @@ def generate_launch_description():
             default_value=EnvironmentVariable('WARETWIN_ROS_BRIDGE_TOKEN', default_value=''),
             description='Token for the Django ROS bridge (defaults to WARETWIN_ROS_BRIDGE_TOKEN)'),
         DeclareLaunchArgument('bridge_ws_url', default_value='ws://127.0.0.1:8000/ws/ros'),
-        sim, real_driver, real_state_publisher, ekf, slam, nav, bridge,
+        sim, real_driver, real_state_publisher, ekf, v30e, slam, nav, bridge,
     ])

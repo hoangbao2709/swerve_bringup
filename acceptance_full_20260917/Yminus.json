@@ -1,0 +1,18 @@
+{
+  "gt_goal_error": 0.023401085050912113,
+  "localization_xy_error": 0.029633422356357568,
+  "localization_yaw_error": 0.0161624779177445,
+  "odom_displacement_error": 0.026732736746286026,
+  "final_yaw_error": 0.08241248700993653,
+  "action_status": "TIMEOUT",
+  "sim_time": 180.04800534248352,
+  "wall_time": 180.04802410400225,
+  "rtf": 0.9999998957971418,
+  "v30e_tag_events": 1,
+  "v30e_tags": [
+    305
+  ],
+  "motion_ok": true,
+  "startup_tag": 305,
+  "map_odom_exists": true
+}

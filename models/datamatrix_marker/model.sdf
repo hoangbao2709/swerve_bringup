@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="datamatrix_marker">
+    <static>true</static>
+    <link name="link">
+      <!-- 200 mm floor marker: white substrate plus DataMatrix-style L finder
+           border and alternating timing border. It is intentionally not QR. -->
+      <visual name="white_substrate"><pose>0 0 0.003 0 0 0</pose><geometry><box><size>0.20 0.20 0.006</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+      <visual name="black_l_left"><pose>-0.088 0 0.007 0 0 0</pose><geometry><box><size>0.024 0.20 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+      <visual name="black_l_bottom"><pose>0 -0.088 0.007 0 0 0</pose><geometry><box><size>0.20 0.024 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+      <visual name="timing_top"><pose>0 0.088 0.007 0 0 0</pose><geometry><box><size>0.20 0.024 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+      <visual name="timing_right"><pose>0.088 0 0.007 0 0 0</pose><geometry><box><size>0.024 0.20 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+      <visual name="cell_a"><pose>-0.045 0.045 0.009 0 0 0</pose><geometry><box><size>0.035 0.035 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+      <visual name="cell_b"><pose>0.010 0.045 0.009 0 0 0</pose><geometry><box><size>0.035 0.035 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+      <visual name="cell_c"><pose>0.045 -0.010 0.009 0 0 0</pose><geometry><box><size>0.035 0.035 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+      <visual name="cell_d"><pose>-0.010 -0.045 0.009 0 0 0</pose><geometry><box><size>0.035 0.035 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+    </link>
+  </model>
+</sdf>

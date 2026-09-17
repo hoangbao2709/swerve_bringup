@@ -22,8 +22,16 @@ Visualization Manager:
       Enabled: true
       Show Names: true
       Show Axes: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: V30E DataMatrix markers
+      Enabled: true
+      Marker Topic: /v30e/markers
+    - Class: rviz_default_plugins/PoseWithCovariance
+      Name: V30E absolute pose
+      Enabled: true
+      Topic: /v30e/pose
   Global Options:
-    Fixed Frame: base_footprint
+    Fixed Frame: map
     Background Color: 48; 48; 48
   Tools:
     - Class: rviz_default_plugins/MoveCamera

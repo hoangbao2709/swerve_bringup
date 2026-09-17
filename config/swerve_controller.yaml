@@ -9,6 +9,6 @@ swerve_controller:
     speed_deadband: 0.01
 
     modules.front.x: 0.300042
-    modules.front.y: 0.049988
+    modules.front.y: 0.0
     modules.rear.x: -0.300042
-    modules.rear.y: 0.050013
+    modules.rear.y: 0.0

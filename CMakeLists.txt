@@ -4,7 +4,7 @@ project(swerve_bringup)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY urdf meshes launch rviz worlds config
+  DIRECTORY urdf meshes launch rviz worlds config models
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -36,6 +36,24 @@ install(
   PROGRAMS swerve_controller/lidar_preprocessor_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME lidar_preprocessor_node
+)
+
+install(
+  PROGRAMS swerve_controller/v30e_sim_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME v30e_sim_node
+)
+
+install(
+  PROGRAMS test_navigation.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME test_navigation.py
+)
+
+install(
+  PROGRAMS accuracy_benchmark.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME accuracy_benchmark.py
 )
 
 ament_package()

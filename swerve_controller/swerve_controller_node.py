@@ -37,9 +37,9 @@ class SwerveController(Node):
         self.declare_parameter('control_rate', 50.0)
         self.declare_parameter('speed_deadband', 0.01)
         self.declare_parameter('modules.front.x', 0.300042)
-        self.declare_parameter('modules.front.y', 0.049988)
+        self.declare_parameter('modules.front.y', 0.0)
         self.declare_parameter('modules.rear.x', -0.300042)
-        self.declare_parameter('modules.rear.y', 0.050013)
+        self.declare_parameter('modules.rear.y', 0.0)
 
         self.wheel_radius = float(self.get_parameter('wheel_radius').value)
         self.max_wheel_velocity = float(self.get_parameter('max_wheel_velocity').value)
@@ -114,6 +114,8 @@ class SwerveController(Node):
                 continue
 
             angle = normalize_angle(math.atan2(module_vy, module_vx))
+            # Calibrated against Gazebo contact motion: positive joint speed
+            # rolls this model in Nav2's positive body direction.
             speed = linear_speed / self.wheel_radius
 
             current = self.steering_state[module]

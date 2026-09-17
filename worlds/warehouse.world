@@ -10,11 +10,11 @@
       <real_time_update_rate>1000</real_time_update_rate>
       <real_time_factor>1.0</real_time_factor>
       <ode>
-        <solver><type>quick</type><iters>100</iters><sor>1.3</sor></solver>
+        <solver><type>quick</type><iters>120</iters><sor>1.3</sor></solver>
         <constraints>
           <cfm>0.0</cfm><erp>0.2</erp>
-          <contact_max_correcting_vel>0.1</contact_max_correcting_vel>
-          <contact_surface_layer>0.0</contact_surface_layer>
+          <contact_max_correcting_vel>0.5</contact_max_correcting_vel>
+          <contact_surface_layer>0.0005</contact_surface_layer>
         </constraints>
       </ode>
     </physics>
@@ -24,6 +24,7 @@
       <shadows>true</shadows>
     </scene>
     <include><uri>model://sun</uri></include>
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so"/>
 
     <!-- 30 m x 20 m floor; wall envelope is x=[-15,15], y=[-10,10]. -->
     <model name="floor">
@@ -754,5 +755,51 @@
         <collision name="collision"><geometry><box><size>0.18 2.8 1</size></box></geometry><surface><friction><ode><mu>0.7</mu><mu2>0.7</mu2></ode></friction><contact><ode><kp>1000000</kp><kd>100</kd><max_vel>0.05</max_vel><min_depth>0</min_depth></ode></contact></surface></collision>
       </link>
     </model>
++    <!-- V30E DataMatrix floor grid; IDs correspond to config/datamatrix_map.yaml. -->
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_101</name><pose>-12 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_102</name><pose>-9 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_103</name><pose>-6 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_104</name><pose>-3 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_105</name><pose>0 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_106</name><pose>3 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_107</name><pose>6 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_108</name><pose>9 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_109</name><pose>12 -8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_201</name><pose>-12 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_202</name><pose>-9 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_203</name><pose>-6 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_204</name><pose>-3 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_205</name><pose>0 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_206</name><pose>3 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_207</name><pose>6 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_208</name><pose>9 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_209</name><pose>12 -4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_301</name><pose>-12 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_302</name><pose>-9 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_303</name><pose>-6 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_304</name><pose>-3 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_305</name><pose>0 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_306</name><pose>3 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_307</name><pose>6 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_308</name><pose>9 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_309</name><pose>12 0 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_401</name><pose>-12 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_402</name><pose>-9 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_403</name><pose>-6 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_404</name><pose>-3 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_405</name><pose>0 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_406</name><pose>3 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_407</name><pose>6 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_408</name><pose>9 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_409</name><pose>12 4 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_501</name><pose>-12 8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_502</name><pose>-9 8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_503</name><pose>-6 8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_504</name><pose>-3 8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_505</name><pose>0 8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_506</name><pose>3 8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_507</name><pose>6 8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_508</name><pose>9 8 0 0 0 0</pose></include>
+    <include><uri>model://datamatrix_marker</uri><name>datamatrix_509</name><pose>12 8 0 0 0 0</pose></include>
   </world>
 </sdf>

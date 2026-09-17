@@ -1,9 +1,13 @@
 swerve_odometry:
   ros__parameters:
-    wheel_radius: 0.0675
-    # URDF wheel axis is +Y. With the wheel contact at -Z, positive joint
-    # rotation produces -X rolling velocity, hence this sign is -1.
-    wheel_velocity_sign: -1.0
+    # Encoder scale calibrated from the one-metre X+ smoke trace:
+    # Gazebo displacement / encoder displacement ~= 0.943 on the
+    # low-angular-rate near-goal controller trace.
+    # Keep controller geometry at the CAD radius; this is the measured
+    # rolling/contact scale used only to report odometry.
+    wheel_radius: 0.0637
+    # Calibrated against Gazebo contact motion.
+    wheel_velocity_sign: 1.0
     publish_rate: 50.0
     joint_state_timeout: 0.3
     odom_frame: odom
@@ -11,6 +15,6 @@ swerve_odometry:
     # robot_localization owns odom -> base_footprint in Phase 6.
     publish_tf: false
     modules.front.x: 0.300042
-    modules.front.y: 0.049988
+    modules.front.y: 0.0
     modules.rear.x: -0.300042
-    modules.rear.y: 0.050013
+    modules.rear.y: 0.0

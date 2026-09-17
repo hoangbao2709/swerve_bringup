@@ -1,3 +1,6 @@
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_controller_node
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/swerve_odometry_node
 /home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/lidar_preprocessor_node
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/test_navigation.py
+/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/accuracy_benchmark.py

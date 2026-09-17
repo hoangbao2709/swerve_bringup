@@ -1,0 +1,42 @@
+ekf_v30e:
+  ros__parameters:
+    two_d_mode: true
+    frequency: 30.0
+    sensor_timeout: 0.5
+    print_diagnostics: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: map
+    # Continuous local estimate remains the source of odom->base_footprint.
+    odom0: /odom
+    # Only wheel velocities are propagated here.  Raw odom x/y/yaw is not an
+    # absolute map observation and must not be fed back into the V30E filter.
+    odom0_config: [false, false, false, false, false, false,
+                   true, true, false, false, false, true,
+                   false, false, false]
+    odom0_queue_size: 10
+    # Feed only continuous wheel increments into the global filter.  Treating
+    # raw odom x/y as an absolute map pose makes the sparse V30E anchor pull
+    # map->odom backwards as the robot moves (localization feedback).
+    odom0_differential: false
+    # Wheel yaw is weakly observable with the two in-line modules. Use the
+    # IMU yaw-rate to prevent accumulated yaw coupling from moving map->odom.
+    imu0: /imu/data
+    imu0_config: [false, false, false, false, false, false,
+                  false, false, false, false, false, true,
+                  false, false, false]
+    imu0_queue_size: 20
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: false
+    # Absolute V30E correction is sparse: no message means no correction.
+    pose0: /v30e/pose
+    pose0_config: [true, true, false, false, false, true,
+                   false, false, false, false, false, false,
+                   false, false, false]
+    pose0_queue_size: 5
+    pose0_differential: false
+    pose0_relative: false
+    pose0_rejection_threshold: 4.0

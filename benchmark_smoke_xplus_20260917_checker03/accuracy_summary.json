@@ -1,0 +1,73 @@
+{
+  "runs": 1,
+  "metrics": {
+    "gt_goal_error": {
+      "mean": 0.046906348015895785,
+      "max": 0.046906348015895785,
+      "rmse": 0.046906348015895785,
+      "stddev": 0.0
+    },
+    "localization_error_xy": {
+      "mean": 0.023570645664376527,
+      "max": 0.023570645664376527,
+      "rmse": 0.023570645664376527,
+      "stddev": 0.0
+    },
+    "localization_error_yaw": {
+      "mean": 0.0023112903699540333,
+      "max": 0.0023112903699540333,
+      "rmse": 0.0023112903699540333,
+      "stddev": 0.0
+    },
+    "odom_error_xy": {
+      "mean": 0.017520104433616193,
+      "max": 0.017520104433616193,
+      "rmse": 0.017520104433616193,
+      "stddev": 0.0
+    },
+    "final_navigation_error_xy": {
+      "mean": 0.046906348015895785,
+      "max": 0.046906348015895785,
+      "rmse": 0.046906348015895785,
+      "stddev": 0.0
+    },
+    "final_yaw_error": {
+      "mean": 0.025919230370329505,
+      "max": 0.025919230370329505,
+      "rmse": 0.025919230370329505,
+      "stddev": 0.0
+    },
+    "travelled_distance": {
+      "mean": 1.0331193592188959,
+      "max": 1.0331193592188959,
+      "rmse": 1.0331193592188959,
+      "stddev": 0.0
+    }
+  },
+  "passed": true,
+  "rows": [
+    {
+      "run": 1,
+      "test": "X+",
+      "alignment_error_xy_initial": 5.2069360517395145e-05,
+      "alignment_error_yaw_initial": 0.00012147802386319739,
+      "gt_goal_error": 0.046906348015895785,
+      "localization_error_xy": 0.023570645664376527,
+      "localization_error_yaw": 0.0023112903699540333,
+      "odom_error_xy": 0.017520104433616193,
+      "v30e_error_xy": 0.8898934268840737,
+      "final_navigation_error_xy": 0.046906348015895785,
+      "final_yaw_error": 0.025919230370329505,
+      "travelled_distance": 1.0331193592188959,
+      "action_status": "SUCCEEDED",
+      "gt_yaw_displacement": 0.025919230370329505,
+      "motion_ok": true,
+      "path_generated": true,
+      "cmd_vel_nonzero": true,
+      "distance_remaining_last": 0.049999892711639404,
+      "elapsed_sim_time": 65.19652080535889,
+      "elapsed_wall_time": 65.19653730599748,
+      "real_time_factor": 0.9999997469092796
+    }
+  ]
+}

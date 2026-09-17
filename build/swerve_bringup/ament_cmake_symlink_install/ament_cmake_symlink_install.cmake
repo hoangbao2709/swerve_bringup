@@ -310,8 +310,8 @@ message(STATUS "Execute custom install script")
 
 # begin of custom install code
 
-# install(DIRECTORY "urdf" "meshes" "launch" "rviz" "worlds" "config" "DESTINATION" "share/swerve_bringup")
-ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "urdf" "meshes" "launch" "rviz" "worlds" "config" "DESTINATION" "share/swerve_bringup")
+# install(DIRECTORY "urdf" "meshes" "launch" "rviz" "worlds" "config" "models" "DESTINATION" "share/swerve_bringup")
+ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "urdf" "meshes" "launch" "rviz" "worlds" "config" "models" "DESTINATION" "share/swerve_bringup")
 
 # install(DIRECTORY "swerve_navigation/config" "swerve_navigation/maps" "DESTINATION" "share/swerve_bringup/swerve_navigation")
 ament_cmake_symlink_install_directory("/home/yahboom/swerve_bringup" DIRECTORY "swerve_navigation/config" "swerve_navigation/maps" "DESTINATION" "share/swerve_bringup/swerve_navigation")

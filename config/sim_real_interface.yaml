@@ -5,11 +5,23 @@ topics:
     imu: /imu/data
     odom: /odom
     filtered_odom: /odometry/filtered
+    v30e_tag_id: /v30e/tag_id
+    v30e_offset: /v30e/offset
+    v30e_pose: /v30e/pose
 frames:
     base_link: base_link
     base_footprint: base_footprint
     lidar: lidar_link
     imu: imu_link
+    v30e: v30e_link
+
+# V30E contract is identical in simulation and on the real robot. The real
+# launch only replaces v30e_sim_node with v30e_driver_node (TCP/RS485).
+v30e:
+    tag_id_type: std_msgs/Int32
+    offset_type: geometry_msgs/Vector3Stamped  # x=AgvX, y=AgvY, z=AgvAngle
+    pose_type: geometry_msgs/PoseWithCovarianceStamped
+    marker_map: datamatrix_map.yaml
 
 real_topics:
     lidar: /lidar/points

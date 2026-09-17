@@ -58,6 +58,18 @@ if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "lidar_preprocessor_node" FILES "/home/yahboom/swerve_bringup/swerve_controller/lidar_preprocessor_node.py")
 endif()
 
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "v30e_sim_node" FILES "/home/yahboom/swerve_bringup/swerve_controller/v30e_sim_node.py")
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "test_navigation.py" FILES "/home/yahboom/swerve_bringup/test_navigation.py")
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "accuracy_benchmark.py" FILES "/home/yahboom/swerve_bringup/accuracy_benchmark.py")
+endif()
+
 if(CMAKE_INSTALL_COMPONENT)
   set(CMAKE_INSTALL_MANIFEST "install_manifest_${CMAKE_INSTALL_COMPONENT}.txt")
 else()

@@ -110,6 +110,15 @@
             rpy="${imu_roll} ${imu_pitch} ${imu_yaw}"/>
   </joint>
 
+  <!-- V30E DataMatrix reader, downward-facing, nominal working height 0.10 m. -->
+  <link name="v30e_link">
+    <visual><geometry><box size="0.09 0.07 0.025"/></geometry><material name="dark"/></visual>
+  </link>
+  <joint name="base_v30e_joint" type="fixed">
+    <parent link="base_link"/><child link="v30e_link"/>
+    <origin xyz="0 0 -0.145" rpy="0 0 0"/>
+  </joint>
+
   <!-- base_footprint - hinh chieu cua robot xuong mat dat (z=0), theo chuan REP-120 cho Nav2.
        Do cao uoc luong tu diem tiep dat thap nhat trong 2 loai banh (chu dong + bi dong),
        lech nhau ~3mm giua 2 uoc luong -> lay trung binh. -->
@@ -197,19 +206,20 @@
       <geometry><sphere radius="0.0414"/></geometry>
       <material name="dark"/>
     </visual>
-    <collision>
-      <geometry><sphere radius="0.0414"/></geometry>
-    </collision>
+    <!-- Stable low-friction primitive; the swivel DOF and low contact
+         friction keep this passive support from locking the chassis. -->
+    <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.443"/>
       <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
     </inertial>
   </link>
-  <joint name="wheel_front_left_joint" type="fixed">
+  <joint name="wheel_front_left_joint" type="continuous">
     <parent link="base_link"/>
     <child link="wheel_front_left_link"/>
     <origin xyz="0.505 0.195 -0.20157" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/><dynamics friction="0.02" damping="0.05"/>
   </joint>
 
   <!-- Banh bi dong FRONT RIGHT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
@@ -218,19 +228,18 @@
       <geometry><sphere radius="0.0414"/></geometry>
       <material name="dark"/>
     </visual>
-    <collision>
-      <geometry><sphere radius="0.0414"/></geometry>
-    </collision>
+    <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.443"/>
       <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
     </inertial>
   </link>
-  <joint name="wheel_front_right_joint" type="fixed">
+  <joint name="wheel_front_right_joint" type="continuous">
     <parent link="base_link"/>
     <child link="wheel_front_right_link"/>
     <origin xyz="0.505 -0.195 -0.20157" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/><dynamics friction="0.02" damping="0.05"/>
   </joint>
 
   <!-- Banh bi dong REAR LEFT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
@@ -239,19 +248,18 @@
       <geometry><sphere radius="0.043"/></geometry>
       <material name="dark"/>
     </visual>
-    <collision>
-      <geometry><sphere radius="0.043"/></geometry>
-    </collision>
+    <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.443"/>
       <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
     </inertial>
   </link>
-  <joint name="wheel_rear_left_joint" type="fixed">
+  <joint name="wheel_rear_left_joint" type="continuous">
     <parent link="base_link"/>
     <child link="wheel_rear_left_link"/>
     <origin xyz="-0.505 0.195 -0.20157" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/><dynamics friction="0.02" damping="0.05"/>
   </joint>
 
   <!-- Banh bi dong REAR RIGHT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
@@ -260,19 +268,18 @@
       <geometry><sphere radius="0.043"/></geometry>
       <material name="dark"/>
     </visual>
-    <collision>
-      <geometry><sphere radius="0.043"/></geometry>
-    </collision>
+    <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.443"/>
       <inertia ixx="0.000327" ixy="0" ixz="0" iyy="0.000327" iyz="0" izz="0.000327"/>
     </inertial>
   </link>
-  <joint name="wheel_rear_right_joint" type="fixed">
+  <joint name="wheel_rear_right_joint" type="continuous">
     <parent link="base_link"/>
     <child link="wheel_rear_right_link"/>
     <origin xyz="-0.505 -0.195 -0.20157" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/><dynamics friction="0.02" damping="0.05"/>
   </joint>
 
   <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->
@@ -297,7 +304,7 @@
     <child link="wheel_front_drive_link"/>
     <!-- Keep the driven wheel slightly below the passive caster contact plane
          so it carries load instead of free-spinning above the floor. -->
-    <origin xyz="0.0 -0.0482 -0.093" rpy="0 0 0"/>
+    <origin xyz="0.0 -0.0482 -0.0916" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <limit effort="200.0" velocity="30.0"/>
     <dynamics friction="0.05" damping="0.10"/>
@@ -323,15 +330,18 @@
   <joint name="wheel_rear_drive_joint" type="continuous">
     <parent link="steer_rear_link"/>
     <child link="wheel_rear_drive_link"/>
-    <origin xyz="0.0 0.0482 -0.093" rpy="0 0 0"/>
+    <!-- Rear housing is mirrored about the chassis centreline.  Use the
+         mirrored lateral offset so both driven contact patches are at
+         y~=0; otherwise straight +X drive applies a constant yaw moment. -->
+    <origin xyz="0.0 -0.0482 -0.0916" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <limit effort="200.0" velocity="30.0"/>
     <dynamics friction="0.05" damping="0.10"/>
   </joint>
   <!-- Gazebo Classic contact/friction parameters. These are initial values only. -->
   <gazebo reference="base_link">
-    <mu1>0.6</mu1>
-    <mu2>0.6</mu2>
+    <mu1>0.05</mu1>
+    <mu2>0.05</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
     <maxVel>0.1</maxVel>
@@ -352,19 +362,17 @@
     <maxVel>0.05</maxVel><minDepth>0.0</minDepth>
   </gazebo>
   <gazebo reference="wheel_front_left_link">
-    <!-- These CAD caster placeholders are fixed spheres.  Keep their
-         isotropic friction below the driven wheels, but non-zero so the
-         chassis does not skate after a zero drive command. -->
-    <mu1>0.80</mu1><mu2>0.80</mu2><kp>1000000.0</kp><kd>100.0</kd>
+    <!-- Passive support has a free swivel DOF; it is not a fixed skid. -->
+    <mu1>0.01</mu1><mu2>0.01</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
   <gazebo reference="wheel_front_right_link">
-    <mu1>0.80</mu1><mu2>0.80</mu2><kp>1000000.0</kp><kd>100.0</kd>
+    <mu1>0.01</mu1><mu2>0.01</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
   <gazebo reference="wheel_rear_left_link">
-    <mu1>0.80</mu1><mu2>0.80</mu2><kp>1000000.0</kp><kd>100.0</kd>
+    <mu1>0.01</mu1><mu2>0.01</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
   <gazebo reference="wheel_rear_right_link">
-    <mu1>0.80</mu1><mu2>0.80</mu2><kp>1000000.0</kp><kd>100.0</kd>
+    <mu1>0.01</mu1><mu2>0.01</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
 
   <!-- Phase 5 - Gazebo Classic multi-ray 3D LiDAR.  A ray sensor is used

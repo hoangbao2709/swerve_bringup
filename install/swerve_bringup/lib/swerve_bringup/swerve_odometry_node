@@ -38,7 +38,7 @@ class SwerveOdometry(Node):
     def __init__(self) -> None:
         super().__init__('swerve_odometry')
         self.declare_parameter('wheel_radius', 0.0675)
-        self.declare_parameter('wheel_velocity_sign', -1.0)
+        self.declare_parameter('wheel_velocity_sign', 1.0)
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('joint_state_timeout', 0.3)
         self.declare_parameter('odom_frame', 'odom')

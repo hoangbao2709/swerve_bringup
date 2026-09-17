@@ -1,0 +1,319 @@
+[INFO] [launch]: All log files can be found below /home/yahboom/.ros/log/2026-09-17-15-50-24-988168-yahboom-virtual-machine-127522
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [127547]
+[INFO] [robot_state_publisher-2]: process started with pid [127549]
+[INFO] [spawn_entity.py-3]: process started with pid [127551]
+[INFO] [ekf_node-4]: process started with pid [127553]
+[INFO] [v30e_sim_node-5]: process started with pid [127555]
+[INFO] [ekf_node-6]: process started with pid [127558]
+[INFO] [map_server-7]: process started with pid [127563]
+[INFO] [controller_server-8]: process started with pid [127566]
+[INFO] [planner_server-9]: process started with pid [127571]
+[INFO] [behavior_server-10]: process started with pid [127581]
+[INFO] [bt_navigator-11]: process started with pid [127592]
+[INFO] [waypoint_follower-12]: process started with pid [127594]
+[INFO] [lifecycle_manager-13]: process started with pid [127605]
+[INFO] [swerve_bridge_node-14]: process started with pid [127613]
+[bt_navigator-11] [37;1m2026-09-17 15:50:32.097 [31;1m[[37;1mRTPS_TRANSPORT_SHM[31;1m Error] [37mFailed init_port fastrtps_port10447: open_and_lock_file failed[34;1m -> Function [36mopen_port_internal[m
+[controller_server-8] [37;1m2026-09-17 15:50:32.125 [31;1m[[37;1mRTPS_TRANSPORT_SHM[31;1m Error] [37mFailed init_port fastrtps_port10447: open_and_lock_file failed[34;1m -> Function [36mopen_port_internal[m
+[robot_state_publisher-2] [INFO] [1789631432.852538907] [robot_state_publisher]: got segment base_footprint
+[robot_state_publisher-2] [INFO] [1789631432.853446390] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789631432.859607734] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789631432.859626886] [robot_state_publisher]: got segment lidar_link
+[robot_state_publisher-2] [INFO] [1789631432.859635842] [robot_state_publisher]: got segment steer_front_link
+[robot_state_publisher-2] [INFO] [1789631432.859643788] [robot_state_publisher]: got segment steer_rear_link
+[robot_state_publisher-2] [INFO] [1789631432.859651615] [robot_state_publisher]: got segment v30e_link
+[robot_state_publisher-2] [INFO] [1789631432.859658744] [robot_state_publisher]: got segment wheel_front_drive_link
+[robot_state_publisher-2] [INFO] [1789631432.859666080] [robot_state_publisher]: got segment wheel_front_left_link
+[robot_state_publisher-2] [INFO] [1789631432.859673019] [robot_state_publisher]: got segment wheel_front_right_link
+[robot_state_publisher-2] [INFO] [1789631432.859680366] [robot_state_publisher]: got segment wheel_rear_drive_link
+[robot_state_publisher-2] [INFO] [1789631432.859687223] [robot_state_publisher]: got segment wheel_rear_left_link
+[robot_state_publisher-2] [INFO] [1789631432.859694336] [robot_state_publisher]: got segment wheel_rear_right_link
+[map_server-7] [INFO] [1789631433.174481528] [map_server]: 
+[map_server-7] 	map_server lifecycle node launched. 
+[map_server-7] 	Waiting on external lifecycle transitions to activate
+[map_server-7] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[map_server-7] [INFO] [1789631433.174650979] [map_server]: Creating
+[bt_navigator-11] [INFO] [1789631433.889571525] [bt_navigator]: 
+[bt_navigator-11] 	bt_navigator lifecycle node launched. 
+[bt_navigator-11] 	Waiting on external lifecycle transitions to activate
+[bt_navigator-11] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[bt_navigator-11] [INFO] [1789631433.889757109] [bt_navigator]: Creating
+[behavior_server-10] [INFO] [1789631433.919760891] [behavior_server]: 
+[behavior_server-10] 	behavior_server lifecycle node launched. 
+[behavior_server-10] 	Waiting on external lifecycle transitions to activate
+[behavior_server-10] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[lifecycle_manager-13] [INFO] [1789631434.080928789] [lifecycle_manager_navigation]: Creating
+[controller_server-8] [INFO] [1789631434.124032497] [controller_server]: 
+[controller_server-8] 	controller_server lifecycle node launched. 
+[controller_server-8] 	Waiting on external lifecycle transitions to activate
+[controller_server-8] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-8] [INFO] [1789631434.153741660] [controller_server]: Creating controller server
+[planner_server-9] [INFO] [1789631434.881807449] [planner_server]: 
+[planner_server-9] 	planner_server lifecycle node launched. 
+[planner_server-9] 	Waiting on external lifecycle transitions to activate
+[planner_server-9] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-9] [INFO] [1789631434.889359370] [planner_server]: Creating
+[lifecycle_manager-13] [INFO] [1789631435.235437977] [lifecycle_manager_navigation]: [34m[1mCreating and initializing lifecycle service clients[0m[0m
+[waypoint_follower-12] [INFO] [1789631435.624254571] [waypoint_follower]: 
+[waypoint_follower-12] 	waypoint_follower lifecycle node launched. 
+[waypoint_follower-12] 	Waiting on external lifecycle transitions to activate
+[waypoint_follower-12] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[waypoint_follower-12] [INFO] [1789631435.624888617] [waypoint_follower]: Creating
+[planner_server-9] [INFO] [1789631435.814462369] [global_costmap.global_costmap]: 
+[planner_server-9] 	global_costmap lifecycle node launched. 
+[planner_server-9] 	Waiting on external lifecycle transitions to activate
+[planner_server-9] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-9] [INFO] [1789631435.823672563] [global_costmap.global_costmap]: Creating Costmap
+[controller_server-8] [INFO] [1789631435.920647851] [local_costmap.local_costmap]: 
+[controller_server-8] 	local_costmap lifecycle node launched. 
+[controller_server-8] 	Waiting on external lifecycle transitions to activate
+[controller_server-8] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-8] [INFO] [1789631435.921185552] [local_costmap.local_costmap]: Creating Costmap
+[swerve_bridge_node-14] [WARN] [1789631436.805779466] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631437.537915050] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631438.810602069] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631439.538596798] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[spawn_entity.py-3] [INFO] [1789631440.594202517] [spawn_swerve]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1789631440.594686364] [spawn_swerve]: Loading entity published on topic robot_description
+[spawn_entity.py-3] [INFO] [1789631440.626675344] [spawn_swerve]: Waiting for entity xml on robot_description
+[swerve_bridge_node-14] [WARN] [1789631440.863350439] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631441.543338204] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[v30e_sim_node-5] [INFO] [1789631441.997525415] [v30e_sim_node]: Using Gazebo /get_entity_state internally; odometry is not a V30E measurement input
+[swerve_bridge_node-14] [WARN] [1789631442.886108155] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631443.546722226] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631444.904352500] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631445.576584115] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631446.919787702] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631447.581017074] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[spawn_entity.py-3] [INFO] [1789631448.228389682] [spawn_swerve]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1789631448.267562274] [spawn_swerve]: Waiting for service /spawn_entity
+[swerve_bridge_node-14] [WARN] [1789631448.926375145] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631449.588029914] [lifecycle_manager_navigation]: Waiting for service map_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631450.947689684] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631452.966031274] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631454.975561276] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631457.010318427] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631458.944915461] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631459.046966119] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631460.949167811] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631461.112963956] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631462.966904380] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631463.146037526] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631464.972489853] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631465.169824076] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631466.973413420] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631467.175753321] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631468.977873454] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631469.183802827] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631470.981620144] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631471.193528975] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631472.990234329] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631473.230709594] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631474.992872558] [lifecycle_manager_navigation]: Waiting for service planner_server/get_state...
+[swerve_bridge_node-14] [WARN] [1789631475.233028718] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631477.237853586] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[spawn_entity.py-3] [INFO] [1789631477.804379302] [spawn_swerve]: Calling service /spawn_entity
+[swerve_bridge_node-14] [WARN] [1789631479.242844400] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[lifecycle_manager-13] [INFO] [1789631479.475379095] [lifecycle_manager_navigation]: [34m[1mStarting managed nodes bringup...[0m[0m
+[lifecycle_manager-13] [INFO] [1789631479.489694928] [lifecycle_manager_navigation]: [34m[1mConfiguring map_server[0m[0m
+[map_server-7] [INFO] [1789631479.509775459] [map_server]: Configuring
+[map_server-7] [INFO] [1789631479.513457623] [map_io]: Loading yaml file: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.yaml
+[map_server-7] [INFO] [1789631479.513827578] [map_io]: resolution: 0.05
+[map_server-7] [INFO] [1789631479.513844607] [map_io]: origin[0]: -17.2
+[map_server-7] [INFO] [1789631479.513850919] [map_io]: origin[1]: -17.4
+[map_server-7] [INFO] [1789631479.513856336] [map_io]: origin[2]: 0
+[map_server-7] [INFO] [1789631479.513862029] [map_io]: free_thresh: 0.25
+[map_server-7] [INFO] [1789631479.513867661] [map_io]: occupied_thresh: 0.65
+[map_server-7] [INFO] [1789631479.513873694] [map_io]: mode: trinary
+[map_server-7] [INFO] [1789631479.513880459] [map_io]: negate: 0
+[map_server-7] [INFO] [1789631479.514151968] [map_io]: Loading image_file: /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.pgm
+[map_server-7] [INFO] [1789631479.655560294] [map_io]: Read map /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/swerve_navigation/maps/warehouse.pgm: 676 X 680 map @ 0.05 m/cell
+[lifecycle_manager-13] [INFO] [1789631480.221544984] [lifecycle_manager_navigation]: [34m[1mConfiguring controller_server[0m[0m
+[gzserver-1] [ERROR] [1789631480.549799863] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789631480.710753905] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789631480.882176105] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[controller_server-8] [INFO] [1789631480.900190498] [controller_server]: Configuring controller interface
+[controller_server-8] [INFO] [1789631480.916391811] [controller_server]: getting goal checker plugins..
+[controller_server-8] [INFO] [1789631480.941105138] [controller_server]: Controller frequency set to 10.0000Hz
+[controller_server-8] [INFO] [1789631480.941251091] [local_costmap.local_costmap]: Configuring
+[gzserver-1] [INFO] [1789631480.989922777] [gazebo_ros_state]: Publishing states of gazebo models at [/model_states]
+[gzserver-1] [ERROR] [1789631481.035067057] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789631481.181052902] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[swerve_bridge_node-14] [WARN] [1789631481.247087144] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[gzserver-1] [INFO] [1789631481.299901915] [gazebo_ros_state]: Publishing states of gazebo links at [/link_states]
+[controller_server-8] [INFO] [1789631481.346328560] [local_costmap.local_costmap]: Using plugin "voxel_layer"
+[gzserver-1] [ERROR] [1789631481.350464035] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[controller_server-8] [INFO] [1789631481.416454434] [local_costmap.local_costmap]: Subscribed to Topics: lidar3d scan
+[gzserver-1] [ERROR] [1789631481.509049809] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[gzserver-1] [ERROR] [1789631481.618882257] [gazebo_ros_state]: GetEntityState: entity [swerve_base] does not exist
+[controller_server-8] [INFO] [1789631481.703704331] [local_costmap.local_costmap]: Initialized plugin "voxel_layer"
+[controller_server-8] [INFO] [1789631481.703756977] [local_costmap.local_costmap]: Using plugin "inflation_layer"
+[controller_server-8] [INFO] [1789631481.737641383] [local_costmap.local_costmap]: Initialized plugin "inflation_layer"
+[controller_server-8] [INFO] [1789631482.207811247] [controller_server]: Created progress_checker : progress_checker of type nav2_controller::SimpleProgressChecker
+[controller_server-8] [INFO] [1789631482.239755606] [controller_server]: Created goal checker : general_goal_checker of type nav2_controller::SimpleGoalChecker
+[controller_server-8] [INFO] [1789631482.259508947] [controller_server]: Controller Server has general_goal_checker  goal checkers available.
+[controller_server-8] [INFO] [1789631482.265352999] [controller_server]: Created controller : FollowPath of type dwb_core::DWBLocalPlanner
+[gzserver-1] [INFO] [1789631482.454329354] [imu.imu_ros]: <initial_orientation_as_reference> is unset, using default value of false to comply with REP 145 (world as orientation reference)
+[swerve_bridge_node-14] [WARN] [1789631483.249206996] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631485.251911489] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631487.269423374] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631489.278539969] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631491.279914470] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631493.287180940] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631495.289848122] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631497.295837090] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631499.302461937] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[spawn_entity.py-3] [INFO] [1789631499.714632561] [spawn_swerve]: Spawn status: SpawnEntity: Successfully spawned entity [swerve_base]
+[gzserver-1] [INFO] [1789631500.680029760] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 127551]
+[INFO] [spawner-15]: process started with pid [127901]
+[swerve_bridge_node-14] [WARN] [1789631501.303933731] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[gzserver-1] [INFO] [1789631501.326412233] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1789631501.326572777] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[gzserver-1] [INFO] [1789631501.964864591] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1789631502.025579516] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1789631502.026542062] [gazebo_ros2_control]: Loading parameter files /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/controllers.yaml
+[gzserver-1] [INFO] [1789631502.089301731] [gazebo_ros2_control]: Loading joint: steer_front_joint
+[gzserver-1] [INFO] [1789631502.089410439] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789631502.089427991] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789631502.089440893] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789631502.089450991] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789631502.089461757] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789631502.139360562] [gazebo_ros2_control]: Loading joint: steer_rear_joint
+[gzserver-1] [INFO] [1789631502.139432610] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789631502.139445442] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789631502.139457306] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789631502.139466528] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789631502.139475366] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789631502.147468400] [gazebo_ros2_control]: Loading joint: wheel_front_drive_joint
+[gzserver-1] [INFO] [1789631502.147523846] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789631502.147531002] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789631502.147537831] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789631502.147543355] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789631502.147552939] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789631502.175796428] [gazebo_ros2_control]: Loading joint: wheel_rear_drive_joint
+[gzserver-1] [INFO] [1789631502.176894301] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1789631502.176914916] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1789631502.176926037] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789631502.176935593] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1789631502.176969287] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1789631502.264113106] [resource_manager]: Initialize hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789631502.272699974] [resource_manager]: Successful initialization of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789631502.281870191] [resource_manager]: 'configure' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789631502.281887587] [resource_manager]: Successful 'configure' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789631502.281891655] [resource_manager]: 'activate' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1789631502.281894795] [resource_manager]: Successful 'activate' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1789631502.281966071] [gazebo_ros2_control]: Loading controller_manager
+[swerve_bridge_node-14] [WARN] [1789631503.352319549] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[spawner-15] [INFO] [1789631503.530173071] [spawn_joint_state_broadcaster]: waiting for service /controller_manager/list_controllers to become available...
+[swerve_bridge_node-14] [WARN] [1789631505.356284890] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631507.362680878] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631509.385558055] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631511.396006614] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631513.464116067] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631515.475294825] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[gzserver-1] [WARN] [1789631516.214563937] [gazebo_ros2_control]:  Desired controller update period (0.01 s) is slower than the gazebo simulation period (0.001 s).
+[gzserver-1] [INFO] [1789631516.265251525] [gazebo_ros2_control]: Loaded gazebo_ros2_control.
+[swerve_bridge_node-14] [WARN] [1789631517.491847062] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631519.494178021] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[gzserver-1] [INFO] [1789631520.516548692] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[swerve_bridge_node-14] [WARN] [1789631521.506925555] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[spawner-15] [INFO] [1789631521.901114012] [spawn_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1789631521.960508911] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1789631521.961032915] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-15] [INFO] [1789631522.886063544] [spawn_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[swerve_bridge_node-14] [WARN] [1789631523.510958697] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[INFO] [spawner-15]: process has finished cleanly [pid 127901]
+[INFO] [spawner-16]: process started with pid [128286]
+[swerve_bridge_node-14] [WARN] [1789631525.520282576] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[spawner-16] [INFO] [1789631525.624438597] [spawn_steering_controller]: waiting for service /controller_manager/list_controllers to become available...
+[swerve_bridge_node-14] [WARN] [1789631527.529039354] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[swerve_bridge_node-14] [WARN] [1789631529.554171879] [swerve_bridge]: Django websocket disconnected: [Errno 111] Connection refused
+[waypoint_follower-12] [INFO] [1789631530.568837271] [rclcpp]: signal_handler(signum=2)
+[controller_server-8] [INFO] [1789631530.574977201] [rclcpp]: signal_handler(signum=2)
+[controller_server-8] [INFO] [1789631530.578912947] [controller_server]: Running Nav2 LifecycleNode rcl preshutdown (controller_server)
+[controller_server-8] [INFO] [1789631530.578998988] [controller_server]: Destroying bond (controller_server) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789631530.580947631] [rclcpp]: signal_handler(signum=2)
+[behavior_server-10] [INFO] [1789631530.580954669] [rclcpp]: signal_handler(signum=2)
+[behavior_server-10] [INFO] [1789631530.581314937] [behavior_server]: Running Nav2 LifecycleNode rcl preshutdown (behavior_server)
+[behavior_server-10] [INFO] [1789631530.581377493] [behavior_server]: Destroying bond (behavior_server) to lifecycle manager.
+[map_server-7] [INFO] [1789631530.581160791] [rclcpp]: signal_handler(signum=2)
+[map_server-7] [INFO] [1789631530.581361915] [map_server]: Running Nav2 LifecycleNode rcl preshutdown (map_server)
+[map_server-7] [INFO] [1789631530.581440646] [map_server]: Cleaning up
+[map_server-7] [INFO] [1789631530.581536690] [map_server]: Destroying bond (map_server) to lifecycle manager.
+[ekf_node-6] [INFO] [1789631530.582874893] [rclcpp]: signal_handler(signum=2)
+[ekf_node-4] [INFO] [1789631530.585432071] [rclcpp]: signal_handler(signum=2)
+[bt_navigator-11] [INFO] [1789631530.588301534] [rclcpp]: signal_handler(signum=2)
+[robot_state_publisher-2] [INFO] [1789631530.594571534] [rclcpp]: signal_handler(signum=2)
+[bt_navigator-11] [INFO] [1789631530.595323416] [bt_navigator]: Running Nav2 LifecycleNode rcl preshutdown (bt_navigator)
+[bt_navigator-11] [INFO] [1789631530.595404508] [bt_navigator]: Destroying bond (bt_navigator) to lifecycle manager.
+[lifecycle_manager-13] [INFO] [1789631530.595736921] [lifecycle_manager_navigation]: Running Nav2 LifecycleManager rcl preshutdown (lifecycle_manager_navigation)
+[waypoint_follower-12] [INFO] [1789631530.600965371] [waypoint_follower]: Running Nav2 LifecycleNode rcl preshutdown (waypoint_follower)
+[waypoint_follower-12] [INFO] [1789631530.601074996] [waypoint_follower]: Destroying bond (waypoint_follower) to lifecycle manager.
+[planner_server-9] [INFO] [1789631530.614330120] [rclcpp]: signal_handler(signum=2)
+[planner_server-9] [INFO] [1789631530.619121316] [planner_server]: Running Nav2 LifecycleNode rcl preshutdown (planner_server)
+[planner_server-9] [INFO] [1789631530.619199261] [planner_server]: Destroying bond (planner_server) to lifecycle manager.
+[behavior_server-10] [INFO] [1789631531.091122876] [behavior_server]: Destroying
+[v30e_sim_node-5] Traceback (most recent call last):
+[v30e_sim_node-5]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node", line 188, in <module>
+[v30e_sim_node-5]     if __name__ == '__main__': main()
+[v30e_sim_node-5]   File "/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node", line 183, in main
+[v30e_sim_node-5]     try: rclpy.spin(node)
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 229, in spin
+[v30e_sim_node-5]     executor.spin_once()
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 773, in spin_once
+[v30e_sim_node-5]     self._spin_once_impl(timeout_sec)
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 762, in _spin_once_impl
+[v30e_sim_node-5]     handler, entity, node = self.wait_for_ready_callbacks(timeout_sec=timeout_sec)
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 745, in wait_for_ready_callbacks
+[v30e_sim_node-5]     return next(self._cb_iter)
+[v30e_sim_node-5]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 646, in _wait_for_ready_callbacks
+[v30e_sim_node-5]     raise ExternalShutdownException()
+[v30e_sim_node-5] rclpy.executors.ExternalShutdownException
+[waypoint_follower-12] [INFO] [1789631531.470112151] [waypoint_follower]: Destroying
+[bt_navigator-11] [INFO] [1789631531.506785384] [bt_navigator]: Destroying
+[planner_server-9] [INFO] [1789631532.039708447] [global_costmap.global_costmap]: Destroying
+[map_server-7] [INFO] [1789631532.120345307] [map_server]: Destroying
+[INFO] [behavior_server-10]: process has finished cleanly [pid 127581]
+[INFO] [ekf_node-4]: process has finished cleanly [pid 127553]
+[swerve_bridge_node-14] Traceback (most recent call last):
+[swerve_bridge_node-14]   File "/home/yahboom/swerve_bringup/build/swerve_bridge/swerve_bridge/bridge_node.py", line 272, in main
+[swerve_bridge_node-14]     rclpy.spin(node)
+[swerve_bridge_node-14]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 229, in spin
+[swerve_bridge_node-14]     executor.spin_once()
+[swerve_bridge_node-14]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 773, in spin_once
+[swerve_bridge_node-14]     self._spin_once_impl(timeout_sec)
+[swerve_bridge_node-14]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 762, in _spin_once_impl
+[swerve_bridge_node-14]     handler, entity, node = self.wait_for_ready_callbacks(timeout_sec=timeout_sec)
+[swerve_bridge_node-14]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 745, in wait_for_ready_callbacks
+[swerve_bridge_node-14]     return next(self._cb_iter)
+[swerve_bridge_node-14]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 646, in _wait_for_ready_callbacks
+[swerve_bridge_node-14]     raise ExternalShutdownException()
+[swerve_bridge_node-14] rclpy.executors.ExternalShutdownException
+[swerve_bridge_node-14] 
+[swerve_bridge_node-14] During handling of the above exception, another exception occurred:
+[swerve_bridge_node-14] 
+[swerve_bridge_node-14] Traceback (most recent call last):
+[swerve_bridge_node-14]   File "/home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node", line 33, in <module>
+[swerve_bridge_node-14]     sys.exit(load_entry_point('swerve-bridge', 'console_scripts', 'swerve_bridge_node')())
+[swerve_bridge_node-14]   File "/home/yahboom/swerve_bringup/build/swerve_bridge/swerve_bridge/bridge_node.py", line 275, in main
+[swerve_bridge_node-14]     rclpy.shutdown()
+[swerve_bridge_node-14]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 130, in shutdown
+[swerve_bridge_node-14]     _shutdown(context=context)
+[swerve_bridge_node-14]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/utilities.py", line 58, in shutdown
+[swerve_bridge_node-14]     return context.shutdown()
+[swerve_bridge_node-14]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/context.py", line 102, in shutdown
+[swerve_bridge_node-14]     self.__context.shutdown()
+[swerve_bridge_node-14] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+[planner_server-9] [INFO] [1789631536.547346547] [planner_server]: Destroying
+[gzserver-1] [INFO] [1789631536.611612577] [controller_manager]: Loading controller 'steering_controller'
+[ERROR] [v30e_sim_node-5]: process has died [pid 127555, exit code 1, cmd '/home/yahboom/swerve_bringup/install/swerve_bringup/lib/swerve_bringup/v30e_sim_node --ros-args -r __node:=v30e_sim_node --params-file /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/v30e_sim.yaml --params-file /tmp/launch_params_8c0pjuuo'].
+[INFO] [map_server-7]: process has finished cleanly [pid 127563]
+[ERROR] [swerve_bridge_node-14]: process has died [pid 127613, exit code 1, cmd '/home/yahboom/swerve_bringup/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node --ros-args -r __node:=swerve_bridge --params-file /home/yahboom/swerve_bringup/install/swerve_bridge/share/swerve_bridge/config/bridge.yaml --params-file /tmp/launch_params_9lyba8aa'].
+[INFO] [ekf_node-6]: process has finished cleanly [pid 127558]
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 127549]
+[INFO] [bt_navigator-11]: process has finished cleanly [pid 127592]
+[INFO] [planner_server-9]: process has finished cleanly [pid 127571]
+[INFO] [waypoint_follower-12]: process has finished cleanly [pid 127594]
+[spawner-16] [WARN] [1789631545.331465390] [spawn_steering_controller]: Failed getting a result from calling /controller_manager/load_controller in 10.0. (Attempt 1 of 3.)

@@ -48,6 +48,7 @@
   <xacro:arg name="imu_update_rate" default="100.0"/>
   <xacro:arg name="imu_gyro_noise_stddev" default="0.002"/>
   <xacro:arg name="imu_accel_noise_stddev" default="0.02"/>
+  <xacro:arg name="enable_contact_sensors" default="false"/>
 
   <xacro:property name="lidar_x" value="$(arg lidar_x)"/>
   <xacro:property name="lidar_y" value="$(arg lidar_y)"/>
@@ -72,6 +73,19 @@
   <xacro:property name="imu_update_rate" value="$(arg imu_update_rate)"/>
   <xacro:property name="imu_gyro_noise_stddev" value="$(arg imu_gyro_noise_stddev)"/>
   <xacro:property name="imu_accel_noise_stddev" value="$(arg imu_accel_noise_stddev)"/>
+
+  <xacro:macro name="contact_sensor" params="link">
+    <gazebo reference="${link}">
+      <sensor name="${link}_contact_sensor" type="contact">
+        <always_on>true</always_on><update_rate>50.0</update_rate>
+        <contact><collision>collision</collision></contact>
+        <plugin name="${link}_contact_plugin" filename="libgazebo_ros_bumper.so">
+          <ros><namespace>/contact_load</namespace><remapping>bumper_states:=${link}</remapping></ros>
+          <frame_name>${link}</frame_name>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
 
   <material name="grey"><color rgba="0.6 0.6 0.6 1"/></material>
   <material name="orange"><color rgba="0.9 0.5 0.1 1"/></material>
@@ -327,6 +341,15 @@
       <inertia ixx="0.000749" ixy="0.0" ixz="0.0" iyy="0.001289" iyz="0.0" izz="0.000749"/>
     </inertial>
   </link>
+
+  <xacro:if value="$(arg enable_contact_sensors)">
+    <xacro:contact_sensor link="wheel_front_drive_link"/>
+    <xacro:contact_sensor link="wheel_rear_drive_link"/>
+    <xacro:contact_sensor link="wheel_front_left_link"/>
+    <xacro:contact_sensor link="wheel_front_right_link"/>
+    <xacro:contact_sensor link="wheel_rear_left_link"/>
+    <xacro:contact_sensor link="wheel_rear_right_link"/>
+  </xacro:if>
   <joint name="wheel_rear_drive_joint" type="continuous">
     <parent link="steer_rear_link"/>
     <child link="wheel_rear_drive_link"/>

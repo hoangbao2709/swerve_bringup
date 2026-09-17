@@ -15,11 +15,15 @@ from rclpy.parameter import Parameter
 from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import Float64MultiArray
 from rosgraph_msgs.msg import Clock
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
 def yaw(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+
+def roll(q): return math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y))
+def pitch(q): return math.asin(max(-1.0, min(1.0, 2 * (q.w * q.y - q.z * q.x))))
 
 
 def wrap(a):
@@ -50,7 +54,9 @@ class Raw(Node):
         self.create_subscription(Float64MultiArray, '/steering_controller/commands', self.steer_cb, 20)
         self.create_subscription(Float64MultiArray, '/drive_controller/commands', self.drive_cb, 20)
         self.create_subscription(JointState, '/joint_states', self.joint_cb, 20)
-        self.create_subscription(Clock, '/clock', self.clock_cb, 20)
+        clock_qos = QoSProfile(depth=20, reliability=ReliabilityPolicy.BEST_EFFORT,
+                               durability=DurabilityPolicy.VOLATILE)
+        self.create_subscription(Clock, '/clock', self.clock_cb, clock_qos)
         self.tf = Buffer(); self.listener = TransformListener(self.tf, self)
         self.state = self.create_client(GetEntityState, '/get_entity_state')
 
@@ -99,8 +105,33 @@ class Raw(Node):
             rclpy.spin_once(self, timeout_sec=0.005)
         if not future.done() or not future.result().success: return None
         state = future.result().state; p = state.pose; t = state.twist
-        return {'x': p.position.x, 'y': p.position.y, 'yaw': yaw(p.orientation),
+        return {'x': p.position.x, 'y': p.position.y, 'z': p.position.z,
+                'roll': roll(p.orientation), 'pitch': pitch(p.orientation), 'yaw': yaw(p.orientation),
                 'vx_world': t.linear.x, 'vy_world': t.linear.y, 'wz': t.angular.z}
+
+    @staticmethod
+    def encoder_body(steer, wheel):
+        rows = ((1.0, 0.0, 0.0), (0.0, 1.0, MODULE_X),
+                (1.0, 0.0, 0.0), (0.0, 1.0, -MODULE_X))
+        rhs = (WHEEL_RADIUS * wheel[0] * math.cos(steer[0]),
+               WHEEL_RADIUS * wheel[0] * math.sin(steer[0]),
+               WHEEL_RADIUS * wheel[1] * math.cos(steer[1]),
+               WHEEL_RADIUS * wheel[1] * math.sin(steer[1]))
+        normal = [[0.0] * 3 for _ in range(3)]; nrhs = [0.0] * 3
+        for row, value in zip(rows, rhs):
+            for i in range(3):
+                nrhs[i] += row[i] * value
+                for j in range(3): normal[i][j] += row[i] * row[j]
+        # Gaussian elimination for the tiny overdetermined least-squares system.
+        for col in range(3):
+            pivot = max(range(col, 3), key=lambda r: abs(normal[r][col]))
+            if abs(normal[pivot][col]) < 1e-12: return (0.0, 0.0, 0.0)
+            normal[col], normal[pivot] = normal[pivot], normal[col]; nrhs[col], nrhs[pivot] = nrhs[pivot], nrhs[col]
+            d = normal[col][col]; normal[col] = [x / d for x in normal[col]]; nrhs[col] /= d
+            for r in range(3):
+                if r == col: continue
+                k = normal[r][col]; normal[r] = [normal[r][j] - k * normal[col][j] for j in range(3)]; nrhs[r] -= k * nrhs[col]
+        return tuple(nrhs)
 
     def local_pose(self):
         try:
@@ -131,11 +162,16 @@ class Raw(Node):
             publish_times.append(now_sim)
             self.spin_for(0.02); gt, odom, loc = self.snapshot()
             pos = self.joints.get('position', {}) if self.joints else {}; vel = self.joints.get('velocity', {}) if self.joints else {}
+            actual_steer = (float(pos.get('steer_front_joint', 0.0)), float(pos.get('steer_rear_joint', 0.0)))
+            actual_wheel = (float(vel.get('wheel_front_drive_joint', 0.0)), float(vel.get('wheel_rear_drive_joint', 0.0)))
+            enc_vx, enc_vy, enc_wz = self.encoder_body(actual_steer, actual_wheel)
             trace.append({'case': name, 'sim_time': now_sim, 'elapsed_sim_time': elapsed_sim,
                 'elapsed_wall_time': time.monotonic() - start_wall,
                 'cmd_publish_gap_sim': now_sim - publish_times[-2] if len(publish_times) > 1 else None,
-                'gt_x': gt['x'] if gt else None, 'gt_y': gt['y'] if gt else None, 'gt_yaw': gt['yaw'] if gt else None,
+                'gt_x': gt['x'] if gt else None, 'gt_y': gt['y'] if gt else None, 'gt_z': gt['z'] if gt else None,
+                'gt_roll': gt['roll'] if gt else None, 'gt_pitch': gt['pitch'] if gt else None, 'gt_yaw': gt['yaw'] if gt else None,
                 'gt_vx_world': gt['vx_world'] if gt else None, 'gt_vy_world': gt['vy_world'] if gt else None, 'gt_wz': gt['wz'] if gt else None,
+                'encoder_vx': enc_vx, 'encoder_vy': enc_vy, 'encoder_wz': enc_wz,
                 'odom_x': odom['x'] if odom else None, 'odom_y': odom['y'] if odom else None, 'odom_yaw': odom['yaw'] if odom else None,
                 'odom_vx': odom['vx'] if odom else None, 'odom_vy': odom['vy'] if odom else None, 'odom_wz': odom['wz'] if odom else None,
                 'local_x': loc['x'] if loc else None, 'local_y': loc['y'] if loc else None, 'local_yaw': loc['yaw'] if loc else None,
@@ -146,6 +182,8 @@ class Raw(Node):
                 'drive_cmd_rear': self.drive[1] if self.drive and len(self.drive) > 1 else None,
                 'steer_pos_front': pos.get('steer_front_joint'), 'steer_pos_rear': pos.get('steer_rear_joint'),
                 'wheel_vel_front': vel.get('wheel_front_drive_joint'), 'wheel_vel_rear': vel.get('wheel_rear_drive_joint'),
+                'drive_error_front': (float(self.drive[0]) - actual_wheel[0]) if self.drive and len(self.drive) > 0 else None,
+                'drive_error_rear': (float(self.drive[1]) - actual_wheel[1]) if self.drive and len(self.drive) > 1 else None,
                 'imu_wz': self.imu['wz'] if self.imu else None, 'imu_yaw': self.imu['yaw'] if self.imu else None})
         command_elapsed_sim = min(duration, max(0.0, self.get_clock().now().nanoseconds * 1e-9 - start_sim))
         motion_finish = self.snapshot()

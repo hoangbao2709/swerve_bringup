@@ -14,6 +14,7 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.parameter import Parameter
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import Imu
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Imu
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
@@ -54,7 +55,9 @@ class Benchmark(Node):
         self.create_subscription(Odometry, '/odometry/filtered', lambda m: setattr(self, 'local_ekf', self.odom_msg(m)), 20)
         self.create_subscription(Odometry, '/odometry/v30e', lambda m: setattr(self, 'global_ekf', self.odom_msg(m)), 20)
         self.create_subscription(Imu, '/imu/data', lambda m: setattr(self, 'imu', (m.angular_velocity.z, yaw(m.orientation))), 20)
-        self.create_subscription(Clock, '/clock', self.clock_cb, 20)
+        clock_qos = QoSProfile(depth=20, reliability=ReliabilityPolicy.BEST_EFFORT,
+                               durability=DurabilityPolicy.VOLATILE)
+        self.create_subscription(Clock, '/clock', self.clock_cb, clock_qos)
         self.create_subscription(PoseWithCovarianceStamped, '/v30e/pose', self.v30e_cb, 20)
         self.create_subscription(Path, '/plan', self.plan_cb, 10)
         self.create_subscription(Twist, '/cmd_vel', self.cmd_cb, 20)

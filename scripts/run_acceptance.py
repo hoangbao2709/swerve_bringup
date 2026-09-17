@@ -80,9 +80,12 @@ def run_case(args, case_name, domain, outdir):
     env['AMENT_PREFIX_PATH'] = ':'.join(prefixes + [p for p in existing if p])
     env['CMAKE_PREFIX_PATH'] = ':'.join(prefixes + [p for p in env.get('CMAKE_PREFIX_PATH', '').split(':') if p])
     launch_log = open(os.path.join(outdir, 'launch.log'), 'w', encoding='utf-8')
+    launch_command = ['ros2', 'launch', 'swerve_bringup', 'system.launch.py',
+                      'use_sim:=true', 'mode:=navigation', 'gui:=false']
+    if env.get('ACCEPTANCE_CONTACT_DIAGNOSTICS', '').lower() in ('1', 'true', 'yes'):
+        launch_command.append('contact_diagnostics:=true')
     proc = subprocess.Popen(
-        ['ros2', 'launch', 'swerve_bringup', 'system.launch.py',
-         'use_sim:=true', 'mode:=navigation', 'gui:=false'],
+        launch_command,
         cwd=ROOT, env=env, stdout=launch_log, stderr=subprocess.STDOUT,
         start_new_session=True)
     readiness_json = os.path.join(outdir, 'readiness.json')

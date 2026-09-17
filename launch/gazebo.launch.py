@@ -37,7 +37,7 @@ def generate_launch_description():
     def xacro_arg(name, value):
         return [f' {name}:={value}']
 
-    xacro_args = []
+    xacro_args = [' enable_contact_sensors:=', LaunchConfiguration('contact_diagnostics')]
     for name, value in zip(('lidar_x', 'lidar_y', 'lidar_z'), lidar_extrinsics['xyz']):
         xacro_args += xacro_arg(name, value)
     for name, value in zip(('lidar_roll', 'lidar_pitch', 'lidar_yaw'), lidar_extrinsics['rpy']):
@@ -181,6 +181,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'start_ekf', default_value='true',
             description='Start robot_localization here; system.launch.py disables it and owns the common EKF.',
+        ),
+        DeclareLaunchArgument(
+            'contact_diagnostics', default_value='false',
+            description='Enable temporary Gazebo contact sensors for load auditing.',
         ),
         DeclareLaunchArgument(
             'start_state_publisher', default_value='true',

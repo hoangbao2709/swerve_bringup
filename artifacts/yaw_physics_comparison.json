@@ -1,0 +1,94 @@
+{
+  "baseline": [
+    {
+      "case": "yaw+",
+      "gt_yaw_delta": 0.19343079489513215,
+      "odom_yaw_delta": 0.5726834687203342,
+      "encoder_wz_steady": 0.08574738132241558,
+      "gt_wz_steady": 0.005709990833712471,
+      "imu_wz_steady": 0.006315365334905133,
+      "wheel_velocity_front": -0.3707384136971723,
+      "wheel_velocity_rear": 0.39156723930134957,
+      "drive_cmd_front": -0.8890133333333291,
+      "drive_cmd_rear": 0.8890133333333291,
+      "gt_z": -0.00016795726610289633,
+      "gt_roll": 6.170216217732041e-05,
+      "gt_pitch": 1.965032334164041e-05,
+      "encoder_to_gt_ratio_steady": 15.017078629295295
+    },
+    {
+      "case": "yaw-",
+      "gt_yaw_delta": -0.178486604470244,
+      "odom_yaw_delta": -0.6328299012019336,
+      "encoder_wz_steady": -0.08580090688357841,
+      "gt_wz_steady": -0.003590850012458454,
+      "imu_wz_steady": -0.003548116251444417,
+      "wheel_velocity_front": -0.3715058281500872,
+      "wheel_velocity_rear": -0.39127567417134584,
+      "drive_cmd_front": -0.8890133333333291,
+      "drive_cmd_rear": -0.8890133333333291,
+      "gt_z": -0.00016697839157661884,
+      "gt_roll": 7.125426197949508e-05,
+      "gt_pitch": 1.3529677072180217e-05,
+      "encoder_to_gt_ratio_steady": 23.89431655064739
+    }
+  ],
+  "contact_audit_valid": false,
+  "contact_audit_reason": "ContactState topics published but no non-empty states received; no physics fix applied",
+  "geometry": [
+    {
+      "link": "wheel_front_drive_link",
+      "contact_z_relative_base_m": -0.244993,
+      "radius_m": 0.0675,
+      "collision_type": "cylinder"
+    },
+    {
+      "link": "wheel_rear_drive_link",
+      "contact_z_relative_base_m": -0.244993,
+      "radius_m": 0.0675,
+      "collision_type": "cylinder"
+    },
+    {
+      "link": "wheel_front_left_link",
+      "contact_z_relative_base_m": -0.24499,
+      "radius_m": 0.04,
+      "collision_type": "cylinder"
+    },
+    {
+      "link": "wheel_front_right_link",
+      "contact_z_relative_base_m": -0.24499,
+      "radius_m": 0.04,
+      "collision_type": "cylinder"
+    },
+    {
+      "link": "wheel_rear_left_link",
+      "contact_z_relative_base_m": -0.24499,
+      "radius_m": 0.04,
+      "collision_type": "cylinder"
+    },
+    {
+      "link": "wheel_rear_right_link",
+      "contact_z_relative_base_m": -0.24499,
+      "radius_m": 0.04,
+      "collision_type": "cylinder"
+    },
+    {
+      "link": "base_link",
+      "contact_z_relative_base_m": -0.23,
+      "radius_m": 0.0,
+      "collision_type": "box"
+    },
+    {
+      "link": "steer_front_link",
+      "contact_z_relative_base_m": -0.221043,
+      "radius_m": 0.0,
+      "collision_type": "box"
+    },
+    {
+      "link": "steer_rear_link",
+      "contact_z_relative_base_m": -0.227593,
+      "radius_m": 0.0,
+      "collision_type": "box"
+    }
+  ]
+}

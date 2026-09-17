@@ -30,6 +30,12 @@ CASTERS = {
     'RR': ('wheel_rear_right', -0.505, -0.195),
 }
 DRIVE_LINKS = ('wheel_front_drive_link', 'wheel_rear_drive_link')
+UNEXPECTED_CONTACT_LINKS = ('base_link', 'steer_front_link', 'steer_rear_link')
+DRIVE_GEOMETRY = {
+    'front': ('wheel_front_drive_link', 0.300042, 0.049988, 'steer_front_actual', 'wheel_front_actual', 'wheel_front_command'),
+    'rear': ('wheel_rear_drive_link', -0.300042, 0.050013, 'steer_rear_actual', 'wheel_rear_actual', 'wheel_rear_command'),
+}
+DRIVE_LOCAL_OFFSET_Y_M = -0.0482
 WHEEL_RADIUS = 0.0675
 MODULE_X = 0.300042
 
@@ -77,7 +83,10 @@ class CasterYawProbe(Node):
         self.imu = None
         self.odom = None
         self.steer_command = self.drive_command = None
-        self.contacts = {name: (0, 0.0, 0.0) for name in (*DRIVE_LINKS, *(prefix + '_link' for prefix, _, _ in CASTERS.values()))}
+        self.contacts = {name: (0, 0.0, 0.0) for name in
+                         (*DRIVE_LINKS, *UNEXPECTED_CONTACT_LINKS, *(prefix + '_link' for prefix, _, _ in CASTERS.values()))}
+        self.axle_offset_x = float(os.environ.get('ACCEPTANCE_CASTER_AXLE_OFFSET_X_M', '0.0'))
+        self.axle_offset_y = float(os.environ.get('ACCEPTANCE_CASTER_AXLE_OFFSET_Y_M', '0.0'))
         qos = QoSProfile(depth=50, reliability=ReliabilityPolicy.BEST_EFFORT,
                          durability=DurabilityPolicy.VOLATILE)
         self.create_subscription(Clock, '/clock', self.clock_cb, qos)
@@ -206,24 +215,56 @@ class CasterYawProbe(Node):
             count, normal, tangential = self.contacts[link]
             row.update({f'{link}_contact_count': count, f'{link}_normal_metric': normal,
                         f'{link}_tangential_metric': tangential})
+        for link in UNEXPECTED_CONTACT_LINKS:
+            count, _, _ = self.contacts[link]
+            row[f'{link}_contact_count'] = count
         for label, (prefix, x, y) in CASTERS.items():
             swivel = self.joint_properties(f'{prefix}_swivel_joint')
             roll = self.joint_properties(f'{prefix}_roll_joint')
             swivel_position = swivel.position[0] if swivel and swivel.success and swivel.position else None
             swivel_velocity = swivel.rate[0] if swivel and swivel.success and swivel.rate else None
             roll_velocity = roll.rate[0] if roll and roll.success and roll.rate else None
-            desired = math.atan2(body_vy + twist.angular.z * x, body_vx - twist.angular.z * y) \
-                if math.hypot(body_vx - twist.angular.z * y, body_vy + twist.angular.z * x) > 1e-6 else None
+            # With a nonzero trail the rolling contact's velocity is at the
+            # *actual axle*, not the fixed swivel pivot.  The offset rotates
+            # with the passive swivel angle in base coordinates.
+            axle_x = axle_y = desired = None
+            if swivel_position is not None:
+                axle_x = x + math.cos(swivel_position) * self.axle_offset_x - math.sin(swivel_position) * self.axle_offset_y
+                axle_y = y + math.sin(swivel_position) * self.axle_offset_x + math.cos(swivel_position) * self.axle_offset_y
+                axle_vx, axle_vy = body_vx - twist.angular.z * axle_y, body_vy + twist.angular.z * axle_x
+                if math.hypot(axle_vx, axle_vy) > 1e-6: desired = math.atan2(axle_vy, axle_vx)
             # A rolling wheel can use heading theta or theta+pi.  wrap(2*d)/2
             # is its signed axis-equivalent error in [-pi/2, pi/2].
             error = wrap(2.0 * (swivel_position - desired)) / 2.0 if desired is not None and swivel_position is not None else None
             count, normal, tangential = self.contacts[prefix + '_link']
             row.update({
                 f'{label}_swivel_position': swivel_position, f'{label}_swivel_velocity': swivel_velocity,
-                f'{label}_roll_velocity': roll_velocity, f'{label}_desired_heading': desired,
+                f'{label}_roll_velocity': roll_velocity, f'{label}_pivot_x': x, f'{label}_pivot_y': y,
+                f'{label}_axle_x': axle_x, f'{label}_axle_y': axle_y,
+                f'{label}_offset_x': self.axle_offset_x, f'{label}_offset_y': self.axle_offset_y,
+                f'{label}_swivel_angle': swivel_position, f'{label}_desired_heading': desired,
                 f'{label}_heading_error_signed': error, f'{label}_heading_error': abs(error) if error is not None else None,
                 f'{label}_contact_count': count, f'{label}_normal_metric': normal, f'{label}_tangential_metric': tangential,
             })
+        # Actual driven-wheel contact kinematics: steering pivot plus its
+        # measured local (0, -48.2 mm) wheel-centre offset.
+        for name, (link, pivot_x, pivot_y, steer_key, wheel_key, command_key) in DRIVE_GEOMETRY.items():
+            steering, wheel_velocity, wheel_command = row[steer_key], row[wheel_key], row[command_key]
+            wheel_x = pivot_x - math.sin(steering) * DRIVE_LOCAL_OFFSET_Y_M
+            wheel_y = pivot_y + math.cos(steering) * DRIVE_LOCAL_OFFSET_Y_M
+            point_vx, point_vy = body_vx - twist.angular.z * wheel_y, body_vy + twist.angular.z * wheel_x
+            rolling = point_vx * math.cos(steering) + point_vy * math.sin(steering)
+            lateral = -point_vx * math.sin(steering) + point_vy * math.cos(steering)
+            surface = WHEEL_RADIUS * wheel_velocity
+            count, normal, tangential = self.contacts[link]
+            row.update({f'drive_{name}_pivot_x': pivot_x, f'drive_{name}_pivot_y': pivot_y,
+                        f'drive_{name}_wheel_x': wheel_x, f'drive_{name}_wheel_y': wheel_y,
+                        f'drive_{name}_v_ground_roll': rolling, f'drive_{name}_v_lateral': lateral,
+                        f'drive_{name}_wheel_surface_velocity': surface,
+                        f'drive_{name}_slip': (surface - rolling) / max(abs(surface), .01),
+                        f'drive_{name}_command_actual_ratio': wheel_velocity / wheel_command if wheel_command is not None and abs(wheel_command) > 1e-9 else None,
+                        f'drive_{name}_normal_metric': normal, f'drive_{name}_tangential_metric': tangential,
+                        f'drive_{name}_contact_count': count})
         return row
 
 
@@ -320,11 +361,29 @@ def main():
     normal_total = sum(r[f'{link}_normal_metric'] for r in rows for link in DRIVE_LINKS) + \
                    sum(r[f'{label}_normal_metric'] for r in rows for label in CASTERS)
     drive_normal = sum(r[f'{link}_normal_metric'] for r in rows for link in DRIVE_LINKS)
+    def mean(rows_subset, key):
+        values = [float(r[key]) for r in rows_subset if r.get(key) is not None and math.isfinite(float(r[key]))]
+        return sum(values) / len(values) if values else None
+    pre_stall = [r for r in rows if stall is None or r['elapsed_sim_time'] < stall['elapsed_sim_time']]
+    post_stall = [r for r in rows if stall is not None and r['elapsed_sim_time'] >= stall['elapsed_sim_time']]
+    drives = {}
+    for name in DRIVE_GEOMETRY:
+        drives[name] = {'mean_command_rad_s': mean(rows, f'wheel_{name}_command'),
+                        'mean_actual_rad_s': mean(rows, f'wheel_{name}_actual'),
+                        'mean_command_actual_ratio': mean(rows, f'drive_{name}_command_actual_ratio'),
+                        'mean_signed_slip': mean(rows, f'drive_{name}_slip'),
+                        'slip_before_stall': mean(pre_stall, f'drive_{name}_slip'),
+                        'slip_after_stall': mean(post_stall, f'drive_{name}_slip'),
+                        'mean_normal_metric': mean(rows, f'drive_{name}_normal_metric'),
+                        'mean_tangential_metric': mean(rows, f'drive_{name}_tangential_metric'),
+                        'mean_lateral_velocity': mean(rows, f'drive_{name}_v_lateral')}
+    unexpected_counts = {link: max(r[f'{link}_contact_count'] for r in rows) for link in UNEXPECTED_CONTACT_LINKS}
     summary = {
         'case': args.case, 'samples': len(rows), 'sim_duration': rows[-1]['elapsed_sim_time'],
         'clock_verified': True, 'telemetry_valid': telemetry_valid,
         'joint_properties_service': node.joint_service_name,
         'classification': 'NOT PHYSICAL CALIBRATION',
+        'physics_variant': os.environ.get('ACCEPTANCE_CASTER_DYNAMICS_VARIANT', 'UNSPECIFIED'),
         'simulation_assumption_caster_trail_m': args.trail_test_value_m,
         'caster_axle_offset_x_m': os.environ.get('ACCEPTANCE_CASTER_AXLE_OFFSET_X_M', '0.0'),
         'caster_axle_offset_y_m': os.environ.get('ACCEPTANCE_CASTER_AXLE_OFFSET_Y_M', '0.0'),
@@ -341,6 +400,11 @@ def main():
         'mean_odom_wz': sum(r['odom_wz'] for r in rows if r['odom_wz'] is not None) / max(1, sum(r['odom_wz'] is not None for r in rows)),
         'mean_imu_wz': sum(r['imu_wz'] for r in rows if r['imu_wz'] is not None) / max(1, sum(r['imu_wz'] is not None for r in rows)),
         'drive_load_share': drive_normal / normal_total if normal_total else None,
+        'drives': drives,
+        'base_contact_count': unexpected_counts['base_link'],
+        'front_housing_contact_count': unexpected_counts['steer_front_link'],
+        'rear_housing_contact_count': unexpected_counts['steer_rear_link'],
+        'unexpected_ground_contacts': any(unexpected_counts.values()),
         'casters': casters,
         't_stall': stall['elapsed_sim_time'] if stall else None,
         'at_stall': {label: {'heading_error': stall.get(label + '_heading_error'),

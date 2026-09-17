@@ -38,6 +38,9 @@ def generate_launch_description():
     proper_caster_test = LaunchConfiguration('proper_caster_test')
     caster_axle_offset_x_m = LaunchConfiguration('caster_axle_offset_x_m')
     caster_axle_offset_y_m = LaunchConfiguration('caster_axle_offset_y_m')
+    proper_caster_dynamics = {name: LaunchConfiguration(name) for name in (
+        'proper_caster_mu1', 'proper_caster_mu2', 'caster_swivel_friction',
+        'caster_swivel_damping', 'caster_roll_friction', 'caster_roll_damping')}
     mode = LaunchConfiguration('mode')
     mapping_mode = IfCondition(PythonExpression(["'", mode, "' == 'mapping'"]))
     navigation_mode = IfCondition(PythonExpression(["'", mode, "' == 'navigation'"]))
@@ -68,6 +71,7 @@ def generate_launch_description():
     for name, value in zip(('imu_roll', 'imu_pitch', 'imu_yaw'), imu_extrinsics['rpy']): args += xacro_arg(name, value)
     args += [' caster_axle_offset_x_m:=', caster_axle_offset_x_m]
     args += [' caster_axle_offset_y_m:=', caster_axle_offset_y_m]
+    for name, value in proper_caster_dynamics.items(): args += [f' {name}:=', value]
     robot_description = ParameterValue(Command(['xacro ', urdf] + args), value_type=str)
 
     # gazebo.launch.py owns Gazebo, spawn, ros2_control and simulated sensors.
@@ -81,6 +85,7 @@ def generate_launch_description():
                           'proper_caster_test': proper_caster_test,
                           'caster_axle_offset_x_m': caster_axle_offset_x_m,
                           'caster_axle_offset_y_m': caster_axle_offset_y_m,
+                          **proper_caster_dynamics,
                           'start_ekf': 'false',
                           'start_state_publisher': 'true'}.items())
     real_driver = OpaqueFunction(function=lambda context: _real_driver(context, pkg), condition=UnlessCondition(use_sim))
@@ -122,6 +127,12 @@ def generate_launch_description():
         DeclareLaunchArgument('proper_caster_test', default_value='false', description='Test-only four-caster swivel+roll model'),
         DeclareLaunchArgument('caster_axle_offset_x_m', default_value='0.0', description='Test-only caster axle offset in local +X (m)'),
         DeclareLaunchArgument('caster_axle_offset_y_m', default_value='0.0', description='Test-only caster axle offset in local +Y (m)'),
+        DeclareLaunchArgument('proper_caster_mu1', default_value='0.01', description='TEST-ONLY proper caster mu1'),
+        DeclareLaunchArgument('proper_caster_mu2', default_value='0.01', description='TEST-ONLY proper caster mu2'),
+        DeclareLaunchArgument('caster_swivel_friction', default_value='0.02', description='TEST-ONLY caster swivel friction'),
+        DeclareLaunchArgument('caster_swivel_damping', default_value='0.02', description='TEST-ONLY caster swivel damping'),
+        DeclareLaunchArgument('caster_roll_friction', default_value='0.02', description='TEST-ONLY caster roll friction'),
+        DeclareLaunchArgument('caster_roll_damping', default_value='0.02', description='TEST-ONLY caster roll damping'),
         DeclareLaunchArgument('real_sensor_launch', default_value='', description='Vendor sensor launch file for use_sim=false'),
         DeclareLaunchArgument('real_lidar_topic', default_value='/lidar/points'),
         DeclareLaunchArgument('real_imu_topic', default_value='/imu/data'),

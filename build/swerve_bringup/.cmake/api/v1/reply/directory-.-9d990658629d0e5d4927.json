@@ -273,6 +273,24 @@
 				"file" : 6,
 				"line" : 39,
 				"parent" : 42
+			},
+			{
+				"command" : 1,
+				"file" : 5,
+				"line" : 89,
+				"parent" : 0
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 34,
+				"parent" : 44
+			},
+			{
+				"command" : 0,
+				"file" : 6,
+				"line" : 39,
+				"parent" : 45
 			}
 		]
 	},
@@ -392,12 +410,22 @@
 			"destination" : "lib/swerve_bringup",
 			"paths" : 
 			[
-				"scripts/nav_accuracy_case.py"
+				"scripts/validate_caster_geometry.py"
 			],
 			"type" : "file"
 		},
 		{
 			"backtrace" : 43,
+			"component" : "Unspecified",
+			"destination" : "lib/swerve_bringup",
+			"paths" : 
+			[
+				"scripts/nav_accuracy_case.py"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 46,
 			"component" : "Unspecified",
 			"destination" : "lib/swerve_bringup",
 			"paths" : 

@@ -42,6 +42,12 @@ def generate_launch_description():
                    ' proper_caster_test:=', LaunchConfiguration('proper_caster_test'),
                    ' caster_axle_offset_x_m:=', LaunchConfiguration('caster_axle_offset_x_m'),
                    ' caster_axle_offset_y_m:=', LaunchConfiguration('caster_axle_offset_y_m'),
+                   ' proper_caster_mu1:=', LaunchConfiguration('proper_caster_mu1'),
+                   ' proper_caster_mu2:=', LaunchConfiguration('proper_caster_mu2'),
+                   ' caster_swivel_friction:=', LaunchConfiguration('caster_swivel_friction'),
+                   ' caster_swivel_damping:=', LaunchConfiguration('caster_swivel_damping'),
+                   ' caster_roll_friction:=', LaunchConfiguration('caster_roll_friction'),
+                   ' caster_roll_damping:=', LaunchConfiguration('caster_roll_damping'),
                    ' enable_gazebo_ros2_control:=', LaunchConfiguration('enable_gazebo_ros2_control')]
     for name, value in zip(('lidar_x', 'lidar_y', 'lidar_z'), lidar_extrinsics['xyz']):
         xacro_args += xacro_arg(name, value)
@@ -208,6 +214,12 @@ def generate_launch_description():
             'caster_axle_offset_y_m', default_value='0.0',
             description='Test-only caster wheel-axle offset from swivel axis in caster local +Y (m).',
         ),
+        DeclareLaunchArgument('proper_caster_mu1', default_value='0.01', description='TEST-ONLY proper-caster isotropic contact mu1.'),
+        DeclareLaunchArgument('proper_caster_mu2', default_value='0.01', description='TEST-ONLY proper-caster isotropic contact mu2.'),
+        DeclareLaunchArgument('caster_swivel_friction', default_value='0.02', description='TEST-ONLY passive caster swivel joint friction.'),
+        DeclareLaunchArgument('caster_swivel_damping', default_value='0.02', description='TEST-ONLY passive caster swivel joint damping.'),
+        DeclareLaunchArgument('caster_roll_friction', default_value='0.02', description='TEST-ONLY passive caster roll joint friction.'),
+        DeclareLaunchArgument('caster_roll_damping', default_value='0.02', description='TEST-ONLY passive caster roll joint damping.'),
         DeclareLaunchArgument(
             'enable_gazebo_ros2_control', default_value='true',
             description='Diagnostic switch to isolate Gazebo model physics from ros2_control.',

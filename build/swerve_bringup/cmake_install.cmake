@@ -83,6 +83,10 @@ if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "validate_caster_geometry.py" FILES "/home/yahboom/swerve_bringup/scripts/validate_caster_geometry.py")
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/swerve_bringup" TYPE PROGRAM RENAME "nav_accuracy_case.py" FILES "/home/yahboom/swerve_bringup/scripts/nav_accuracy_case.py")
 endif()
 

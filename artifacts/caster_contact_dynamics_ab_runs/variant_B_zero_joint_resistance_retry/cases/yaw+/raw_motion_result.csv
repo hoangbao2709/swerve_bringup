@@ -1,0 +1,2 @@
+case,clock_verified,direction_correct,physics_acceptance_pass,integrated_gt_yaw,integrated_encoder_yaw,integrated_odom_yaw,integrated_imu_yaw,encoder_to_gt_yaw_ratio
+yaw+,True,True,False,0.14348865300274793,1.4271148606932176,1.3522571471541216,0.08835480087823715,9.945837742764837

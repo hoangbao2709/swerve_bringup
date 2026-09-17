@@ -25,11 +25,11 @@
   "casters": {
     "FL": {
       "initial_swivel": 0.013486958120513037,
-      "desired_heading": 0.5444830130309843,
+      "desired_heading": 0.5513542782077475,
       "actual_heading": -0.10786323840893353,
-      "mean_equivalent_heading_error": 1.0617447096018164,
-      "p95_heading_error": 1.5082216088147298,
-      "final_heading_error": 0.6523462514399179,
+      "mean_equivalent_heading_error": 1.0581800481928394,
+      "p95_heading_error": 1.5049939757162765,
+      "final_heading_error": 0.659217516616681,
       "swivel_travel": 0.2037895528521787,
       "mean_abs_swivel_velocity": 0.004701510020997806,
       "mean_abs_roll_velocity": 0.2579862718813416,
@@ -38,11 +38,11 @@
     },
     "FR": {
       "initial_swivel": 0.012290267544251776,
-      "desired_heading": 0.6468128032887764,
+      "desired_heading": 0.6541927282979356,
       "actual_heading": -0.09871072414132431,
-      "mean_equivalent_heading_error": 0.7704600086594433,
-      "p95_heading_error": 0.900696042187544,
-      "final_heading_error": 0.7455235274301008,
+      "mean_equivalent_heading_error": 0.7606230906141953,
+      "p95_heading_error": 0.8794820478732585,
+      "final_heading_error": 0.7529034524392599,
       "swivel_travel": 0.23907861579213385,
       "mean_abs_swivel_velocity": 0.0071772467156531565,
       "mean_abs_roll_velocity": 0.20354712344818868,
@@ -51,11 +51,11 @@
     },
     "RL": {
       "initial_swivel": -0.010489380961169914,
-      "desired_heading": 0.841374363490541,
+      "desired_heading": 0.8396697994870715,
       "actual_heading": -0.9855566377456917,
-      "mean_equivalent_heading_error": 1.1069557226381823,
-      "p95_heading_error": 1.5344174465130012,
-      "final_heading_error": 1.3146616523535606,
+      "mean_equivalent_heading_error": 1.1069066926535125,
+      "p95_heading_error": 1.5352587457973226,
+      "final_heading_error": 1.3163662163570302,
       "swivel_travel": 0.9756692303241241,
       "mean_abs_swivel_velocity": 0.012931793248197163,
       "mean_abs_roll_velocity": 0.21032495809972732,
@@ -64,11 +64,11 @@
     },
     "RR": {
       "initial_swivel": -0.0023633907001316956,
-      "desired_heading": 0.9489190218173138,
+      "desired_heading": 0.9457714952769963,
       "actual_heading": -1.0654440441739688,
-      "mean_equivalent_heading_error": 0.8837542287202105,
-      "p95_heading_error": 1.4090068635040573,
-      "final_heading_error": 1.1272295875985106,
+      "mean_equivalent_heading_error": 0.8873105178524362,
+      "p95_heading_error": 1.4073924007931475,
+      "final_heading_error": 1.1303771141388281,
       "swivel_travel": 1.063080653473837,
       "mean_abs_swivel_velocity": 0.027812395630368792,
       "mean_abs_roll_velocity": 0.6250477078506653,
@@ -101,5 +101,7 @@
     "caster_swivel_nearly_stationary": false,
     "drive_wheels_active": true,
     "gt_stall_detected": true
-  }
+  },
+  "heading_math_version": "actual_rotated_axle_v1",
+  "heading_math_recomputed_from_recorded_telemetry": true
 }

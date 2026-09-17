@@ -5,6 +5,7 @@ import json
 import math
 import os
 import time
+import argparse
 
 import rclpy
 from gazebo_msgs.srv import GetEntityState
@@ -37,6 +38,70 @@ CASES = {
 }
 WHEEL_RADIUS = 0.0675
 MODULE_X = 0.300042
+YAW_MIN_MEANINGFUL_RAD = 0.05
+YAW_RATIO_TOLERANCE = 0.15
+
+
+def finite_values(rows, key):
+    return [float(row[key]) for row in rows
+            if row.get(key) not in (None, '') and math.isfinite(float(row[key]))]
+
+
+def trapezoid(rows, value_key):
+    """Integrate a trace signal in simulation time, ignoring invalid spans."""
+    total = 0.0
+    for before, after in zip(rows, rows[1:]):
+        try:
+            dt = float(after['sim_time']) - float(before['sim_time'])
+            a, b = float(before[value_key]), float(after[value_key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if dt > 0.0 and math.isfinite(a) and math.isfinite(b):
+            total += 0.5 * (a + b) * dt
+    return total
+
+
+def unwrapped_heading_delta(rows, heading_key):
+    """Endpoint heading change without the +/-pi discontinuity.
+
+    This is deliberately distinct from a rate integral: GT/odom heading is an
+    orientation measurement, while encoder and IMU yaw are rate integrals.
+    """
+    values = finite_values(rows, heading_key)
+    return sum(wrap(after - before) for before, after in zip(values, values[1:])) if len(values) > 1 else None
+
+
+def yaw_report_from_trace(trace, command, clock_verified=True):
+    """Produce named yaw metrics; used both live and to repair old artifacts."""
+    active = trace[max(0, len(trace) * 3 // 4):]
+    def mean(key):
+        values = finite_values(active, key)
+        return sum(values) / len(values) if values else None
+    gt_yaw = unwrapped_heading_delta(trace, 'gt_yaw')
+    odom_yaw = unwrapped_heading_delta(trace, 'odom_yaw')
+    encoder_yaw = trapezoid(trace, 'encoder_wz')
+    imu_yaw = trapezoid(trace, 'imu_wz')
+    ratio = encoder_yaw / gt_yaw if gt_yaw is not None and abs(gt_yaw) > 1e-9 else None
+    yaw_meaningful = gt_yaw is not None and abs(gt_yaw) >= YAW_MIN_MEANINGFUL_RAD
+    direction = bool(gt_yaw is not None and gt_yaw * command[2] > 0.0)
+    ratio_ok = ratio is not None and abs(ratio - 1.0) <= YAW_RATIO_TOLERANCE
+    return {
+        'steady_gt_wz': mean('gt_wz'),
+        'steady_encoder_wz': mean('encoder_wz'),
+        'steady_odom_wz': mean('odom_wz'),
+        'steady_imu_wz': mean('imu_wz'),
+        'integrated_gt_yaw': gt_yaw,
+        'integrated_encoder_yaw': encoder_yaw,
+        'integrated_odom_yaw': odom_yaw,
+        'integrated_imu_yaw': imu_yaw,
+        'encoder_to_gt_yaw_ratio': ratio,
+        'odom_to_gt_yaw_ratio': odom_yaw / gt_yaw if gt_yaw is not None and abs(gt_yaw) > 1e-9 else None,
+        'imu_to_gt_yaw_error': imu_yaw - gt_yaw if gt_yaw is not None else None,
+        'gt_yaw_magnitude_meaningful': yaw_meaningful,
+        'direction_correct': direction,
+        'physics_acceptance_pass': bool(clock_verified and direction and yaw_meaningful and ratio_ok),
+        'yaw_ratio_acceptance_tolerance': YAW_RATIO_TOLERANCE,
+    }
 
 
 class Raw(Node):
@@ -227,19 +292,61 @@ class Raw(Node):
             'gt_velocity_integral': gt_integral, 'integration_error': abs(gt_disp - gt_integral),
             'velocity_efficiency': gt_disp / expected_disp if expected_disp > 1e-9 else abs(gt_d[2] / expected[2]) if abs(expected[2]) > 1e-9 else None,
             'steady_gt_body_speed': math.hypot(mean('gt_vx_world') or 0.0, mean('gt_vy_world') or 0.0),
-            'steady_gt_cmd_speed': steady_gt_cmd_speed, 'steady_gt_wz': mean('gt_wz'),
+            'steady_gt_cmd_speed': steady_gt_cmd_speed,
             'steady_odom_speed': math.hypot(mean('odom_vx') or 0.0, mean('odom_vy') or 0.0), 'command_wheel_rad_s': expected_wheel,
             'actual_wheel_rad_s': actual_wheel, 'wheel_surface_m_s': actual_wheel * WHEEL_RADIUS,
             'traction_ratio': steady_gt_cmd_speed / (actual_wheel * WHEEL_RADIUS) if actual_wheel > 1e-9 and steady_gt_cmd_speed is not None else None,
             'steer_error': max(abs((mean('steer_pos_front') or 0.0) - (mean('steer_cmd_front') or 0.0)), abs((mean('steer_pos_rear') or 0.0) - (mean('steer_cmd_rear') or 0.0))),
             'max_cmd_publish_gap_sim': max(publish_gaps) if publish_gaps else None,
             'mean_cmd_publish_gap_sim': sum(publish_gaps) / len(publish_gaps) if publish_gaps else None,
-            'clock_verified': True,
-            'direction_correct': bool(gt_d[0] * command[0] > 0 if abs(command[0]) > 0 else gt_d[1] * command[1] > 0 if abs(command[1]) > 0 else gt_d[2] * command[2] > 0)}
+            'clock_verified': True}
+        if abs(command[2]) > 0.0 and command[0] == 0.0 and command[1] == 0.0:
+            # Do not infer a physics pass merely from the commanded sign.
+            result.update(yaw_report_from_trace(trace, command, result['clock_verified']))
+            # Preserve the old field as an endpoint diagnostic for comparison.
+            result['gt_dyaw'] = result['integrated_gt_yaw']
+        else:
+            result['direction_correct'] = bool(gt_d[0] * command[0] > 0 if abs(command[0]) > 0 else gt_d[1] * command[1] > 0)
+            result['physics_acceptance_pass'] = bool(result['clock_verified'] and result['direction_correct'])
         return result, trace
 
 
+def postprocess(trace_path, result_path, source_result_path=None):
+    """Backfill explicit yaw fields from an existing raw trace without a rerun."""
+    with open(trace_path, newline='', encoding='utf-8') as stream:
+        trace = list(csv.DictReader(stream))
+    if not trace:
+        raise RuntimeError(f'empty raw trace: {trace_path}')
+    name = trace[0].get('case', 'yaw+')
+    command = (float(trace[0].get('cmd_x') or 0.0), float(trace[0].get('cmd_y') or 0.0),
+               float(trace[0].get('cmd_yaw') or 0.0))
+    existing = {}
+    source = source_result_path or result_path
+    if os.path.exists(source):
+        with open(source, newline='', encoding='utf-8') as stream:
+            existing = next(csv.DictReader(stream), {})
+    clock = str(existing.get('clock_verified', 'True')).lower() == 'true'
+    result = dict(existing)
+    result.update(yaw_report_from_trace(trace, command, clock))
+    result['case'] = name
+    # Use unwrapped trace heading rather than a manually interpreted CSV column.
+    result['gt_dyaw'] = result['integrated_gt_yaw']
+    with open(result_path, 'w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=result.keys(), lineterminator='\n'); writer.writeheader(); writer.writerow(result)
+    return result
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--postprocess', metavar='RAW_MOTION_CSV', help='backfill named yaw metrics from an existing trace')
+    parser.add_argument('--result', help='output result CSV (defaults beside trace)')
+    parser.add_argument('--source-result', help='existing result CSV to retain non-yaw fields from')
+    args = parser.parse_args()
+    if args.postprocess:
+        result_path = args.result or os.path.join(os.path.dirname(args.postprocess), 'raw_motion_result.csv')
+        result = postprocess(args.postprocess, result_path, args.source_result)
+        print(result, flush=True)
+        return 0 if result['physics_acceptance_pass'] else 1
     name = os.environ.get('ACCEPTANCE_CASE', 'X+')
     if name not in CASES: raise SystemExit(f'unknown raw case {name}')
     outdir = os.environ.get('ACCEPTANCE_CASE_DIR', 'artifacts/raw_motion'); os.makedirs(outdir, exist_ok=True)
@@ -248,9 +355,9 @@ def main():
     finally: node.destroy_node(); rclpy.shutdown()
     fields = list(trace[0].keys()) if trace else list(result.keys())
     with open(os.path.join(outdir, 'raw_motion.csv'), 'w', newline='', encoding='utf-8') as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields); writer.writeheader(); writer.writerows(trace)
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator='\n'); writer.writeheader(); writer.writerows(trace)
     with open(os.path.join(outdir, 'raw_motion_result.csv'), 'w', newline='', encoding='utf-8') as stream:
-        writer = csv.DictWriter(stream, fieldnames=result.keys()); writer.writeheader(); writer.writerow(result)
+        writer = csv.DictWriter(stream, fieldnames=result.keys(), lineterminator='\n'); writer.writeheader(); writer.writerow(result)
     with open(os.path.join(outdir, 'clock_validation.json'), 'w', encoding='utf-8') as stream:
         json.dump({'use_sim_time': bool(node.get_parameter('use_sim_time').value),
                    'clock_topic_seen': bool(node.clock_samples),
@@ -259,7 +366,7 @@ def main():
                    'rtf': result['clock_delta'] / result['clock_wall_delta'] if result['clock_wall_delta'] else None,
                    'max_cmd_publish_gap_sim': result['max_cmd_publish_gap_sim'],
                    'clock_verified': bool(node.get_parameter('use_sim_time').value and node.clock_samples)}, stream, indent=2)
-    print(result, flush=True); return 0 if result['direction_correct'] else 1
+    print(result, flush=True); return 0 if result['physics_acceptance_pass'] else 1
 
 
 if __name__ == '__main__': raise SystemExit(main())

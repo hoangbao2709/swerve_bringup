@@ -88,6 +88,17 @@ def run_case(args, case_name, domain, outdir):
         launch_command.append('caster_frictionless:=true')
     if env.get('ACCEPTANCE_PROPER_CASTER_TEST', '').lower() in ('1', 'true', 'yes'):
         launch_command.append('proper_caster_test:=true')
+    # Test-only engineering assumptions are deliberately explicit.  The
+    # production launch defaults remain zero/unknown in the URDF/config.
+    for name in ('X', 'Y'):
+        value = env.get(f'ACCEPTANCE_CASTER_AXLE_OFFSET_{name}_M')
+        if value is not None:
+            launch_command.append(f'caster_axle_offset_{name.lower()}_m:={value}')
+    for parameter in ('proper_caster_mu1', 'proper_caster_mu2', 'caster_swivel_friction',
+                      'caster_swivel_damping', 'caster_roll_friction', 'caster_roll_damping'):
+        value = env.get('ACCEPTANCE_' + parameter.upper())
+        if value is not None:
+            launch_command.append(f'{parameter}:={value}')
     proc = subprocess.Popen(
         launch_command,
         cwd=ROOT, env=env, stdout=launch_log, stderr=subprocess.STDOUT,
@@ -104,6 +115,8 @@ def run_case(args, case_name, domain, outdir):
     evaluator_rc = None
     evaluator_log = ''
     evaluator_passed = True
+    direction_correct = None
+    physics_acceptance_pass = None
     if nav_ready and args.evaluator:
         evaluator_command = [value.replace('{case_dir}', outdir) for value in args.evaluator]
         evaluator = subprocess.run(evaluator_command, cwd=ROOT, env=env,
@@ -119,7 +132,15 @@ def run_case(args, case_name, domain, outdir):
         result_path = os.path.join(outdir, 'raw_motion_result.csv')
         if os.path.exists(result_path):
             with open(result_path, encoding='utf-8') as stream:
-                evaluator_passed = evaluator_passed and next(csv.DictReader(stream), {}).get('direction_correct') == 'True'
+                raw_result = next(csv.DictReader(stream), {})
+            direction_correct = raw_result.get('direction_correct') == 'True'
+            # Raw yaw diagnostics deliberately distinguish command direction
+            # from physical acceptance; never collapse them into one PASS.
+            if 'physics_acceptance_pass' in raw_result:
+                physics_acceptance_pass = raw_result.get('physics_acceptance_pass') == 'True'
+                evaluator_passed = evaluator_passed and physics_acceptance_pass
+            else:
+                evaluator_passed = evaluator_passed and direction_correct
     shutdown_clean = stop_group(proc, args.shutdown_grace)
     quiet = graph_quiet(env)
     launch_log.close()
@@ -136,6 +157,10 @@ def run_case(args, case_name, domain, outdir):
         'no_old_test_launch': bool(shutdown_clean),
         'no_old_evaluator': evaluator_rc is not None or not args.evaluator,
         'evaluator_rc': evaluator_rc,
+        'direction_correct': direction_correct,
+        'physics_acceptance_pass': physics_acceptance_pass,
+        'direction_status': 'PASS' if direction_correct is True else 'FAIL' if direction_correct is False else 'N/A',
+        'physics_status': 'PASS' if physics_acceptance_pass is True else 'FAIL' if physics_acceptance_pass is False else 'N/A',
         'status': 'PASS' if nav_ready and shutdown_clean and quiet and evaluator_rc in (None, 0) and evaluator_passed else 'FAIL',
     }
 
@@ -150,6 +175,8 @@ def main():
     parser.add_argument('--evaluator', nargs='+', help='command run only after NAV_READY')
     parser.add_argument('--cases', nargs='+', help='case names exported as ACCEPTANCE_CASE')
     parser.add_argument('--outdir', help='timestamped output root')
+    parser.add_argument('--continue-on-failure', action='store_true',
+                        help='diagnostic sweeps collect later cases even when an earlier physics gate fails')
     args = parser.parse_args()
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     root = args.outdir or os.path.join(ROOT, 'artifacts', f'acceptance_{stamp}')
@@ -162,7 +189,7 @@ def main():
         row = run_case(args, case, args.domain + index, case_dir)
         rows.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
-        if row['status'] != 'PASS':
+        if row['status'] != 'PASS' and not args.continue_on_failure:
             print('STOP: case failed; no next case is launched', flush=True)
             break
     with open(os.path.join(root, 'summary.csv'), 'w', newline='', encoding='utf-8') as stream:

@@ -94,6 +94,11 @@ def run_case(args, case_name, domain, outdir):
         value = env.get(f'ACCEPTANCE_CASTER_AXLE_OFFSET_{name}_M')
         if value is not None:
             launch_command.append(f'caster_axle_offset_{name.lower()}_m:={value}')
+    for parameter in ('proper_caster_mu1', 'proper_caster_mu2', 'caster_swivel_friction',
+                      'caster_swivel_damping', 'caster_roll_friction', 'caster_roll_damping'):
+        value = env.get('ACCEPTANCE_' + parameter.upper())
+        if value is not None:
+            launch_command.append(f'{parameter}:={value}')
     proc = subprocess.Popen(
         launch_command,
         cwd=ROOT, env=env, stdout=launch_log, stderr=subprocess.STDOUT,

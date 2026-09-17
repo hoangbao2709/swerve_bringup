@@ -17,6 +17,8 @@
 /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/rviz/swerve.rviz
 /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/worlds/test.world
 /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/worlds/warehouse.world
+/home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/caster_geometry.yaml
+/home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/caster_trail_sweep_test_only.yaml
 /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/controllers.yaml
 /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/datamatrix_map.yaml
 /home/yahboom/swerve_bringup/install/swerve_bringup/share/swerve_bringup/config/ekf.yaml

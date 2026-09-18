@@ -1,7 +1,9 @@
 from django.test import SimpleTestCase
 
 from twin.canonical_map import (
+    aisle_footprint,
     canonicalize_layout,
+    validate_aisle_centerline,
     validate_canonical_layout,
     warehouse_to_three,
     warehouse_to_ros,
@@ -65,3 +67,39 @@ class CanonicalMapTests(SimpleTestCase):
         self.assertEqual(validate_canonical_layout(layout), [])
         layout["aisles"][0]["width"] = 0
         self.assertTrue(any("width must be positive" in error for error in validate_canonical_layout(layout)))
+
+    def test_two_point_and_collinear_aisles_are_valid(self):
+        for centerline in (
+            [{"x": 2, "y": 2}, {"x": 18, "y": 2}],
+            [{"x": 2, "y": 2}, {"x": 10, "y": 2}, {"x": 18, "y": 2}],
+            [{"x": 2, "y": 2}, {"x": 2, "y": 10}, {"x": 10, "y": 10}],
+        ):
+            self.assertEqual(validate_aisle_centerline(centerline, 2), [])
+        self.assertTrue(validate_aisle_centerline([{"x": 1, "y": 1}], 2))
+        self.assertTrue(validate_aisle_centerline([{"x": 1, "y": 1}, {"x": 1, "y": 1}], 2))
+
+    def test_aisle_width_is_contained_and_respects_holes(self):
+        base = {
+            "size": {"width": 20, "depth": 20},
+            "floors": [{"id": 1, "boundary": [[0, 0], [20, 0], [20, 20], [0, 20]], "holes": [[[8, 8], [12, 8], [12, 12], [8, 12]]]}],
+        }
+        base["aisles"] = [{"id": "inside", "floor_id": 1, "centerline": [{"x": 2, "y": 5}, {"x": 18, "y": 5}], "width": 2}]
+        self.assertEqual(validate_canonical_layout(base), [])
+        base["aisles"][0]["centerline"] = [{"x": 2, "y": 0.5}, {"x": 18, "y": 0.5}]
+        self.assertTrue(any("width footprint" in error for error in validate_canonical_layout(base)))
+        base["aisles"][0]["centerline"] = [{"x": 2, "y": 10}, {"x": 18, "y": 10}]
+        self.assertTrue(any("width footprint" in error for error in validate_canonical_layout(base)))
+        base["aisles"][0]["centerline"] = [{"x": 2, "y": 2}, {"x": 2, "y": 6}, {"x": 6, "y": 6}]
+        self.assertEqual(validate_canonical_layout(base), [])
+        self.assertEqual(len(aisle_footprint(base["aisles"][0]["centerline"], 2)), 6)
+
+    def test_multi_floor_aisles_keep_their_floor_reference(self):
+        layout = {
+            "size": {"width": 20, "depth": 20},
+            "floors": [{"id": "F1"}, {"id": "F2"}],
+            "aisles": [
+                {"id": "A-F1", "floor_id": "F1", "centerline": [{"x": 2, "y": 2}, {"x": 18, "y": 2}], "width": 2},
+                {"id": "A-F2", "floor_id": "F2", "centerline": [{"x": 2, "y": 4}, {"x": 18, "y": 4}], "width": 2},
+            ],
+        }
+        self.assertEqual(validate_canonical_layout(layout), [])

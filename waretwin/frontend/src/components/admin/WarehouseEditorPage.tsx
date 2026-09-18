@@ -8,11 +8,14 @@ import { onLayoutUpdated, wsSend } from "../../services/ws";
 import { DEMO_MODE } from "../../config";
 import { useStore } from "../../state/store";
 import type { WarehouseLayout } from "../../layout/types";
-import { pointInPolygon, validatePolygon, type Point } from "../../layout/geometry";
-import { generateAisleTags, validateTags } from "../../layout/navigation";
+import { buildAisleFootprint, pointInPolygon, polygonContainedInFloor, snapPoint, validateAisleCenterline, validateFloorPolygon, validateHolePolygon, validatePolygon, type Point } from "../../layout/geometry";
+import { generateAisleTags, validateGeneratedTags, validateTags } from "../../layout/navigation";
 import layoutJson from "../../layout/warehouse_layout.json";
 
 type Kind =
+  | "floor"
+  | "aisle"
+  | "navigation-tag"
   | "rack"
   | "wall"
   | "conveyor"
@@ -38,7 +41,7 @@ type EditorBlock = {
   members: Selection[];
 };
 type Vec3 = [number, number, number];
-type Mode = "select" | "move" | "measure" | "draw-floor" | "edit-vertex" | "add-hole" | "draw-aisle" | "edit-aisle";
+type Mode = "select" | "move" | "measure" | "draw-floor" | "edit-vertex" | "add-hole" | "draw-aisle" | "edit-aisle" | "add-manual-tag";
 type ContextAction =
   | "focus"
   | "rotateLeft"
@@ -88,7 +91,9 @@ function normalizeDraft(value: unknown): Draft {
   normalized.schema_version = 2;
   normalized.coordinate_system = source.coordinate_system ?? { unit: "meter", frame: "warehouse_map", yaw_unit: "radian" };
   normalized.aisles = Array.isArray(source.aisles) ? source.aisles : [];
-  normalized.navigation_tags = Array.isArray(source.navigation_tags) ? source.navigation_tags : [];
+  normalized.navigation_tags = Array.isArray(source.navigation_tags)
+    ? source.navigation_tags.map((tag) => ({ ...tag, id: tag.id ?? tag.uuid }))
+    : [];
   normalized.navigation_edges = Array.isArray(source.navigation_edges) ? source.navigation_edges : [];
   normalized.floors = normalized.floors.map((floor) => ({
     ...floor,
@@ -114,6 +119,9 @@ function normalizeDraft(value: unknown): Draft {
 }
 
 const COLORS: Record<Kind, string> = {
+  floor: "#38bdf8",
+  aisle: "#22d3ee",
+  "navigation-tag": "#a78bfa",
   rack: "#64748b",
   wall: "#94a3b8",
   conveyor: "#f59e0b",
@@ -133,6 +141,9 @@ const COLORS: Record<Kind, string> = {
 };
 
 const LABELS: Record<Kind, string> = {
+  floor: "Floor",
+  aisle: "Aisle",
+  "navigation-tag": "Navigation Tag",
   rack: "Rack",
   wall: "Wall",
   conveyor: "Conveyor",
@@ -152,6 +163,9 @@ const LABELS: Record<Kind, string> = {
 };
 
 const ICONS: Record<Kind, string> = {
+  floor: "⌂",
+  aisle: "╱",
+  "navigation-tag": "●",
   rack: "▥",
   wall: "▤",
   conveyor: "→",
@@ -185,7 +199,7 @@ const GROUPS: { title: string; kinds: Kind[] }[] = [
   },
   {
     title: "Navigation",
-    kinds: ["zone", "walkway", "restricted", "spawn"],
+    kinds: ["floor", "aisle", "navigation-tag", "zone", "walkway", "restricted", "spawn"],
   },
   {
     title: "Sensors",
@@ -194,6 +208,9 @@ const GROUPS: { title: string; kinds: Kind[] }[] = [
 ];
 
 const KEY_MAP: Partial<Record<Kind, keyof Draft>> = {
+  floor: "floors",
+  aisle: "aisles",
+  "navigation-tag": "navigation_tags",
   rack: "racks",
   zone: "zones",
   station: "stations",
@@ -211,6 +228,9 @@ const KEY_MAP: Partial<Record<Kind, keyof Draft>> = {
 };
 
 const DEFAULT_LAYER_ORDER: Kind[] = [
+  "floor",
+  "aisle",
+  "navigation-tag",
   "column",
   "wall",
   "lift",
@@ -230,6 +250,9 @@ const DEFAULT_LAYER_ORDER: Kind[] = [
 ];
 
 const LAYER_LABELS: Record<Kind, string> = {
+  floor: "Floors",
+  aisle: "Aisles",
+  "navigation-tag": "Navigation Tags",
   column: "Structure",
   wall: "Walls",
   lift: "Lifts",
@@ -267,8 +290,21 @@ function nextId(arr: any[], prefix: string) {
 
 function getCollection(draft: Draft, kind: Kind): any[] {
   if (kind === "spawn") return draft.spawn.robots as any[];
+  if (kind === "floor") return draft.floors as any[];
   const key = KEY_MAP[kind];
   return key ? ((draft as any)[key] as any[]) ?? [] : [];
+}
+
+function objectId(kind: Kind, obj: any): string {
+  return kind === "navigation-tag" ? String(obj.uuid ?? obj.id) : String(obj.id);
+}
+
+function getFloorForObject(obj: any): number | string {
+  return obj?.floor_id ?? obj?.floor ?? 1;
+}
+
+function findCollectionObject(draft: Draft, kind: Kind, id: string): any | undefined {
+  return getCollection(draft, kind).find((item) => objectId(kind, item) === String(id));
 }
 
 function addObject(d: Draft, kind: Kind): Selection {
@@ -437,6 +473,7 @@ function addObject(d: Draft, kind: Kind): Selection {
 }
 
 function removeObject(d: Draft, selection: Selection) {
+  if (selection.kind === "floor") return;
   if (selection.kind === "column") {
     const index = Number(selection.id.split("-").pop() ?? "-1");
     if (d.columns && index >= 0) d.columns.splice(index, 1);
@@ -476,6 +513,25 @@ function get2DBox(kind: Kind, obj: any): {
     }
     return fallback;
   };
+
+  if (kind === "navigation-tag") {
+    return { x: Number(obj?.x) || 0, z: Number(obj?.y) || 0, w: 0.6, h: 0.6, rotation: Number(obj?.yaw) || 0 };
+  }
+  if (kind === "aisle") {
+    const footprint = buildAisleFootprint(obj?.centerline ?? [], Number(obj?.width));
+    if (footprint.length) {
+      const xs = footprint.map((p) => p.x), ys = footprint.map((p) => p.y);
+      return { x: Math.min(...xs), z: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), rotation: 0 };
+    }
+    const line = obj?.centerline ?? [];
+    const xs = line.map((p: Point) => p.x), ys = line.map((p: Point) => p.y);
+    return { x: Math.min(...xs, 0), z: Math.min(...ys, 0), w: Math.max(...xs, 1) - Math.min(...xs, 0), h: Math.max(...ys, 1) - Math.min(...ys, 0), rotation: 0 };
+  }
+  if (kind === "floor") {
+    const points = obj?.boundary ?? obj?.footprint ?? [];
+    const xs = points.map((p: Point | [number, number]) => Array.isArray(p) ? p[0] : p.x), ys = points.map((p: Point | [number, number]) => Array.isArray(p) ? p[1] : p.y);
+    return { x: Math.min(...xs, 0), z: Math.min(...ys, 0), w: Math.max(...xs, 1) - Math.min(...xs, 0), h: Math.max(...ys, 1) - Math.min(...ys, 0), rotation: 0 };
+  }
 
   if (kind === "column") {
     const p = Array.isArray(obj) ? obj : [0, 0];
@@ -570,10 +626,7 @@ function get2DBox(kind: Kind, obj: any): {
 
 function moveObject(d: Draft, selection: Selection, centerX: number, centerZ: number) {
   const sx = (v: number) => Math.round(v * 2) / 2;
-  const arr = selection.kind === "column"
-    ? null
-    : getCollection(d, selection.kind);
-  const obj = arr?.find((x) => x.id === selection.id);
+  const obj = selection.kind === "column" ? undefined : findCollectionObject(d, selection.kind, selection.id);
 
   if (selection.kind === "column") {
     const index = Number(selection.id.split("-").pop() ?? "-1");
@@ -583,6 +636,9 @@ function moveObject(d: Draft, selection: Selection, centerX: number, centerZ: nu
     return;
   }
   if (!obj) return;
+
+  if (selection.kind === "navigation-tag") { obj.x = sx(centerX); obj.y = sx(centerZ); if (obj.placement === "auto") { obj.placement = "manual"; obj.locked = true; } return; }
+  if (selection.kind === "aisle") { const box = get2DBox("aisle", obj); const dx = sx(centerX) - (box.x + box.w / 2), dz = sx(centerZ) - (box.z + box.h / 2); obj.centerline = obj.centerline.map((p: Point) => ({ x: sx(p.x + dx), y: sx(p.y + dz) })); return; }
 
   if (["rack", "charger", "spawn", "sensor", "camera"].includes(selection.kind)) {
     obj.position = [sx(centerX), obj.position[1], sx(centerZ)];
@@ -631,10 +687,7 @@ function moveObject(d: Draft, selection: Selection, centerX: number, centerZ: nu
 }
 
 function rotateObject(d: Draft, selection: Selection, delta: number) {
-  const arr = selection.kind === "column"
-    ? null
-    : getCollection(d, selection.kind);
-  const obj = arr?.find((x) => x.id === selection.id);
+  const obj = selection.kind === "column" ? undefined : findCollectionObject(d, selection.kind, selection.id);
   if (!obj) return;
 
   if (selection.kind === "rack") obj.rotation = ((obj.rotation ?? 0) + delta + 360) % 360;
@@ -662,7 +715,7 @@ function setObjectProperty(obj: any, path: string, raw: string) {
   }
   const key = parts[parts.length - 1];
   const parsed = Number(raw);
-  cursor[key] = raw.trim() !== "" && Number.isFinite(parsed) ? parsed : raw;
+  cursor[key] = raw === "true" ? true : raw === "false" ? false : raw.trim() !== "" && Number.isFinite(parsed) ? parsed : raw;
 }
 
 function objectGeometry(kind: Kind, obj: any): {
@@ -719,7 +772,7 @@ function selectionBounds(draft: Draft, selections: Selection[]) {
       const obj =
         selection.kind === "column"
           ? null
-          : getCollection(draft, selection.kind).find((x) => x.id === selection.id);
+          : findCollectionObject(draft, selection.kind, selection.id);
       if (!obj && selection.kind !== "column") return null;
       if (selection.kind === "column") {
         const index = Number(selection.id.split("-").pop() ?? "-1");
@@ -895,7 +948,7 @@ function EditorScene3D({
   const items = useMemo(() => {
     const entries: [Kind, any[]][] = [];
     layerOrder.forEach((kind) => {
-      if (kind === "column" || kind === "spawn") return;
+      if (kind === "column" || kind === "spawn" || kind === "floor") return;
       const arr = getCollection(draft, kind);
       if (arr?.length) entries.push([kind, arr]);
     });
@@ -943,19 +996,20 @@ function EditorScene3D({
           ? arr
               .filter((o: any) => {
                 if (floor === "all") return true;
-                if ("floor" in o) return (o.floor ?? 1) === floor;
+                if (kind === "floor") return String(o.id) === String(floor);
+                if ("floor" in o || "floor_id" in o) return String(getFloorForObject(o)) === String(floor);
                 return true;
               })
               .map((obj: any) => (
                 <Editor3DObject
-                  key={`${kind}-${obj.id}`}
+                  key={`${kind}-${objectId(kind, obj)}`}
                   kind={kind}
                   obj={obj}
                   selected={selected.some(
-                    (s) => s.kind === kind && s.id === obj.id,
+                    (s) => s.kind === kind && s.id === objectId(kind, obj),
                   )}
                   onSelect={(additive) =>
-                    onSelect({ kind, id: obj.id }, additive)
+                    onSelect({ kind, id: objectId(kind, obj) }, additive)
                   }
                   onDragState={onDragState}
                   onCommit={onCommit}
@@ -1014,6 +1068,23 @@ function MapObject({
   const stroke = selected ? "#ffffff" : hovered ? "#bae6fd" : color;
   const strokeWidth = selected ? 2 : hovered ? 1.75 : 1;
   const tooltip = `${obj?.id ?? "Object"} · ${LABELS[kind]} · Floor ${obj?.floor ?? 1}`;
+
+  if (kind === "aisle") {
+    const footprint = buildAisleFootprint(obj.centerline ?? [], Number(obj.width));
+    const footprintPoints = footprint.map((p) => `${p.x * scale.x},${p.y * scale.z}`).join(" ");
+    const centerlinePoints = (obj.centerline ?? []).map((p: Point) => `${p.x * scale.x},${p.y * scale.z}`).join(" ");
+    return (
+      <g onPointerDown={onPointerDown} onContextMenu={onContextMenu} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)} className="cursor-pointer">
+        <title>{tooltip}</title>
+        <polygon points={footprintPoints} fill={color} fillOpacity={selected ? 0.36 : 0.22} stroke={stroke} strokeWidth={selected ? 2 : 1} vectorEffect="non-scaling-stroke" />
+        <polyline points={centerlinePoints} fill="none" stroke="#cffafe" strokeWidth="1" strokeDasharray="4 3" vectorEffect="non-scaling-stroke" pointerEvents="none" />
+      </g>
+    );
+  }
+
+  if (kind === "navigation-tag") {
+    return <g onPointerDown={onPointerDown} onContextMenu={onContextMenu} className="cursor-pointer"><title>{tooltip}</title><circle cx={obj.x * scale.x} cy={obj.y * scale.z} r={selected ? 7 : 5} fill={obj.locked ? "#f59e0b" : obj.placement === "manual" ? "#f472b6" : color} stroke={stroke} strokeWidth={selected ? 2 : 1} vectorEffect="non-scaling-stroke" /><text x={obj.x * scale.x + 8} y={obj.y * scale.z - 6} fill="#e2e8f0" fontSize="10" vectorEffect="non-scaling-stroke" pointerEvents="none">{obj.tag_id}</text></g>;
+  }
 
   if (kind === "zone" || kind === "walkway") {
     return (
@@ -1247,6 +1318,9 @@ function Editor2DMap({
   background,
   backgroundOpacity,
   backgroundScale,
+  backgroundOffsetX,
+  backgroundOffsetY,
+  backgroundRotation,
   mode,
   measurePoints,
   drawingPoints,
@@ -1258,6 +1332,12 @@ function Editor2DMap({
   onMeasurePoint,
   onDrawPoint,
   onFinishDrawing,
+  onAddManualTag,
+  onEditVertex,
+  onEditAisleVertex,
+  onInsertVertex,
+  onDeleteVertex,
+  snapStep,
   onBoxSelect,
   onContextMenu,
   smartGuidesEnabled,
@@ -1274,6 +1354,9 @@ function Editor2DMap({
   background: string | null;
   backgroundOpacity: number;
   backgroundScale: number;
+  backgroundOffsetX: number;
+  backgroundOffsetY: number;
+  backgroundRotation: number;
   mode: Mode;
   measurePoints: { x: number; z: number }[];
   drawingPoints: Point[];
@@ -1290,6 +1373,12 @@ function Editor2DMap({
   onMeasurePoint: (point: { x: number; z: number }) => void;
   onDrawPoint: (point: Point) => void;
   onFinishDrawing: () => void;
+  onAddManualTag: (point: Point) => void;
+  onEditVertex: (floorId: number | string, holeIndex: number | null, vertexIndex: number, point: Point) => void;
+  onEditAisleVertex: (aisleId: string, vertexIndex: number, point: Point) => void;
+  onInsertVertex: (kind: "floor" | "aisle", id: string, holeIndex: number | null, vertexIndex: number, point: Point) => void;
+  onDeleteVertex: (kind: "floor" | "aisle", id: string, holeIndex: number | null, vertexIndex: number) => void;
+  snapStep: number | null;
   onBoxSelect: (bounds: { x: number; z: number; w: number; h: number }, additive: boolean) => void;
   onContextMenu?: (selection: Selection | null, x: number, y: number) => void;
   smartGuidesEnabled: boolean;
@@ -1315,8 +1404,20 @@ function Editor2DMap({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const [smartGuides, setSmartGuides] = useState<{ x?: number; z?: number }>({});
+  const [vertexDrag, setVertexDrag] = useState<{ kind: "floor" | "aisle"; id: string; holeIndex: number | null; index: number } | null>(null);
+  const [activeVertex, setActiveVertex] = useState<typeof vertexDrag>(null);
   const panMargin = 180;
   const cycleRef = useRef<{ key: string; candidates: Selection[]; index: number } | null>(null);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if ((event.key === "Delete" || event.key === "Backspace") && activeVertex && !target?.matches("input,textarea,select")) {
+        event.preventDefault(); onDeleteVertex(activeVertex.kind, activeVertex.id, activeVertex.holeIndex, activeVertex.index); setActiveVertex(null);
+      }
+    };
+    window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
+  }, [activeVertex, onDeleteVertex]);
 
   const clampPan = (x: number, y: number, currentZoom = zoom) => {
     const visibleW = viewW / currentZoom;
@@ -1334,7 +1435,7 @@ function Editor2DMap({
   const viewW = draft.size.width * scale.x;
   const viewH = draft.size.depth * scale.z;
 
-  const getPoint = (event: React.PointerEvent<SVGSVGElement | SVGElement>) => {
+  const getPoint = (event: React.PointerEvent<SVGSVGElement | SVGElement> | React.MouseEvent<SVGSVGElement>) => {
     const rect = hostRef.current?.getBoundingClientRect();
     if (!rect) return null;
     const visibleW = viewW / zoom;
@@ -1356,7 +1457,7 @@ function Editor2DMap({
   const items = useMemo(() => {
     const entries: [Kind, any[]][] = [];
     layerOrder.forEach((kind) => {
-      if (kind === "column" || kind === "spawn") return;
+      if (kind === "column" || kind === "spawn" || kind === "floor") return;
       const arr = getCollection(draft, kind);
       if (arr?.length) entries.push([kind, arr]);
     });
@@ -1386,15 +1487,19 @@ function Editor2DMap({
       onMeasurePoint(point);
       return;
     }
+    if (mode === "add-manual-tag") {
+      onAddManualTag(snapPoint({ x: point.x, y: point.z }, snapStep));
+      return;
+    }
     if (mode === "draw-floor" || mode === "add-hole" || mode === "draw-aisle") {
-      onDrawPoint({ x: point.x, y: point.z });
+      onDrawPoint(snapPoint({ x: point.x, y: point.z }, snapStep));
       return;
     }
 
-    onSelect({ kind, id: obj.id }, additive);
+    onSelect({ kind, id: objectId(kind, obj) }, additive);
     const box = get2DBox(kind, obj);
     setDrag({
-      selection: { kind, id: obj.id },
+      selection: { kind, id: objectId(kind, obj) },
       start: point,
       offsetX: box.x + box.w / 2 - point.x,
       offsetZ: box.z + box.h / 2 - point.z,
@@ -1423,7 +1528,7 @@ function Editor2DMap({
             point.z >= box.z &&
             point.z <= box.z + box.h
           ) {
-            const candidate = { kind, id: obj.id };
+            const candidate = { kind, id: objectId(kind, obj) };
             const key = selectionKey(candidate);
             if (!seen.has(key)) {
               seen.add(key);
@@ -1485,8 +1590,12 @@ function Editor2DMap({
       onMeasurePoint(point);
       return;
     }
+    if (mode === "add-manual-tag") {
+      onAddManualTag(snapPoint({ x: point.x, y: point.z }, snapStep));
+      return;
+    }
     if (mode === "draw-floor" || mode === "add-hole" || mode === "draw-aisle") {
-      onDrawPoint({ x: point.x, y: point.z });
+      onDrawPoint(snapPoint({ x: point.x, y: point.z }, snapStep));
       return;
     }
 
@@ -1509,7 +1618,7 @@ function Editor2DMap({
     const tolerance = 0.4;
     const movingObj = selection.kind === "column"
       ? null
-      : getCollection(draft, selection.kind).find((item) => String(item.id) === selection.id);
+      : findCollectionObject(draft, selection.kind, selection.id);
     const movingBox = selection.kind === "column"
       ? { x: proposedX - 0.45, z: proposedZ - 0.45, w: 0.9, h: 0.9 }
       : movingObj
@@ -1525,7 +1634,7 @@ function Editor2DMap({
     layerOrder.forEach((kind) => {
       if (!visibleLayers[kind] || lockedLayers[kind]) return;
       getCollection(draft, kind).forEach((obj: any) => {
-        const candidate = { kind, id: String(obj.id) } as Selection;
+        const candidate = { kind, id: objectId(kind, obj) } as Selection;
         if (selectionKey(candidate) === selectedKey) return;
         const b = get2DBox(kind, obj);
         const centerX = b.x + b.w / 2;
@@ -1592,12 +1701,19 @@ function Editor2DMap({
     const point = getPoint(event);
     if (!point) return;
 
+    if (vertexDrag) {
+      const snapped = snapPoint({ x: point.x, y: point.z }, snapStep);
+      if (vertexDrag.kind === "floor") onEditVertex(vertexDrag.id, vertexDrag.holeIndex, vertexDrag.index, snapped);
+      else onEditAisleVertex(vertexDrag.id, vertexDrag.index, snapped);
+      return;
+    }
+
     if (resizeDrag) {
       onResize(
         resizeDrag.selection,
         resizeDrag.handle,
-        Math.round(point.x * 2) / 2,
-        Math.round(point.z * 2) / 2,
+        snapPoint({ x: point.x, y: point.z }, snapStep).x,
+        snapPoint({ x: point.x, y: point.z }, snapStep).y,
       );
       return;
     }
@@ -1651,6 +1767,7 @@ function Editor2DMap({
     setSelectionBox(null);
     setPanDrag(null);
     setSmartGuides({});
+    setVertexDrag(null);
   };
 
   const handleWheel = (event: React.WheelEvent<SVGSVGElement>) => {
@@ -1676,6 +1793,26 @@ function Editor2DMap({
     setPan(nextPan);
   };
 
+  const insertVertexAt = (event: React.MouseEvent<SVGSVGElement>) => {
+    if (mode !== "edit-vertex" && mode !== "edit-aisle") return;
+    const point = getPoint(event); if (!point) return;
+    const snapped = snapPoint({ x: point.x, y: point.z }, snapStep);
+    const activeAisle = selected.find((item) => item.kind === "aisle");
+    if (mode === "edit-aisle" && activeAisle) {
+      const aisle = findCollectionObject(draft, "aisle", activeAisle.id); if (!aisle) return;
+      let best = 0, bestDistance = Infinity;
+      for (let i = 1; i < aisle.centerline.length; i += 1) { const a = aisle.centerline[i - 1], b = aisle.centerline[i], dx = b.x - a.x, dy = b.y - a.y, t = Math.max(0, Math.min(1, ((snapped.x - a.x) * dx + (snapped.y - a.y) * dy) / (dx * dx + dy * dy || 1))), d = Math.hypot(snapped.x - (a.x + t * dx), snapped.y - (a.y + t * dy)); if (d < bestDistance) { bestDistance = d; best = i; } }
+      if (bestDistance < Math.max(0.5, aisle.width)) onInsertVertex("aisle", activeAisle.id, null, best, snapped);
+      return;
+    }
+    const activeFloor = selected.find((item) => item.kind === "floor")?.id ?? (floor === "all" ? draft.floors[0]?.id : floor);
+    const floorItem = draft.floors.find((item) => String(item.id) === String(activeFloor)); if (!floorItem) return;
+    const boundary = (floorItem.boundary ?? floorItem.footprint ?? []).map((entry) => Array.isArray(entry) ? { x: entry[0], y: entry[1] } : entry);
+    let best = 0, bestDistance = Infinity;
+    for (let i = 0; i < boundary.length; i += 1) { const a = boundary[i], b = boundary[(i + 1) % boundary.length], dx = b.x - a.x, dy = b.y - a.y, t = Math.max(0, Math.min(1, ((snapped.x - a.x) * dx + (snapped.y - a.y) * dy) / (dx * dx + dy * dy || 1))), d = Math.hypot(snapped.x - (a.x + t * dx), snapped.y - (a.y + t * dy)); if (d < bestDistance) { bestDistance = d; best = i + 1; } }
+    if (bestDistance < 1) onInsertVertex("floor", String(floorItem.id), null, best, snapped);
+  };
+
   return (
     <div className="absolute inset-0 overflow-auto bg-[#07101b]">
       <svg
@@ -1694,7 +1831,7 @@ function Editor2DMap({
         onPointerMove={moveCanvas}
         onPointerUp={upCanvas}
         onPointerCancel={upCanvas}
-        onDoubleClick={(event) => { if (mode === "draw-floor" || mode === "add-hole" || mode === "draw-aisle") { event.preventDefault(); onFinishDrawing(); } }}
+        onDoubleClick={(event) => { event.preventDefault(); if (mode === "draw-floor" || mode === "add-hole" || mode === "draw-aisle") onFinishDrawing(); else insertVertexAt(event); }}
         onWheel={handleWheel}
         onAuxClick={(event) => event.preventDefault()}
         onContextMenu={(event) => {
@@ -1731,23 +1868,32 @@ function Editor2DMap({
           return <g>
             <polygon points={path(boundary as Array<Point | [number, number]>)} fill="#0b1727" fillOpacity="0.55" stroke="#38bdf8" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
             {(active?.holes ?? []).map((hole, index) => <polygon key={`editor-hole-${index}`} points={path(hole as Array<Point | [number, number]>)} fill="#020617" stroke="#f97316" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />)}
-            {(draft.aisles ?? []).filter((aisle) => floor === "all" || String(aisle.floor_id ?? 1) === String(floor)).map((aisle) => <g key={`aisle-${aisle.id}`}><polyline points={path(aisle.centerline)} fill="none" stroke="#22d3ee" strokeOpacity="0.22" strokeWidth={Math.max(3, aisle.width * scale.x)} vectorEffect="non-scaling-stroke" /><polyline points={path(aisle.centerline)} fill="none" stroke="#67e8f9" strokeWidth="1.5" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" /></g>)}
-            {(draft.navigation_tags ?? []).filter((tag) => floor === "all" || String(tag.floor_id ?? 1) === String(floor)).map((tag) => <g key={tag.uuid}><circle cx={tag.x * scale.x} cy={tag.y * scale.z} r="5" fill={tag.locked ? "#f59e0b" : "#a78bfa"} vectorEffect="non-scaling-stroke" /><text x={tag.x * scale.x + 7} y={tag.y * scale.z - 6} fill="#e2e8f0" fontSize="10" vectorEffect="non-scaling-stroke">{tag.tag_id}</text></g>)}
             {drawingPoints.length > 0 && <polyline points={path(drawingPoints)} fill="none" stroke="#facc15" strokeWidth="2" vectorEffect="non-scaling-stroke" />}
             {drawingPoints.map((p, index) => <circle key={`draw-point-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="4" fill="#facc15" vectorEffect="non-scaling-stroke" />)}
           </g>;
         })()}
 
+        {(() => {
+          const active = floor === "all" ? draft.floors[0] : draft.floors.find((item) => String(item.id) === String(floor));
+          if (!active) return null;
+          const toPoint = (entry: Point | [number, number]): Point => Array.isArray(entry) ? { x: entry[0], y: entry[1] } : entry;
+          const handle = (kind: "floor" | "aisle", id: string, holeIndex: number | null, index: number) => (event: React.PointerEvent<SVGCircleElement>) => { event.stopPropagation(); const value = { kind, id, holeIndex, index } as const; setVertexDrag(value); setActiveVertex(value); onSelect({ kind, id }, false); hostRef.current?.setPointerCapture(event.pointerId); };
+          const floorHandles = mode === "edit-vertex" || selected.some((item) => item.kind === "floor" && item.id === String(active.id)) ? <g key={`floor-handles-${active.id}`} pointerEvents="all">{(active.boundary ?? active.footprint ?? []).map((entry, index) => { const p = toPoint(entry); return <circle key={`floor-v-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="6" fill="#0b1220" stroke="#38bdf8" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("floor", String(active.id), null, index)} />; })}{(active.holes ?? []).flatMap((hole, holeIndex) => hole.map((entry, index) => { const p = toPoint(entry); return <circle key={`hole-v-${holeIndex}-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="5" fill="#0b1220" stroke="#f97316" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("floor", String(active.id), holeIndex, index)} />; }))}</g> : null;
+          const aisleHandles = (draft.aisles ?? []).filter((aisle) => (floor === "all" || String(aisle.floor_id ?? 1) === String(floor)) && (mode === "edit-aisle" || selected.some((item) => item.kind === "aisle" && item.id === String(aisle.id)))).map((aisle) => <g key={`aisle-handles-${aisle.id}`} pointerEvents="all">{aisle.centerline.map((point, index) => <circle key={`aisle-v-${aisle.id}-${index}`} cx={point.x * scale.x} cy={point.y * scale.z} r="5" fill="#0b1220" stroke="#67e8f9" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("aisle", String(aisle.id), null, index)} />)}</g>);
+          return <>{floorHandles}{aisleHandles}</>;
+        })()}
+
         {background && (
           <image
             href={background}
-            x={(viewW - viewW * backgroundScale) / 2}
-            y={(viewH - viewH * backgroundScale) / 2}
+            x={(viewW - viewW * backgroundScale) / 2 + backgroundOffsetX * scale.x}
+            y={(viewH - viewH * backgroundScale) / 2 + backgroundOffsetY * scale.z}
             width={viewW * backgroundScale}
             height={viewH * backgroundScale}
             opacity={backgroundOpacity}
             preserveAspectRatio="none"
             pointerEvents="none"
+            transform={`rotate(${backgroundRotation} ${viewW / 2} ${viewH / 2})`}
           />
         )}
 
@@ -1768,16 +1914,17 @@ function Editor2DMap({
             ? arr
                 .filter((obj) => {
                   if (floor === "all") return true;
-                  if ("floor" in obj) return (obj.floor ?? 1) === floor;
+                if (kind === "floor") return String(obj.id) === String(floor);
+                if ("floor" in obj || "floor_id" in obj) return String(getFloorForObject(obj)) === String(floor);
                   return true;
                 })
                 .map((obj) => (
                   <MapObject
-                    key={`${kind}-${obj.id}`}
+                    key={`${kind}-${objectId(kind, obj)}`}
                     kind={kind}
                     obj={obj}
                     selected={selected.some(
-                      (s) => s.kind === kind && s.id === obj.id,
+                      (s) => s.kind === kind && s.id === objectId(kind, obj),
                     )}
                     scale={scale}
                     onPointerDown={(event) =>
@@ -1786,7 +1933,7 @@ function Editor2DMap({
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      onContextMenu?.({ kind, id: obj.id }, event.clientX, event.clientY);
+                      onContextMenu?.({ kind, id: objectId(kind, obj) }, event.clientX, event.clientY);
                     }}
                   />
                 ))
@@ -2309,7 +2456,11 @@ export function WarehouseEditorPage() {
   const [background, setBackground] = useState<string | null>(null);
   const [backgroundOpacity, setBackgroundOpacity] = useState(0.35);
   const [backgroundScale, setBackgroundScale] = useState(1);
+  const [backgroundOffsetX, setBackgroundOffsetX] = useState(0);
+  const [backgroundOffsetY, setBackgroundOffsetY] = useState(0);
+  const [backgroundRotation, setBackgroundRotation] = useState(0);
   const [calibratingBackground, setCalibratingBackground] = useState(false);
+  const [settingReferenceOrigin, setSettingReferenceOrigin] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<
     { x: number; z: number }[]
   >([]);
@@ -2319,6 +2470,7 @@ export function WarehouseEditorPage() {
   const [arrayRows, setArrayRows] = useState(2);
   const [arrayCols, setArrayCols] = useState(5);
   const [smartGuidesEnabled, setSmartGuidesEnabled] = useState(true);
+  const [snapStep, setSnapStep] = useState<number | null>(0.5);
   const [arrayGapX, setArrayGapX] = useState(1.0);
   const [arrayGapZ, setArrayGapZ] = useState(1.0);
   const [search, setSearch] = useState("");
@@ -2335,9 +2487,7 @@ export function WarehouseEditorPage() {
       selected
         .map((selection) => {
           if (selection.kind === "column") return { selection, obj: null };
-          const obj = getCollection(draft, selection.kind).find(
-            (x) => x.id === selection.id,
-          );
+          const obj = findCollectionObject(draft, selection.kind, selection.id);
           return obj ? { selection, obj } : null;
         })
         .filter(Boolean) as { selection: Selection; obj: any }[],
@@ -2676,21 +2826,18 @@ export function WarehouseEditorPage() {
   function updateProperty(path: string, value: string) {
     if (!primary) return;
     const next = clone(draft);
-    const obj = getCollection(
-      next,
-      primary.selection.kind,
-    ).find((item) => item.id === primary.selection.id);
+    const obj = findCollectionObject(next, primary.selection.kind, primary.selection.id);
     if (!obj) return;
 
-    if (path === "id") {
+    if (path === "id" || path === "uuid") {
       const arr = getCollection(next, primary.selection.kind);
-      if (arr.some((item) => item !== obj && item.id === value)) {
+      if (arr.some((item) => item !== obj && objectId(primary.selection.kind, item) === value)) {
         setErrors([`Duplicate object id: ${value}`]);
         return;
       }
     }
 
-    const oldId = obj.id;
+    const oldId = objectId(primary.selection.kind, obj);
     setObjectProperty(obj, path, value);
 
     if (path === "id" && typeof value === "string" && value !== oldId) {
@@ -2954,9 +3101,72 @@ export function WarehouseEditorPage() {
     setDrawingPoints((current) => [...current, point]);
   }
 
+  function editFloorVertex(floorId: number | string, holeIndex: number | null, vertexIndex: number, point: Point) {
+    const next = clone(draft);
+    const floorItem = next.floors.find((item) => String(item.id) === String(floorId));
+    if (!floorItem) return;
+    const target = holeIndex == null ? floorItem.boundary : floorItem.holes?.[holeIndex];
+    if (!target || vertexIndex < 0 || vertexIndex >= target.length) return;
+    const converted = target.map((entry) => Array.isArray(entry) ? { x: entry[0], y: entry[1] } : entry);
+    converted[vertexIndex] = point;
+    const validation = holeIndex == null ? validateFloorPolygon(converted, `Floor ${floorId}`) : validateHolePolygon(converted, `Floor ${floorId} hole ${holeIndex + 1}`);
+    if (validation.length) setErrors(validation); else setErrors([]);
+    if (holeIndex == null) floorItem.boundary = converted; else if (floorItem.holes) floorItem.holes[holeIndex] = converted;
+    begin2DEdit();
+    setDraft(normalizeDraft(next));
+    setStatus(validation.length ? "INVALID VERTEX EDIT" : "VERTEX EDITED · UNSAVED");
+  }
+
+  function editAisleVertex(aisleId: string, vertexIndex: number, point: Point) {
+    const next = clone(draft), aisle = next.aisles?.find((item) => String(item.id) === String(aisleId));
+    if (!aisle || vertexIndex < 0 || vertexIndex >= aisle.centerline.length) return;
+    const centerline = aisle.centerline.map((entry) => ({ x: entry.x, y: entry.y })); centerline[vertexIndex] = point;
+    const validation = validateAisleCenterline(centerline, aisle.width, `Aisle ${aisleId}`);
+    if (validation.length) setErrors(validation); else setErrors([]);
+    aisle.centerline = centerline;
+    begin2DEdit(); setDraft(normalizeDraft(next)); setStatus(validation.length ? "INVALID AISLE EDIT" : "AISLE EDITED · UNSAVED");
+  }
+
+  function insertVertex(kind: "floor" | "aisle", id: string, holeIndex: number | null, vertexIndex: number, point: Point) {
+    const next = clone(draft);
+    if (kind === "aisle") {
+      const aisle = next.aisles?.find((item) => String(item.id) === id); if (!aisle) return;
+      aisle.centerline.splice(vertexIndex, 0, point);
+    } else {
+      const floorItem = next.floors.find((item) => String(item.id) === id); if (!floorItem) return;
+      const target = holeIndex == null ? floorItem.boundary : floorItem.holes?.[holeIndex]; if (!target) return;
+      const converted = target.map((entry) => Array.isArray(entry) ? { x: entry[0], y: entry[1] } : entry); converted.splice(vertexIndex, 0, point);
+      if (holeIndex == null) floorItem.boundary = converted; else if (floorItem.holes) floorItem.holes[holeIndex] = converted;
+    }
+    commit(next, "VERTEX INSERTED · UNSAVED");
+  }
+
+  function deleteVertex(kind: "floor" | "aisle", id: string, holeIndex: number | null, vertexIndex: number) {
+    const next = clone(draft);
+    if (kind === "aisle") {
+      const aisle = next.aisles?.find((item) => String(item.id) === id); if (!aisle || aisle.centerline.length <= 2) { setErrors(["An aisle must keep at least 2 centerline points."]); return; }
+      aisle.centerline.splice(vertexIndex, 1);
+    } else {
+      const floorItem = next.floors.find((item) => String(item.id) === id); if (!floorItem) return;
+      const target = holeIndex == null ? floorItem.boundary : floorItem.holes?.[holeIndex]; if (!target || target.length <= 3) { setErrors(["A polygon must keep at least 3 vertices."]); return; }
+      const converted = target.map((entry) => Array.isArray(entry) ? { x: entry[0], y: entry[1] } : entry); converted.splice(vertexIndex, 1);
+      if (holeIndex == null) floorItem.boundary = converted; else if (floorItem.holes) floorItem.holes[holeIndex] = converted;
+    }
+    commit(next, "VERTEX DELETED · UNSAVED"); setErrors([]);
+  }
+
   function finishDrawing() {
+    if (mode === "draw-aisle") {
+      const geometryErrors = validateAisleCenterline(drawingPoints, 2, "aisle");
+      if (geometryErrors.length) { setErrors(geometryErrors); return; }
+      const next = clone(draft), active = next.floors.find((item) => String(item.id) === String(floor)) ?? next.floors[0];
+      if (!active) return;
+      const aisleId = `aisle-${String((next.aisles?.length ?? 0) + 1).padStart(3, "0")}`;
+      next.aisles = [...(next.aisles ?? []), { id: aisleId, floor_id: active.id, centerline: drawingPoints, width: 2, direction: "bidirectional", speed_limit: 0.8, tag_rule: { enabled: true, spacing: 2, start_offset: 0.5, end_offset: 0.5 } }];
+      commit(next, "AISLE DRAWN · UNSAVED"); setSelected([{ kind: "aisle", id: aisleId }]); setDrawingPoints([]); setMode("select"); setErrors([]); return;
+    }
     if (drawingPoints.length < 3) { setErrors(["A floor/hole polygon requires at least 3 points."]); return; }
-    const geometryErrors = validatePolygon(drawingPoints, mode === "add-hole" ? "hole" : mode === "draw-aisle" ? "aisle" : "floor");
+    const geometryErrors = mode === "add-hole" ? validateHolePolygon(drawingPoints, "hole") : validateFloorPolygon(drawingPoints, "floor");
     if (geometryErrors.length) { setErrors(geometryErrors); return; }
     const next = clone(draft);
     const active = next.floors.find((item) => String(item.id) === String(floor)) ?? next.floors[0];
@@ -2967,9 +3177,6 @@ export function WarehouseEditorPage() {
       const boundary = ((active.boundary ?? active.footprint ?? []) as Array<Point | [number, number]>).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
       if (!boundary.length || !drawingPoints.every((p) => pointInPolygon(p, boundary))) { setErrors(["Hole must be completely inside the floor boundary."]); return; }
       active.holes = [...(active.holes ?? []), drawingPoints.map((p) => ({ x: p.x, y: p.y }))];
-    } else {
-      const aisleId = `aisle-${String((next.aisles?.length ?? 0) + 1).padStart(3, "0")}`;
-      next.aisles = [...(next.aisles ?? []), { id: aisleId, floor_id: active.id, centerline: drawingPoints, width: 2, direction: "bidirectional", speed_limit: 0.8, tag_rule: { enabled: true, spacing: 2, start_offset: 0.5, end_offset: 0.5 } }];
     }
     commit(next, "GEOMETRY DRAWN · UNSAVED");
     setDrawingPoints([]);
@@ -2980,13 +3187,31 @@ export function WarehouseEditorPage() {
   function regenerateTags() {
     const next = clone(draft);
     next.navigation_tags = generateAisleTags(next.aisles ?? [], next.navigation_tags ?? []);
-    const active = next.floors[0];
-    if (active) {
-      const boundary = (active.boundary ?? active.footprint ?? []).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
-      const tagErrors = validateTags(next.navigation_tags, boundary, (active.holes ?? []).map((hole) => hole.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p)));
-      if (tagErrors.length) setErrors(tagErrors);
+    const tagErrors: string[] = [];
+    for (const floorItem of next.floors) {
+      const boundary = (floorItem.boundary ?? floorItem.footprint ?? []).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
+      const floorTags = next.navigation_tags.filter((tag) => String(tag.floor_id ?? 1) === String(floorItem.id));
+      tagErrors.push(...validateTags(floorTags, boundary, (floorItem.holes ?? []).map((hole) => hole.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p))));
     }
-    commit(next, "TAGS REGENERATED · UNSAVED");
+    if (tagErrors.length) { setErrors(tagErrors); setStatus("TAG REGENERATION ABORTED"); return; }
+    setErrors([]); commit(next, "TAGS REGENERATED · UNSAVED");
+  }
+
+  function regenerateSelectedAisle() {
+    const aisle = selected.find((item) => item.kind === "aisle");
+    if (!aisle) return;
+    const next = clone(draft); next.navigation_tags = generateAisleTags(next.aisles ?? [], next.navigation_tags ?? [], { onlyAisleId: aisle.id });
+    const tagErrors = validateGeneratedTags(next.navigation_tags ?? []);
+    if (tagErrors.length) { setErrors(tagErrors); setStatus("TAG REGENERATION ABORTED"); return; }
+    setErrors([]); commit(next, "SELECTED AISLE TAGS REGENERATED · UNSAVED");
+  }
+
+  function addManualTag(point?: Point) {
+    const active = floor === "all" ? draft.floors[0] : draft.floors.find((item) => String(item.id) === String(floor));
+    if (!active) return;
+    const used = new Set((draft.navigation_tags ?? []).map((tag) => tag.tag_id)); let tagId = Math.max(1000, ...used) + 1; while (used.has(tagId)) tagId += 1;
+    const tag = { id: `tag-manual-${tagId}`, uuid: `tag-manual-${tagId}`, tag_id: tagId, floor_id: active.id, x: point?.x ?? draft.size.width / 2, y: point?.y ?? draft.size.depth / 2, z: 0, yaw: 0, placement: "manual" as const, locked: true };
+    const next = clone(draft); next.navigation_tags = [...(next.navigation_tags ?? []), tag]; commit(next, "MANUAL TAG ADDED · UNSAVED"); setSelected([{ kind: "navigation-tag", id: tag.uuid }]); setMode("select");
   }
 
   function validate(draftToCheck = draft) {
@@ -3011,9 +3236,15 @@ export function WarehouseEditorPage() {
       });
     });
     (draftToCheck.aisles ?? []).forEach((aisle) => {
-      if (aisle.width <= 0) nextErrors.push(`Aisle ${aisle.id} width must be positive`);
-      if (aisle.centerline.length < 2 || aisle.centerline.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) nextErrors.push(`Aisle ${aisle.id} has invalid centerline`);
+      nextErrors.push(...validateAisleCenterline(aisle.centerline, aisle.width, `Aisle ${aisle.id}`));
       if (aisle.floor_id != null && !floorIds.has(String(aisle.floor_id))) nextErrors.push(`Aisle ${aisle.id} has invalid floor reference`);
+      const floorItem = draftToCheck.floors.find((item) => String(item.id) === String(aisle.floor_id ?? 1));
+      if (floorItem) {
+        const boundary = (floorItem.boundary ?? floorItem.footprint ?? []).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
+        const footprint = buildAisleFootprint(aisle.centerline, aisle.width);
+        const holes = (floorItem.holes ?? []).map((hole) => hole.map((entry) => Array.isArray(entry) ? { x: entry[0], y: entry[1] } : entry));
+        if (!polygonContainedInFloor(footprint, boundary, holes)) nextErrors.push(`Aisle ${aisle.id} width footprint is outside usable floor or intersects a hole`);
+      }
     });
 
     const ids = new Set<string>();
@@ -3283,6 +3514,9 @@ export function WarehouseEditorPage() {
   }
 
   function onMeasurePoint(point: { x: number; z: number }) {
+    if (settingReferenceOrigin) {
+      setBackgroundOffsetX(-point.x); setBackgroundOffsetY(-point.z); setSettingReferenceOrigin(false); setMode("select"); setStatus("REFERENCE ORIGIN SET"); return;
+    }
     setMeasurePoints((current) => {
       const next = current.length >= 2 ? [point] : [...current, point];
 
@@ -3782,7 +4016,10 @@ export function WarehouseEditorPage() {
               <ToolButton active={mode === "edit-vertex"} label="Edit Vertex" icon="◇" onClick={() => setMode("edit-vertex")} />
               <ToolButton active={mode === "add-hole"} label="Add Hole" icon="□" onClick={() => { setMode("add-hole"); setDrawingPoints([]); setErrors([]); }} />
               <ToolButton active={mode === "draw-aisle"} label="Draw Aisle" icon="╱" onClick={() => { setMode("draw-aisle"); setDrawingPoints([]); setErrors([]); }} />
-              <button type="button" onClick={regenerateTags} className="mt-1 w-full rounded-md border border-violet-400/20 bg-violet-400/[0.06] px-2 py-2 text-left text-[9px] font-semibold text-violet-300 hover:bg-violet-400/[0.12]">Generate Navigation Tags</button>
+              <ToolButton active={mode === "edit-aisle"} label="Edit Aisle" icon="✎" onClick={() => setMode("edit-aisle")} />
+              <ToolButton active={mode === "add-manual-tag"} label="Add Manual Tag" icon="●" onClick={() => { setMode("add-manual-tag"); setStatus("MANUAL TAG · CLICK MAP"); }} />
+              <button type="button" onClick={regenerateTags} className="mt-1 w-full rounded-md border border-violet-400/20 bg-violet-400/[0.06] px-2 py-2 text-left text-[9px] font-semibold text-violet-300 hover:bg-violet-400/[0.12]">Regenerate All Tags</button>
+              <button type="button" disabled={!selected.some((item) => item.kind === "aisle")} onClick={regenerateSelectedAisle} className="mt-1 w-full rounded-md border border-violet-400/15 px-2 py-2 text-left text-[9px] text-violet-300 hover:bg-violet-400/[0.08] disabled:opacity-30">Regenerate Selected Aisle</button>
               <div className="mt-1 grid grid-cols-2 gap-1">
                 <button
                   type="button"
@@ -3884,6 +4121,8 @@ export function WarehouseEditorPage() {
                     <span>Scale</span>
                     <span className="font-mono text-slate-400">{backgroundScale.toFixed(2)}×</span>
                   </div>
+                  <input type="range" min="0.1" max="3" step="0.05" value={backgroundScale} onChange={(e) => setBackgroundScale(Number(e.target.value))} className="w-full accent-sky-400" />
+                  <div className="mt-2 grid grid-cols-3 gap-1"><PropertyInput label="Translate X" type="number" step="0.1" value={backgroundOffsetX} onChange={(value) => setBackgroundOffsetX(Number(value) || 0)} /><PropertyInput label="Translate Y" type="number" step="0.1" value={backgroundOffsetY} onChange={(value) => setBackgroundOffsetY(Number(value) || 0)} /><PropertyInput label="Rotate" type="number" step="1" value={backgroundRotation} onChange={(value) => setBackgroundRotation(Number(value) || 0)} /></div>
                   <button
                     type="button"
                     onClick={() => {
@@ -3896,11 +4135,13 @@ export function WarehouseEditorPage() {
                   >
                     Calibrate with 2 points
                   </button>
+                  <button type="button" onClick={() => { setSettingReferenceOrigin(true); setMode("measure"); setStatus("REFERENCE ORIGIN · PICK (0,0)"); }} className="mt-2 w-full rounded-md border border-sky-400/10 px-2 py-1.5 text-[9px] text-sky-300 hover:bg-sky-400/[0.08]">Set Reference Origin</button>
                   <button
                     type="button"
                     onClick={() => {
                       setBackground(null);
                       setBackgroundScale(1);
+                      setBackgroundOffsetX(0); setBackgroundOffsetY(0); setBackgroundRotation(0);
                       setCalibratingBackground(false);
                     }}
                     className="mt-2 w-full rounded-md px-2 py-1.5 text-[9px] text-rose-300 hover:bg-rose-500/[0.07]"
@@ -4060,9 +4301,12 @@ export function WarehouseEditorPage() {
                 <div>
                   Grid <span className="float-right font-mono text-slate-400">{draft.grid.cell_size} m</span>
                 </div>
-                <div>
-                  Snap <span className="float-right font-mono text-emerald-300">0.5 m</span>
-                </div>
+                <label className="flex items-center justify-between gap-2">
+                  <span>Snap</span>
+                  <select value={snapStep ?? "off"} onChange={(event) => setSnapStep(event.target.value === "off" ? null : Number(event.target.value))} className="rounded border border-white/[0.08] bg-[#070d16] px-1 py-0.5 font-mono text-[9px] text-emerald-300 outline-none">
+                    <option value="off">OFF</option><option value="0.01">0.01 m</option><option value="0.05">0.05 m</option><option value="0.1">0.10 m</option><option value="0.5">0.50 m</option><option value="1">1.00 m</option>
+                  </select>
+                </label>
                 <div>
                   Origin <span className="float-right font-mono text-slate-400">0, 0</span>
                 </div>
@@ -4264,6 +4508,9 @@ export function WarehouseEditorPage() {
                 background={background}
                 backgroundOpacity={backgroundOpacity}
                 backgroundScale={backgroundScale}
+                backgroundOffsetX={backgroundOffsetX}
+                backgroundOffsetY={backgroundOffsetY}
+                backgroundRotation={backgroundRotation}
                 mode={mode}
                 measurePoints={measurePoints}
                 drawingPoints={drawingPoints}
@@ -4275,6 +4522,12 @@ export function WarehouseEditorPage() {
                 onMeasurePoint={onMeasurePoint}
                 onDrawPoint={onDrawPoint}
                 onFinishDrawing={finishDrawing}
+                onAddManualTag={addManualTag}
+                onEditVertex={editFloorVertex}
+                onEditAisleVertex={editAisleVertex}
+                onInsertVertex={insertVertex}
+                onDeleteVertex={deleteVertex}
+                snapStep={snapStep}
                 onBoxSelect={onBoxSelect}
                 onContextMenu={(selection, x, y) => setContextMenu({ selection, x, y })}
                 smartGuidesEnabled={smartGuidesEnabled}
@@ -4503,9 +4756,31 @@ export function WarehouseEditorPage() {
                 <div className="space-y-2 rounded-xl border border-white/[0.07] bg-white/[0.018] p-3">
                   <PropertyInput
                     label="ID"
-                    value={primary.obj.id}
+                    value={objectId(primary.selection.kind, primary.obj)}
                     onChange={(value) => updateProperty("id", value)}
                   />
+
+                  {primary.selection.kind === "aisle" && (
+                    <>
+                      <PropertyInput label="Width" type="number" step="0.01" value={primary.obj.width} onChange={(value) => updateProperty("width", value)} />
+                      <label className="block"><span className="mb-1 block text-[9px] font-medium uppercase tracking-[0.08em] text-slate-500">Direction</span><select value={primary.obj.direction ?? "bidirectional"} onChange={(event) => updateProperty("direction", event.target.value)} className="w-full rounded-md border border-white/[0.08] bg-[#070d16] px-2.5 py-2 text-[11px] text-slate-200 outline-none"><option value="bidirectional">Bidirectional</option><option value="forward">Forward</option><option value="reverse">Reverse</option></select></label>
+                      <PropertyInput label="Speed Limit" type="number" step="0.01" value={primary.obj.speed_limit ?? 0.8} onChange={(value) => updateProperty("speed_limit", value)} />
+                      <div className="grid grid-cols-2 gap-2"><PropertyInput label="Tag Spacing" type="number" step="0.01" value={primary.obj.tag_rule?.spacing ?? 2} onChange={(value) => updateProperty("tag_rule.spacing", value)} /><PropertyInput label="Start Offset" type="number" step="0.01" value={primary.obj.tag_rule?.start_offset ?? 0} onChange={(value) => updateProperty("tag_rule.start_offset", value)} /></div>
+                      <PropertyInput label="End Offset" type="number" step="0.01" value={primary.obj.tag_rule?.end_offset ?? 0} onChange={(value) => updateProperty("tag_rule.end_offset", value)} />
+                      <label className="flex items-center justify-between text-[10px] text-slate-400"><span>Auto Tags</span><input type="checkbox" checked={primary.obj.tag_rule?.enabled !== false} onChange={(event) => updateProperty("tag_rule.enabled", event.target.checked ? "true" : "false")} /></label>
+                    </>
+                  )}
+
+                  {primary.selection.kind === "navigation-tag" && (
+                    <>
+                      <PropertyInput label="Tag ID" type="number" step="1" value={primary.obj.tag_id} onChange={(value) => updateProperty("tag_id", value)} />
+                      <div className="grid grid-cols-2 gap-2"><PropertyInput label="X" type="number" step="0.01" value={primary.obj.x} onChange={(value) => updateProperty("x", value)} /><PropertyInput label="Y" type="number" step="0.01" value={primary.obj.y} onChange={(value) => updateProperty("y", value)} /></div>
+                      <div className="grid grid-cols-2 gap-2"><PropertyInput label="Z" type="number" step="0.01" value={primary.obj.z ?? 0} onChange={(value) => updateProperty("z", value)} /><PropertyInput label="Yaw" type="number" step="0.01" value={primary.obj.yaw ?? 0} onChange={(value) => updateProperty("yaw", value)} /></div>
+                      <label className="flex items-center justify-between text-[10px] text-slate-400"><span>Locked</span><input type="checkbox" checked={Boolean(primary.obj.locked)} onChange={(event) => updateProperty("locked", event.target.checked ? "true" : "false")} /></label>
+                      <div className="text-[9px] text-slate-500">Placement <span className="float-right font-mono text-slate-300">{String(primary.obj.placement ?? "auto").toUpperCase()}</span></div>
+                      <div className="text-[9px] text-slate-500">Generated From <span className="float-right font-mono text-slate-300">{primary.obj.generated_from ?? "—"}</span></div>
+                    </>
+                  )}
 
                   {primary.selection.kind === "rack" && (
                     <>

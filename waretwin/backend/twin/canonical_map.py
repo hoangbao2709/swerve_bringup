@@ -101,6 +101,76 @@ def validate_polygon(raw: Any, label='polygon') -> list[str]:
     return errors
 
 
+def validate_floor_polygon(raw: Any, label='floor') -> list[str]:
+    return validate_polygon(raw, label)
+
+
+def validate_hole_polygon(raw: Any, label='hole') -> list[str]:
+    return validate_polygon(raw, label)
+
+
+def validate_aisle_centerline(raw: Any, width: Any, label='aisle') -> list[str]:
+    errors: list[str] = []
+    try:
+        line = points(raw)
+    except (TypeError, ValueError) as exc:
+        return [f'{label}: {exc}']
+    try:
+        numeric_width = float(width)
+    except (TypeError, ValueError):
+        numeric_width = float('nan')
+    if len(line) < 2: errors.append(f'{label}: centerline requires at least 2 points')
+    if not math.isfinite(numeric_width) or numeric_width <= 0: errors.append(f'{label}: width must be positive and finite')
+    for a, b in zip(line, line[1:]):
+        if math.hypot(b[0] - a[0], b[1] - a[1]) <= 1e-9: errors.append(f'{label}: consecutive points must not duplicate')
+    return errors
+
+
+def _line_intersection(a, ad, b, bd):
+    cross = ad[0] * bd[1] - ad[1] * bd[0]
+    if abs(cross) <= 1e-10: return None
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t = (dx * bd[1] - dy * bd[0]) / cross
+    return (a[0] + ad[0] * t, a[1] + ad[1] * t)
+
+
+def aisle_footprint(raw: Any, width: float) -> list[tuple[float, float]]:
+    line = points(raw)
+    if len(validate_aisle_centerline(line, width)):
+        return []
+    half = float(width) / 2
+    directions = []
+    for a, b in zip(line, line[1:]):
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        directions.append(((b[0] - a[0]) / length, (b[1] - a[1]) / length))
+
+    def side(sign):
+        out = []
+        for i, point in enumerate(line):
+            prev = directions[max(0, i - 1)]; nxt = directions[min(len(directions) - 1, i)]
+            def normal(direction): return (-direction[1] * half * sign, direction[0] * half * sign)
+            if i == 0: offset = normal(nxt); out.append((point[0] + offset[0], point[1] + offset[1])); continue
+            if i == len(line) - 1: offset = normal(prev); out.append((point[0] + offset[0], point[1] + offset[1])); continue
+            pn, nn = normal(prev), normal(nxt)
+            intersection = _line_intersection((line[i - 1][0] + pn[0], line[i - 1][1] + pn[1]), prev, (point[0] + nn[0], point[1] + nn[1]), nxt)
+            if intersection is None or math.hypot(intersection[0] - point[0], intersection[1] - point[1]) > half * 4:
+                out.append((point[0] + (pn[0] + nn[0]) / 2, point[1] + (pn[1] + nn[1]) / 2))
+            else: out.append(intersection)
+        return out
+    return side(1) + list(reversed(side(-1)))
+
+
+def polygon_contained_in_usable_floor(polygon, boundary, holes=()) -> bool:
+    if len(polygon) < 3 or len(boundary) < 3: return False
+    # Strict containment prevents an aisle half-width from sitting on a wall.
+    if not all(point_in_polygon(point, boundary, include_boundary=False) and not any(point_in_polygon(point, hole, include_boundary=True) for hole in holes) for point in polygon): return False
+    for i, a in enumerate(polygon):
+        b = polygon[(i + 1) % len(polygon)]
+        if any(segments_intersect(a, b, boundary[j], boundary[(j + 1) % len(boundary)]) for j in range(len(boundary))): return False
+        if any(segments_intersect(a, b, hole[j], hole[(j + 1) % len(hole)]) for hole in holes for j in range(len(hole))): return False
+    return True
+
+
 def canonicalize_layout(value: dict[str, Any], fallback: dict[str, Any] | None = None) -> dict[str, Any]:
     source = copy.deepcopy(value if isinstance(value, dict) else (fallback or {}))
     size = source.get('size') or {}
@@ -134,14 +204,14 @@ def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
     floor_polys: dict[str, list[tuple[float, float]]] = {}
     for floor in floors:
         fid = str(floor.get('id'))
-        errors += validate_polygon(floor.get('boundary'), f'floor {fid} boundary')
+        errors += validate_floor_polygon(floor.get('boundary'), f'floor {fid} boundary')
         try: boundary = points(floor.get('boundary'))
         except (TypeError, ValueError): boundary = []
         floor_polys[fid] = boundary
         holes = floor.get('holes') or []
         if not isinstance(holes, list): errors.append(f'floor {fid}: holes must be an array'); continue
         for index, hole in enumerate(holes):
-            errors += validate_polygon(hole, f'floor {fid} hole {index + 1}')
+            errors += validate_hole_polygon(hole, f'floor {fid} hole {index + 1}')
             try: hp = points(hole)
             except (TypeError, ValueError): continue
             if boundary and not all(point_in_polygon(p, boundary, include_boundary=False) for p in hp): errors.append(f'floor {fid} hole {index + 1}: outside floor')
@@ -162,16 +232,20 @@ def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
     if len(tag_ids) != len(set(tag_ids)): errors.append('navigation_tags: duplicate tag_id')
     for aisle in doc.get('aisles', []):
         aid = aisle.get('uuid') or aisle.get('id') or '?'
-        try:
-            width = float(aisle.get('width'))
-            centerline = points(aisle.get('centerline'))
-        except (TypeError, ValueError, KeyError):
-            errors.append(f'aisle {aid}: invalid centerline/width')
-            continue
-        if width <= 0: errors.append(f'aisle {aid}: width must be positive')
-        if len(centerline) < 2: errors.append(f'aisle {aid}: centerline requires at least 2 points')
+        centerline = aisle.get('centerline')
+        width = aisle.get('width')
+        aisle_errors = validate_aisle_centerline(centerline, width, f'aisle {aid}')
+        errors += aisle_errors
+        try: centerline_points = points(centerline); numeric_width = float(width)
+        except (TypeError, ValueError, KeyError): continue
         floor_ref = aisle.get('floor_id', aisle.get('floor'))
-        if floor_ref is not None and str(floor_ref) in floor_polys and centerline:
+        if floor_ref is not None and str(floor_ref) in floor_polys and centerline_points and numeric_width > 0:
             boundary = floor_polys[str(floor_ref)]
-            if boundary and not all(point_in_polygon(p, boundary, include_boundary=True) for p in centerline): errors.append(f'aisle {aid}: centerline outside floor')
+            floor = next((item for item in floors if str(item.get('id')) == str(floor_ref)), {})
+            hole_points = []
+            for hole in floor.get('holes') or []:
+                try: hole_points.append(points(hole))
+                except (TypeError, ValueError): pass
+            footprint = aisle_footprint(centerline_points, numeric_width)
+            if boundary and not polygon_contained_in_usable_floor(footprint, boundary, hole_points): errors.append(f'aisle {aid}: width footprint is outside usable floor or intersects a hole')
     return errors

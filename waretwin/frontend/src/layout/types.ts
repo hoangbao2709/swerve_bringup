@@ -19,7 +19,7 @@ export interface LayoutLocation { id: string; kind: string; zone: string; floor?
 export interface LayoutSpawnRobot { id: string; position: P3; heading: number; battery: number; floor?: number }
 export interface LayoutFloor { id: number; name: string; elevation: number; footprint?: P2[]; boundary?: WarehousePoint[] | P2[]; holes?: Array<WarehousePoint[] | P2[]> }
 export interface LayoutAisle { id: string; floor_id?: number | string; centerline: WarehousePoint[]; width: number; direction: "bidirectional" | "forward" | "reverse"; speed_limit?: number; tag_rule?: { enabled: boolean; spacing: number; start_offset?: number; end_offset?: number } }
-export interface LayoutNavigationTag { uuid: string; tag_id: number; floor_id?: number | string; x: number; y: number; z?: number; yaw: number; placement: "auto" | "manual"; locked: boolean; generated_from?: string }
+export interface LayoutNavigationTag { id?: string; uuid: string; tag_id: number; floor_id?: number | string; x: number; y: number; z?: number; yaw: number; placement: "auto" | "manual"; locked: boolean; generated_from?: string; source_aisles?: string[]; semantic_role?: "intersection" | "turn" | "start" | "end" | "spacing"; logical_key?: string }
 export interface LayoutNavigationEdge { uuid?: string; from_tag_uuid?: string; to_tag_uuid?: string; from_tag_id?: number; to_tag_id?: number; enabled?: boolean; bidirectional?: boolean; cost?: number }
 export interface LayoutLift { id: string; cell: [number, number]; floors: number[]; ride_ticks: number }
 

@@ -3,6 +3,7 @@ import { Billboard, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { layout, useStore } from "../../state/store";
 import { rackOccupancy } from "../../layout/shelfOccupancy";
+import { sameFloor } from "../../layout/types";
 
 const dummy = new THREE.Object3D();
 const color = new THREE.Color();
@@ -46,7 +47,7 @@ export function RackInstances({
     }> = [];
 
     for (const [rackIndex, r] of layout.racks.entries()) {
-      if ((r.floor ?? 1) !== floor) continue;
+      if (!sameFloor(r.floor ?? 1, floor)) continue;
       const [x, , z] = r.position;
       const [w, h, d] = r.size;
       const levelH = h / Math.max(1, r.levels);

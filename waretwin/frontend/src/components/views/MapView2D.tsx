@@ -30,13 +30,11 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
 
   // 障礙格合併成矩形 (逐列 run-length) 以減少 SVG 元素
   const blocks = useMemo(() => {
-    const fp = mapFloor === 1 ? null : layout.floors.find((f) => sameFloor(f.id, canonicalMapFloor))?.footprint;
-    const inFp = (c: number, r: number) => !fp || (c >= Math.min(...fp.map((p) => p[0])) && c < Math.max(...fp.map((p) => p[0])) && r >= Math.min(...fp.map((p) => p[1])) && r < Math.max(...fp.map((p) => p[1])));
     const out: Array<[number, number, number]> = [];
     for (let r = 0; r < grid.rows; r++) {
       let c = 0;
       while (c < grid.cols) {
-        if (grid.cells[r * grid.cols + c] === 1 && inFp(c, r)) { let e = c; while (e < grid.cols && grid.cells[r * grid.cols + e] === 1 && inFp(e, r)) e++; out.push([c, r, e - c]); c = e; } else c++;
+        if (grid.cells[r * grid.cols + c] === 1) { let e = c; while (e < grid.cols && grid.cells[r * grid.cols + e] === 1) e++; out.push([c, r, e - c]); c = e; } else c++;
       }
     }
     return out;
@@ -104,9 +102,9 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
       {layout.lifts.map((l) => (
         <g key={l.id}><rect x={l.cell[0] - 0.7} y={l.cell[1] - 0.7} width="2.4" height="2.4" fill="none" stroke="#a78bfa" strokeWidth="0.35" /><text x={l.cell[0] + 2} y={l.cell[1] + 0.6} fill="#a78bfa" fontSize="1.8">{l.id}</text></g>
       ))}
-      {blocks.map(([c, r, len], i) => <rect key={i} x={c * grid.cols / grid.cols} y={r} width={len} height="1" fill="#334155" />)}
+      {blocks.map(([c, r, len], i) => <rect key={i} x={c * layout.grid.cell_size} y={r * layout.grid.cell_size} width={len * layout.grid.cell_size} height={layout.grid.cell_size} fill="#334155" />)}
       {/* Exact rack footprints from the shared database map (nav cells above are only a conservative collision mask). */}
-      {layout.racks.filter((r) => (r.floor ?? 1) === mapFloor).map((r) => {
+      {layout.racks.filter((r) => sameFloor(r.floor ?? 1, canonicalMapFloor)).map((r) => {
         const x=r.position[0], y=r.position[2], w=r.size[0], d=r.size[2], cx=x+w/2, cy=y+d/2;
         const isSelected = selectedShelf === r.id;
         const occupancy = rackOccupancy(r);

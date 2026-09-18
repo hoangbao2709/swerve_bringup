@@ -9,7 +9,7 @@
  * 每 tick 的順序：任務產生 → 任務指派 → 每台機器人 FSM/移動/電池 → Zone/擁塞統計 → KPI → 事件整理
  */
 import { canonicalFloorId, resolveRuntimeFloorIndex, type WarehouseLayout, type LayoutLocation } from "../layout/types";
-import { buildNavGrid } from "../layout/navgrid";
+import { buildNavGrid, type NavGridBuildOptions } from "../layout/navgrid";
 import type {
   TwinState, PerceivedObstacle, RobotState, TaskState, TwinEvent, AlertState, AiDecision, DecisionCandidate,
   GridCell, RobotFsmState, RobotStatus, EventType, Severity, TaskPriority, ScenarioInjection,
@@ -106,7 +106,7 @@ interface RobotRt {
   liftBlockedTicks: number;
 }
 
-export interface EngineOptions { seed?: number; initialState?: TwinState }
+export interface EngineOptions extends NavGridBuildOptions { seed?: number; initialState?: TwinState }
 
 export class SimEngine {
   readonly layout: WarehouseLayout;
@@ -137,11 +137,12 @@ export class SimEngine {
 
   constructor(layout: WarehouseLayout, opts: EngineOptions = {}) {
     this.layout = layout;
-    this.grid = buildNavGrid(layout, canonicalFloorId(layout, 1));
+    const navGridOptions: NavGridBuildOptions = { robot_radius: opts.robot_radius, safety_margin: opts.safety_margin };
+    this.grid = buildNavGrid(layout, canonicalFloorId(layout, 1), navGridOptions);
     this.grids = { 1: this.grid };
     for (const f of layout.floors ?? []) {
       const runtimeFloor = resolveRuntimeFloorIndex(layout, f.id);
-      if (runtimeFloor !== 1) this.grids[runtimeFloor] = buildNavGrid(layout, f.id);
+      if (runtimeFloor !== 1) this.grids[runtimeFloor] = buildNavGrid(layout, f.id, navGridOptions);
     }
     const n = this.grid.cols * this.grid.rows;
     this.traffic = {}; this.trafficShort = {};

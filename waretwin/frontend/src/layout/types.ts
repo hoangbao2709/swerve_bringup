@@ -10,7 +10,7 @@ export const sameFloor = (a: FloorId | null | undefined, b: FloorId | null | und
 
 export interface LayoutZone { id: string; name: string; color: string; polygon: P2[]; floor?: number }
 export interface LayoutDock { id: string; kind: "INBOUND" | "OUTBOUND"; zone: string; rect: Rect; door: P2 }
-export interface LayoutRack { id: string; zone: string; position: P3; size: P3; rotation: number; levels: number; model: string; blocks_grid: boolean; floor?: number; /** Fixed operational capacity: 8 orders. */ capacity?: number; /** Current number of orders physically on this shelf. */ current_load?: number }
+export interface LayoutRack { id: string; zone: string; position: P3; size: P3; rotation: number; levels: number; model: string; blocks_grid: boolean; floor?: FloorId; /** Fixed operational capacity: 8 orders. */ capacity?: number; /** Current number of orders physically on this shelf. */ current_load?: number }
 export interface LayoutConveyor { id: string; name: string; zone: string; path: P2[]; width: number; speed_mps: number; direction: string; blocks_grid: boolean; /** 這條輸送帶供應的工作站；故障時該站的卸貨時間變長 */ feeds?: string }
 export interface LayoutStation { id: string; kind: string; zone: string; rect: Rect; access_point: P2 }
 export interface LayoutCharging { id: string; zone: string; position: P3; heading: number; power_kw: number; access_point: P2 }

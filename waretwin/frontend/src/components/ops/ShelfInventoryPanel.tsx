@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { schedulerApi, type InventoryDispatchResult, type ShelfInventoryItem, type ShelfInventoryResponse } from "../../services/scheduler";
 import { useStore } from "../../state/store";
+import type { FloorId } from "../../layout/types";
 
 type Props = {
   rackId: string;
   zone: string;
-  floor: number;
+  floor: FloorId;
   position: [number, number, number];
   load: number;
   percentLabel: string;

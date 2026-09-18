@@ -1,10 +1,10 @@
-import type { WarehouseLayout } from "./types";
+import { canonicalFloorId, sameFloor, type FloorId, type WarehouseLayout } from "./types";
 
 /**
  * 由 layout 產生導航網格。0 = 可通行、1 = 障礙、2 = walkway (可通行但減速)。
  * 規則見格式說明「導航網格的產生規則」。後端 Python 需實作同樣規則並以同一 layout 做比對測試。
  */
-export function buildNavGrid(layout: WarehouseLayout, floor = 1): { cols: number; rows: number; cells: Uint8Array } {
+export function buildNavGrid(layout: WarehouseLayout, floor: FloorId = 1): { cols: number; rows: number; cells: Uint8Array } {
   const { cols, rows, cell_size: cs } = layout.grid;
   const cells = new Uint8Array(cols * rows);
   const rackBounds = (r: WarehouseLayout["racks"][number]) => {
@@ -34,17 +34,18 @@ export function buildNavGrid(layout: WarehouseLayout, floor = 1): { cols: number
       for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) cells[r * cols + c] = 1;
     }
   };
-  if (floor !== 1) {
+  const groundFloor = canonicalFloorId(layout, 1);
+  if (!sameFloor(floor, groundFloor)) {
     // 二樓（夾層）：footprint 之外全是「不存在的樓板」= 障礙；footprint 內可走，再扣掉該樓層貨架
     cells.fill(1);
-    const fp = layout.floors.find((f) => f.id === floor)?.footprint;
+    const fp = layout.floors.find((f) => sameFloor(f.id, floor))?.footprint;
     if (fp) {
       const xs = fp.map((p) => p[0]), zs = fp.map((p) => p[1]);
       const c0 = Math.max(0, Math.floor(Math.min(...xs) / cs)), c1 = Math.min(cols - 1, Math.ceil(Math.max(...xs) / cs) - 1);
       const r0 = Math.max(0, Math.floor(Math.min(...zs) / cs)), r1 = Math.min(rows - 1, Math.ceil(Math.max(...zs) / cs) - 1);
       for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) cells[r * cols + c] = 0;
     }
-    for (const r of layout.racks) if (r.blocks_grid && (r.floor ?? 1) === floor) {
+    for (const r of layout.racks) if (r.blocks_grid && sameFloor(r.floor ?? 1, floor)) {
       const [x0, z0, x1, z1] = rackBounds(r);
       const c0 = Math.max(0, Math.floor(x0 / cs)), c1 = Math.min(cols - 1, Math.ceil(x1 / cs) - 1);
       const r0 = Math.max(0, Math.floor(z0 / cs)), r1 = Math.min(rows - 1, Math.ceil(z1 / cs) - 1);

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildAisleFootprint, polygonContainedInFloor, snapCoordinate, snapPoint, validateAisleCenterline, validateFloorPolygon } from "../src/layout/geometry";
+import { buildNavGrid } from "../src/layout/navgrid";
+import { canonicalFloorId, resolveRuntimeFloorIndex, type WarehouseLayout } from "../src/layout/types";
+import layoutJson from "../src/layout/warehouse_layout.json";
 
 const p = (x: number, y: number) => ({ x, y });
 
@@ -32,5 +35,17 @@ describe("floor and aisle geometry", () => {
     expect(snapCoordinate(12.347, null)).toBe(12.347);
     expect(snapCoordinate(12.347, 0.05)).toBeCloseTo(12.35);
     expect(snapPoint(p(12.347, 8.223), 0.5)).toEqual(p(12.5, 8));
+  });
+
+  it("adapts canonical string floor IDs to numeric runtime layers without coercion", () => {
+    const layout = structuredClone(layoutJson) as unknown as WarehouseLayout;
+    layout.floors = [
+      { id: "F1", name: "F1", elevation: 0, footprint: [[0, 0], [20, 0], [20, 20], [0, 20]] },
+      { id: "F2", name: "F2", elevation: 4, footprint: [[0, 0], [10, 0], [10, 10], [0, 10]] },
+    ];
+    expect(resolveRuntimeFloorIndex(layout, "F1")).toBe(1);
+    expect(resolveRuntimeFloorIndex(layout, "F2")).toBe(2);
+    expect(canonicalFloorId(layout, 2)).toBe("F2");
+    expect(buildNavGrid(layout, "F2").cells.some((cell) => cell === 0)).toBe(true);
   });
 });

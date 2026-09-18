@@ -4,6 +4,7 @@ import { buildNavGrid } from "../../layout/navgrid";
 import { getEngine } from "../../simulation/runner";
 import { rackOccupancy } from "../../layout/shelfOccupancy";
 import { floorBoundary, polygonPoints } from "../../layout/coordinates";
+import { canonicalFloorId, sameFloor } from "../../layout/types";
 
 /** 俯視 2D 地圖：導航網格障礙、Zone、輸送帶、機器人。TRAFFIC / HEATMAP 模式疊上熱區。 */
 export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP"; size?: { width: number; height: number } }) {
@@ -11,6 +12,7 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
   const layoutRevision = useStore((s) => s.layoutRevision);
   const activeFloorSel = useStore((s) => s.activeFloor);
   const mapFloor = typeof activeFloorSel === "number" ? activeFloorSel : 1;   // 2D 圖一次畫一層；All/Exploded 時畫一樓
+  const canonicalMapFloor = canonicalFloorId(layout, mapFloor);
   const robots = Object.fromEntries(Object.entries(allRobots).filter(([, r]) => r.floor === mapFloor));
   const zones = useStore((s) => s.twin.zones);
   const selected = useStore((s) => s.selectedRobot);
@@ -22,13 +24,13 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
   const tagMission = useStore((s) => s.tagNavigation);
   const setTargetTagId = useStore((s) => s.setTargetTagId);
   const { width: W, depth: D } = layout.size;
-  const activeFloor = layout.floors.find((f) => String(f.id) === String(mapFloor));
+  const activeFloor = layout.floors.find((f) => sameFloor(f.id, canonicalMapFloor));
   const boundary = activeFloor ? floorBoundary(activeFloor, W, D) : [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: D }, { x: 0, y: D }];
-  const grid = useMemo(() => buildNavGrid(layout, mapFloor), [mapFloor, layoutRevision]);
+  const grid = useMemo(() => buildNavGrid(layout, canonicalMapFloor), [canonicalMapFloor, layoutRevision]);
 
   // 障礙格合併成矩形 (逐列 run-length) 以減少 SVG 元素
   const blocks = useMemo(() => {
-    const fp = mapFloor === 1 ? null : layout.floors.find((f) => f.id === mapFloor)?.footprint;
+    const fp = mapFloor === 1 ? null : layout.floors.find((f) => sameFloor(f.id, canonicalMapFloor))?.footprint;
     const inFp = (c: number, r: number) => !fp || (c >= Math.min(...fp.map((p) => p[0])) && c < Math.max(...fp.map((p) => p[0])) && r >= Math.min(...fp.map((p) => p[1])) && r < Math.max(...fp.map((p) => p[1])));
     const out: Array<[number, number, number]> = [];
     for (let r = 0; r < grid.rows; r++) {

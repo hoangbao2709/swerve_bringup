@@ -3,6 +3,10 @@ export type P2 = [number, number];
 export type WarehousePoint = { x: number; y: number };
 export type P3 = [number, number, number];
 export type Rect = [number, number, number, number];
+/** Canonical map identity. Runtime simulation may use a separate numeric layer index. */
+export type FloorId = number | string;
+export const floorKey = (id: FloorId): string => String(id);
+export const sameFloor = (a: FloorId | null | undefined, b: FloorId | null | undefined): boolean => a != null && b != null && floorKey(a) === floorKey(b);
 
 export interface LayoutZone { id: string; name: string; color: string; polygon: P2[]; floor?: number }
 export interface LayoutDock { id: string; kind: "INBOUND" | "OUTBOUND"; zone: string; rect: Rect; door: P2 }
@@ -17,11 +21,23 @@ export interface LayoutCamera { id: string; zone: string; floor?: number; positi
 export interface LayoutSensor { id: string; kind: string; zone: string; position: P3 }
 export interface LayoutLocation { id: string; kind: string; zone: string; floor?: number; rack_id: string | null; level_range: [number, number] | null; access_point: P2 }
 export interface LayoutSpawnRobot { id: string; position: P3; heading: number; battery: number; floor?: number }
-export interface LayoutFloor { id: number | string; name: string; elevation: number; footprint?: P2[]; boundary?: WarehousePoint[] | P2[]; holes?: Array<WarehousePoint[] | P2[]> }
-export interface LayoutAisle { id: string; floor_id?: number | string; centerline: WarehousePoint[]; width: number; direction: "bidirectional" | "forward" | "reverse"; speed_limit?: number; tag_rule?: { enabled: boolean; spacing: number; start_offset?: number; end_offset?: number } }
-export interface LayoutNavigationTag { id?: string; uuid: string; tag_id: number; floor_id?: number | string; x: number; y: number; z?: number; yaw: number; placement: "auto" | "manual"; locked: boolean; generated_from?: string; source_aisles?: string[]; semantic_role?: "intersection" | "turn" | "start" | "end" | "spacing"; logical_key?: string; distance_along_aisle?: number }
+export interface LayoutFloor { id: FloorId; name: string; elevation: number; footprint?: P2[]; boundary?: WarehousePoint[] | P2[]; holes?: Array<WarehousePoint[] | P2[]> }
+export interface LayoutAisle { id: string; floor_id?: FloorId; centerline: WarehousePoint[]; width: number; direction: "bidirectional" | "forward" | "reverse"; speed_limit?: number; tag_rule?: { enabled: boolean; spacing: number; start_offset?: number; end_offset?: number } }
+/** uuid is immutable editor identity; tag_id is the editable physical marker; id is a legacy alias only. */
+export interface LayoutNavigationTag { id?: string; uuid: string; tag_id: number; floor_id?: FloorId; x: number; y: number; z?: number; yaw: number; placement: "auto" | "manual"; locked: boolean; generated_from?: string; source_aisles?: string[]; semantic_role?: "intersection" | "turn" | "start" | "end" | "spacing"; logical_key?: string; distance_along_aisle?: number }
 export interface LayoutNavigationEdge { uuid?: string; from_tag_uuid?: string; to_tag_uuid?: string; from_tag_id?: number; to_tag_id?: number; enabled?: boolean; bidirectional?: boolean; cost?: number }
-export interface LayoutLift { id: string; cell: [number, number]; floors: number[]; ride_ticks: number }
+export interface LayoutLift { id: string; cell: [number, number]; floors: FloorId[]; ride_ticks: number }
+
+/** Runtime robots use numeric layer indexes; string canonical IDs resolve by floor declaration order. */
+export function resolveRuntimeFloorIndex(layout: Pick<WarehouseLayout, "floors">, id: FloorId | null | undefined): number {
+  const index = layout.floors.findIndex((floor) => sameFloor(floor.id, id ?? 1));
+  if (index >= 0) return typeof layout.floors[index].id === "number" ? layout.floors[index].id as number : index + 1;
+  return typeof id === "number" ? id : 1;
+}
+
+export function canonicalFloorId(layout: Pick<WarehouseLayout, "floors">, runtimeIndex: number): FloorId {
+  return layout.floors.find((floor) => typeof floor.id === "number" && floor.id === runtimeIndex)?.id ?? layout.floors[runtimeIndex - 1]?.id ?? runtimeIndex;
+}
 
 export interface WarehouseLayout {
   schema_version: string | number;

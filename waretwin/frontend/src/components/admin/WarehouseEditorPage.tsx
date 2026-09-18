@@ -9,7 +9,8 @@ import { DEMO_MODE } from "../../config";
 import { useStore } from "../../state/store";
 import type { WarehouseLayout } from "../../layout/types";
 import { buildAisleFootprint, pointInPolygon, polygonContainedInFloor, snapPoint, validateAisleCenterline, validateFloorPolygon, validateHolePolygon, validatePolygon, type Point } from "../../layout/geometry";
-import { applyNavigationTagPhysicalOverride, generateAisleTags, nextAisleId, validateNavigationTagsForLayout } from "../../layout/navigation";
+import { applyNavigationTagPhysicalOverride, generateAisleTags, nextAisleId, validateNavigationTagIdChange, validateNavigationTagsForLayout } from "../../layout/navigation";
+import { validatePhysicalObjectOverlaps } from "../../layout/validation";
 import layoutJson from "../../layout/warehouse_layout.json";
 
 type Kind =
@@ -484,7 +485,7 @@ function removeObject(d: Draft, selection: Selection) {
   if (!key) return;
   const arr = (d as any)[key] as any[];
   if (Array.isArray(arr)) {
-    (d as any)[key] = arr.filter((x: any) => x.id !== selection.id);
+    (d as any)[key] = arr.filter((x: any) => objectId(selection.kind, x) !== selection.id);
   }
 }
 
@@ -1236,7 +1237,7 @@ function MapObject({
 
 function setObjectRotation(draft: Draft, selection: Selection, angle: number) {
   const arr = selection.kind === "column" ? null : getCollection(draft, selection.kind);
-  const obj = arr?.find((item) => item.id === selection.id);
+  const obj = arr?.find((item) => objectId(selection.kind, item) === selection.id);
   if (!obj) return;
 
   const normalized = ((Math.round(angle / 15) * 15) % 360 + 360) % 360;
@@ -1284,7 +1285,7 @@ function resizeObject(
 
   if (["wall", "station", "dock", "parking", "restricted"].includes(selection.kind)) {
     const obj = getCollection(draft, selection.kind).find(
-      (item) => item.id === selection.id,
+      (item) => objectId(selection.kind, item) === selection.id,
     );
     if (!obj || !Array.isArray(obj.rect)) return;
 
@@ -2049,7 +2050,7 @@ function Editor2DMap({
           ) && (() => {
             const selection = selected[0];
             const obj = getCollection(draft, selection.kind).find(
-              (item) => item.id === selection.id,
+              (item) => objectId(selection.kind, item) === selection.id,
             );
             if (!obj) return null;
             const box = get2DBox(selection.kind, obj);
@@ -2836,6 +2837,19 @@ export function WarehouseEditorPage() {
     const obj = findCollectionObject(next, primary.selection.kind, primary.selection.id);
     if (!obj) return;
 
+    if (primary.selection.kind === "navigation-tag" && (path === "id" || path === "uuid")) {
+      setErrors(["Navigation tag UUID is immutable."]);
+      return;
+    }
+    if (primary.selection.kind === "navigation-tag" && path === "tag_id") {
+      const nextTagId = Number(value);
+      const tagIdError = validateNavigationTagIdChange(next.navigation_tags ?? [], obj.uuid, nextTagId);
+      if (tagIdError) {
+        setErrors([tagIdError]);
+        return;
+      }
+    }
+
     if (path === "id" || path === "uuid") {
       const arr = getCollection(next, primary.selection.kind);
       if (arr.some((item) => item !== obj && objectId(primary.selection.kind, item) === value)) {
@@ -2899,7 +2913,7 @@ export function WarehouseEditorPage() {
       }
 
       const arr = getCollection(next, selection.kind);
-      const obj = arr.find((item) => item.id === selection.id);
+      const obj = arr.find((item) => objectId(selection.kind, item) === selection.id);
       if (!obj) return;
 
       const cp = clone(obj);
@@ -2962,7 +2976,7 @@ export function WarehouseEditorPage() {
           ? null
           : clone(
               getCollection(draft, selection.kind).find(
-                (item) => item.id === selection.id,
+                (item) => objectId(selection.kind, item) === selection.id,
               ),
             ),
     }));
@@ -3065,7 +3079,7 @@ export function WarehouseEditorPage() {
         const point = source.columns?.[index];
         return point ? { selection, box: { x: point[0] - 0.45, z: point[1] - 0.45, w: 0.9, h: 0.9 } } : null;
       }
-      const obj = getCollection(source, selection.kind).find((item) => item.id === selection.id);
+      const obj = getCollection(source, selection.kind).find((item) => objectId(selection.kind, item) === selection.id);
       return obj ? { selection, box: get2DBox(selection.kind, obj) } : null;
     }).filter(Boolean) as { selection: Selection; box: { x: number; z: number; w: number; h: number; rotation: number } }[];
   }
@@ -3264,8 +3278,9 @@ export function WarehouseEditorPage() {
       if (kind === "column") return;
       const arr = getCollection(draftToCheck, kind);
       arr.forEach((obj: any) => {
-        if (ids.has(obj.id)) nextErrors.push(`Duplicate object id: ${obj.id}`);
-        ids.add(obj.id);
+        const identity = objectId(kind, obj);
+        if (ids.has(identity)) nextErrors.push(`Duplicate object id: ${identity}`);
+        ids.add(identity);
 
         const box = get2DBox(kind, obj);
         if (
@@ -3283,7 +3298,9 @@ export function WarehouseEditorPage() {
     (Object.keys(KEY_MAP) as Kind[]).forEach((kind) => {
       if (kind === "column") return;
       getCollection(draftToCheck, kind).forEach((obj: any) => {
-        if (["zone", "walkway", "camera", "sensor", "location", "spawn"].includes(kind)) return;
+        // Floor containment, aisle footprints and tag placement have dedicated validators above;
+        // they are not collidable physical rectangles.
+        if (["floor", "aisle", "navigation-tag", "zone", "walkway", "camera", "sensor", "location", "spawn"].includes(kind)) return;
         rectObjects.push({
           kind,
           id: obj.id,
@@ -3292,23 +3309,7 @@ export function WarehouseEditorPage() {
       });
     });
 
-    for (let i = 0; i < rectObjects.length; i += 1) {
-      for (let j = i + 1; j < rectObjects.length; j += 1) {
-        const a = rectObjects[i];
-        const b = rectObjects[j];
-        const overlap =
-          a.box.x < b.box.x + b.box.w &&
-          a.box.x + a.box.w > b.box.x &&
-          a.box.z < b.box.z + b.box.h &&
-          a.box.z + a.box.h > b.box.z;
-
-        if (overlap) {
-          nextErrors.push(
-            `${a.id} overlaps ${b.id}`,
-          );
-        }
-      }
-    }
+    nextErrors.push(...validatePhysicalObjectOverlaps(rectObjects));
 
     (draftToCheck.walkways ?? []).forEach((item) => {
       if (item.speed_limit_mps <= 0) {
@@ -3409,7 +3410,7 @@ export function WarehouseEditorPage() {
         selection.kind === "column"
           ? null
           : getCollection(next, selection.kind).find(
-              (item) => item.id === selection.id,
+              (item) => objectId(selection.kind, item) === selection.id,
             );
 
       if (selection.kind === "column") {
@@ -3455,7 +3456,7 @@ export function WarehouseEditorPage() {
       )
     ) {
       const clicked = getCollection(next, selection.kind).find(
-        (item) => item.id === selection.id,
+        (item) => objectId(selection.kind, item) === selection.id,
       );
 
       if (clicked) {
@@ -3476,7 +3477,7 @@ export function WarehouseEditorPage() {
           }
 
           const obj = getCollection(next, item.kind).find(
-            (entry) => entry.id === item.id,
+            (entry) => objectId(item.kind, entry) === item.id,
           );
           if (!obj) return;
 
@@ -4769,11 +4770,15 @@ export function WarehouseEditorPage() {
                 </div>
 
                 <div className="space-y-2 rounded-xl border border-white/[0.07] bg-white/[0.018] p-3">
-                  <PropertyInput
-                    label="ID"
-                    value={objectId(primary.selection.kind, primary.obj)}
-                    onChange={(value) => updateProperty("id", value)}
-                  />
+                  {primary.selection.kind === "navigation-tag" ? (
+                    <div className="text-[9px] text-slate-500">UUID <span className="float-right max-w-[72%] truncate font-mono text-slate-300" title={primary.obj.uuid}>{primary.obj.uuid}</span></div>
+                  ) : (
+                    <PropertyInput
+                      label="ID"
+                      value={objectId(primary.selection.kind, primary.obj)}
+                      onChange={(value) => updateProperty("id", value)}
+                    />
+                  )}
 
                   {primary.selection.kind === "aisle" && (
                     <>

@@ -49,7 +49,26 @@ function aisleCandidates(aisles: LayoutAisle[], tolerance: number, minimumSepara
   return resolveCandidateSeparation(candidates, minimumSeparation);
 }
 function tagSources(tag: LayoutNavigationTag): string[] { return tag.source_aisles?.map(String) ?? String(tag.generated_from ?? "").split(",").filter(Boolean); }
-function matchesCandidate(tag: LayoutNavigationTag, c: Candidate, tolerance: number): boolean { return tag.logical_key ? tag.logical_key === candidateKey(c) : String(tag.floor_id ?? 1) === String(c.floorId) && tag.semantic_role === c.role && tagSources(tag).sort().join(",") === c.sourceAisles.slice().sort().join(",") && Math.abs((tag.distance_along_aisle ?? c.distanceAlong) - c.distanceAlong) <= tolerance; }
+function matchesCandidate(tag: LayoutNavigationTag, c: Candidate, tolerance: number): boolean {
+  if (tag.logical_key) return tag.logical_key === candidateKey(c);
+  const sources = tagSources(tag);
+  return String(tag.floor_id ?? 1) === String(c.floorId)
+    && tag.semantic_role === c.role
+    && sources.length > 0
+    && sources.sort().join(",") === c.sourceAisles.slice().sort().join(",")
+    && Number.isFinite(tag.distance_along_aisle)
+    && Math.abs(tag.distance_along_aisle! - c.distanceAlong) <= tolerance;
+}
+function stableTagOrder(a: LayoutNavigationTag, b: LayoutNavigationTag): number { return a.tag_id - b.tag_id || a.uuid.localeCompare(b.uuid); }
+function legacyCandidateMatch(tags: LayoutNavigationTag[], candidate: Candidate, tolerance: number): LayoutNavigationTag | undefined {
+  const migrationTolerance = Math.max(tolerance, DEFAULT_TAG_MINIMUM_SEPARATION);
+  return tags.filter((tag) => {
+    const sources = tagSources(tag);
+    return String(tag.floor_id ?? 1) === String(candidate.floorId)
+      && (!sources.length || sources.some((source) => candidate.sourceAisles.includes(source)))
+      && distance(tag, candidate.point) <= migrationTolerance;
+  }).sort((a, b) => distance(a, candidate.point) - distance(b, candidate.point) || stableTagOrder(a, b))[0];
+}
 function tagIsInAisleScope(tag: LayoutNavigationTag, aisleId: string): boolean { return tagSources(tag).includes(String(aisleId)); }
 function nextTagId(existing: LayoutNavigationTag[]): number { const used = new Set(existing.map((tag) => Number(tag.tag_id)).filter(Number.isInteger)); let id = Math.max(1000, ...Array.from(used)) + 1; while (used.has(id)) id += 1; return id; }
 
@@ -60,7 +79,9 @@ export function generateAisleTags(aisles: LayoutAisle[], existing: LayoutNavigat
   const preserved = existing.filter((tag) => tag.placement === "manual" || tag.locked || Boolean(onlyAisleId && !tagIsInAisleScope(tag, onlyAisleId))), available = existing.filter((tag) => tag.placement === "auto" && !tag.locked && (!onlyAisleId || tagIsInAisleScope(tag, onlyAisleId))), result = [...preserved], consumed = new Set<string>();
   for (const candidate of candidates) {
     if (preserved.some((tag) => matchesCandidate(tag, candidate, tolerance))) continue;
-    const matched = available.find((tag) => !consumed.has(tag.uuid) && matchesCandidate(tag, candidate, tolerance)) ?? available.find((tag) => !consumed.has(tag.uuid) && String(tag.floor_id ?? 1) === String(candidate.floorId) && distance(tag, candidate.point) <= tolerance && tagSources(tag).some((id) => candidate.sourceAisles.includes(id)));
+    const unmatched = available.filter((tag) => !consumed.has(tag.uuid));
+    const matched = unmatched.filter((tag) => matchesCandidate(tag, candidate, tolerance)).sort(stableTagOrder)[0]
+      ?? legacyCandidateMatch(unmatched, candidate, tolerance);
     if (matched) consumed.add(matched.uuid);
     const key = candidateKey(candidate), identity = matched?.uuid ?? "tag-" + key.replace(/[^a-zA-Z0-9_-]/g, "_");
     result.push({ ...(matched ?? {}), uuid: identity, id: matched?.id ?? identity, tag_id: matched?.tag_id ?? nextTagId([...existing, ...result]), floor_id: candidate.floorId, x: candidate.point.x, y: candidate.point.y, z: matched?.z ?? 0, yaw: matched?.yaw ?? candidate.yaw, placement: "auto", locked: false, generated_from: candidate.generatedFrom, source_aisles: candidate.sourceAisles, semantic_role: candidate.role, logical_key: key, distance_along_aisle: candidate.distanceAlong });
@@ -68,6 +89,10 @@ export function generateAisleTags(aisles: LayoutAisle[], existing: LayoutNavigat
   return result;
 }
 export function applyNavigationTagPhysicalOverride(tag: LayoutNavigationTag): LayoutNavigationTag { return tag.placement === "auto" ? { ...tag, placement: "manual", locked: true } : tag; }
+export function validateNavigationTagIdChange(tags: LayoutNavigationTag[], uuid: string, tagId: number): string | null {
+  if (!Number.isInteger(tagId) || tagId < 0) return `Tag ID ${tagId} is invalid.`;
+  return tags.some((tag) => tag.uuid !== uuid && tag.tag_id === tagId) ? `Tag ID ${tagId} already exists.` : null;
+}
 function floorPoints(floor: LayoutFloor): Point[] { return (floor.boundary ?? floor.footprint ?? []).map((point) => Array.isArray(point) ? { x: point[0], y: point[1] } : point); }
 function floorHoles(floor: LayoutFloor): Point[][] { return (floor.holes ?? []).map((hole) => hole.map((point) => Array.isArray(point) ? { x: point[0], y: point[1] } : point)); }
 /** Shared generation validation for global and selected calls, before a draft can be committed. */

@@ -8,7 +8,7 @@
  *
  * 每 tick 的順序：任務產生 → 任務指派 → 每台機器人 FSM/移動/電池 → Zone/擁塞統計 → KPI → 事件整理
  */
-import type { WarehouseLayout, LayoutLocation } from "../layout/types";
+import { canonicalFloorId, resolveRuntimeFloorIndex, type WarehouseLayout, type LayoutLocation } from "../layout/types";
 import { buildNavGrid } from "../layout/navgrid";
 import type {
   TwinState, PerceivedObstacle, RobotState, TaskState, TwinEvent, AlertState, AiDecision, DecisionCandidate,
@@ -137,12 +137,15 @@ export class SimEngine {
 
   constructor(layout: WarehouseLayout, opts: EngineOptions = {}) {
     this.layout = layout;
-    this.grid = buildNavGrid(layout, 1);
+    this.grid = buildNavGrid(layout, canonicalFloorId(layout, 1));
     this.grids = { 1: this.grid };
-    for (const f of layout.floors ?? []) if (f.id !== 1) this.grids[f.id] = buildNavGrid(layout, f.id);
+    for (const f of layout.floors ?? []) {
+      const runtimeFloor = resolveRuntimeFloorIndex(layout, f.id);
+      if (runtimeFloor !== 1) this.grids[runtimeFloor] = buildNavGrid(layout, f.id);
+    }
     const n = this.grid.cols * this.grid.rows;
     this.traffic = {}; this.trafficShort = {};
-    for (const f of layout.floors ?? [{ id: 1 }]) { this.traffic[f.id] = new Float32Array(n); this.trafficShort[f.id] = new Float32Array(n); }
+    for (const f of layout.floors ?? [{ id: 1 }]) { const runtimeFloor = resolveRuntimeFloorIndex(layout, f.id); this.traffic[runtimeFloor] = new Float32Array(n); this.trafficShort[runtimeFloor] = new Float32Array(n); }
     this.loc = Object.fromEntries(layout.locations.map((l) => [l.id, l]));
     const seed = opts.seed ?? 42;
     this.rng = mulberry32(seed);
@@ -440,7 +443,7 @@ export class SimEngine {
   //  節點：slot0(=approach/exit) → slot1 → slot2 在井道西側；cabin = 電梯格中心。
   // ─────────────────────────────────────────────────────────
   private liftLayout(id: string) { return this.layout.lifts.find((l) => l.id === id)!; }
-  private elevOf(floor: number): number { return this.layout.floors.find((f) => f.id === floor)?.elevation ?? 0; }
+  private elevOf(floor: number): number { return this.layout.floors.find((f) => resolveRuntimeFloorIndex(this.layout, f.id) === floor)?.elevation ?? 0; }
   /** 排隊格（round-9b 再退一格）：slot0 = cell−4，距轉向安全點 1.916 m ——
    *  原地旋轉的掃掠圓（對角半徑 0.584）對上任意朝向的排隊車（最壞也是 0.584）需要 ≥ 1.17 m 才保證不碰；
    *  舊的 cell−3（相距 0.916 m）光是兩台面對面站著（0.475+0.475=0.95）就會車體重疊。 */

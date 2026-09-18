@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyNavigationTagPhysicalOverride, findAisleIntersections, generateAisleTags, nextAisleId, validateNavigationTagsForLayout } from "../src/layout/navigation";
+import { applyNavigationTagPhysicalOverride, findAisleIntersections, generateAisleTags, nextAisleId, validateNavigationTagIdChange, validateNavigationTagsForLayout } from "../src/layout/navigation";
 import type { LayoutAisle, LayoutNavigationTag } from "../src/layout/types";
 
 const aisle = (id: string, floor_id: number | string, centerline: { x: number; y: number }[], spacing: number): LayoutAisle => ({ id, floor_id, centerline, width: 2, direction: "bidirectional", tag_rule: { enabled: true, spacing, start_offset: 1, end_offset: 1 } });
@@ -99,5 +99,33 @@ describe("aisle intersections and navigation tags", () => {
     const invalid = [{ ...tags[0], x: 99, placement: "manual" as const, locked: true }, ...tags.slice(1)];
     const selectedCandidateState = generateAisleTags([a], invalid, { onlyAisleId: "A" });
     expect(validateNavigationTagsForLayout([{ id: 1, name: "F1", elevation: 0, boundary: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }] }], selectedCandidateState)).toContain(`Tag ${invalid[0].tag_id}: outside floor or inside hole`);
+  });
+
+  it("matches legacy spacing tags by nearest position deterministically when input is shuffled", () => {
+    const a = aisle("A", 1, [{ x: 1, y: 5 }, { x: 9, y: 5 }], 2);
+    const legacy = [
+      { ...base("legacy-2", 1, 2, 5, 102), id: "old-2" },
+      { ...base("legacy-4", 1, 4, 5, 104), id: "old-4" },
+      { ...base("legacy-6", 1, 6, 5, 106), id: "old-6" },
+    ];
+    const identityAt = (tags: LayoutNavigationTag[]) => Object.fromEntries(tags.filter((tag) => [2, 4, 6].includes(tag.x)).map((tag) => [tag.x, [tag.uuid, tag.tag_id]]));
+    expect(identityAt(generateAisleTags([a], legacy))).toEqual({ 2: ["legacy-2", 102], 4: ["legacy-4", 104], 6: ["legacy-6", 106] });
+    expect(identityAt(generateAisleTags([a], [...legacy].reverse()))).toEqual({ 2: ["legacy-2", 102], 4: ["legacy-4", 104], 6: ["legacy-6", 106] });
+  });
+
+  it("prefers modern logical_key identity over a nearby legacy candidate", () => {
+    const a = aisle("A", 1, [{ x: 1, y: 5 }, { x: 9, y: 5 }], 2);
+    const first = generateAisleTags([a], []);
+    const modern = first.find((tag) => tag.semantic_role === "spacing" && tag.x === 4)!;
+    const nearbyLegacy = { ...base("legacy", 1, 4.1, 5, 999), id: "legacy" };
+    const regenerated = generateAisleTags([a], [nearbyLegacy, modern]);
+    expect(regenerated.find((tag) => tag.logical_key === modern.logical_key)).toMatchObject({ uuid: modern.uuid, tag_id: modern.tag_id });
+  });
+
+  it("allows physical tag ID changes without changing UUID and rejects duplicates", () => {
+    const tags = [base("uuid-a", 1, 2, 2, 1001), base("uuid-b", 1, 4, 2, 1002)];
+    expect(validateNavigationTagIdChange(tags, "uuid-a", 2001)).toBeNull();
+    expect({ ...tags[0], tag_id: 2001 }).toMatchObject({ uuid: "uuid-a", tag_id: 2001 });
+    expect(validateNavigationTagIdChange(tags, "uuid-a", 1002)).toBe("Tag ID 1002 already exists.");
   });
 });

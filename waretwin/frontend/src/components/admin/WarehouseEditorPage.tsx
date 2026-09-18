@@ -8,7 +8,7 @@ import { onLayoutUpdated, wsSend } from "../../services/ws";
 import { DEMO_MODE } from "../../config";
 import { useStore } from "../../state/store";
 import type { WarehouseLayout } from "../../layout/types";
-import { pointInPolygon, validatePolygon, polylineLength, type Point } from "../../layout/geometry";
+import { pointInPolygon, validatePolygon, type Point } from "../../layout/geometry";
 import { generateAisleTags, validateTags } from "../../layout/navigation";
 import layoutJson from "../../layout/warehouse_layout.json";
 

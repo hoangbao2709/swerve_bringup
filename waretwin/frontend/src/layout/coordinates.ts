@@ -25,8 +25,8 @@ export function floorBoundary(
   width: number,
   depth: number,
 ): { x: number; y: number }[] {
-  const points = floor.boundary ?? floor.footprint;
-  return (points?.length ? points : [[0, 0], [width, 0], [width, depth], [0, depth]]).map(pointXY);
+  const points = (floor.boundary ?? floor.footprint ?? [[0, 0], [width, 0], [width, depth], [0, depth]]) as FloorPoint[];
+  return points.map(pointXY);
 }
 
 export function polygonPoints(points: FloorPoint[]): string {

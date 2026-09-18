@@ -48,6 +48,7 @@ def generate_launch_description():
     imu_topic = LaunchConfiguration('real_imu_topic')
     odom_topic = LaunchConfiguration('real_odom_topic')
     artifact_root = LaunchConfiguration('artifact_root')
+    robot_id = LaunchConfiguration('robot_id')
     datamatrix_map_file = LaunchConfiguration('datamatrix_map_file')
     tag_graph_file = LaunchConfiguration('tag_graph_file')
     urdf = os.path.join(pkg, 'urdf', 'swerve_base.urdf')
@@ -82,6 +83,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'gazebo.launch.py')),
         condition=IfCondition(use_sim),
         launch_arguments={'world': LaunchConfiguration('world'), 'gui': LaunchConfiguration('gui'),
+                          'robot_id': robot_id,
                           'use_sim_time': use_sim_time,
                           'contact_diagnostics': contact_diagnostics,
                           'caster_frictionless': caster_frictionless,
@@ -127,6 +129,7 @@ def generate_launch_description():
         DeclareLaunchArgument('mode', default_value='mapping',
                               description='mapping=SLAM owns map->odom; navigation=static map + V30E owns map->odom'),
         DeclareLaunchArgument('world', default_value=os.path.join(pkg, 'worlds', 'warehouse.world')),
+        DeclareLaunchArgument('robot_id', default_value='R01', description='Robot ID selected from the published Gazebo manifest'),
         DeclareLaunchArgument('gui', default_value='true', description='Start the Gazebo client window'),
         DeclareLaunchArgument('contact_diagnostics', default_value='false', description='Enable temporary Gazebo contact sensors'),
         DeclareLaunchArgument('caster_frictionless', default_value='false', description='Test-only caster friction A/B variant'),

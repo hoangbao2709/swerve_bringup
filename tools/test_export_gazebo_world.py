@@ -72,6 +72,32 @@ class GazeboExporterTest(unittest.TestCase):
             self.assertEqual(next(tag for tag in manifest["tags"] if tag["tag_id"] == 2001)["pose"][2], 4.0)
             self.assertTrue((root / "one" / "models" / "floor_F1" / "mesh.obj").exists())
 
+    def test_exports_robot_spawn_pose_from_canonical_map(self):
+        layout = fixture_layout()
+        # Use a simple usable rectangle for this pose-focused case while
+        # retaining the canonical [x, vertical, floor_y] representation.
+        layout["floors"][0]["boundary"] = [[0, 0], [20, 0], [20, 8], [0, 8]]
+        layout["spawn"] = {"robots": [{
+            "id": "R01", "position": [15, 0.2, 5.5],
+            "heading": 1.57079632679, "battery": 100, "floor": "F1",
+        }]}
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = export_gazebo_world(layout, Path(directory) / "generated")
+        self.assertEqual(manifest["robots"], [{
+            "id": "R01", "floor_id": "F1",
+            "pose": [15.0, 5.5, 0.2, 1.57079632679], "battery": 100,
+        }])
+
+    def test_spawn_pose_changes_manifest(self):
+        layout = fixture_layout()
+        layout["spawn"] = {"robots": [{"id": "R01", "position": [2, 0.2, 5], "heading": 0, "floor": "F1"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = export_gazebo_world(layout, root / "first")
+            layout["spawn"]["robots"][0]["position"][0] = 2.5
+            second = export_gazebo_world(layout, root / "second")
+        self.assertNotEqual(first["robots"], second["robots"])
+
     def test_invalid_layout_does_not_create_output(self):
         invalid = fixture_layout()
         invalid["navigation_tags"][0]["floor_id"] = "missing-floor"

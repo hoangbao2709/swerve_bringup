@@ -292,6 +292,49 @@ def _floor_id(obj: dict[str, Any], default: str) -> str:
     return str(obj.get("floor_id", obj.get("floor", default)))
 
 
+def _spawn_robot_records(doc: dict[str, Any], floors: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate canonical spawn records and return deterministic Gazebo poses."""
+    raw_robots = (doc.get("spawn") or {}).get("robots") or []
+    if not isinstance(raw_robots, list):
+        raise ExportValidationError(["spawn.robots: expected a list"])
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, robot in enumerate(raw_robots):
+        if not isinstance(robot, dict):
+            raise ExportValidationError([f"spawn.robots[{index}]: expected an object"])
+        robot_id = str(robot.get("id", "")).strip()
+        if not robot_id:
+            raise ExportValidationError([f"spawn.robots[{index}]: id is required"])
+        if robot_id in seen:
+            raise ExportValidationError([f"spawn robot {robot_id}: duplicate id"])
+        seen.add(robot_id)
+        floor_id = _floor_id(robot, next(iter(floors), ""))
+        floor = floors.get(floor_id)
+        if floor is None:
+            raise ExportValidationError([f"spawn robot {robot_id}: invalid floor reference {floor_id}"])
+        position = robot.get("position")
+        if not isinstance(position, (list, tuple)) or len(position) < 3:
+            raise ExportValidationError([f"spawn robot {robot_id}: position requires [x, vertical, floor_y]"])
+        canonical_position = [_number(position[i], f"spawn robot {robot_id} position[{i}]") for i in range(3)]
+        heading = _number(robot.get("heading", 0), f"spawn robot {robot_id} heading")
+        elevation = _number(floor.get("elevation", 0), f"floor {floor_id} elevation")
+        point = (canonical_position[0], canonical_position[2])
+        boundary = _points(floor.get("boundary"))
+        holes = [_points(hole) for hole in floor.get("holes") or []]
+        if len(boundary) < 3 or not _point_in_polygon(point, boundary):
+            raise ExportValidationError([f"spawn robot {robot_id}: spawn point outside floor {floor_id}"])
+        if any(_point_in_polygon(point, hole) for hole in holes if len(hole) >= 3):
+            raise ExportValidationError([f"spawn robot {robot_id}: spawn point inside hole on floor {floor_id}"])
+        gx, gy, gz = p3_to_gazebo(canonical_position, elevation)
+        records.append({
+            "id": robot_id,
+            "floor_id": floor.get("id"),
+            "pose": [gx, gy, gz, heading],
+            "battery": robot.get("battery", 100),
+        })
+    return sorted(records, key=lambda record: str(record["id"]))
+
+
 def validate_export_layout(layout: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(layout, dict):
         raise ExportValidationError(["layout: expected a JSON object"])
@@ -329,6 +372,7 @@ def validate_export_layout(layout: dict[str, Any]) -> dict[str, Any]:
     for tag in doc.get("navigation_tags", []):
         uid = str(tag.get("uuid", ""))
         add_name(f"nav_tag_{_safe_name(tag.get('tag_id', 'invalid'))}", f"navigation tag {uid}")
+    _spawn_robot_records(doc, floors)
     if errors:
         raise ExportValidationError(sorted(set(errors)))
     return doc
@@ -396,11 +440,12 @@ def export_gazebo_world(layout: dict[str, Any], output: Path) -> dict[str, Any]:
         for tag in doc.get("navigation_tags", []):
             uid = str(tag.get("uuid")); fid = str(tag.get("floor_id", default_floor)); elevation = _number(floors[fid].get("elevation", 0), f"floor {fid} elevation"); x = _number(tag.get("x"), f"tag {uid} x"); y = _number(tag.get("y"), f"tag {uid} y"); z = elevation + _number(tag.get("z", 0), f"tag {uid} z"); yaw = _number(tag.get("yaw"), f"tag {uid} yaw"); tag_id = int(tag.get("tag_id")); model = f"nav_tag_{_safe_name(tag_id)}"; world_models.append(_tag_model(model, _pose(x, y, z, yaw))); tag_manifest.append({"uuid": uid, "tag_id": tag_id, "floor_id": tag.get("floor_id", default_floor), "model": model, "pose": [x, y, z, yaw]})
 
+        robot_manifest = _spawn_robot_records(doc, floors)
         canonical_json = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         revision = str(doc.get("map_revision") or doc.get("revision") or hashlib.sha256(canonical_json).hexdigest()[:16])
         world = "<?xml version=\"1.0\"?>\n<sdf version=\"1.6\">\n  <world name=\"warehouse_generated\">\n    <gravity>0 0 -9.81</gravity>\n    <include><uri>model://sun</uri></include>\n" + "\n".join(world_models) + "\n  </world>\n</sdf>\n"
         (staging / "warehouse.world").write_text(world, encoding="utf-8")
-        manifest = {"schema_version": 1, "map_revision": revision, "world": "warehouse.world", "floors": floor_info, "tags": tag_manifest, "objects": object_manifest}
+        manifest = {"schema_version": 1, "map_revision": revision, "world": "warehouse.world", "floors": floor_info, "tags": tag_manifest, "objects": object_manifest, "robots": robot_manifest}
         (staging / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if output.exists():
             if output.is_dir(): shutil.rmtree(output)

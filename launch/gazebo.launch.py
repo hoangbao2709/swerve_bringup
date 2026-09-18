@@ -1,17 +1,45 @@
 #!/usr/bin/env python3
-"""Spawn the audited swerve model in Gazebo Classic for Phase 1 testing."""
+"""Spawn the swerve model using the published Gazebo manifest when available."""
+import json
+import math
 import os
+from pathlib import Path
 import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler, LogInfo
+from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler, LogInfo, OpaqueFunction, SetLaunchConfiguration
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def resolve_robot_spawn(world_path, robot_id, fallback):
+    """Return ``(x, y, z, yaw, source)`` for a world and selected robot.
+
+    Published worlds carry a sibling ``manifest.json``.  Legacy development
+    worlds may explicitly use the fallback launch arguments instead.
+    """
+    manifest_path = Path(world_path).expanduser().resolve().parent / 'manifest.json'
+    if not manifest_path.exists():
+        return tuple(float(value) for value in fallback) + ('fallback',)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f'Unable to read published Gazebo manifest {manifest_path}: {exc}') from exc
+    record = next((item for item in manifest.get('robots', []) if str(item.get('id', '')) == str(robot_id)), None)
+    if record is None:
+        raise RuntimeError(f'Robot {robot_id} is not present in published Gazebo manifest {manifest_path}')
+    pose = record.get('pose')
+    if not isinstance(pose, (list, tuple)) or len(pose) < 4:
+        raise RuntimeError(f'Robot {robot_id} has an invalid pose in {manifest_path}')
+    values = tuple(float(value) for value in pose[:4])
+    if not all(math.isfinite(value) for value in values):
+        raise RuntimeError(f'Robot {robot_id} has a non-finite pose in {manifest_path}')
+    return values + ('manifest',)
 
 
 def generate_launch_description():
@@ -102,13 +130,36 @@ def generate_launch_description():
         arguments=[
             '-entity', 'swerve_base',
             '-topic', 'robot_description',
-            # Start at the centre of the warehouse map.  The lowest CAD
-            # collision is 1.4 mm below the floor at z=0; 2 mm is the
-            # geometry-derived contact clearance, not a dynamics fudge.
-            '-x', '0.0', '-y', '0.0', '-z', '0.002',
-            '-R', '0.0', '-P', '0.0', '-Y', '0.0',
+            '-x', LaunchConfiguration('resolved_spawn_x'),
+            '-y', LaunchConfiguration('resolved_spawn_y'),
+            '-z', LaunchConfiguration('resolved_spawn_z'),
+            '-R', '0.0', '-P', '0.0', '-Y', LaunchConfiguration('resolved_spawn_yaw'),
         ],
     )
+
+    def configure_spawn(context):
+        world = LaunchConfiguration('world').perform(context)
+        robot_id = LaunchConfiguration('robot_id').perform(context).strip() or 'R01'
+        fallback = (
+            LaunchConfiguration('spawn_x').perform(context),
+            LaunchConfiguration('spawn_y').perform(context),
+            LaunchConfiguration('spawn_z').perform(context),
+            LaunchConfiguration('spawn_yaw').perform(context),
+        )
+        x, y, z, yaw, source = resolve_robot_spawn(world, robot_id, fallback)
+        # Set substitutions before the concrete Node executes.  Keeping Node
+        # concrete preserves the existing controller OnProcessExit chain.
+        resolved = [
+            SetLaunchConfiguration('resolved_spawn_x', str(x)),
+            SetLaunchConfiguration('resolved_spawn_y', str(y)),
+            SetLaunchConfiguration('resolved_spawn_z', str(z)),
+            SetLaunchConfiguration('resolved_spawn_yaw', str(yaw)),
+        ]
+        if source == 'manifest':
+            return resolved + [LogInfo(msg=f'Spawn {robot_id} loaded from published Gazebo manifest: x={x}, y={y}, z={z}, yaw={yaw}')]
+        return resolved + [LogInfo(msg=f'Generated manifest unavailable; using development spawn fallback for {robot_id}: x={x}, y={y}, z={z}, yaw={yaw}')]
+
+    spawn_config = OpaqueFunction(function=configure_spawn)
 
     # Gazebo creates /controller_manager from the gazebo_ros2_control plugin
     # while the entity is being inserted. Start controllers only after spawn
@@ -190,6 +241,14 @@ def generate_launch_description():
             description='Gazebo world SDF path (defaults to warehouse.world)',
         ),
         DeclareLaunchArgument(
+            'robot_id', default_value='R01',
+            description='Robot ID selected from the published Gazebo manifest.',
+        ),
+        DeclareLaunchArgument('spawn_x', default_value='0.0', description='Development-only fallback spawn X.'),
+        DeclareLaunchArgument('spawn_y', default_value='0.0', description='Development-only fallback spawn Y.'),
+        DeclareLaunchArgument('spawn_z', default_value='0.002', description='Development-only fallback spawn Z.'),
+        DeclareLaunchArgument('spawn_yaw', default_value='0.0', description='Development-only fallback spawn yaw.'),
+        DeclareLaunchArgument(
             'start_ekf', default_value='true',
             description='Start robot_localization here; system.launch.py disables it and owns the common EKF.',
         ),
@@ -230,6 +289,7 @@ def generate_launch_description():
         model_path,
         gazebo,
         state_publisher,
+        spawn_config,
         spawn,
         start_joint_state,
         start_steering,

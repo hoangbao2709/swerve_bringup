@@ -7,8 +7,8 @@ import { apiFetch } from "../../services/api";
 import { onLayoutUpdated, wsSend } from "../../services/ws";
 import { DEMO_MODE } from "../../config";
 import { useStore } from "../../state/store";
-import type { WarehouseLayout } from "../../layout/types";
-import { buildAisleFootprint, pointInPolygon, polygonContainedInFloor, snapPoint, validateAisleCenterline, validateFloorPolygon, validateHolePolygon, validatePolygon, type Point } from "../../layout/geometry";
+import { resolveRuntimeFloorIndex, type FloorId, type WarehouseLayout } from "../../layout/types";
+import { buildAisleFootprint, pointInPolygon, polygonContainedInFloor, rackFootprint2D, snapPoint, validateAisleCenterline, validateFloorPolygon, validateHolePolygon, validatePolygon, type Point } from "../../layout/geometry";
 import { applyNavigationTagPhysicalOverride, generateAisleTags, nextAisleId, validateNavigationTagIdChange, validateNavigationTagsForLayout } from "../../layout/navigation";
 import { generateNavigationEdges, validateNavigationEdges } from "../../layout/navigation_graph";
 import { validatePhysicalObjectOverlaps } from "../../layout/validation";
@@ -282,6 +282,8 @@ const LAYER_LABELS: Record<Kind, string> = {
 
 const BLOCKS_STORAGE_KEY = "waretwin.editor.blocks.v1";
 const LAYERS_STORAGE_KEY = "waretwin.editor.layers.v1";
+const BUILD_STORAGE_KEY = "waretwin.editor.build.v1";
+const SIDEBAR_WIDTH_STORAGE_KEY = "waretwin.editor.sidebar-width.v1";
 
 const selectionKey = (selection: Selection) => `${selection.kind}:${selection.id}`;
 
@@ -313,11 +315,30 @@ function getFloorForObject(obj: any): number | string {
   return obj?.floor_id ?? obj?.floor ?? 1;
 }
 
+/**
+ * The editor may receive canonical IDs such as F1/F2 while legacy physical
+ * objects still carry runtime layer numbers. Treat both representations as
+ * the same floor so newly added objects are visible in the 2D and 3D views.
+ */
+function sameEditorFloor(draft: Draft, a: number | string | undefined, b: number | string | undefined): boolean {
+  if (a == null || b == null) return false;
+  return String(a) === String(b) || resolveRuntimeFloorIndex(draft, a) === resolveRuntimeFloorIndex(draft, b);
+}
+
+function floorMatches(draft: Draft, objectFloor: number | string | undefined, selectedFloor: number | string | "all"): boolean {
+  return selectedFloor === "all" || sameEditorFloor(draft, objectFloor ?? 1, selectedFloor);
+}
+
+function findEditorFloor(draft: Draft, selectedFloor: number | string | "all") {
+  if (selectedFloor === "all") return draft.floors[0];
+  return draft.floors.find((item) => sameEditorFloor(draft, item.id, selectedFloor));
+}
+
 function findCollectionObject(draft: Draft, kind: Kind, id: string): any | undefined {
   return getCollection(draft, kind).find((item) => objectId(kind, item) === String(id));
 }
 
-function addObject(d: Draft, kind: Kind): Selection {
+function addObject(d: Draft, kind: Kind, floorId: FloorId = d.floors[0]?.id ?? 1): Selection {
   if (kind === "column") {
     const id = `COL-${String((d.columns?.length ?? 0) + 1).padStart(3, "0")}`;
     d.columns ??= [];
@@ -327,6 +348,7 @@ function addObject(d: Draft, kind: Kind): Selection {
 
   const arr = getCollection(d, kind);
   const id = nextId(arr, kind === "spawn" ? "SPAWN" : kind.toUpperCase());
+  const runtimeFloor = resolveRuntimeFloorIndex(d, floorId);
 
   switch (kind) {
     case "rack":
@@ -339,7 +361,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         levels: 4,
         model: "rack_double",
         blocks_grid: true,
-        floor: 1,
+        floor: runtimeFloor,
       });
       break;
     case "zone":
@@ -353,7 +375,7 @@ function addObject(d: Draft, kind: Kind): Selection {
           [30, 30],
           [20, 30],
         ],
-        floor: 1,
+        floor: runtimeFloor,
       });
       break;
     case "station":
@@ -363,6 +385,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         zone: d.zones[0]?.id ?? "A",
         rect: [20, 20, 26, 24],
         access_point: [23, 19],
+        floor: runtimeFloor,
       });
       break;
     case "charger":
@@ -373,6 +396,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         heading: 0,
         power_kw: 12,
         access_point: [20, 19],
+        floor: runtimeFloor,
       });
       break;
     case "dock":
@@ -382,6 +406,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         zone: d.zones[0]?.id ?? "A",
         rect: [20, 0, 28, 6],
         door: [24, 0],
+        floor: runtimeFloor,
       });
       break;
     case "conveyor":
@@ -397,6 +422,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         speed_mps: 0.8,
         direction: "BIDIRECTIONAL",
         blocks_grid: true,
+        floor: runtimeFloor,
       });
       break;
     case "lift":
@@ -413,6 +439,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         zone: d.zones[0]?.id ?? "A",
         rect: [20, 20, 26, 24],
         slots: 4,
+        floor: runtimeFloor,
       });
       break;
     case "restricted":
@@ -421,6 +448,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         name: id,
         rect: [20, 20, 28, 24],
         robots_allowed: false,
+        floor: runtimeFloor,
       });
       break;
     case "walkway":
@@ -434,13 +462,14 @@ function addObject(d: Draft, kind: Kind): Selection {
         ],
         robots_allowed: false,
         speed_limit_mps: 1.0,
+        floor: runtimeFloor,
       });
       break;
     case "camera":
       d.cameras.push({
         id,
         zone: d.zones[0]?.id ?? "A",
-        floor: 1,
+        floor: runtimeFloor,
         position: [20, 4, 20],
         look_at: [25, 0, 25],
         fov_deg: 80,
@@ -453,6 +482,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         kind: "ENVIRONMENT",
         zone: d.zones[0]?.id ?? "A",
         position: [20, 2, 20],
+        floor: runtimeFloor,
       });
       break;
     case "location":
@@ -460,7 +490,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         id,
         kind: "PICKUP",
         zone: d.zones[0]?.id ?? "A",
-        floor: 1,
+        floor: runtimeFloor,
         rack_id: null,
         level_range: null,
         access_point: [22, 20],
@@ -472,7 +502,7 @@ function addObject(d: Draft, kind: Kind): Selection {
         position: [20, 0.2, 20],
         heading: 0,
         battery: 100,
-        floor: 1,
+        floor: runtimeFloor,
       });
       break;
     default:
@@ -621,6 +651,16 @@ function get2DBox(kind: Kind, obj: any): {
     const rawSize = kind === "rack" ? obj?.size : undefined;
     const sx = Number.isFinite(Number(rawSize?.[0])) ? Number(rawSize[0]) : defaultSize[0];
     const sz = Number.isFinite(Number(rawSize?.[2])) ? Number(rawSize[2]) : defaultSize[2];
+    if (kind === "rack") {
+      const footprint = rackFootprint2D(p, [sx, 0, sz]);
+      return {
+        x: footprint.x,
+        z: footprint.y,
+        w: Math.max(0.6, footprint.width),
+        h: Math.max(0.6, footprint.depth),
+        rotation: Number.isFinite(Number(obj?.rotation)) ? Number(obj.rotation) : 0,
+      };
+    }
     return {
       x: p[0] - sx / 2,
       z: p[2] - sz / 2,
@@ -658,7 +698,11 @@ function moveObject(d: Draft, selection: Selection, centerX: number, centerZ: nu
   if (selection.kind === "aisle") { const box = get2DBox("aisle", obj); const dx = sx(centerX) - (box.x + box.w / 2), dz = sx(centerZ) - (box.z + box.h / 2); obj.centerline = obj.centerline.map((p: Point) => ({ x: sx(p.x + dx), y: sx(p.y + dz) })); return; }
 
   if (["rack", "charger", "spawn", "sensor", "camera"].includes(selection.kind)) {
-    obj.position = [sx(centerX), obj.position[1], sx(centerZ)];
+    if (selection.kind === "rack") {
+      obj.position = [sx(centerX - Number(obj.size?.[0] ?? 0) / 2), obj.position[1], sx(centerZ - Number(obj.size?.[2] ?? 0) / 2)];
+    } else {
+      obj.position = [sx(centerX), obj.position[1], sx(centerZ)];
+    }
     if (selection.kind === "camera") {
       obj.look_at = [sx(centerX), obj.look_at?.[1] ?? 0, sx(centerZ + 5)];
     }
@@ -741,7 +785,9 @@ function objectGeometry(kind: Kind, obj: any): {
   rotation: number;
 } {
   if (kind === "rack") {
-    return { pos: obj.position, size: obj.size, rotation: obj.rotation ?? 0 };
+    const position = obj.position ?? [0, 0, 0];
+    const size = obj.size ?? [1, 1, 1];
+    return { pos: [position[0] + size[0] / 2, position[1] + size[1] / 2, position[2] + size[2] / 2], size, rotation: obj.rotation ?? 0 };
   }
   if (kind === "charger") {
     return { pos: obj.position, size: [1, 1.8, 1], rotation: obj.heading ?? 0 };
@@ -993,7 +1039,7 @@ function EditorScene3D({
       <ambientLight intensity={0.55} />
       <directionalLight position={[40, 60, 20]} intensity={1.4} castShadow />
 
-      {draft.floors.filter((item) => floor === "all" || String(item.id) === String(floor)).map((item) => {
+      {draft.floors.filter((item) => floorMatches(draft, item.id, floor)).map((item) => {
         const boundary = (item.boundary ?? item.footprint ?? [[0, 0], [draft.size.width, 0], [draft.size.width, draft.size.depth], [0, draft.size.depth]]) as Array<[number, number] | { x: number; y: number }>;
         const xy = (p: [number, number] | { x: number; y: number }) => Array.isArray(p) ? p : [p.x, p.y];
         const shape = new THREE.Shape(boundary.map((p) => { const [x, y] = xy(p); return new THREE.Vector2(x, -y); }));
@@ -1017,9 +1063,8 @@ function EditorScene3D({
         visibleLayers[kind]
           ? arr
               .filter((o: any) => {
-                if (floor === "all") return true;
-                if (kind === "floor") return String(o.id) === String(floor);
-                if ("floor" in o || "floor_id" in o) return String(getFloorForObject(o)) === String(floor);
+                if (kind === "floor") return floorMatches(draft, o.id, floor);
+                if ("floor" in o || "floor_id" in o) return floorMatches(draft, getFloorForObject(o), floor);
                 return true;
               })
               .map((obj: any) => (
@@ -1070,6 +1115,7 @@ function MapObject({
   kind,
   obj,
   selected,
+  lightMap,
   scale,
   onPointerDown,
   onContextMenu,
@@ -1077,6 +1123,7 @@ function MapObject({
   kind: Kind;
   obj: any;
   selected: boolean;
+  lightMap: boolean;
   scale: { x: number; z: number };
   onPointerDown: (event: React.PointerEvent<SVGElement>) => void;
   onContextMenu?: (event: React.MouseEvent<SVGElement>) => void;
@@ -1106,7 +1153,7 @@ function MapObject({
   }
 
   if (kind === "navigation-tag") {
-    return <g onPointerDown={onPointerDown} onContextMenu={onContextMenu} className="cursor-pointer"><title>{tooltip}</title><circle cx={obj.x * scale.x} cy={obj.y * scale.z} r={selected ? 7 : 5} fill={obj.locked ? "#f59e0b" : obj.placement === "manual" ? "#f472b6" : color} stroke={stroke} strokeWidth={selected ? 2 : 1} vectorEffect="non-scaling-stroke" /><text x={obj.x * scale.x + 8} y={obj.y * scale.z - 6} fill="#e2e8f0" fontSize="10" vectorEffect="non-scaling-stroke" pointerEvents="none">{obj.tag_id}</text></g>;
+    return <g onPointerDown={onPointerDown} onContextMenu={onContextMenu} className="cursor-pointer"><title>{tooltip}</title><circle cx={obj.x * scale.x} cy={obj.y * scale.z} r={selected ? 7 : 5} fill={obj.locked ? "#f59e0b" : obj.placement === "manual" ? "#f472b6" : color} stroke={stroke} strokeWidth={selected ? 2 : 1} vectorEffect="non-scaling-stroke" /><text x={obj.x * scale.x + 8} y={obj.y * scale.z - 6} fill={lightMap ? "#0f172a" : "#e2e8f0"} fontSize="10" vectorEffect="non-scaling-stroke" pointerEvents="none">{obj.tag_id}</text></g>;
   }
 
   if (kind === "navigation-edge") {
@@ -1304,8 +1351,10 @@ function resizeObject(
     const width = nextRight - left;
     const depth = nextBottom - top;
 
-    obj.position[0] = Math.round(((left + nextRight) / 2) * 2) / 2;
-    obj.position[2] = Math.round(((top + nextBottom) / 2) * 2) / 2;
+    // Racks store the minimum footprint corner; the editor manipulates the
+    // visible centre but must convert back to canonical origin coordinates.
+    obj.position[0] = Math.round(left * 2) / 2;
+    obj.position[2] = Math.round(top * 2) / 2;
     obj.size[0] = Math.round(width * 10) / 10;
     obj.size[2] = Math.round(depth * 10) / 10;
     return;
@@ -1419,6 +1468,20 @@ function Editor2DMap({
   smartGuidesEnabled: boolean;
 }) {
   const hostRef = useRef<SVGSVGElement>(null);
+  const [mapTheme, setMapTheme] = useState<"dark" | "light">(() => {
+    try {
+      return typeof window !== "undefined" && window.localStorage.getItem("waretwin.map-theme") === "light" ? "light" : "dark";
+    } catch {
+      return "dark";
+    }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem("waretwin.map-theme", mapTheme); } catch { /* storage is optional */ }
+  }, [mapTheme]);
+  const lightMap = mapTheme === "light";
+  const mapColors = lightMap
+    ? { canvas: "#f8fafc", grid: "#cbd5e1", floor: "#ffffff", hole: "#cbd5e1", handle: "#e2e8f0" }
+    : { canvas: "#08111d", grid: "#1e293b", floor: "#0b1727", hole: "#020617", handle: "#0b1220" };
   const [drag, setDrag] = useState<{
     selection: Selection;
     start: { x: number; z: number };
@@ -1856,7 +1919,16 @@ function Editor2DMap({
   };
 
   return (
-    <div className="absolute inset-0 overflow-auto bg-[#07101b]">
+    <div className={`editor-2d-map-shell ${lightMap ? "editor-map-light" : "editor-map-dark"}`}>
+      <button
+        type="button"
+        className="editor-map-theme-toggle"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={() => setMapTheme((value) => value === "dark" ? "light" : "dark")}
+        aria-label={`Switch to ${lightMap ? "dark" : "light"} editor map`}
+      >
+        {lightMap ? "☾ Dark" : "☀ Light"}
+      </button>
       <svg
         ref={hostRef}
         viewBox={`${pan.x} ${pan.y} ${viewW / zoom} ${viewH / zoom}`}
@@ -1882,7 +1954,7 @@ function Editor2DMap({
           onContextMenu?.(target, event.clientX, event.clientY);
         }}
       >
-        <rect x={0} y={0} width={viewW} height={viewH} fill="#08111d" />
+        <rect x={0} y={0} width={viewW} height={viewH} fill={mapColors.canvas} />
 
         <defs>
           <marker id="nav-edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#c084fc" /></marker>
@@ -1897,7 +1969,7 @@ function Editor2DMap({
             <path
               d={`M ${draft.grid.cell_size * scale.x} 0 L 0 0 0 ${draft.grid.cell_size * scale.z}`}
               fill="none"
-              stroke="#1e293b"
+              stroke={mapColors.grid}
               strokeWidth="1"
               opacity="0.65"
             />
@@ -1907,24 +1979,24 @@ function Editor2DMap({
         <rect x={0} y={0} width={viewW} height={viewH} fill="url(#editor-grid)" />
 
         {(() => {
-          const active = floor === "all" ? draft.floors[0] : draft.floors.find((item) => String(item.id) === String(floor));
+          const active = findEditorFloor(draft, floor);
           const boundary = active?.boundary ?? active?.footprint ?? [[0, 0], [draft.size.width, 0], [draft.size.width, draft.size.depth], [0, draft.size.depth]];
           const path = (points: Array<Point | [number, number]>) => points.map((p) => { const x = Array.isArray(p) ? p[0] : p.x; const y = Array.isArray(p) ? p[1] : p.y; return `${x * scale.x},${y * scale.z}`; }).join(" ");
           return <g>
-            <polygon points={path(boundary as Array<Point | [number, number]>)} fill="#0b1727" fillOpacity="0.55" stroke="#38bdf8" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-            {(active?.holes ?? []).map((hole, index) => <polygon key={`editor-hole-${index}`} points={path(hole as Array<Point | [number, number]>)} fill="#020617" stroke="#f97316" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />)}
+            <polygon points={path(boundary as Array<Point | [number, number]>)} fill={mapColors.floor} fillOpacity={lightMap ? "0.92" : "0.55"} stroke="#38bdf8" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+            {(active?.holes ?? []).map((hole, index) => <polygon key={`editor-hole-${index}`} points={path(hole as Array<Point | [number, number]>)} fill={mapColors.hole} stroke="#f97316" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />)}
             {drawingPoints.length > 0 && <polyline points={path(drawingPoints)} fill="none" stroke="#facc15" strokeWidth="2" vectorEffect="non-scaling-stroke" />}
             {drawingPoints.map((p, index) => <circle key={`draw-point-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="4" fill="#facc15" vectorEffect="non-scaling-stroke" />)}
           </g>;
         })()}
 
         {(() => {
-          const active = floor === "all" ? draft.floors[0] : draft.floors.find((item) => String(item.id) === String(floor));
+          const active = findEditorFloor(draft, floor);
           if (!active) return null;
           const toPoint = (entry: Point | [number, number]): Point => Array.isArray(entry) ? { x: entry[0], y: entry[1] } : entry;
           const handle = (kind: "floor" | "aisle", id: string, holeIndex: number | null, index: number) => (event: React.PointerEvent<SVGCircleElement>) => { event.stopPropagation(); const value = { kind, id, holeIndex, index } as const; setVertexDrag(value); setActiveVertex(value); onSelect({ kind, id }, false); hostRef.current?.setPointerCapture(event.pointerId); };
-          const floorHandles = mode === "edit-vertex" || selected.some((item) => item.kind === "floor" && item.id === String(active.id)) ? <g key={`floor-handles-${active.id}`} pointerEvents="all">{(active.boundary ?? active.footprint ?? []).map((entry, index) => { const p = toPoint(entry); return <circle key={`floor-v-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="6" fill="#0b1220" stroke="#38bdf8" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("floor", String(active.id), null, index)} />; })}{(active.holes ?? []).flatMap((hole, holeIndex) => hole.map((entry, index) => { const p = toPoint(entry); return <circle key={`hole-v-${holeIndex}-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="5" fill="#0b1220" stroke="#f97316" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("floor", String(active.id), holeIndex, index)} />; }))}</g> : null;
-          const aisleHandles = (draft.aisles ?? []).filter((aisle) => (floor === "all" || String(aisle.floor_id ?? 1) === String(floor)) && (mode === "edit-aisle" || selected.some((item) => item.kind === "aisle" && item.id === String(aisle.id)))).map((aisle) => <g key={`aisle-handles-${aisle.id}`} pointerEvents="all">{aisle.centerline.map((point, index) => <circle key={`aisle-v-${aisle.id}-${index}`} cx={point.x * scale.x} cy={point.y * scale.z} r="5" fill="#0b1220" stroke="#67e8f9" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("aisle", String(aisle.id), null, index)} />)}</g>);
+          const floorHandles = mode === "edit-vertex" || selected.some((item) => item.kind === "floor" && item.id === String(active.id)) ? <g key={`floor-handles-${active.id}`} pointerEvents="all">{(active.boundary ?? active.footprint ?? []).map((entry, index) => { const p = toPoint(entry); return <circle key={`floor-v-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="6" fill={mapColors.handle} stroke="#38bdf8" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("floor", String(active.id), null, index)} />; })}{(active.holes ?? []).flatMap((hole, holeIndex) => hole.map((entry, index) => { const p = toPoint(entry); return <circle key={`hole-v-${holeIndex}-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="5" fill={mapColors.handle} stroke="#f97316" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("floor", String(active.id), holeIndex, index)} />; }))}</g> : null;
+          const aisleHandles = (draft.aisles ?? []).filter((aisle) => floorMatches(draft, aisle.floor_id ?? 1, floor) && (mode === "edit-aisle" || selected.some((item) => item.kind === "aisle" && item.id === String(aisle.id)))).map((aisle) => <g key={`aisle-handles-${aisle.id}`} pointerEvents="all">{aisle.centerline.map((point, index) => <circle key={`aisle-v-${aisle.id}-${index}`} cx={point.x * scale.x} cy={point.y * scale.z} r="5" fill={mapColors.handle} stroke="#67e8f9" strokeWidth="1.5" vectorEffect="non-scaling-stroke" onPointerDown={handle("aisle", String(aisle.id), null, index)} />)}</g>);
           return <>{floorHandles}{aisleHandles}</>;
         })()}
 
@@ -1958,16 +2030,16 @@ function Editor2DMap({
           visibleLayers[kind]
             ? arr
                 .filter((obj) => {
-                  if (floor === "all") return true;
-                if (kind === "floor") return String(obj.id) === String(floor);
-                if ("floor" in obj || "floor_id" in obj) return String(getFloorForObject(obj)) === String(floor);
-                  return true;
+                if (kind === "floor") return floorMatches(draft, obj.id, floor);
+                if ("floor" in obj || "floor_id" in obj) return floorMatches(draft, getFloorForObject(obj), floor);
+                return true;
                 })
                 .map((obj) => (
-                  <MapObject
-                    key={`${kind}-${objectId(kind, obj)}`}
-                    kind={kind}
-                    obj={obj}
+              <MapObject
+                  key={`${kind}-${objectId(kind, obj)}`}
+                  kind={kind}
+                  obj={obj}
+                  lightMap={lightMap}
                     selected={selected.some(
                       (s) => s.kind === kind && s.id === objectId(kind, obj),
                     )}
@@ -2481,7 +2553,7 @@ export function WarehouseEditorPage() {
   const [artifactStatus, setArtifactStatus] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const [floor, setFloor] = useState<number | string | "all">(1);
+  const [floor, setFloor] = useState<number | string | "all">(base.floors[0]?.id ?? 1);
   const [viewRotation, setViewRotation] = useState(0);
   const [history, setHistory] = useState<Draft[]>([]);
   const [future, setFuture] = useState<Draft[]>([]);
@@ -2519,6 +2591,16 @@ export function WarehouseEditorPage() {
   const [arrayCols, setArrayCols] = useState(5);
   const [smartGuidesEnabled, setSmartGuidesEnabled] = useState(true);
   const [snapStep, setSnapStep] = useState<number | null>(0.5);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(() => {
+    const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    return Number.isFinite(stored) ? Math.max(190, Math.min(460, stored)) : 270;
+  });
+  const [resizingSidebar, setResizingSidebar] = useState(false);
+  const [openBuildGroups, setOpenBuildGroups] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(GROUPS.map((group) => [group.title, true])),
+  );
+  const [hiddenBuildKinds, setHiddenBuildKinds] = useState<Kind[]>([]);
+  const [customizingBuild, setCustomizingBuild] = useState(false);
   const [arrayGapX, setArrayGapX] = useState(1.0);
   const [arrayGapZ, setArrayGapZ] = useState(1.0);
   const [search, setSearch] = useState("");
@@ -2558,6 +2640,9 @@ export function WarehouseEditorPage() {
     if (Number.isFinite(version)) setPublishedVersion(version);
     const normalized = normalizeDraft(remote);
     setDraft(normalized);
+    setFloor((current) => current === "all" || normalized.floors.some((item) => String(item.id) === String(current))
+      ? current
+      : (normalized.floors[0]?.id ?? "all"));
     setSelected([]);
     setHistory([]);
     setFuture([]);
@@ -2581,6 +2666,7 @@ export function WarehouseEditorPage() {
     try {
       const savedBlocks = window.localStorage.getItem(BLOCKS_STORAGE_KEY);
       const savedLayers = window.localStorage.getItem(LAYERS_STORAGE_KEY);
+      const savedBuild = window.localStorage.getItem(BUILD_STORAGE_KEY);
       if (savedBlocks) {
         const parsed = JSON.parse(savedBlocks) as EditorBlock[];
         if (Array.isArray(parsed)) setBlocks(parsed);
@@ -2606,6 +2692,15 @@ export function WarehouseEditorPage() {
           setLockedLayers((current) => ({ ...current, ...parsed.locked }));
         }
       }
+      if (savedBuild) {
+        const parsed = JSON.parse(savedBuild) as { open?: Record<string, boolean>; hidden?: Kind[] };
+        if (parsed.open && typeof parsed.open === "object") {
+          setOpenBuildGroups((current) => ({ ...current, ...parsed.open }));
+        }
+        if (Array.isArray(parsed.hidden)) {
+          setHiddenBuildKinds(parsed.hidden.filter((kind) => Object.prototype.hasOwnProperty.call(COLORS, kind)));
+        }
+      }
     } catch {
       // Ignore malformed editor metadata; geometry remains authoritative.
     }
@@ -2622,10 +2717,26 @@ export function WarehouseEditorPage() {
           locked: lockedLayers,
         }),
       );
+      window.localStorage.setItem(BUILD_STORAGE_KEY, JSON.stringify({ open: openBuildGroups, hidden: hiddenBuildKinds }));
+      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(leftSidebarWidth));
     } catch {
       // localStorage can be unavailable in private/restricted browsing contexts.
     }
-  }, [blocks, layerOrder, visibleLayers, lockedLayers]);
+  }, [blocks, layerOrder, visibleLayers, lockedLayers, openBuildGroups, hiddenBuildKinds, leftSidebarWidth]);
+
+  useEffect(() => {
+    if (!resizingSidebar) return;
+    const onMove = (event: PointerEvent) => {
+      setLeftSidebarWidth(Math.max(190, Math.min(460, event.clientX)));
+    };
+    const onUp = () => setResizingSidebar(false);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [resizingSidebar]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -2764,7 +2875,10 @@ export function WarehouseEditorPage() {
 
   function add(kind: Kind) {
     const next = clone(draft);
-    const created = addObject(next, kind);
+    const targetFloor = floor === "all"
+      ? (next.floors[0]?.id ?? 1)
+      : floor;
+    const created = addObject(next, kind, targetFloor);
     commit(next, `${LABELS[kind].toUpperCase()} ADDED · UNSAVED`);
     setSelected([created]);
   }
@@ -4078,9 +4192,23 @@ export function WarehouseEditorPage() {
       </header>
 
       {/* Main */}
-      <div className="grid min-h-0 flex-1 grid-cols-[230px_minmax(0,1fr)_300px]">
+      <div
+        className="grid min-h-0 flex-1"
+        style={{ gridTemplateColumns: `${leftSidebarWidth}px minmax(0,1fr) 300px` }}
+      >
         {/* Left */}
-        <aside className="min-h-0 overflow-y-auto border-r border-white/[0.08] bg-[#080d16]">
+        <aside className="editor-sidebar-scroll relative min-h-0 overflow-y-auto overflow-x-hidden border-r border-slate-700/70 bg-[#0b1220] text-slate-200 shadow-[8px_0_24px_rgba(0,0,0,.14)]">
+          <div
+            role="separator"
+            aria-label="Resize editor sidebar"
+            aria-orientation="vertical"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setResizingSidebar(true);
+            }}
+            className={`absolute right-0 top-0 z-30 h-full w-1.5 cursor-col-resize transition-colors ${resizingSidebar ? "bg-sky-400" : "bg-transparent hover:bg-sky-400/70"}`}
+            title="Drag to resize sidebar"
+          />
           <div className="border-b border-white/[0.07] p-3">
             <div className="grid grid-cols-3 gap-1 rounded-lg border border-white/[0.06] bg-black/10 p-1">
               {([
@@ -4105,9 +4233,9 @@ export function WarehouseEditorPage() {
             </div>
           </div>
 
-          <div className="space-y-4 p-3">
+          <div className="space-y-4 p-3 pr-4">
             <div>
-              <div className="mb-1 px-1 text-[9px] font-bold uppercase tracking-[0.16em] text-slate-600">
+              <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
                 Tools
               </div>
               <ToolButton
@@ -4164,39 +4292,74 @@ export function WarehouseEditorPage() {
             </div>
 
             <div>
-              <div className="mb-1 px-1 text-[9px] font-bold uppercase tracking-[0.16em] text-slate-600">
-                Build
+              <div className="mb-2 flex items-center justify-between px-1">
+                <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Build</span>
+                <button
+                  type="button"
+                  onClick={() => setCustomizingBuild((value) => !value)}
+                  className="rounded border border-slate-600/70 bg-slate-800/70 px-1.5 py-1 text-[9px] font-semibold text-slate-300 hover:border-sky-400/60 hover:text-white"
+                  title="Choose which build buttons are visible"
+                >
+                  {customizingBuild ? "Done" : "Customize"}
+                </button>
               </div>
-              {GROUPS.map((group) => (
-                <div key={group.title} className="mb-2">
-                  <div className="px-1 pb-1 text-[8px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                    {group.title}
+              {customizingBuild && (
+                <div className="mb-3 rounded-lg border border-slate-600/70 bg-[#101b2d] p-2.5 text-[10px] text-slate-300 shadow-lg">
+                  <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-400">Visible buttons</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {GROUPS.flatMap((group) => group.kinds).map((kind) => (
+                      <label key={kind} className="flex min-w-0 items-center gap-1.5 rounded px-1.5 py-1 hover:bg-white/[0.06]">
+                        <input
+                          type="checkbox"
+                          checked={!hiddenBuildKinds.includes(kind)}
+                          onChange={() => setHiddenBuildKinds((current) => current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind])}
+                          className="accent-sky-400"
+                        />
+                        <span className="truncate">{LABELS[kind]}</span>
+                      </label>
+                    ))}
                   </div>
-                  {group.kinds.map((kind) => (
+                </div>
+              )}
+              {GROUPS.map((group) => {
+                const kinds = group.kinds.filter((kind) => !hiddenBuildKinds.includes(kind));
+                return (
+                  <div key={group.title} className="mb-2 rounded-lg border border-slate-700/70 bg-[#0d1728]">
                     <button
                       type="button"
-                      key={kind}
-                      onClick={() => add(kind)}
-                      className="group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-white/[0.04]"
+                      onClick={() => setOpenBuildGroups((current) => ({ ...current, [group.title]: !current[group.title] }))}
+                      className="flex w-full items-center justify-between px-2.5 py-2 text-left text-[9px] font-bold uppercase tracking-[0.14em] text-slate-300 hover:bg-white/[0.05]"
+                      aria-expanded={openBuildGroups[group.title] !== false}
                     >
-                      <span
-                        className="grid h-7 w-7 shrink-0 place-items-center rounded-md border text-[10px]"
-                        style={{
-                          borderColor: `${COLORS[kind]}33`,
-                          background: `${COLORS[kind]}10`,
-                          color: COLORS[kind],
-                        }}
-                      >
-                        {ICONS[kind]}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-[10px] text-slate-400 group-hover:text-slate-200">
-                        {LABELS[kind]}
-                      </span>
-                      <span className="text-slate-700">+</span>
+                      <span>{group.title}</span>
+                      <span className="flex items-center gap-1.5 text-slate-500"><span>{kinds.length}</span><span>{openBuildGroups[group.title] === false ? "＋" : "−"}</span></span>
                     </button>
-                  ))}
-                </div>
-              ))}
+                    {openBuildGroups[group.title] !== false && (
+                      <div className="border-t border-slate-700/60 p-1.5">
+                        {kinds.length === 0 ? (
+                          <div className="px-2 py-2 text-[9px] text-slate-500">All buttons hidden</div>
+                        ) : kinds.map((kind) => (
+                          <button
+                            type="button"
+                            key={kind}
+                            onClick={() => add(kind)}
+                            className="group flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left text-slate-200 hover:border-slate-600/70 hover:bg-slate-700/40"
+                          >
+                            <span
+                              className="grid h-7 w-7 shrink-0 place-items-center rounded-md border text-[11px]"
+                              style={{ borderColor: `${COLORS[kind]}66`, background: `${COLORS[kind]}18`, color: COLORS[kind] }}
+                            >
+                              {ICONS[kind]}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-slate-200 group-hover:text-white">{LABELS[kind]}</span>
+                            <span className="text-sm font-semibold text-slate-400 group-hover:text-sky-300">＋</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
             <div>

@@ -1,5 +1,38 @@
 export type Point = { x: number; y: number };
 
+/** Canonical rack coordinates use the minimum footprint corner, not the
+ * rendered/physical centre. Keep this conversion shared by editor and maps. */
+export type Footprint2D = { x: number; y: number; width: number; depth: number };
+export function rackFootprint2D(position: readonly number[], size: readonly number[]): Footprint2D {
+  return {
+    x: Number.isFinite(Number(position[0])) ? Number(position[0]) : 0,
+    y: Number.isFinite(Number(position[2])) ? Number(position[2]) : 0,
+    width: Math.max(0, Number(size[0]) || 0),
+    depth: Math.max(0, Number(size[2]) || 0),
+  };
+}
+
+/** Keep zone labels compact in world units and anchor them inside the zone. */
+export function zoneLabelLayout(polygon: Point[], minDimension: number): { x: number; y: number; fontSize: number } {
+  const xs = polygon.map((point) => point.x);
+  const ys = polygon.map((point) => point.y);
+  const minX = Math.min(...xs, 0), maxX = Math.max(...xs, 0);
+  const minY = Math.min(...ys, 0);
+  const fontSize = Math.max(0.7, Math.min(1.3, Math.max(1, minDimension) * 0.035));
+  return { x: (minX + maxX) / 2, y: minY + fontSize * 1.4, fontSize };
+}
+
+export type NavigationRenderTag = { uuid?: string; id?: number | string; tag_id: number; x: number; y: number };
+export type NavigationRenderEdge = { from_tag_uuid?: string; to_tag_uuid?: string; from_tag_id?: number; to_tag_id?: number };
+/** Resolve canonical graph endpoints without depending on a runtime graph/API. */
+export function resolveNavigationEdgeEndpoints(tags: readonly NavigationRenderTag[], edge: NavigationRenderEdge): { from: NavigationRenderTag; to: NavigationRenderTag } | null {
+  const byUuid = new Map(tags.flatMap((tag) => tag.uuid ? [[tag.uuid, tag] as const] : []));
+  const byId = new Map(tags.map((tag) => [tag.tag_id, tag] as const));
+  const from = (edge.from_tag_uuid ? byUuid.get(edge.from_tag_uuid) : undefined) ?? (edge.from_tag_id == null ? undefined : byId.get(edge.from_tag_id));
+  const to = (edge.to_tag_uuid ? byUuid.get(edge.to_tag_uuid) : undefined) ?? (edge.to_tag_id == null ? undefined : byId.get(edge.to_tag_id));
+  return from && to ? { from, to } : null;
+}
+
 export function distance(a: Point, b: Point): number { return Math.hypot(a.x - b.x, a.y - b.y); }
 export function polylineLength(points: Point[]): number { return points.slice(1).reduce((sum, p, i) => sum + distance(points[i], p), 0); }
 export function signedArea(points: Point[]): number { return points.reduce((sum, p, i) => { const q = points[(i + 1) % points.length]; return sum + p.x * q.y - q.x * p.y; }, 0) / 2; }

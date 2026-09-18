@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAisleFootprint, polygonContainedInFloor, snapCoordinate, snapPoint, validateAisleCenterline, validateFloorPolygon } from "../src/layout/geometry";
+import { buildAisleFootprint, polygonContainedInFloor, rackFootprint2D, resolveNavigationEdgeEndpoints, snapCoordinate, snapPoint, validateAisleCenterline, validateFloorPolygon, zoneLabelLayout } from "../src/layout/geometry";
 import { buildNavGrid } from "../src/layout/navgrid";
 import { canonicalFloorId, resolveRuntimeFloorIndex, type WarehouseLayout } from "../src/layout/types";
 import layoutJson from "../src/layout/warehouse_layout.json";
@@ -35,6 +35,28 @@ describe("floor and aisle geometry", () => {
     expect(snapCoordinate(12.347, null)).toBe(12.347);
     expect(snapCoordinate(12.347, 0.05)).toBeCloseTo(12.35);
     expect(snapPoint(p(12.347, 8.223), 0.5)).toEqual(p(12.5, 8));
+  });
+
+  it("keeps rack origin semantics consistent with the canonical exporter", () => {
+    expect(rackFootprint2D([6, 0, 7.5], [6, 2.5, 4])).toEqual({ x: 6, y: 7.5, width: 6, depth: 4 });
+  });
+
+  it("uses a compact, centered zone label layout for large maps", () => {
+    const label = zoneLabelLayout([p(0, 0), p(15, 0), p(15, 8), p(0, 8)], 30);
+    expect(label.x).toBe(7.5);
+    expect(label.fontSize).toBeLessThanOrEqual(1.3);
+    expect(label.fontSize).toBeGreaterThanOrEqual(0.7);
+    expect(label.y).toBeGreaterThan(0);
+  });
+
+  it("resolves canonical navigation edges by UUID without a runtime graph", () => {
+    const tags = [
+      { uuid: "tag-a", tag_id: 1101, x: 2, y: 3 },
+      { uuid: "tag-b", tag_id: 1102, x: 8, y: 3 },
+    ];
+    expect(resolveNavigationEdgeEndpoints(tags, { from_tag_uuid: "tag-a", to_tag_uuid: "tag-b" })?.from.tag_id).toBe(1101);
+    expect(resolveNavigationEdgeEndpoints(tags, { from_tag_id: 1101, to_tag_id: 1102 })?.to.x).toBe(8);
+    expect(resolveNavigationEdgeEndpoints(tags, { from_tag_uuid: "missing", to_tag_uuid: "tag-b" })).toBeNull();
   });
 
   it("adapts canonical string floor IDs to numeric runtime layers without coercion", () => {

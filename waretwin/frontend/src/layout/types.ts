@@ -25,7 +25,7 @@ export interface LayoutFloor { id: FloorId; name: string; elevation: number; foo
 export interface LayoutAisle { id: string; floor_id?: FloorId; centerline: WarehousePoint[]; width: number; direction: "bidirectional" | "forward" | "reverse"; speed_limit?: number; tag_rule?: { enabled: boolean; spacing: number; start_offset?: number; end_offset?: number } }
 /** uuid is immutable editor identity; tag_id is the editable physical marker; id is a legacy alias only. */
 export interface LayoutNavigationTag { id?: string; uuid: string; tag_id: number; floor_id?: FloorId; x: number; y: number; z?: number; yaw: number; placement: "auto" | "manual"; locked: boolean; generated_from?: string; source_aisles?: string[]; semantic_role?: "intersection" | "turn" | "start" | "end" | "spacing"; logical_key?: string; distance_along_aisle?: number }
-export interface LayoutNavigationEdge { uuid?: string; from_tag_uuid?: string; to_tag_uuid?: string; from_tag_id?: number; to_tag_id?: number; enabled?: boolean; bidirectional?: boolean; cost?: number }
+export interface LayoutNavigationEdge { uuid: string; from_tag_uuid: string; to_tag_uuid: string; from_tag_id?: number; to_tag_id?: number; aisle_id: string; floor_id: FloorId; distance: number; direction: "bidirectional" | "forward" | "reverse"; cost: number; speed_limit?: number; enabled: boolean; bidirectional: boolean; placement: "auto" | "manual"; locked: boolean }
 export interface LayoutLift { id: string; cell: [number, number]; floors: FloorId[]; ride_ticks: number }
 
 /** Runtime robots use numeric layer indexes; string canonical IDs resolve by floor declaration order. */

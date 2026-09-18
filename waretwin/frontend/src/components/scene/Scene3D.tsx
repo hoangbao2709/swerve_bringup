@@ -14,6 +14,7 @@ import { Robots } from "./Robots";
 import { CameraGizmos } from "./Cameras";
 import { People } from "./People";
 import { Mezzanine, FLOOR_ELEV } from "./Mezzanine";
+import { canonicalFloorId, sameFloor } from "../../layout/types";
 
 
 /** 相機聚焦動畫：focusTarget 改變時平滑移動 OrbitControls target */
@@ -113,7 +114,7 @@ export function SceneContent({ quality, lite = false }: { quality: "low" | "medi
   const showLights = useStore((s) => s.showLights);
   const showCameras = useStore((s) => s.showCameras);
   const activeFloor = lite ? "all" : af;   // CCTV / 縮圖用的 lite 場景永遠全樓層
-  const f2 = layout.floors?.find((f) => f.id === 2);
+  const f2 = layout.floors?.find((f) => sameFloor(f.id, canonicalFloorId(layout, 2)));
   return (
     <>
       <Background env={!lite} />

@@ -236,8 +236,12 @@ def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
         if not uid: errors.append('navigation_tags: missing uuid')
         elif uid in tag_uuids: errors.append('navigation_tags: duplicate uuid')
         tag_uuids.add(uid)
-        try: tag_id = int(tag.get('tag_id'))
-        except (TypeError, ValueError): errors.append('navigation_tags: invalid tag_id'); tag_id = -1
+        raw_tag_id = tag.get('tag_id')
+        try:
+            numeric_tag_id = float(raw_tag_id)
+            if not math.isfinite(numeric_tag_id) or numeric_tag_id != int(numeric_tag_id): raise ValueError
+            tag_id = int(numeric_tag_id)
+        except (TypeError, ValueError, OverflowError): errors.append('navigation_tags: invalid tag_id'); tag_id = -1
         if tag_id < 0: errors.append('navigation_tags: invalid tag_id')
         elif tag_id in tag_ids: errors.append('navigation_tags: duplicate tag_id')
         tag_ids.add(tag_id)
@@ -278,4 +282,56 @@ def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
                 except (TypeError, ValueError): pass
             footprint = aisle_footprint(centerline_points, numeric_width)
             if boundary and not polygon_contained_in_usable_floor(footprint, boundary, hole_points): errors.append(f'aisle {aid}: width footprint is outside usable floor or intersects a hole')
+    # Graph edges are validated against the canonical tag identity and floor
+    # contract here, before save/publish.  The relational model intentionally
+    # stores endpoint tag_id values; UUIDs remain the immutable layout identity.
+    tag_by_uuid = {str(tag.get('uuid')): tag for tag in doc.get('navigation_tags', []) if tag.get('uuid')}
+    aisle_by_id = {str(aisle.get('id') or aisle.get('uuid')): aisle for aisle in doc.get('aisles', [])}
+    edge_keys: set[tuple[str, str, str, str]] = set()
+    edge_logical_keys: set[tuple[str, str, str, str]] = set()
+    edge_uuids: set[str] = set()
+    valid_directions = {'bidirectional', 'forward', 'reverse'}
+    for edge in doc.get('navigation_edges', []):
+        edge_id = str(edge.get('uuid') or edge.get('id') or '?')
+        if not edge.get('uuid'): errors.append(f'navigation_edges {edge_id}: missing uuid')
+        if edge_id in edge_uuids: errors.append(f'navigation_edges {edge_id}: duplicate uuid')
+        edge_uuids.add(edge_id)
+        from_uuid, to_uuid = str(edge.get('from_tag_uuid') or ''), str(edge.get('to_tag_uuid') or '')
+        if from_uuid not in tag_by_uuid or to_uuid not in tag_by_uuid:
+            errors.append(f'navigation_edges {edge_id}: references missing tag')
+        if from_uuid and from_uuid == to_uuid:
+            errors.append(f'navigation_edges {edge_id}: self-edge')
+        direction = str(edge.get('direction') or '')
+        if direction not in valid_directions:
+            errors.append(f'navigation_edges {edge_id}: invalid direction')
+        try:
+            edge_distance, edge_cost = float(edge.get('distance')), float(edge.get('cost'))
+        except (TypeError, ValueError):
+            edge_distance = edge_cost = float('nan')
+        if not math.isfinite(edge_distance) or edge_distance <= 0:
+            errors.append(f'navigation_edges {edge_id}: invalid distance')
+        if not math.isfinite(edge_cost) or edge_cost <= 0:
+            errors.append(f'navigation_edges {edge_id}: invalid cost')
+        aisle_id = str(edge.get('aisle_id') or '')
+        floor_id = str(edge.get('floor_id', 1))
+        key = (aisle_id, from_uuid, to_uuid, direction)
+        if key in edge_keys:
+            errors.append(f'navigation_edges {edge_id}: duplicate edge')
+        edge_keys.add(key)
+        logical_key = (aisle_id, *sorted((from_uuid, to_uuid)), direction) if direction == 'bidirectional' else key
+        if logical_key in edge_logical_keys:
+            errors.append(f'navigation_edges {edge_id}: duplicate edge')
+        edge_logical_keys.add(logical_key)
+        if floor_id not in floor_ids:
+            errors.append(f'navigation_edges {edge_id}: invalid floor reference')
+        source, target = tag_by_uuid.get(from_uuid), tag_by_uuid.get(to_uuid)
+        if source and str(source.get('floor_id', 1)) != floor_id:
+            errors.append(f'navigation_edges {edge_id}: source floor mismatch')
+        if target and str(target.get('floor_id', 1)) != floor_id:
+            errors.append(f'navigation_edges {edge_id}: target floor mismatch')
+        aisle = aisle_by_id.get(aisle_id)
+        if aisle_by_id and aisle is None:
+            errors.append(f'navigation_edges {edge_id}: references missing aisle')
+        if aisle and str(aisle.get('floor_id', aisle.get('floor', 1))) != floor_id:
+            errors.append(f'navigation_edges {edge_id}: aisle floor mismatch')
     return errors

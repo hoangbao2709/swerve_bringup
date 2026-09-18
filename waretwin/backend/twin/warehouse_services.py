@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from django.db import transaction
 
-from .models import Warehouse, Zone, Shelf
+from .models import Warehouse, Zone, Shelf, NavigationTag, NavigationTagEdge
 from .canonical_map import canonicalize_layout
 
 
@@ -428,7 +428,67 @@ def sync_from_layout(layout: dict[str, Any], *, warehouse: Warehouse | None = No
         Shelf.objects.filter(zone__warehouse=warehouse).exclude(id__in=keep_shelf_ids).delete()
         Zone.objects.filter(warehouse=warehouse).exclude(id__in=keep_zone_ids).delete()
 
-    return {'warehouses': 1, 'zones': len(zone_map), 'shelves': shelf_count, 'warehouse_id': warehouse.id}
+    # Navigation tags/edges are part of the canonical map contract.  The
+    # existing relational models use tag_id as their physical identity and
+    # endpoint foreign keys; UUIDs remain in the raw layout for editor
+    # matching and are not regenerated here.
+    keep_tag_ids: set[int] = set()
+    tags_by_id: dict[int, NavigationTag] = {}
+    for raw_tag in layout.get('navigation_tags') or []:
+        try:
+            tag_id = int(raw_tag.get('tag_id'))
+            x, y = float(raw_tag.get('x')), float(raw_tag.get('y'))
+            yaw = float(raw_tag.get('yaw', 0))
+        except (TypeError, ValueError):
+            continue
+        tag, _ = NavigationTag.objects.get_or_create(
+            warehouse=warehouse, tag_id=tag_id,
+            defaults={'x': x, 'y': y, 'yaw': yaw},
+        )
+        tag.x, tag.y, tag.yaw = x, y, yaw
+        tag.enabled = bool(raw_tag.get('enabled', True))
+        tag.label = str(raw_tag.get('label') or raw_tag.get('uuid') or '')
+        tag.save()
+        keep_tag_ids.add(tag.pk)
+        tags_by_id[tag_id] = tag
+
+    keep_edge_ids: set[int] = set()
+    edge_count = 0
+    for raw_edge in layout.get('navigation_edges') or []:
+        try:
+            from_id = int(raw_edge.get('from_tag_id'))
+            to_id = int(raw_edge.get('to_tag_id'))
+        except (TypeError, ValueError):
+            # Older drafts may only carry UUID endpoints.  Resolve those via
+            # the canonical tag list before falling back to a safe skip.
+            by_uuid = {str(tag.get('uuid')): int(tag.get('tag_id')) for tag in layout.get('navigation_tags') or [] if tag.get('uuid')}
+            try:
+                from_id, to_id = by_uuid[str(raw_edge.get('from_tag_uuid'))], by_uuid[str(raw_edge.get('to_tag_uuid'))]
+            except KeyError:
+                continue
+        source, target = tags_by_id.get(from_id), tags_by_id.get(to_id)
+        if source is None or target is None or source.pk == target.pk:
+            continue
+        defaults = {
+            'cost': float(raw_edge.get('cost')) if raw_edge.get('cost') is not None else None,
+            'enabled': bool(raw_edge.get('enabled', True)),
+            'bidirectional': str(raw_edge.get('direction') or '') == 'bidirectional' or bool(raw_edge.get('bidirectional', False)),
+        }
+        edge, _ = NavigationTagEdge.objects.update_or_create(
+            warehouse=warehouse, from_tag=source, to_tag=target, defaults=defaults,
+        )
+        keep_edge_ids.add(edge.pk)
+        edge_count += 1
+
+    if prune:
+        NavigationTagEdge.objects.filter(warehouse=warehouse).exclude(pk__in=keep_edge_ids).delete()
+        NavigationTag.objects.filter(warehouse=warehouse).exclude(pk__in=keep_tag_ids).delete()
+
+    return {
+        'warehouses': 1, 'zones': len(zone_map), 'shelves': shelf_count,
+        'navigation_tags': len(tags_by_id), 'navigation_edges': edge_count,
+        'warehouse_id': warehouse.id,
+    }
 
 
 def ensure_warehouse_map(warehouse: Warehouse, fallback_layout: dict[str, Any] | None = None):

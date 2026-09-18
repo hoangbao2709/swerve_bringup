@@ -10,6 +10,7 @@ import { useStore } from "../../state/store";
 import type { WarehouseLayout } from "../../layout/types";
 import { buildAisleFootprint, pointInPolygon, polygonContainedInFloor, snapPoint, validateAisleCenterline, validateFloorPolygon, validateHolePolygon, validatePolygon, type Point } from "../../layout/geometry";
 import { applyNavigationTagPhysicalOverride, generateAisleTags, nextAisleId, validateNavigationTagIdChange, validateNavigationTagsForLayout } from "../../layout/navigation";
+import { generateNavigationEdges, validateNavigationEdges } from "../../layout/navigation_graph";
 import { validatePhysicalObjectOverlaps } from "../../layout/validation";
 import layoutJson from "../../layout/warehouse_layout.json";
 
@@ -17,6 +18,7 @@ type Kind =
   | "floor"
   | "aisle"
   | "navigation-tag"
+  | "navigation-edge"
   | "rack"
   | "wall"
   | "conveyor"
@@ -123,6 +125,7 @@ const COLORS: Record<Kind, string> = {
   floor: "#38bdf8",
   aisle: "#22d3ee",
   "navigation-tag": "#a78bfa",
+  "navigation-edge": "#c084fc",
   rack: "#64748b",
   wall: "#94a3b8",
   conveyor: "#f59e0b",
@@ -145,6 +148,7 @@ const LABELS: Record<Kind, string> = {
   floor: "Floor",
   aisle: "Aisle",
   "navigation-tag": "Navigation Tag",
+  "navigation-edge": "Navigation Graph",
   rack: "Rack",
   wall: "Wall",
   conveyor: "Conveyor",
@@ -167,6 +171,7 @@ const ICONS: Record<Kind, string> = {
   floor: "⌂",
   aisle: "╱",
   "navigation-tag": "●",
+  "navigation-edge": "⇢",
   rack: "▥",
   wall: "▤",
   conveyor: "→",
@@ -200,7 +205,7 @@ const GROUPS: { title: string; kinds: Kind[] }[] = [
   },
   {
     title: "Navigation",
-    kinds: ["floor", "aisle", "navigation-tag", "zone", "walkway", "restricted", "spawn"],
+    kinds: ["floor", "aisle", "navigation-tag", "navigation-edge", "zone", "walkway", "restricted", "spawn"],
   },
   {
     title: "Sensors",
@@ -212,6 +217,7 @@ const KEY_MAP: Partial<Record<Kind, keyof Draft>> = {
   floor: "floors",
   aisle: "aisles",
   "navigation-tag": "navigation_tags",
+  "navigation-edge": "navigation_edges",
   rack: "racks",
   zone: "zones",
   station: "stations",
@@ -232,6 +238,7 @@ const DEFAULT_LAYER_ORDER: Kind[] = [
   "floor",
   "aisle",
   "navigation-tag",
+  "navigation-edge",
   "column",
   "wall",
   "lift",
@@ -254,6 +261,7 @@ const LAYER_LABELS: Record<Kind, string> = {
   floor: "Floors",
   aisle: "Aisles",
   "navigation-tag": "Navigation Tags",
+  "navigation-edge": "Navigation Graph",
   column: "Structure",
   wall: "Walls",
   lift: "Lifts",
@@ -292,12 +300,13 @@ function nextId(arr: any[], prefix: string) {
 function getCollection(draft: Draft, kind: Kind): any[] {
   if (kind === "spawn") return draft.spawn.robots as any[];
   if (kind === "floor") return draft.floors as any[];
+  if (kind === "navigation-edge") return (draft.navigation_edges ?? []) as any[];
   const key = KEY_MAP[kind];
   return key ? ((draft as any)[key] as any[]) ?? [] : [];
 }
 
 function objectId(kind: Kind, obj: any): string {
-  return kind === "navigation-tag" ? String(obj.uuid ?? obj.id) : String(obj.id);
+  return kind === "navigation-tag" || kind === "navigation-edge" ? String(obj.uuid ?? obj.id) : String(obj.id);
 }
 
 function getFloorForObject(obj: any): number | string {
@@ -518,6 +527,12 @@ function get2DBox(kind: Kind, obj: any): {
   if (kind === "navigation-tag") {
     return { x: Number(obj?.x) || 0, z: Number(obj?.y) || 0, w: 0.6, h: 0.6, rotation: Number(obj?.yaw) || 0 };
   }
+  if (kind === "navigation-edge") {
+    const from = obj?.from_point ?? { x: 0, y: 0 };
+    const to = obj?.to_point ?? from;
+    const x = Math.min(from.x, to.x), z = Math.min(from.y, to.y);
+    return { x, z, w: Math.max(0.6, Math.abs(to.x - from.x)), h: Math.max(0.6, Math.abs(to.y - from.y)), rotation: 0 };
+  }
   if (kind === "aisle") {
     const footprint = buildAisleFootprint(obj?.centerline ?? [], Number(obj?.width));
     if (footprint.length) {
@@ -637,6 +652,7 @@ function moveObject(d: Draft, selection: Selection, centerX: number, centerZ: nu
     return;
   }
   if (!obj) return;
+  if (selection.kind === "navigation-edge") return;
 
   if (selection.kind === "navigation-tag") { obj.x = sx(centerX); obj.y = sx(centerZ); if (obj.placement === "auto") { obj.placement = "manual"; obj.locked = true; } return; }
   if (selection.kind === "aisle") { const box = get2DBox("aisle", obj); const dx = sx(centerX) - (box.x + box.w / 2), dz = sx(centerZ) - (box.z + box.h / 2); obj.centerline = obj.centerline.map((p: Point) => ({ x: sx(p.x + dx), y: sx(p.y + dz) })); return; }
@@ -954,7 +970,7 @@ function EditorScene3D({
   const items = useMemo(() => {
     const entries: [Kind, any[]][] = [];
     layerOrder.forEach((kind) => {
-      if (kind === "column" || kind === "spawn" || kind === "floor") return;
+      if (kind === "column" || kind === "spawn" || kind === "floor" || kind === "navigation-edge") return;
       const arr = getCollection(draft, kind);
       if (arr?.length) entries.push([kind, arr]);
     });
@@ -1091,6 +1107,18 @@ function MapObject({
 
   if (kind === "navigation-tag") {
     return <g onPointerDown={onPointerDown} onContextMenu={onContextMenu} className="cursor-pointer"><title>{tooltip}</title><circle cx={obj.x * scale.x} cy={obj.y * scale.z} r={selected ? 7 : 5} fill={obj.locked ? "#f59e0b" : obj.placement === "manual" ? "#f472b6" : color} stroke={stroke} strokeWidth={selected ? 2 : 1} vectorEffect="non-scaling-stroke" /><text x={obj.x * scale.x + 8} y={obj.y * scale.z - 6} fill="#e2e8f0" fontSize="10" vectorEffect="non-scaling-stroke" pointerEvents="none">{obj.tag_id}</text></g>;
+  }
+
+  if (kind === "navigation-edge") {
+    const from = obj.from_point ?? { x: 0, y: 0 };
+    const to = obj.to_point ?? from;
+    const marker = obj.direction === "reverse" ? "url(#nav-edge-arrow-reverse)" : "url(#nav-edge-arrow)";
+    return (
+      <g onPointerDown={onPointerDown} onContextMenu={onContextMenu} className="cursor-pointer">
+        <title>{`${obj.from_tag_id ?? obj.from_tag_uuid} → ${obj.to_tag_id ?? obj.to_tag_uuid} · ${obj.distance?.toFixed?.(2) ?? obj.distance} m`}</title>
+        <line x1={from.x * scale.x} y1={from.y * scale.z} x2={to.x * scale.x} y2={to.y * scale.z} stroke={stroke} strokeWidth={selected ? 3 : 2} strokeDasharray={obj.enabled === false ? "5 4" : undefined} markerStart={obj.direction === "bidirectional" ? "url(#nav-edge-arrow-both)" : undefined} markerEnd={marker} vectorEffect="non-scaling-stroke" />
+      </g>
+    );
   }
 
   if (kind === "zone" || kind === "walkway") {
@@ -1465,7 +1493,13 @@ function Editor2DMap({
     const entries: [Kind, any[]][] = [];
     layerOrder.forEach((kind) => {
       if (kind === "column" || kind === "spawn" || kind === "floor") return;
-      const arr = getCollection(draft, kind);
+      const arr = kind === "navigation-edge"
+        ? getCollection(draft, kind).map((edge: any) => ({
+            ...edge,
+            from_point: draft.navigation_tags?.find((tag) => tag.uuid === edge.from_tag_uuid) ?? { x: 0, y: 0 },
+            to_point: draft.navigation_tags?.find((tag) => tag.uuid === edge.to_tag_uuid) ?? { x: 0, y: 0 },
+          }))
+        : getCollection(draft, kind);
       if (arr?.length) entries.push([kind, arr]);
     });
     if (layerOrder.includes("spawn") && draft.spawn?.robots?.length) {
@@ -1851,6 +1885,9 @@ function Editor2DMap({
         <rect x={0} y={0} width={viewW} height={viewH} fill="#08111d" />
 
         <defs>
+          <marker id="nav-edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#c084fc" /></marker>
+          <marker id="nav-edge-arrow-reverse" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f0abfc" /></marker>
+          <marker id="nav-edge-arrow-both" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#c084fc" /></marker>
           <pattern
             id="editor-grid"
             width={draft.grid.cell_size * scale.x}
@@ -2792,7 +2829,7 @@ export function WarehouseEditorPage() {
           box.z + box.h < bounds.z ||
           box.z > bounds.z + bounds.h
         );
-        if (intersects) found.push({ kind, id: obj.id });
+        if (intersects) found.push({ kind, id: objectId(kind, obj) });
       });
     });
 
@@ -2870,6 +2907,11 @@ export function WarehouseEditorPage() {
       }
       Object.assign(obj, applyNavigationTagPhysicalOverride(obj));
     }
+    if (primary.selection.kind === "navigation-edge" && ["cost", "direction", "speed_limit", "enabled"].includes(path)) {
+      obj.placement = "manual";
+      obj.locked = true;
+      if (path === "direction") obj.bidirectional = obj.direction === "bidirectional";
+    }
 
     if (path === "id" && typeof value === "string" && value !== oldId) {
       setBlocks((current) =>
@@ -2900,6 +2942,7 @@ export function WarehouseEditorPage() {
     const newSelections: Selection[] = [];
 
     selections.forEach((selection) => {
+      if (selection.kind === "navigation-edge") return;
       if (selection.kind === "column") {
         const index = Number(selection.id.split("-").pop() ?? "-1");
         const point = next.columns?.[index];
@@ -3232,6 +3275,49 @@ export function WarehouseEditorPage() {
     setErrors([]); commit(next, "SELECTED AISLE TAGS REGENERATED · UNSAVED");
   }
 
+  function generateNavigationGraph() {
+    const next = clone(draft);
+    next.navigation_edges = generateNavigationEdges(next.aisles ?? [], next.navigation_tags ?? [], next.navigation_edges ?? []);
+    const validation = validateNavigationEdges(next.navigation_tags ?? [], next.navigation_edges ?? [], next.aisles ?? []);
+    if (validation.errors.length) {
+      setErrors(validation.errors);
+      setStatus("GRAPH GENERATION ABORTED");
+      return;
+    }
+    setErrors(validation.warnings);
+    commit(next, "NAVIGATION GRAPH GENERATED · UNSAVED");
+  }
+
+  function regenerateSelectedAisleGraph() {
+    const selection = selected.find((item) => item.kind === "aisle");
+    const aisle = selection && (draft.aisles ?? []).find((item) => String(item.id) === selection.id);
+    if (!aisle) return;
+    const next = clone(draft);
+    const untouched = (next.navigation_edges ?? []).filter((edge) => edge.aisle_id !== aisle.id && !(edge.placement === "auto" && !edge.locked));
+    const selectedEdges = generateNavigationEdges([aisle], next.navigation_tags ?? [], next.navigation_edges ?? []);
+    next.navigation_edges = [...untouched, ...selectedEdges.filter((edge) => edge.aisle_id === aisle.id)];
+    const validation = validateNavigationEdges(next.navigation_tags ?? [], next.navigation_edges ?? [], next.aisles ?? []);
+    if (validation.errors.length) { setErrors(validation.errors); setStatus("GRAPH REGENERATION ABORTED"); return; }
+    setErrors(validation.warnings); commit(next, "SELECTED AISLE GRAPH REGENERATED · UNSAVED");
+  }
+
+  function addManualNavigationEdge() {
+    const tagSelections = selected.filter((item) => item.kind === "navigation-tag");
+    const aisleSelection = selected.find((item) => item.kind === "aisle");
+    if (tagSelections.length !== 2 || !aisleSelection) return;
+    const aisle = (draft.aisles ?? []).find((item) => String(item.id) === aisleSelection.id);
+    const tags = tagSelections.map((selection) => (draft.navigation_tags ?? []).find((tag) => tag.uuid === selection.id)).filter(Boolean) as NonNullable<Draft["navigation_tags"]>[number][];
+    if (!aisle || tags.length !== 2 || String(tags[0].floor_id ?? 1) !== String(tags[1].floor_id ?? 1)) return;
+    const generated = generateNavigationEdges([aisle], tags, draft.navigation_edges ?? []);
+    const candidate = generated.find((edge) => edge.from_tag_uuid === tags[0].uuid && edge.to_tag_uuid === tags[1].uuid) ?? generated[0];
+    if (!candidate || (draft.navigation_edges ?? []).some((edge) => edge.from_tag_uuid === candidate.from_tag_uuid && edge.to_tag_uuid === candidate.to_tag_uuid && edge.aisle_id === candidate.aisle_id)) return;
+    const next = clone(draft);
+    next.navigation_edges = [...(next.navigation_edges ?? []), { ...candidate, placement: "manual", locked: true }];
+    const validation = validateNavigationEdges(next.navigation_tags ?? [], next.navigation_edges, next.aisles ?? []);
+    if (validation.errors.length) { setErrors(validation.errors); return; }
+    setErrors(validation.warnings); commit(next, "MANUAL NAVIGATION EDGE ADDED · UNSAVED");
+  }
+
 
   function addManualTag(point?: Point) {
     const active = floor === "all" ? draft.floors[0] : draft.floors.find((item) => String(item.id) === String(floor));
@@ -3274,6 +3360,7 @@ export function WarehouseEditorPage() {
       }
     });
     nextErrors.push(...validateNavigationTagsForLayout(draftToCheck.floors, draftToCheck.navigation_tags ?? []));
+    nextErrors.push(...validateNavigationEdges(draftToCheck.navigation_tags ?? [], draftToCheck.navigation_edges ?? [], draftToCheck.aisles ?? []).errors);
 
     const ids = new Set<string>();
     (Object.keys(KEY_MAP) as Kind[]).forEach((kind) => {
@@ -3302,7 +3389,7 @@ export function WarehouseEditorPage() {
       getCollection(draftToCheck, kind).forEach((obj: any) => {
         // Floor containment, aisle footprints and tag placement have dedicated validators above;
         // they are not collidable physical rectangles.
-        if (["floor", "aisle", "navigation-tag", "zone", "walkway", "camera", "sensor", "location", "spawn"].includes(kind)) return;
+        if (["floor", "aisle", "navigation-tag", "navigation-edge", "zone", "walkway", "camera", "sensor", "location", "spawn"].includes(kind)) return;
         rectObjects.push({
           kind,
           id: obj.id,
@@ -4037,6 +4124,9 @@ export function WarehouseEditorPage() {
               <ToolButton active={mode === "add-manual-tag"} label="Add Manual Tag" icon="●" onClick={() => { setMode("add-manual-tag"); setStatus("MANUAL TAG · CLICK MAP"); }} />
               <button type="button" onClick={regenerateTags} className="mt-1 w-full rounded-md border border-violet-400/20 bg-violet-400/[0.06] px-2 py-2 text-left text-[9px] font-semibold text-violet-300 hover:bg-violet-400/[0.12]">Regenerate All Tags</button>
               <button type="button" disabled={!selected.some((item) => item.kind === "aisle")} onClick={regenerateSelectedAisle} className="mt-1 w-full rounded-md border border-violet-400/15 px-2 py-2 text-left text-[9px] text-violet-300 hover:bg-violet-400/[0.08] disabled:opacity-30">Regenerate Selected Aisle</button>
+              <button type="button" onClick={generateNavigationGraph} className="mt-1 w-full rounded-md border border-fuchsia-400/20 bg-fuchsia-400/[0.06] px-2 py-2 text-left text-[9px] font-semibold text-fuchsia-300 hover:bg-fuchsia-400/[0.12]">Generate Navigation Graph</button>
+              <button type="button" disabled={!selected.some((item) => item.kind === "aisle")} onClick={regenerateSelectedAisleGraph} className="mt-1 w-full rounded-md border border-fuchsia-400/15 px-2 py-2 text-left text-[9px] text-fuchsia-300 hover:bg-fuchsia-400/[0.08] disabled:opacity-30">Regenerate Selected Aisle Graph</button>
+              <button type="button" disabled={selected.filter((item) => item.kind === "navigation-tag").length !== 2 || !selected.some((item) => item.kind === "aisle")} onClick={addManualNavigationEdge} className="mt-1 w-full rounded-md border border-fuchsia-400/15 px-2 py-2 text-left text-[9px] text-fuchsia-300 hover:bg-fuchsia-400/[0.08] disabled:opacity-30">Add Manual Edge (2 Tags)</button>
               <div className="mt-1 grid grid-cols-2 gap-1">
                 <button
                   type="button"
@@ -4741,7 +4831,7 @@ export function WarehouseEditorPage() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="text-[12px] font-semibold text-white">
-                        {primary.obj.id}
+                        {primary.obj.id ?? primary.obj.uuid}
                       </div>
                       <div className="mt-0.5 text-[9px] uppercase tracking-[0.08em] text-slate-600">
                         {LABELS[primary.selection.kind]}
@@ -4801,6 +4891,21 @@ export function WarehouseEditorPage() {
                       <label className="flex items-center justify-between text-[10px] text-slate-400"><span>Locked</span><input type="checkbox" checked={Boolean(primary.obj.locked)} onChange={(event) => updateProperty("locked", event.target.checked ? "true" : "false")} /></label>
                       <div className="text-[9px] text-slate-500">Placement <span className="float-right font-mono text-slate-300">{String(primary.obj.placement ?? "auto").toUpperCase()}</span></div>
                       <div className="text-[9px] text-slate-500">Generated From <span className="float-right font-mono text-slate-300">{primary.obj.generated_from ?? "—"}</span></div>
+                    </>
+                  )}
+
+                  {primary.selection.kind === "navigation-edge" && (
+                    <>
+                      <div className="text-[9px] text-slate-500">From <span className="float-right font-mono text-slate-300">{primary.obj.from_tag_id ?? primary.obj.from_tag_uuid}</span></div>
+                      <div className="text-[9px] text-slate-500">To <span className="float-right font-mono text-slate-300">{primary.obj.to_tag_id ?? primary.obj.to_tag_uuid}</span></div>
+                      <div className="text-[9px] text-slate-500">Aisle <span className="float-right font-mono text-slate-300">{primary.obj.aisle_id}</span></div>
+                      <PropertyInput label="Distance" type="number" step="0.01" value={primary.obj.distance} onChange={(value) => updateProperty("distance", value)} />
+                      <PropertyInput label="Cost" type="number" step="0.01" value={primary.obj.cost} onChange={(value) => updateProperty("cost", value)} />
+                      <label className="block"><span className="mb-1 block text-[9px] font-medium uppercase tracking-[0.08em] text-slate-500">Direction</span><select value={primary.obj.direction} onChange={(event) => updateProperty("direction", event.target.value)} className="w-full rounded-md border border-white/[0.08] bg-[#070d16] px-2.5 py-2 text-[11px] text-slate-200 outline-none"><option value="bidirectional">Bidirectional</option><option value="forward">Forward</option><option value="reverse">Reverse</option></select></label>
+                      <PropertyInput label="Speed Limit" type="number" step="0.01" value={primary.obj.speed_limit ?? ""} onChange={(value) => updateProperty("speed_limit", value)} />
+                      <label className="flex items-center justify-between text-[10px] text-slate-400"><span>Enabled</span><input type="checkbox" checked={primary.obj.enabled !== false} onChange={(event) => updateProperty("enabled", event.target.checked ? "true" : "false")} /></label>
+                      <div className="text-[9px] text-slate-500">Placement <span className="float-right font-mono text-slate-300">{String(primary.obj.placement ?? "auto").toUpperCase()}</span></div>
+                      <label className="flex items-center justify-between text-[10px] text-slate-400"><span>Locked</span><input type="checkbox" checked={Boolean(primary.obj.locked)} onChange={(event) => updateProperty("locked", event.target.checked ? "true" : "false")} /></label>
                     </>
                   )}
 

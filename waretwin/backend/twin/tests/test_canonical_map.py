@@ -140,3 +140,21 @@ class CanonicalMapTests(SimpleTestCase):
         self.assertTrue(any("duplicate uuid" in error for error in validate_canonical_layout(duplicate)))
         close = canonicalize_layout(base); close["navigation_tags"].append({"uuid": "b", "tag_id": 2, "floor_id": "F1", "x": 0.1, "y": 5, "z": 0, "yaw": 0})
         self.assertTrue(any("minimum separation" in error for error in validate_canonical_layout(close)))
+
+    def test_navigation_edges_validate_identity_floor_direction_and_cost(self):
+        layout = {
+            "size": {"width": 20, "depth": 10},
+            "floors": [{"id": "F1"}],
+            "aisles": [{"id": "A", "floor_id": "F1", "centerline": [[1, 5], [19, 5]], "width": 2}],
+            "navigation_tags": [
+                {"uuid": "t1", "tag_id": 1, "floor_id": "F1", "x": 2, "y": 5, "yaw": 0},
+                {"uuid": "t2", "tag_id": 2, "floor_id": "F1", "x": 8, "y": 5, "yaw": 0},
+            ],
+            "navigation_edges": [{"uuid": "e1", "from_tag_uuid": "t1", "to_tag_uuid": "t2", "aisle_id": "A", "floor_id": "F1", "distance": 6, "cost": 6, "direction": "forward"}],
+        }
+        self.assertEqual(validate_canonical_layout(layout), [])
+        bad = canonicalize_layout(layout)
+        bad["navigation_edges"][0]["to_tag_uuid"] = "missing"
+        bad["navigation_edges"][0]["cost"] = 0
+        self.assertTrue(any("missing tag" in error for error in validate_canonical_layout(bad)))
+        self.assertTrue(any("invalid cost" in error for error in validate_canonical_layout(bad)))

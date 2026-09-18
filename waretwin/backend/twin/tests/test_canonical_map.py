@@ -55,3 +55,13 @@ class CanonicalMapTests(SimpleTestCase):
     def test_coordinate_convention_is_explicit(self):
         self.assertEqual(warehouse_to_three(1, 2, 3), (1.0, 3.0, 2.0))
         self.assertEqual(warehouse_to_ros(1, 2, 3), (1.0, 2.0, 3.0))
+
+    def test_aisle_centerline_and_width_are_validated(self):
+        layout = {
+            "size": {"width": 20, "depth": 20},
+            "floors": [{"id": 1}],
+            "aisles": [{"id": "a-1", "floor_id": 1, "centerline": [{"x": 2, "y": 2}, {"x": 18, "y": 2}], "width": 2}],
+        }
+        self.assertEqual(validate_canonical_layout(layout), [])
+        layout["aisles"][0]["width"] = 0
+        self.assertTrue(any("width must be positive" in error for error in validate_canonical_layout(layout)))

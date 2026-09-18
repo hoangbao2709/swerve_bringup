@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { STATUS_COLOR, layout, useStore } from "../../state/store";
 import { buildNavGrid } from "../../layout/navgrid";
 import { getEngine } from "../../simulation/runner";
@@ -20,6 +20,9 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
     try { window.localStorage.setItem("waretwin.map-theme", theme); } catch { /* storage is optional */ }
   }, [theme]);
   const light = theme === "light";
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const mapColors = light
     ? { floor: "#f8fafc", hole: "#cbd5e1", grid: "#cbd5e1", blocked: "#94a3b8", rack: "#e2e8f0", rackText: "#0f172a", robotStroke: "#0f172a", label: "#0f172a", border: "#64748b" }
     : { floor: "#0a1020", hole: "#020617", grid: "#16213a", blocked: "#334155", rack: "#0b1220", rackText: "#e2e8f0", robotStroke: "#05080f", label: "#f8fafc", border: "#334155" };
@@ -105,12 +108,58 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
     return `rgb(${Math.round(r0 + (r1 - r0) * k)},${Math.round(g0 + (g1 - g0) * k)},${Math.round(b0 + (b1 - b0) * k)})`;
   };
 
+  const baseView = { x: -2, y: -7, width: W + 4, height: D + 10 };
+  const zoomBy = (factor: number) => setZoom((value) => Math.max(0.5, Math.min(4, value * factor)));
+  const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+  const beginPan = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (event.button !== 1 && !(event.button === 0 && event.shiftKey)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setPanDrag({ x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const movePan = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (!panDrag) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const visibleWidth = baseView.width / zoom;
+    const visibleHeight = baseView.height / zoom;
+    setPan({
+      x: panDrag.panX - ((event.clientX - panDrag.x) / Math.max(1, rect.width)) * visibleWidth,
+      y: panDrag.panY - ((event.clientY - panDrag.y) / Math.max(1, rect.height)) * visibleHeight,
+    });
+  };
+  const endPan = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (panDrag && event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setPanDrag(null);
+  };
+  const zoomWheel = (event: ReactWheelEvent<SVGSVGElement>) => {
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const fractionX = (event.clientX - rect.left) / Math.max(1, rect.width);
+    const fractionY = (event.clientY - rect.top) / Math.max(1, rect.height);
+    const oldZoom = zoom;
+    const nextZoom = Math.max(0.5, Math.min(4, oldZoom * (event.deltaY < 0 ? 1.12 : 0.89)));
+    if (nextZoom === oldZoom) return;
+    const oldWidth = baseView.width / oldZoom, oldHeight = baseView.height / oldZoom;
+    const worldX = baseView.x + pan.x + fractionX * oldWidth;
+    const worldY = baseView.y + pan.y + fractionY * oldHeight;
+    const nextWidth = baseView.width / nextZoom, nextHeight = baseView.height / nextZoom;
+    setZoom(nextZoom);
+    setPan({ x: worldX - baseView.x - fractionX * nextWidth, y: worldY - baseView.y - fractionY * nextHeight });
+  };
+
   return (
     <div className={`map2d-shell ${light ? "map2d-light" : "map2d-dark"}`} style={size ? { width: "100%", height: "100%" } : undefined}>
       <button type="button" className="map2d-theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} aria-label={`Switch to ${light ? "dark" : "light"} map`}>
         {light ? "☾ Dark" : "☀ Light"}
       </button>
-      <svg className="map2d-canvas" viewBox={`-2 -7 ${W + 4} ${D + 10}`} preserveAspectRatio="xMidYMid meet" onClick={() => selectShelf(null)}>
+      <div className="map-view-controls" aria-label="Map view controls">
+        <button type="button" onClick={() => zoomBy(1.2)} aria-label="Zoom in">+</button>
+        <span>{Math.round(zoom * 100)}%</span>
+        <button type="button" onClick={() => zoomBy(0.833333)} aria-label="Zoom out">−</button>
+        <button type="button" onClick={resetView} aria-label="Reset map view">⌂</button>
+      </div>
+      <svg className={`map2d-canvas${panDrag ? " is-panning" : ""}`} viewBox={`${baseView.x + pan.x} ${baseView.y + pan.y} ${baseView.width / zoom} ${baseView.height / zoom}`} preserveAspectRatio="xMidYMid meet" onClick={() => selectShelf(null)} onPointerDown={beginPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan} onWheel={zoomWheel}>
       <polygon points={polygonPoints(boundary)} fill={mapColors.floor} stroke={mapColors.border} strokeWidth="0.4" />
       {activeFloor?.holes?.map((hole, index) => <polygon key={`floor-hole-${index}`} points={polygonPoints(hole)} fill={mapColors.hole} stroke={mapColors.border} strokeWidth="0.25" />)}
       {/* 格線 */}

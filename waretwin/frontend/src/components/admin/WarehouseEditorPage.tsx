@@ -1012,6 +1012,15 @@ function EditorScene3D({
   snapStep: number | null;
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    try { return typeof window !== "undefined" && window.localStorage.getItem("waretwin.3d-theme") === "light" ? "light" : "dark"; } catch { return "dark"; }
+  });
+  useEffect(() => { try { window.localStorage.setItem("waretwin.3d-theme", theme); } catch { /* storage is optional */ } }, [theme]);
+  const zoom = (inward: boolean) => {
+    if (inward) controlsRef.current?.dollyIn(1.25);
+    else controlsRef.current?.dollyOut(1.25);
+    controlsRef.current?.update();
+  };
 
   const items = useMemo(() => {
     const entries: [Kind, any[]][] = [];
@@ -1027,6 +1036,7 @@ function EditorScene3D({
   }, [draft, layerOrder]);
 
   return (
+    <div className={`editor-3d-shell ${theme === "light" ? "editor-3d-light" : "editor-3d-dark"}`}>
     <Canvas
       camera={{
         position: [draft.size.width / 2, 55, draft.size.depth + 35],
@@ -1036,6 +1046,7 @@ function EditorScene3D({
       style={{ cursor: "grab" }}
       onPointerMissed={() => onSelect({ kind: "zone", id: "__clear__" }, false)}
     >
+      <color attach="background" args={[theme === "light" ? "#eaf1f8" : "#05080f"]} />
       <ambientLight intensity={0.55} />
       <directionalLight position={[40, 60, 20]} intensity={1.4} castShadow />
 
@@ -1047,7 +1058,7 @@ function EditorScene3D({
           const holeShape = new THREE.Path((hole as Array<[number, number] | { x: number; y: number }>).map((p) => { const [x, y] = xy(p); return new THREE.Vector2(x, -y); }));
           shape.holes.push(holeShape);
         }
-        return <mesh key={`floor-${item.id}`} geometry={new THREE.ShapeGeometry(shape)} rotation-x={-Math.PI / 2} position={[0, item.elevation - 0.05, 0]} onPointerDown={(e) => e.stopPropagation()}><meshStandardMaterial color="#0b1220" /></mesh>;
+        return <mesh key={`floor-${item.id}`} geometry={new THREE.ShapeGeometry(shape)} rotation-x={-Math.PI / 2} position={[0, item.elevation - 0.05, 0]} onPointerDown={(e) => e.stopPropagation()}><meshStandardMaterial color={theme === "light" ? "#dce6f0" : "#0b1220"} /></mesh>;
       })}
 
       <Grid
@@ -1102,6 +1113,12 @@ function EditorScene3D({
         enabled
       />
     </Canvas>
+    <div className="editor-3d-view-controls" aria-label="Editor 3D view controls">
+      <button type="button" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} aria-label="Toggle editor 3D theme">{theme === "light" ? "☾" : "☀"}</button>
+      <button type="button" onClick={() => zoom(true)} aria-label="Zoom in editor 3D">+</button>
+      <button type="button" onClick={() => zoom(false)} aria-label="Zoom out editor 3D">−</button>
+    </div>
+    </div>
   );
 }
 
@@ -1929,6 +1946,12 @@ function Editor2DMap({
       >
         {lightMap ? "☾ Dark" : "☀ Light"}
       </button>
+      <div className="editor-map-view-controls" aria-label="Editor 2D view controls">
+        <button type="button" onClick={() => setZoom((value) => Math.min(4, value * 1.2))} aria-label="Zoom in editor map">+</button>
+        <span>{Math.round(zoom * 100)}%</span>
+        <button type="button" onClick={() => setZoom((value) => Math.max(0.65, value * 0.833333))} aria-label="Zoom out editor map">−</button>
+        <button type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} aria-label="Reset editor map view">⌂</button>
+      </div>
       <svg
         ref={hostRef}
         viewBox={`${pan.x} ${pan.y} ${viewW / zoom} ${viewH / zoom}`}

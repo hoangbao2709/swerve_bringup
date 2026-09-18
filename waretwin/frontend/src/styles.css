@@ -259,6 +259,13 @@
 .scene-toolbar button { width: 40px; height: 36px; border-radius: 6px; color: var(--muted); display: flex; align-items: center; justify-content: center; }
 .scene-toolbar button.on { background: #1e3a8a; color: #fff; }
 .scene-toolbar button:hover { color: var(--text); }
+.scene3d-shell { position: relative; width: 100%; height: 100%; min-height: 0; background: #05080f; }
+.scene3d-shell.scene3d-light { background: #eaf1f8; }
+.scene-view-controls { position: absolute; top: 56px; right: 12px; z-index: 135; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid #475569; border-radius: 8px; background: rgba(15,23,42,.92); box-shadow: 0 4px 12px rgba(0,0,0,.25); }
+.scene-view-controls button { width: 28px; height: 28px; border: 1px solid #475569; border-radius: 5px; background: transparent; color: #f8fafc; font-size: 17px; line-height: 1; }
+.scene-view-controls button:hover { border-color: #38bdf8; background: rgba(56,189,248,.12); }
+.scene3d-light .scene-view-controls { border-color: #94a3b8; background: rgba(255,255,255,.95); }
+.scene3d-light .scene-view-controls button { border-color: #94a3b8; color: #0f172a; }
 .shelf-selection-card { position: absolute; left: 50%; bottom: 66px; transform: translateX(-50%); z-index: 120; min-width: 290px; padding: 10px 12px 12px; border: 1px solid rgba(34,211,238,.38); border-radius: 9px; background: rgba(7,13,22,.95); box-shadow: 0 12px 28px rgba(0,0,0,.38), 0 0 0 1px rgba(34,211,238,.06) inset; backdrop-filter: blur(8px); color: #e5e7eb; font-family: var(--mono); pointer-events: auto; }
 .shelf-selection-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:5px; color:#67e8f9; font-size:9px; font-weight:800; letter-spacing:.16em; }
 .shelf-selection-head button { width:24px; height:24px; display:grid; place-items:center; border:1px solid #263449; border-radius:5px; color:#94a3b8; background:#0a101a; font-size:17px; line-height:1; }
@@ -512,6 +519,15 @@ table.dt tbody tr:hover td { background: var(--panel-2); }
   color: #0f172a;
 }
 .map2d-theme-toggle:hover { border-color: #38bdf8; }
+.map-view-controls { position: absolute; right: 10px; bottom: 12px; z-index: 6; display: flex; align-items: center; gap: 3px; padding: 4px; border: 1px solid #475569; border-radius: 8px; background: rgba(15,23,42,.92); box-shadow: 0 4px 12px rgba(0,0,0,.25); }
+.map-view-controls button { width: 27px; height: 27px; border: 1px solid #475569; border-radius: 5px; background: transparent; color: #f8fafc; font-size: 17px; line-height: 1; }
+.map-view-controls button:hover { border-color: #38bdf8; background: rgba(56,189,248,.12); }
+.map-view-controls span { min-width: 42px; color: #cbd5e1; font: 10px var(--mono); text-align: center; }
+.map2d-light .map-view-controls { border-color: #94a3b8; background: rgba(255,255,255,.95); }
+.map2d-light .map-view-controls button { border-color: #94a3b8; color: #0f172a; }
+.map2d-light .map-view-controls span { color: #0f172a; }
+.map2d-canvas { cursor: default; touch-action: none; }
+.map2d-canvas.is-panning { cursor: grabbing; }
 /* The overview viewport already has a toolbar in this corner. Keep the map
  * theme control below it so it remains clickable when Settings is open. */
 .viewport .map2d-theme-toggle { top: 56px; }
@@ -520,6 +536,21 @@ table.dt tbody tr:hover td { background: var(--panel-2); }
 .editor-map-theme-toggle { position: absolute; top: 10px; right: 12px; z-index: 25; border: 1px solid #475569; border-radius: 7px; padding: 6px 9px; background: rgba(15,23,42,.94); color: #f8fafc; box-shadow: 0 4px 12px rgba(0,0,0,.25); font-size: 11px; font-weight: 700; line-height: 1; cursor: pointer; }
 .editor-map-light .editor-map-theme-toggle { border-color: #94a3b8; background: rgba(255,255,255,.96); color: #0f172a; }
 .editor-map-theme-toggle:hover { border-color: #38bdf8; }
+.editor-map-view-controls { position: absolute; right: 12px; bottom: 12px; z-index: 25; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid #475569; border-radius: 8px; background: rgba(15,23,42,.92); box-shadow: 0 4px 12px rgba(0,0,0,.25); }
+.editor-map-view-controls button { width: 28px; height: 28px; border: 1px solid #475569; border-radius: 5px; background: transparent; color: #f8fafc; font-size: 17px; line-height: 1; }
+.editor-map-view-controls button:hover { border-color: #38bdf8; background: rgba(56,189,248,.12); }
+.editor-map-view-controls span { min-width: 42px; color: #cbd5e1; font: 10px var(--mono); text-align: center; }
+.editor-map-light .editor-map-view-controls { border-color: #94a3b8; background: rgba(255,255,255,.95); }
+.editor-map-light .editor-map-view-controls button { border-color: #94a3b8; color: #0f172a; }
+.editor-map-light .editor-map-view-controls span { color: #0f172a; }
+.editor-3d-shell { position: relative; width: 100%; height: 100%; min-height: 0; background: #05080f; }
+.editor-3d-shell.editor-3d-light { background: #eaf1f8; }
+.editor-3d-shell > canvas { width: 100% !important; height: 100% !important; display: block; }
+.editor-3d-view-controls { position: absolute; top: 10px; right: 12px; z-index: 25; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid #475569; border-radius: 8px; background: rgba(15,23,42,.92); box-shadow: 0 4px 12px rgba(0,0,0,.25); }
+.editor-3d-view-controls button { width: 28px; height: 28px; border: 1px solid #475569; border-radius: 5px; background: transparent; color: #f8fafc; font-size: 17px; line-height: 1; }
+.editor-3d-view-controls button:hover { border-color: #38bdf8; background: rgba(56,189,248,.12); }
+.editor-3d-light .editor-3d-view-controls { border-color: #94a3b8; background: rgba(255,255,255,.95); }
+.editor-3d-light .editor-3d-view-controls button { border-color: #94a3b8; color: #0f172a; }
 .placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: var(--muted); }
 .placeholder b { color: var(--text); font-size: 16px; }
 .placeholder .ph { font-family: var(--mono); font-size: 11px; color: var(--faint); }

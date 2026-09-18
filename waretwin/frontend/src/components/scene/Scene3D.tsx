@@ -95,20 +95,21 @@ function CanvasSizeSync({ size }: { size: { width: number; height: number } }) {
 }
 
 /** 背景、霧、以及程序化的環境貼圖 (RoomEnvironment，不需下載 HDR，離線可用) */
-function Background({ env = true }: { env?: boolean }) {
+function Background({ env = true, light = false }: { env?: boolean; light?: boolean }) {
   const { scene, gl } = useThree();
   useEffect(() => {
-    scene.background = new THREE.Color("#05080f"); scene.fog = new THREE.Fog("#05080f", 120, 260);
+    const background = light ? "#eaf1f8" : "#05080f";
+    scene.background = new THREE.Color(background); scene.fog = new THREE.Fog(background, 120, 260);
     if (!env) return;
     const pmrem = new THREE.PMREMGenerator(gl);
     const tex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     scene.environment = tex; scene.environmentIntensity = 0.35;
     return () => { scene.environment = null; tex.dispose(); pmrem.dispose(); };
-  }, [scene, gl, env]);
+  }, [scene, gl, env, light]);
   return null;
 }
 
-export function SceneContent({ quality, lite = false }: { quality: "low" | "medium" | "high"; lite?: boolean }) {
+export function SceneContent({ quality, lite = false, theme = "dark" }: { quality: "low" | "medium" | "high"; lite?: boolean; theme?: "dark" | "light" }) {
   const W = layout.size.width, D = layout.size.depth;
   const af = useStore((s) => s.activeFloor);
   const showLights = useStore((s) => s.showLights);
@@ -117,10 +118,10 @@ export function SceneContent({ quality, lite = false }: { quality: "low" | "medi
   const f2 = layout.floors?.find((f) => sameFloor(f.id, canonicalFloorId(layout, 2)));
   return (
     <>
-      <Background env={!lite} />
+      <Background env={!lite} light={theme === "light"} />
       <Lights quality={lite ? "low" : quality} visible={showLights} />
       <group visible={activeFloor === "all" || activeFloor === "exploded" || activeFloor === 1}>
-        <WarehouseShell lite={lite} />
+        <WarehouseShell lite={lite} light={theme === "light"} />
         <RackInstances castShadow={!lite && quality !== "low"} floor={1} labels={!lite} />
         <Fixtures lite={lite} />
       </group>
@@ -181,8 +182,17 @@ export function Scene3D({ size, measurePoints = [], onMeasurePoint }: { size: { 
   const selectShelf = useStore((s) => s.selectShelf);
   const controls = useRef<OrbitControlsImpl>(null!);
   const [fps, setFps] = useState(0);
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    try { return typeof window !== "undefined" && window.localStorage.getItem("waretwin.3d-theme") === "light" ? "light" : "dark"; } catch { return "dark"; }
+  });
+  useEffect(() => { try { window.localStorage.setItem("waretwin.3d-theme", theme); } catch { /* storage is optional */ } }, [theme]);
+  const zoom = (inward: boolean) => {
+    if (inward) controls.current?.dollyIn(1.25);
+    else controls.current?.dollyOut(1.25);
+    controls.current?.update();
+  };
   return (
-    <>
+    <div className={`scene3d-shell ${theme === "light" ? "scene3d-light" : "scene3d-dark"}`}>
       <Canvas
         resize={{ scroll: false, debounce: 0 }}
         style={{ width: "100%", height: "100%", display: "block" }}
@@ -193,7 +203,7 @@ export function Scene3D({ size, measurePoints = [], onMeasurePoint }: { size: { 
         onPointerMissed={() => { if (tool === "select") { select(null); selectShelf(null); } }}
       >
         <CanvasSizeSync size={size} />
-        <SceneContent quality={quality} />
+        <SceneContent quality={quality} theme={theme} />
         <MeasureGround enabled={tool === "measure"} onPoint={onMeasurePoint ?? (() => {})} />
         {tool === "measure" && <MeasureOverlay points={measurePoints} />}
         <OrbitControls ref={controls} target={[W / 2, 0, D / 2 - 2]} maxPolarAngle={Math.PI / 2.15} minDistance={8} maxDistance={200} enableDamping dampingFactor={0.08} enablePan mouseButtons={tool === "pan" ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE } : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }} />
@@ -212,7 +222,12 @@ export function Scene3D({ size, measurePoints = [], onMeasurePoint }: { size: { 
           </EffectComposer>
         )}
       </Canvas>
+      <div className="scene-view-controls" aria-label="3D view controls">
+        <button type="button" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} aria-label="Toggle 3D theme">{theme === "light" ? "☾" : "☀"}</button>
+        <button type="button" onClick={() => zoom(true)} aria-label="Zoom in 3D">+</button>
+        <button type="button" onClick={() => zoom(false)} aria-label="Zoom out 3D">−</button>
+      </div>
       <div className="fps">{fps} FPS · {quality.toUpperCase()}</div>
-    </>
+    </div>
   );
 }

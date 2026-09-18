@@ -3,20 +3,20 @@ import * as THREE from "three";
 import { layout } from "../../state/store";
 
 /** 地板、外牆、柱子、屋頂桁架、碼頭門、燈具 */
-export function WarehouseShell({ lite = false }: { lite?: boolean }) {
+export function WarehouseShell({ lite = false, light = false }: { lite?: boolean; light?: boolean }) {
   const { width: W, depth: D, height: H } = layout.size;
   const floorTex = useMemo(() => {
     const c = document.createElement("canvas"); c.width = c.height = 512;
     const g = c.getContext("2d")!;
-    g.fillStyle = "#1b2230"; g.fillRect(0, 0, 512, 512);
+    g.fillStyle = light ? "#dce6f0" : "#1b2230"; g.fillRect(0, 0, 512, 512);
     // 細緻噪點
     for (let i = 0; i < 9000; i++) { g.fillStyle = `rgba(255,255,255,${Math.random() * 0.045})`; g.fillRect(Math.random() * 512, Math.random() * 512, 2, 2); }
     // 格線 (每 1m，一格 = 512/8 px => texture repeat 每 8 m)
-    g.strokeStyle = "rgba(120,140,170,0.18)"; g.lineWidth = 1.5;
+    g.strokeStyle = light ? "rgba(71,85,105,0.22)" : "rgba(120,140,170,0.18)"; g.lineWidth = 1.5;
     for (let i = 0; i <= 8; i++) { const p = (i * 512) / 8; g.beginPath(); g.moveTo(p, 0); g.lineTo(p, 512); g.moveTo(0, p); g.lineTo(512, p); g.stroke(); }
     const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(W / 8, D / 8); t.anisotropy = 8; t.colorSpace = THREE.SRGBColorSpace;
     return t;
-  }, [W, D]);
+  }, [W, D, light]);
 
   // round-9d：柱位不再程序生成（舊版會把柱子長在輸送帶與中央走道上、且導航網格不知道）。
   // 單一事實來源 = layout.obstacles（kind PILLAR），F1 網格用同一份資料封鎖 —— 視覺與路徑永遠一致。

@@ -182,60 +182,62 @@ export function TopBar() {
         <span className="brand-sub">Warehouse Digital Twin</span>
       </div>
 
-      <span
-        className={
-          "badge-live " +
-          (paused ? "paused" : mode === "WHATIF" ? "whatif" : "live")
-        }
-      >
+      <div className="topbar-statuses" aria-label="System status">
         <span
-          className="dot"
-          style={{
-            background: "currentColor",
-            width: 6,
-            height: 6,
-          }}
-        />
-        {paused ? "PAUSED" : mode === "WHATIF" ? "SIMULATION" : "LIVE"}
-      </span>
+          className={
+            "badge-live " +
+            (paused ? "paused" : mode === "WHATIF" ? "whatif" : "live")
+          }
+        >
+          <span
+            className="dot"
+            style={{
+              background: "currentColor",
+              width: 6,
+              height: 6,
+            }}
+          />
+          {paused ? "PAUSED" : mode === "WHATIF" ? "SIMULATION" : "LIVE"}
+        </span>
 
-      <span className="badge-src online" title={`ROS bridge ${rosConnected ? "connected" : "offline"}; Nav2 ${nav2State}`}>
-        <span className="dot" style={{ background: rosConnected || runtimeMode === "LOCAL_SIM" ? "currentColor" : "#f87171", width: 6, height: 6 }} />
-        {runtimeMode.replace("_", " ")}
-      </span>
+        <span className="badge-src online" title={`ROS bridge ${rosConnected ? "connected" : "offline"}; Nav2 ${nav2State}`}>
+          <span className="dot" style={{ background: rosConnected || runtimeMode === "LOCAL_SIM" ? "currentColor" : "#f87171", width: 6, height: 6 }} />
+          {runtimeMode.replace("_", " ")}
+        </span>
 
-      <span
-        className={"badge-src " + source}
-        title={
-          source === "online"
-            ? "Connected to Django backend (Channels WebSocket)"
+        <span
+          className={"badge-src " + source}
+          title={
+            source === "online"
+              ? "Connected to Django backend (Channels WebSocket)"
+              : source === "local"
+                ? "Frontend demo mode — local simulation engine"
+                : source === "offline"
+                  ? "Django backend unreachable — state is frozen at the last confirmed value"
+                  : source === "unauthorized"
+                    ? "Backend authentication failed"
+                    : "Connecting to Django backend…"
+          }
+        >
+          <span
+            className="dot"
+            style={{
+              background: "currentColor",
+              width: 6,
+              height: 6,
+            }}
+          />
+          {source === "online"
+            ? "BACKEND"
             : source === "local"
-              ? "Frontend demo mode — local simulation engine"
+              ? "LOCAL"
               : source === "offline"
-                ? "Django backend unreachable — state is frozen at the last confirmed value"
+                ? "OFFLINE"
                 : source === "unauthorized"
-                  ? "Backend authentication failed"
-                  : "Connecting to Django backend…"
-        }
-      >
-        <span
-          className="dot"
-          style={{
-            background: "currentColor",
-            width: 6,
-            height: 6,
-          }}
-        />
-        {source === "online"
-          ? "BACKEND"
-          : source === "local"
-            ? "LOCAL"
-            : source === "offline"
-              ? "OFFLINE"
-              : source === "unauthorized"
-                ? "AUTH"
-                : "CONNECTING"}
-      </span>
+                  ? "AUTH"
+                  : "CONNECTING"}
+        </span>
+      </div>
 
       <div className="topbar-right">
         <div className="sim-controls" title="Simulation controls">
@@ -353,7 +355,7 @@ export function TopBar() {
         {/* USER ACCOUNT */}
         <div
           ref={userMenuRef}
-          className="relative"
+          className="topbar-user-anchor relative"
           onMouseEnter={() => setUserMenuOpen(true)}
           onMouseLeave={() => {
             setUserMenuOpen(false);

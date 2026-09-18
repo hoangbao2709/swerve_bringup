@@ -143,6 +143,17 @@
   :root { --side-l: 190px; --side-r: 240px; }
   .topbar-right .clock .d { display: none; }
 }
+@media (max-width: 1100px) {
+  .topbar { gap: 8px; padding: 0 12px; }
+  .topbar-statuses { gap: 5px; }
+  .topbar-statuses .badge-src { display: none; }
+  .topbar-right { gap: 8px; }
+}
+@media (max-width: 760px) {
+  .topbar { grid-template-columns: auto 1fr; }
+  .topbar-statuses { display: none; }
+  .topbar-right { grid-column: 2; }
+}
 @media (max-height: 820px) {
   .shell { grid-template-rows: 46px minmax(0, 1fr); }
   .shell-body { grid-template-rows: minmax(0, 1fr) clamp(180px, 26vh, 240px); }
@@ -151,10 +162,11 @@
 }
 
 /* ── TopBar ────────────────────────────────────── */
-.topbar { display: flex; align-items: center; padding: 0 18px; border-bottom: 1px solid var(--border); background: var(--panel); gap: 14px; }
+.topbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; padding: 0 18px; border-bottom: 1px solid var(--border); background: var(--panel); gap: 14px; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
 .brand .ai { color: var(--accent); font-weight: 800; margin-right: -10px; }
 .brand-sub { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 6px; letter-spacing: .02em; }
+.topbar-statuses { grid-column: 2; justify-self: center; display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; }
 .badge-live { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: .08em; padding: 3px 8px; border-radius: 4px; border: 1px solid; }
 .badge-live.live { color: var(--green); border-color: #14532d; background: #052e16; }
 .badge-live.paused { color: var(--muted); border-color: var(--border-strong); }
@@ -165,7 +177,8 @@
 .badge-src.connecting { color: var(--muted); border-color: var(--border-strong); }
 .badge-src.offline { color: #fb7185; border-color: #881337; background: #2b0b14; }
 .badge-src.unauthorized { color: #fda4af; border-color: #9f1239; background: #2b0b14; }
-.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+.topbar-right { grid-column: 3; margin-left: 0; display: flex; align-items: center; justify-content: flex-end; gap: 18px; min-width: 0; }
+.topbar-user-anchor { order: -1; }
 .clock { text-align: right; line-height: 1.2; }
 .clock .t { font-family: var(--mono); font-size: 15px; font-weight: 500; }
 .clock .d { font-size: 11px; color: var(--muted); }

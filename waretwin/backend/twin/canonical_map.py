@@ -228,8 +228,38 @@ def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
             if oid: ids.add(oid)
             floor_ref = obj.get('floor_id', obj.get('floor'))
             if floor_ref is not None and str(floor_ref) not in floor_ids: errors.append(f'{key} {oid}: invalid floor reference')
-    tag_ids = [str(t.get('tag_id')) for t in doc.get('navigation_tags', []) if t.get('tag_id') is not None]
-    if len(tag_ids) != len(set(tag_ids)): errors.append('navigation_tags: duplicate tag_id')
+    tag_ids: set[int] = set()
+    tag_uuids: set[str] = set()
+    parsed_tags: list[tuple[dict[str, Any], str, tuple[float, float]]] = []
+    for tag in doc.get('navigation_tags', []):
+        uid = str(tag.get('uuid') or '')
+        if not uid: errors.append('navigation_tags: missing uuid')
+        elif uid in tag_uuids: errors.append('navigation_tags: duplicate uuid')
+        tag_uuids.add(uid)
+        try: tag_id = int(tag.get('tag_id'))
+        except (TypeError, ValueError): errors.append('navigation_tags: invalid tag_id'); tag_id = -1
+        if tag_id < 0: errors.append('navigation_tags: invalid tag_id')
+        elif tag_id in tag_ids: errors.append('navigation_tags: duplicate tag_id')
+        tag_ids.add(tag_id)
+        fid = str(tag.get('floor_id', 1))
+        if fid not in floor_ids: errors.append(f'navigation_tags {uid or tag_id}: invalid floor reference'); continue
+        try:
+            x, y, z, yaw = float(tag.get('x')), float(tag.get('y')), float(tag.get('z', 0)), float(tag.get('yaw'))
+        except (TypeError, ValueError): errors.append(f'navigation_tags {uid or tag_id}: invalid x/y/z/yaw'); continue
+        if not all(math.isfinite(value) for value in (x, y, z, yaw)): errors.append(f'navigation_tags {uid or tag_id}: invalid x/y/z/yaw'); continue
+        boundary = floor_polys.get(fid, [])
+        floor = next((item for item in floors if str(item.get('id')) == fid), {})
+        holes = []
+        for hole in floor.get('holes') or []:
+            try: holes.append(points(hole))
+            except (TypeError, ValueError): pass
+        if boundary and not point_in_polygon((x, y), boundary, include_boundary=True): errors.append(f'navigation_tags {uid or tag_id}: outside floor')
+        if any(point_in_polygon((x, y), hole, include_boundary=True) for hole in holes): errors.append(f'navigation_tags {uid or tag_id}: inside hole')
+        parsed_tags.append((tag, fid, (x, y)))
+    for i, (_, fid, point) in enumerate(parsed_tags):
+        for other, other_fid, other_point in parsed_tags[i + 1:]:
+            if fid == other_fid and math.hypot(point[0] - other_point[0], point[1] - other_point[1]) < 0.25:
+                errors.append(f'navigation_tags: minimum separation violation ({parsed_tags[i][0].get("tag_id")}, {other.get("tag_id")})')
     for aisle in doc.get('aisles', []):
         aid = aisle.get('uuid') or aisle.get('id') or '?'
         centerline = aisle.get('centerline')

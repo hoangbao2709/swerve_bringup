@@ -2784,6 +2784,7 @@ export function WarehouseEditorPage() {
       if (!visibleLayers[kind] || lockedLayers[kind]) return;
 
       arr.forEach((obj) => {
+        if (["floor", "aisle", "navigation-tag"].includes(kind)) return;
         const box = get2DBox(kind, obj);
         const intersects = !(
           box.x + box.w < bounds.x ||
@@ -3230,6 +3231,7 @@ export function WarehouseEditorPage() {
     if (tagErrors.length) { setErrors(tagErrors); setStatus("TAG REGENERATION ABORTED"); return; }
     setErrors([]); commit(next, "SELECTED AISLE TAGS REGENERATED · UNSAVED");
   }
+
 
   function addManualTag(point?: Point) {
     const active = floor === "all" ? draft.floors[0] : draft.floors.find((item) => String(item.id) === String(floor));

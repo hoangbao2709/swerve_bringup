@@ -126,3 +126,17 @@ class CanonicalMapTests(SimpleTestCase):
         normalized = canonicalize_layout(layout)
         self.assertEqual(normalized["navigation_tags"][0]["logical_key"], "F1|A|spacing|5000:1000")
         self.assertEqual(normalized["navigation_tags"][0]["source_aisles"], ["A"])
+
+    def test_navigation_tags_validate_geometry_identity_and_separation(self):
+        base = {"size": {"width": 10, "depth": 10}, "floors": [{"id": "F1", "boundary": [[0, 0], [10, 0], [10, 10], [0, 10]], "holes": [[[4, 4], [6, 4], [6, 6], [4, 6]]]}]}
+        base["navigation_tags"] = [{"uuid": "a", "tag_id": 1, "floor_id": "F1", "x": 0.01, "y": 5, "z": 0, "yaw": 0}]
+        self.assertEqual(validate_canonical_layout(base), [])
+        for changed, needle in [
+            ({"x": 11}, "outside floor"), ({"x": 5, "y": 5}, "inside hole"), ({"floor_id": "NO"}, "invalid floor"), ({"uuid": ""}, "missing uuid"), ({"x": float("nan")}, "invalid x/y/z/yaw"),
+        ]:
+            layout = canonicalize_layout(base); layout["navigation_tags"][0].update(changed)
+            self.assertTrue(any(needle in error for error in validate_canonical_layout(layout)))
+        duplicate = canonicalize_layout(base); duplicate["navigation_tags"].append({"uuid": "a", "tag_id": 1, "floor_id": "F1", "x": 1, "y": 5, "z": 0, "yaw": 0})
+        self.assertTrue(any("duplicate uuid" in error for error in validate_canonical_layout(duplicate)))
+        close = canonicalize_layout(base); close["navigation_tags"].append({"uuid": "b", "tag_id": 2, "floor_id": "F1", "x": 0.1, "y": 5, "z": 0, "yaw": 0})
+        self.assertTrue(any("minimum separation" in error for error in validate_canonical_layout(close)))

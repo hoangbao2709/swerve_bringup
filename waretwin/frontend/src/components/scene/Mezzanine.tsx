@@ -10,11 +10,12 @@ import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { labelZIndexRange, layout, useStore } from "../../state/store";
 import type { LiftState } from "../../schema/twin_state";
+import { canonicalFloorId, sameFloor } from "../../layout/types";
 
 export const FLOOR_ELEV: Record<number, number> = new Proxy({} as Record<number, number>, {
   get: (_target, prop) => {
     const floor = Number(prop);
-    return layout.floors?.find((f) => f.id === floor)?.elevation ?? 0;
+    return layout.floors?.find((f) => sameFloor(f.id, canonicalFloorId(layout, floor)))?.elevation ?? 0;
   },
 });
 
@@ -34,7 +35,7 @@ const SHAFT_HALF = 1.9;        // 井道開口半寬（z 方向）
 
 export function Mezzanine({ lite = false }: { lite?: boolean }) {
   const COLUMNS = layout.columns ?? FALLBACK_COLUMNS;
-  const f2 = layout.floors.find((f) => f.id === 2);
+  const f2 = layout.floors.find((f) => sameFloor(f.id, canonicalFloorId(layout, 2)));
   if (!f2 || !f2.footprint) return null;
   const xs = f2.footprint.map((p) => p[0]), zs = f2.footprint.map((p) => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);

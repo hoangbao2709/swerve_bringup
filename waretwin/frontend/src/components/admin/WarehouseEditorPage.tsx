@@ -2476,6 +2476,8 @@ export function WarehouseEditorPage() {
   const [mode, setMode] = useState<Mode>("select");
   const [code, setCode] = useState(() => JSON.stringify(base, null, 2));
   const [status, setStatus] = useState("LOCAL DRAFT");
+  const [publishedVersion, setPublishedVersion] = useState<number | null>(null);
+  const [artifactStatus, setArtifactStatus] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [floor, setFloor] = useState<number | string | "all">(1);
@@ -2549,6 +2551,10 @@ export function WarehouseEditorPage() {
     const response = await apiFetch("/api/layout/draft");
     if (!response.ok) throw new Error(await response.text());
     const remote = await response.json();
+    const revision = Number(response.headers.get("x-layout-revision"));
+    if (Number.isFinite(revision)) useStore.setState({ layoutRevision: revision });
+    const version = Number(response.headers.get("x-layout-version"));
+    if (Number.isFinite(version)) setPublishedVersion(version);
     const normalized = normalizeDraft(remote);
     setDraft(normalized);
     setSelected([]);
@@ -3431,8 +3437,12 @@ export function WarehouseEditorPage() {
       setErrors([await response.text()]);
       return;
     }
-
+    const payload = await response.json().catch(() => ({} as Record<string, unknown>));
+    const revision = Number(payload.revision);
+    if (Number.isFinite(revision)) useStore.setState({ layoutRevision: revision });
+    if (Number.isFinite(Number(payload.published_version))) setPublishedVersion(Number(payload.published_version));
     setStatus("SAVED + SYNCED TO DB");
+    setArtifactStatus("");
   }
 
   function applyCode() {
@@ -3467,8 +3477,13 @@ export function WarehouseEditorPage() {
       setErrors([await response.text()]);
       return;
     }
-
-    setStatus("PUBLISHED · simulation reset");
+    const payload = await response.json().catch(() => ({} as Record<string, unknown>));
+    const revision = Number(payload.revision);
+    const version = Number(payload.published_version ?? payload.version);
+    if (Number.isFinite(revision)) useStore.setState({ layoutRevision: revision });
+    if (Number.isFinite(version)) setPublishedVersion(version);
+    setStatus(Number.isFinite(version) ? `PUBLISHED v${version}` : "PUBLISHED");
+    setArtifactStatus(payload.artifacts ? "ROS configs + Gazebo generated" : "");
     // The backend replaces the runtime engine on publish; fetch the authoritative FULL state immediately.
     wsSend({ type: "RESYNC" });
   }
@@ -3972,7 +3987,8 @@ export function WarehouseEditorPage() {
           <div className="hidden items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.025] px-2.5 py-1.5 xl:flex">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.7)]" />
             <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-emerald-300/80">
-              {status} · r{layoutRevision}{activeWarehouseId ? ` · WH#${activeWarehouseId}` : ""}
+              {status} · draft r{layoutRevision}{publishedVersion !== null ? ` · published v${publishedVersion}` : ""}{activeWarehouseId ? ` · WH#${activeWarehouseId}` : ""}
+              {artifactStatus ? ` · ${artifactStatus}` : ""}
             </span>
           </div>
 

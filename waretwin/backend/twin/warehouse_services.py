@@ -4,7 +4,8 @@ from typing import Any
 from django.db import transaction
 
 from .models import Warehouse, Zone, Shelf, NavigationTag, NavigationTagEdge
-from .canonical_map import canonicalize_layout
+from .canonical_map import canonicalize_layout, validate_canonical_layout
+from .map_artifacts import build_revision_artifacts, cleanup_artifact_dir
 
 
 def warehouse_to_dict(w: Warehouse, *, counts: bool = True) -> dict[str, Any]:
@@ -563,22 +564,55 @@ def save_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout: di
 def publish_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout: dict[str, Any] | None = None):
     from .models import WarehouseMap, WarehouseMapVersion
     layout = canonicalize_layout(layout, fallback_layout)
+    validation_errors = validate_canonical_layout(layout)
+    if validation_errors:
+        raise ValueError('; '.join(validation_errors[:20]))
     active = ensure_active_map(fallback_layout or layout)
-    warehouse = active.warehouse
-    with transaction.atomic():
-        sync_from_layout(layout, warehouse=warehouse, prune=True)
-        active.refresh_from_db()
-        active.layout = _deepcopy_json(layout)
-        active.draft = _deepcopy_json(layout)
-        active.revision = int(active.revision or 0) + 1
-        active.published_version = int(active.published_version or 0) + 1
-        active.updated_by = user if getattr(user, 'pk', None) else None
-        active.save()
-        WarehouseMapVersion.objects.create(
-            warehouse_map=active,
-            version=active.published_version,
-            revision=active.revision,
-            layout=_deepcopy_json(layout),
-            created_by=active.updated_by,
-        )
+    staging = final = None
+    moved = False
+    manifest = None
+    try:
+        with transaction.atomic():
+            locked = WarehouseMap.objects.select_for_update().select_related('warehouse').get(pk=active.pk)
+            next_revision = int(locked.revision or 0) + 1
+            next_version = int(locked.published_version or 0) + 1
+            # Build every external artifact while the map row is locked.  Any
+            # exporter failure therefore leaves both the DB and artifact tree
+            # untouched.
+            staging, final, manifest = build_revision_artifacts(
+                layout,
+                warehouse_id=locked.warehouse.code,
+                revision=next_revision,
+                published_version=next_version,
+            )
+            sync_from_layout(layout, warehouse=locked.warehouse, prune=True)
+            locked.layout = _deepcopy_json(layout)
+            locked.draft = _deepcopy_json(layout)
+            locked.revision = next_revision
+            locked.published_version = next_version
+            locked.updated_by = user if getattr(user, 'pk', None) else None
+            locked.save()
+            WarehouseMapVersion.objects.create(
+                warehouse_map=locked,
+                version=next_version,
+                revision=next_revision,
+                layout=_deepcopy_json(layout),
+                created_by=locked.updated_by,
+            )
+            # The destination is immutable and must not already exist.
+            final.parent.mkdir(parents=True, exist_ok=True)
+            if final.exists():
+                raise ValueError(f'artifact revision already exists: {final}')
+            import os
+            os.replace(staging, final)
+            staging = None
+            moved = True
+        active = locked
+    except Exception:
+        cleanup_artifact_dir(staging)
+        if moved:
+            cleanup_artifact_dir(final)
+        raise
+    active._artifact_manifest = manifest
+    active._artifact_dir = str(final)
     return active

@@ -82,5 +82,8 @@ if WARETWIN_RUNTIME_MODE not in WARETWIN_RUNTIME_MODES:
     )
 WARETWIN_ROS_BRIDGE_TOKEN = os.getenv('WARETWIN_ROS_BRIDGE_TOKEN', '')
 WARETWIN_ROS_HEARTBEAT_TIMEOUT_S = float(os.getenv('WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', '3.0'))
+# Immutable publish artifacts live outside the source/config tree.  Tests and
+# deployments may override this with a warehouse-specific volume.
+WARETWIN_ARTIFACT_ROOT = Path(os.getenv('WARETWIN_ARTIFACT_ROOT', str(BASE_DIR.parent.parent / 'generated' / 'maps')))
 
 print(f'WARETWIN runtime mode: {WARETWIN_RUNTIME_MODE}', flush=True)

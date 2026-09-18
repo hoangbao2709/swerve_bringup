@@ -1,9 +1,10 @@
 import copy
 import json
+import tempfile
 from pathlib import Path
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from twin.models import Warehouse, Zone, Shelf, WarehouseMap
 from twin.warehouse_services import (
@@ -49,9 +50,10 @@ class WarehouseMapSyncTests(TestCase):
 
     def test_editor_publish_creates_version(self):
         doc = copy.deepcopy(self.map.layout)
-        published = publish_layout_to_map(doc, user=self.user, fallback_layout=self.layout)
-        self.assertEqual(published.published_version, 1)
-        self.assertEqual(published.versions.count(), 1)
+        with tempfile.TemporaryDirectory() as tmp, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tmp)):
+            published = publish_layout_to_map(doc, user=self.user, fallback_layout=self.layout)
+            self.assertEqual(published.published_version, 1)
+            self.assertEqual(published.versions.count(), 1)
 
     def test_each_warehouse_has_independent_map(self):
         other = Warehouse.objects.create(

@@ -501,6 +501,7 @@ def layout_draft(request):
         response = JsonResponse(canonicalize_layout(active.layout))
         response['X-Warehouse-Id'] = str(active.warehouse_id)
         response['X-Layout-Revision'] = str(active.revision)
+        response['X-Layout-Version'] = str(active.published_version)
         return response
 
     conflict = _layout_revision_conflict(request, active)
@@ -518,7 +519,8 @@ def layout_draft(request):
     _broadcast_layout_update(active, 'WAREHOUSE_EDITOR_SAVE')
     return JsonResponse({
         'ok': True, 'status': 'SYNCED', 'layout_id': body.get('id'),
-        'revision': active.revision, 'warehouse_id': active.warehouse_id,
+        'revision': active.revision, 'published_version': active.published_version,
+        'warehouse_id': active.warehouse_id,
     })
 
 
@@ -538,11 +540,19 @@ def layout_publish(request):
         active = publish_layout_to_map(body, user=request.api_user, fallback_layout=runtime.layout)
     except IntegrityError as exc:
         return _error(f'layout/master-data conflict: {exc}', 409)
+    except ValueError as exc:
+        return _error(str(exc), 400)
+    except Exception as exc:
+        # Artifact generation is part of publishing.  Do not report a
+        # successful DB publish when an external artifact failed.
+        return _error(f'publish artifacts failed: {exc}', 500)
     _audit(request.api_user, 'PUBLISH_LAYOUT', f"{body.get('name', 'warehouse')}@{active.published_version}")
     _broadcast_layout_update(active, 'WAREHOUSE_EDITOR_PUBLISH')
     return JsonResponse({
         'ok': True, 'status': 'PUBLISHED', 'version': active.published_version,
-        'revision': active.revision, 'warehouse_id': active.warehouse_id,
+        'published_version': active.published_version, 'revision': active.revision,
+        'warehouse_id': active.warehouse_id,
+        'artifacts': getattr(active, '_artifact_manifest', None),
         'simulation_reset': True,
     })
 
@@ -551,12 +561,15 @@ def layout_publish(request):
 @require_http_methods(['GET'])
 def layout_versions(request):
     active = ensure_active_map(runtime.layout)
+    from .map_artifacts import artifact_root
+    artifact_base = artifact_root() / re.sub(r'[^A-Za-z0-9_.-]+', '_', str(active.warehouse.code)).strip('._-')
     return JsonResponse([
         {
             'version': row.version,
             'revision': row.revision,
             'created_at': row.created_at.isoformat(),
             'created_by': row.created_by.username if row.created_by else None,
+            'artifacts': str(artifact_base / str(row.revision)) if (artifact_base / str(row.revision)).is_dir() else None,
         }
         for row in active.versions.all()[:100]
     ], safe=False)

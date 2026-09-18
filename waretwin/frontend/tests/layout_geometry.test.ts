@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAisleFootprint, polygonContainedInFloor, validateAisleCenterline, validateFloorPolygon } from "../src/layout/geometry";
+import { buildAisleFootprint, polygonContainedInFloor, snapCoordinate, snapPoint, validateAisleCenterline, validateFloorPolygon } from "../src/layout/geometry";
 
 const p = (x: number, y: number) => ({ x, y });
 
@@ -26,5 +26,11 @@ describe("floor and aisle geometry", () => {
     expect(polygonContainedInFloor(buildAisleFootprint([p(2, 0.5), p(18, 0.5)], 2), floor)).toBe(false);
     expect(polygonContainedInFloor(buildAisleFootprint([p(2, 10), p(18, 10)], 2), floor, [hole])).toBe(false);
     expect(polygonContainedInFloor(buildAisleFootprint([p(2, 2), p(2, 6), p(6, 6)], 2), floor)).toBe(true);
+  });
+
+  it("uses the configured snap step and leaves coordinates untouched when snapping is off", () => {
+    expect(snapCoordinate(12.347, null)).toBe(12.347);
+    expect(snapCoordinate(12.347, 0.05)).toBeCloseTo(12.35);
+    expect(snapPoint(p(12.347, 8.223), 0.5)).toEqual(p(12.5, 8));
   });
 });

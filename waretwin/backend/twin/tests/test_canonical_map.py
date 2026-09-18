@@ -103,3 +103,26 @@ class CanonicalMapTests(SimpleTestCase):
             ],
         }
         self.assertEqual(validate_canonical_layout(layout), [])
+
+    def test_navigation_tag_generation_metadata_is_preserved(self):
+        layout = {
+            "size": {"width": 10, "depth": 10},
+            "floors": [{"id": "F1"}],
+            "navigation_tags": [{
+                "uuid": "tag-F1-A-spacing-5000-1000",
+                "tag_id": 1005,
+                "floor_id": "F1",
+                "x": 5.0,
+                "y": 1.0,
+                "placement": "manual",
+                "locked": True,
+                "logical_key": "F1|A|spacing|5000:1000",
+                "generated_from": "A",
+                "source_aisles": ["A"],
+                "semantic_role": "spacing",
+                "distance_along_aisle": 5.0,
+            }],
+        }
+        normalized = canonicalize_layout(layout)
+        self.assertEqual(normalized["navigation_tags"][0]["logical_key"], "F1|A|spacing|5000:1000")
+        self.assertEqual(normalized["navigation_tags"][0]["source_aisles"], ["A"])

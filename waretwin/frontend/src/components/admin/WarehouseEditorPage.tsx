@@ -9,7 +9,7 @@ import { DEMO_MODE } from "../../config";
 import { useStore } from "../../state/store";
 import type { WarehouseLayout } from "../../layout/types";
 import { buildAisleFootprint, pointInPolygon, polygonContainedInFloor, snapPoint, validateAisleCenterline, validateFloorPolygon, validateHolePolygon, validatePolygon, type Point } from "../../layout/geometry";
-import { generateAisleTags, validateGeneratedTags, validateTags } from "../../layout/navigation";
+import { applyNavigationTagPhysicalOverride, generateAisleTags, nextAisleId, validateNavigationTagsForLayout } from "../../layout/navigation";
 import layoutJson from "../../layout/warehouse_layout.json";
 
 type Kind =
@@ -624,8 +624,8 @@ function get2DBox(kind: Kind, obj: any): {
   };
 }
 
-function moveObject(d: Draft, selection: Selection, centerX: number, centerZ: number) {
-  const sx = (v: number) => Math.round(v * 2) / 2;
+function moveObject(d: Draft, selection: Selection, centerX: number, centerZ: number, snapStep: number | null = null) {
+  const sx = (v: number) => snapPoint({ x: v, y: 0 }, snapStep).x;
   const obj = selection.kind === "column" ? undefined : findCollectionObject(d, selection.kind, selection.id);
 
   if (selection.kind === "column") {
@@ -810,6 +810,7 @@ type Editor3DObjectProps = {
   onDragState: (value: boolean) => void;
   onCommit: (point: Vec3) => void;
   onHover?: (active: boolean) => void;
+  snapStep: number | null;
 };
 
 function Editor3DObject({
@@ -821,6 +822,7 @@ function Editor3DObject({
   onDragState,
   onCommit,
   onHover,
+  snapStep,
 }: Editor3DObjectProps) {
   const { gl } = useThree();
   const { pos, size, rotation } = objectGeometry(kind, obj);
@@ -870,8 +872,9 @@ function Editor3DObject({
     }
     const point = getPoint(event);
     if (point) {
-      const sx = Math.round(point[0] * 2) / 2;
-      const sz = Math.round(point[2] * 2) / 2;
+      const snapped = snapPoint({ x: point[0], y: point[2] }, snapStep);
+      const sx = snapped.x;
+      const sz = snapped.y;
       setDisplayPos([sx, pos[1], sz]);
     }
   };
@@ -932,16 +935,18 @@ function EditorScene3D({
   visibleLayers,
   lockedLayers,
   layerOrder,
+  snapStep,
 }: {
   draft: Draft;
   selected: Selection[];
   onSelect: (selection: Selection, additive: boolean) => void;
   onCommit: (point: Vec3) => void;
   onDragState: (active: boolean) => void;
-  floor: number | "all";
+  floor: number | string | "all";
   visibleLayers: Record<Kind, boolean>;
   lockedLayers: Record<Kind, boolean>;
   layerOrder: Kind[];
+  snapStep: number | null;
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
 
@@ -1014,6 +1019,7 @@ function EditorScene3D({
                   onDragState={onDragState}
                   onCommit={onCommit}
                   lockedLayers={lockedLayers}
+                  snapStep={snapStep}
                 />
               ))
           : [],
@@ -1344,7 +1350,7 @@ function Editor2DMap({
 }: {
   draft: Draft;
   selected: Selection[];
-  floor: number | "all";
+  floor: number | string | "all";
   viewRotation: number;
   visibleLayers: Record<Kind, boolean>;
   lockedLayers: Record<Kind, boolean>;
@@ -1733,8 +1739,9 @@ function Editor2DMap({
     }
 
     if (drag) {
-      const proposedX = Math.round((point.x + drag.offsetX) * 2) / 2;
-      const proposedZ = Math.round((point.z + drag.offsetZ) * 2) / 2;
+      const proposed = snapPoint({ x: point.x + drag.offsetX, y: point.z + drag.offsetZ }, snapStep);
+      const proposedX = proposed.x;
+      const proposedZ = proposed.y;
       const snapped = getSmartSnap(drag.selection, proposedX, proposedZ);
       setSmartGuides(snapped.guides);
       onMove(drag.selection, snapped.x, snapped.z);
@@ -2433,7 +2440,7 @@ export function WarehouseEditorPage() {
   const [status, setStatus] = useState("LOCAL DRAFT");
   const [errors, setErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const [floor, setFloor] = useState<number | "all">(1);
+  const [floor, setFloor] = useState<number | string | "all">(1);
   const [viewRotation, setViewRotation] = useState(0);
   const [history, setHistory] = useState<Draft[]>([]);
   const [future, setFuture] = useState<Draft[]>([]);
@@ -2840,6 +2847,15 @@ export function WarehouseEditorPage() {
     const oldId = objectId(primary.selection.kind, obj);
     setObjectProperty(obj, path, value);
 
+    if (primary.selection.kind === "navigation-tag" && ["x", "y", "yaw"].includes(path)) {
+      if (path === "x" || path === "y") {
+        const snapped = snapPoint({ x: Number(obj.x), y: Number(obj.y) }, snapStep);
+        obj.x = snapped.x;
+        obj.y = snapped.y;
+      }
+      Object.assign(obj, applyNavigationTagPhysicalOverride(obj));
+    }
+
     if (path === "id" && typeof value === "string" && value !== oldId) {
       setBlocks((current) =>
         current.map((block) => ({
@@ -3161,7 +3177,7 @@ export function WarehouseEditorPage() {
       if (geometryErrors.length) { setErrors(geometryErrors); return; }
       const next = clone(draft), active = next.floors.find((item) => String(item.id) === String(floor)) ?? next.floors[0];
       if (!active) return;
-      const aisleId = `aisle-${String((next.aisles?.length ?? 0) + 1).padStart(3, "0")}`;
+      const aisleId = nextAisleId(next.aisles ?? []);
       next.aisles = [...(next.aisles ?? []), { id: aisleId, floor_id: active.id, centerline: drawingPoints, width: 2, direction: "bidirectional", speed_limit: 0.8, tag_rule: { enabled: true, spacing: 2, start_offset: 0.5, end_offset: 0.5 } }];
       commit(next, "AISLE DRAWN · UNSAVED"); setSelected([{ kind: "aisle", id: aisleId }]); setDrawingPoints([]); setMode("select"); setErrors([]); return;
     }
@@ -3187,12 +3203,7 @@ export function WarehouseEditorPage() {
   function regenerateTags() {
     const next = clone(draft);
     next.navigation_tags = generateAisleTags(next.aisles ?? [], next.navigation_tags ?? []);
-    const tagErrors: string[] = [];
-    for (const floorItem of next.floors) {
-      const boundary = (floorItem.boundary ?? floorItem.footprint ?? []).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
-      const floorTags = next.navigation_tags.filter((tag) => String(tag.floor_id ?? 1) === String(floorItem.id));
-      tagErrors.push(...validateTags(floorTags, boundary, (floorItem.holes ?? []).map((hole) => hole.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p))));
-    }
+    const tagErrors = validateNavigationTagsForLayout(next.floors, next.navigation_tags ?? []);
     if (tagErrors.length) { setErrors(tagErrors); setStatus("TAG REGENERATION ABORTED"); return; }
     setErrors([]); commit(next, "TAGS REGENERATED · UNSAVED");
   }
@@ -3201,7 +3212,7 @@ export function WarehouseEditorPage() {
     const aisle = selected.find((item) => item.kind === "aisle");
     if (!aisle) return;
     const next = clone(draft); next.navigation_tags = generateAisleTags(next.aisles ?? [], next.navigation_tags ?? [], { onlyAisleId: aisle.id });
-    const tagErrors = validateGeneratedTags(next.navigation_tags ?? []);
+    const tagErrors = validateNavigationTagsForLayout(next.floors, next.navigation_tags ?? []);
     if (tagErrors.length) { setErrors(tagErrors); setStatus("TAG REGENERATION ABORTED"); return; }
     setErrors([]); commit(next, "SELECTED AISLE TAGS REGENERATED · UNSAVED");
   }
@@ -3246,6 +3257,7 @@ export function WarehouseEditorPage() {
         if (!polygonContainedInFloor(footprint, boundary, holes)) nextErrors.push(`Aisle ${aisle.id} width footprint is outside usable floor or intersects a hole`);
       }
     });
+    nextErrors.push(...validateNavigationTagsForLayout(draftToCheck.floors, draftToCheck.navigation_tags ?? []));
 
     const ids = new Set<string>();
     (Object.keys(KEY_MAP) as Kind[]).forEach((kind) => {
@@ -3404,8 +3416,8 @@ export function WarehouseEditorPage() {
         const index = Number(selection.id.split("-").pop() ?? "-1");
         if (next.columns?.[index]) {
           next.columns[index] = [
-            Math.round(point[0] * 2) / 2,
-            Math.round(point[2] * 2) / 2,
+            snapPoint({ x: point[0], y: point[2] }, snapStep).x,
+            snapPoint({ x: point[0], y: point[2] }, snapStep).y,
           ];
         }
         return;
@@ -3421,6 +3433,7 @@ export function WarehouseEditorPage() {
         selection,
         b.x + b.w / 2 + dx,
         b.z + b.h / 2 + dz,
+        snapStep,
       );
     });
 
@@ -3455,8 +3468,8 @@ export function WarehouseEditorPage() {
             const index = Number(item.id.split("-").pop() ?? "-1");
             if (next.columns?.[index]) {
               next.columns[index] = [
-                Math.round((next.columns[index][0] + dx) * 2) / 2,
-                Math.round((next.columns[index][1] + dz) * 2) / 2,
+                snapPoint({ x: next.columns[index][0] + dx, y: next.columns[index][1] + dz }, snapStep).x,
+                snapPoint({ x: next.columns[index][0] + dx, y: next.columns[index][1] + dz }, snapStep).y,
               ];
             }
             return;
@@ -3473,11 +3486,12 @@ export function WarehouseEditorPage() {
             item,
             box.x + box.w / 2 + dx,
             box.z + box.h / 2 + dz,
+            snapStep,
           );
         });
       }
     } else {
-      moveObject(next, selection, x, z);
+      moveObject(next, selection, x, z, snapStep);
     }
 
     setDraft(normalizeDraft(next));
@@ -4471,7 +4485,7 @@ export function WarehouseEditorPage() {
                   setFloor(
                     e.target.value === "all"
                       ? "all"
-                      : Number(e.target.value),
+                      : (draft.floors.find((item) => String(item.id) === e.target.value)?.id ?? e.target.value),
                   )
                 }
                 className="rounded-md border border-white/[0.08] bg-[#0b1220] px-2.5 py-1.5 text-[9px] text-slate-300 outline-none"
@@ -4545,6 +4559,7 @@ export function WarehouseEditorPage() {
                 visibleLayers={visibleLayers}
                 lockedLayers={lockedLayers}
                 layerOrder={layerOrder}
+                snapStep={snapStep}
               />
             )}
 
@@ -4594,7 +4609,7 @@ export function WarehouseEditorPage() {
             </div>
             {view === "2d" && (
               <div className="rounded-md border border-white/[0.07] bg-[#080d16]/90 px-2.5 py-1.5 text-[9px] text-slate-500 backdrop-blur-xl">
-                Grid {draft.grid.cell_size}m · Snap 0.5m · {viewRotation}°
+                Grid {draft.grid.cell_size}m · Snap {snapStep == null ? "OFF" : `${snapStep}m`} · {viewRotation}°
               </div>
             )}
             {measurement > 0 && (

@@ -527,6 +527,12 @@ export interface TwinState {
 // WebSocket 訊息協定
 // ─────────────────────────────────────────────────────────────
 
+export interface TagNavigationState {
+  id: number; mission_id: number; warehouse_id: number; robot_id: string; target_tag_id: number;
+  current_tag_id: number | null; next_tag_id: number | null; route: number[]; status: string;
+  route_index: number; progress_percent: number; failure_reason: string; started_at?: string | null;
+}
+
 /**
  * 策略：連線時送一次 FULL，之後每 tick 送 PATCH (只含變動欄位)。
  * 前端若發現 patch.base_tick !== 本地 tick，送 RESYNC 請求 FULL。
@@ -542,6 +548,11 @@ export type ServerMessage =
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
   | { type: "SCHEDULE_UPDATED"; source: string }
   | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; ros_connected: boolean; nav2_state: string; last_telemetry_at: string | null }
+  | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
+  | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }
+  | { type: "LOCALIZATION_STATUS"; robot_id: string; state: string; last_tag_id?: number | null; expected_tag_id?: number | null; tag_visible?: boolean; last_tag_seen_at?: string | null }
+  | { type: "TAG_NAV_ROUTE"; robot_id: string; mission_id?: number; route: number[] }
+  | { type: "TAG_NAV_EVENT"; robot_id: string; mission_id?: number; event: string; details?: unknown; timestamp?: string }
   | { type: "ERROR"; code: string; message: string; request_id?: string | null };
 
 export type ClientMessage =

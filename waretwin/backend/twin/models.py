@@ -413,3 +413,55 @@ class ResourceReservation(models.Model):
     class Meta:
         ordering = ['starts_at']
         indexes = [models.Index(fields=['resource_type', 'resource_id', 'status', 'starts_at'])]
+
+
+class NavigationTag(models.Model):
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name='navigation_tags')
+    tag_id = models.IntegerField()
+    x = models.FloatField()
+    y = models.FloatField()
+    yaw = models.FloatField(default=0.0)
+    enabled = models.BooleanField(default=True, db_index=True)
+    label = models.CharField(max_length=160, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['warehouse_id', 'tag_id']
+        constraints = [models.UniqueConstraint(fields=['warehouse', 'tag_id'], name='uniq_navigation_tag_per_warehouse')]
+
+
+class NavigationTagEdge(models.Model):
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name='navigation_edges')
+    from_tag = models.ForeignKey(NavigationTag, on_delete=models.CASCADE, related_name='outgoing_edges')
+    to_tag = models.ForeignKey(NavigationTag, on_delete=models.CASCADE, related_name='incoming_edges')
+    cost = models.FloatField(null=True, blank=True)
+    enabled = models.BooleanField(default=True, db_index=True)
+    bidirectional = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['warehouse', 'from_tag', 'to_tag'], name='uniq_navigation_edge')]
+
+
+class RobotNavigationMission(models.Model):
+    STATUSES = [(s, s) for s in (
+        'PENDING', 'PLANNING', 'NAVIGATING', 'DEAD_RECKONING', 'APPROACH_TAG',
+        'TAG_CORRECTION', 'PAUSED', 'ROUTE_DEVIATION', 'TAG_ACQUIRE_FAILED',
+        'ARRIVED', 'CANCELLED', 'FAILED', 'EMERGENCY_STOPPED')]
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name='tag_missions')
+    robot_id = models.CharField(max_length=64, db_index=True)
+    target_tag = models.ForeignKey(NavigationTag, on_delete=models.PROTECT, related_name='missions')
+    current_tag_id = models.IntegerField(null=True, blank=True)
+    next_tag_id = models.IntegerField(null=True, blank=True)
+    route = models.JSONField(default=list)
+    status = models.CharField(max_length=24, choices=STATUSES, default='PENDING', db_index=True)
+    route_index = models.PositiveIntegerField(default=0)
+    progress_percent = models.FloatField(default=0.0)
+    failure_reason = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-id']
+        indexes = [models.Index(fields=['warehouse', 'robot_id', 'status'])]

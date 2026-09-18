@@ -17,6 +17,7 @@ import { WarehouseManagementPage } from "./components/admin/WarehouseManagementP
 import { OverviewPage } from "./components/overview/OverviewPage";
 import { bootstrapAuth } from "./services/auth";
 import { DEMO_MODE, DEMO_USER } from "./config";
+import { RobotControlPage } from "./components/control/RobotControlPage";
 
 /**
  * 版面以 1536×860 CSS px 為基準設計；視窗更小時整體等比縮小，確保所有面板完整可見
@@ -189,6 +190,7 @@ export default function App() {
       return <AdminPage />;
     }
     if (path === "/operations") return <NarrowScreenGate><Console /></NarrowScreenGate>;
+    if (path === "/control") return <NarrowScreenGate><RobotControlPage /></NarrowScreenGate>;
     return <OverviewPage />;
   }
 
@@ -209,5 +211,6 @@ export default function App() {
     return <AdminPage />;
   }
   if (path === "/operations") return <NarrowScreenGate><Console /></NarrowScreenGate>;
+  if (path === "/control") return <NarrowScreenGate><RobotControlPage /></NarrowScreenGate>;
   return <OverviewPage />;
 }

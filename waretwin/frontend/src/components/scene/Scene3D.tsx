@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, ContactShadows, Html, Line } from "@react-three/drei";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -71,6 +71,25 @@ function Lights({ quality, visible }: { quality: string; visible: boolean }) {
 function FpsCounter({ onFps }: { onFps: (v: number) => void }) {
   const acc = useRef({ t: 0, n: 0 });
   useFrame((_, dt) => { acc.current.t += dt; acc.current.n++; if (acc.current.t >= 0.5) { onFps(Math.round(acc.current.n / acc.current.t)); acc.current = { t: 0, n: 0 }; } });
+  return null;
+}
+
+/**
+ * R3F normally observes its parent, but the first measurement can happen while
+ * the shell/grid is still resolving its layout. Keep the authoritative size in
+ * Viewport and apply it only after both dimensions are usable. This changes the
+ * renderer/camera projection without touching OrbitControls' target or zoom.
+ */
+function CanvasSizeSync({ size }: { size: { width: number; height: number } }) {
+  const { camera, gl } = useThree();
+  useLayoutEffect(() => {
+    if (size.width <= 0 || size.height <= 0) return;
+    gl.setSize(size.width, size.height, false);
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.aspect = size.width / size.height;
+      camera.updateProjectionMatrix();
+    }
+  }, [camera, gl, size.width, size.height]);
   return null;
 }
 
@@ -153,7 +172,7 @@ function MeasureGround({ enabled, onPoint }: { enabled: boolean; onPoint: (point
   </mesh>;
 }
 
-export function Scene3D({ measurePoints = [], onMeasurePoint }: { measurePoints?: Array<[number, number, number]>; onMeasurePoint?: (point: [number, number, number]) => void }) {
+export function Scene3D({ size, measurePoints = [], onMeasurePoint }: { size: { width: number; height: number }; measurePoints?: Array<[number, number, number]>; onMeasurePoint?: (point: [number, number, number]) => void }) {
   const W = layout.size.width, D = layout.size.depth;
   const quality = useStore((s) => s.quality);
   const tool = useStore((s) => s.tool);
@@ -164,13 +183,15 @@ export function Scene3D({ measurePoints = [], onMeasurePoint }: { measurePoints?
   return (
     <>
       <Canvas
-        resize={{ offsetSize: true }}
+        resize={{ scroll: false, debounce: 0 }}
+        style={{ width: "100%", height: "100%", display: "block" }}
         shadows={quality !== "low"}
         dpr={quality === "high" ? [1, 2] : quality === "medium" ? [1, 1.5] : 1}
         gl={{ antialias: quality !== "low", powerPreference: "high-performance", toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.15 }}
         camera={{ position: [W / 2 + 4, 58, D + 50], fov: 36, near: 0.5, far: 400 }}
         onPointerMissed={() => { if (tool === "select") { select(null); selectShelf(null); } }}
       >
+        <CanvasSizeSync size={size} />
         <SceneContent quality={quality} />
         <MeasureGround enabled={tool === "measure"} onPoint={onMeasurePoint ?? (() => {})} />
         {tool === "measure" && <MeasureOverlay points={measurePoints} />}

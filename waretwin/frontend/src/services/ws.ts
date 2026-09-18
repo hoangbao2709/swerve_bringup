@@ -187,6 +187,14 @@ function handle(msg: ServerMessage) {
       st.setNav2State(msg.nav2_state);
       st.setLastTelemetryAt(msg.last_telemetry_at);
       break;
+    case "TAG_NAV_STATUS":
+      if (msg.mission) st.setTagNavigation(msg.mission);
+      else if (st.tagNavigation) st.setTagNavigation({ ...st.tagNavigation, mission_id: msg.mission_id ?? st.tagNavigation.mission_id, id: msg.mission_id ?? st.tagNavigation.id, robot_id: msg.robot_id, status: msg.state ?? msg.status ?? st.tagNavigation.status, current_tag_id: msg.current_tag_id ?? st.tagNavigation.current_tag_id, next_tag_id: msg.next_tag_id ?? st.tagNavigation.next_tag_id, target_tag_id: msg.target_tag_id ?? st.tagNavigation.target_tag_id, route: msg.route ?? st.tagNavigation.route, route_index: msg.route_index ?? st.tagNavigation.route_index, progress_percent: msg.progress_percent ?? st.tagNavigation.progress_percent });
+      break;
+    case "TAG_DETECTION": st.setTagDetection({ visible: msg.visible, tagId: msg.tag_id ?? null, offsetX: msg.offset_x ?? null, offsetY: msg.offset_y ?? null, yaw: msg.yaw ?? null, timestamp: msg.timestamp ?? null }); break;
+    case "LOCALIZATION_STATUS": st.setLocalization({ state: msg.state, lastTagId: msg.last_tag_id ?? null, expectedTagId: msg.expected_tag_id ?? null, tagVisible: msg.tag_visible ?? false, lastTagSeenAt: msg.last_tag_seen_at ?? null }); break;
+    case "TAG_NAV_ROUTE": if (st.tagNavigation) st.setTagNavigation({ ...st.tagNavigation, route: msg.route }); break;
+    case "TAG_NAV_EVENT": break;
     case "COPILOT_REPLY": copilotListeners.forEach((fn) => fn(msg as unknown as CopilotReply)); break;
     case "WHATIF_RESULT": if (!msg.request_id || msg.request_id === whatifPending) whatifPending = null; whatifListeners.forEach((fn) => fn(msg.result)); break;
     case "ERROR": {

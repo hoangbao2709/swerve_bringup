@@ -5,7 +5,7 @@ import { getEngine } from "../../simulation/runner";
 import { rackOccupancy } from "../../layout/shelfOccupancy";
 
 /** 俯視 2D 地圖：導航網格障礙、Zone、輸送帶、機器人。TRAFFIC / HEATMAP 模式疊上熱區。 */
-export function MapView2D({ mode }: { mode: "MAP" | "TRAFFIC" | "HEATMAP" }) {
+export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP"; size?: { width: number; height: number } }) {
   const allRobots = useStore((s) => s.twin.robots);
   const layoutRevision = useStore((s) => s.layoutRevision);
   const activeFloorSel = useStore((s) => s.activeFloor);
@@ -17,6 +17,9 @@ export function MapView2D({ mode }: { mode: "MAP" | "TRAFFIC" | "HEATMAP" }) {
   const openWindow = useStore((s) => s.openWindow);
   const selectedShelf = useStore((s) => s.selectedShelf);
   const selectShelf = useStore((s) => s.selectShelf);
+  const tagGraph = useStore((s) => s.tagGraph);
+  const tagMission = useStore((s) => s.tagNavigation);
+  const setTargetTagId = useStore((s) => s.setTargetTagId);
   const { width: W, depth: D } = layout.size;
   const grid = useMemo(() => buildNavGrid(layout, mapFloor), [mapFloor, layoutRevision]);
 
@@ -76,7 +79,7 @@ export function MapView2D({ mode }: { mode: "MAP" | "TRAFFIC" | "HEATMAP" }) {
   };
 
   return (
-    <svg className="map2d" viewBox={`-2 -7 ${W + 4} ${D + 10}`} preserveAspectRatio="xMidYMid meet" onClick={() => selectShelf(null)}>
+    <svg className="map2d" style={size ? { width: "100%", height: "100%" } : undefined} viewBox={`-2 -7 ${W + 4} ${D + 10}`} preserveAspectRatio="xMidYMid meet" onClick={() => selectShelf(null)}>
       <rect x="0" y="0" width={W} height={D} fill="#0a1020" stroke="#334155" strokeWidth="0.4" />
       {/* 格線 */}
       {Array.from({ length: W / 10 + 1 }, (_, i) => <line key={"v" + i} x1={i * 10} x2={i * 10} y1="0" y2={D} stroke="#16213a" strokeWidth="0.15" />)}
@@ -121,6 +124,10 @@ export function MapView2D({ mode }: { mode: "MAP" | "TRAFFIC" | "HEATMAP" }) {
       {mapFloor === 1 && layout.conveyors.map((c) => <polyline key={c.id} points={c.path.map((p) => p.join(",")).join(" ")} fill="none" stroke="#22d3ee" strokeWidth="1" strokeOpacity="0.9" />)}
       {mapFloor === 1 && layout.docks.map((d) => <rect key={d.id} x={d.rect[0]} y={d.rect[1]} width={d.rect[2] - d.rect[0]} height={d.rect[3] - d.rect[1]} fill="none" stroke={d.kind === "INBOUND" ? "#22c55e" : "#22d3ee"} strokeWidth="0.3" strokeDasharray="1 0.6" />)}
       {mapFloor === 1 && layout.charging_stations.map((c) => <circle key={c.id} cx={c.position[0]} cy={c.position[2]} r="0.6" fill="#3b82f6" />)}
+      {tagGraph && <g className="tag-navigation-overlay">
+        {tagGraph.edges.map((e, i) => { const a = tagGraph.tags.find(t => t.tag_id === e.from_tag_id); const b = tagGraph.tags.find(t => t.tag_id === e.to_tag_id); return a && b ? <line key={`tag-edge-${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#f59e0b" strokeWidth="0.45" strokeDasharray="1.2 0.7" opacity="0.85" /> : null; })}
+        {tagGraph.tags.map(t => { const state = t.tag_id === tagMission?.current_tag_id ? "current" : t.tag_id === tagMission?.next_tag_id ? "next" : t.tag_id === tagMission?.target_tag_id ? "target" : tagMission?.route?.includes(t.tag_id) ? "route" : "normal"; return <g key={`tag-${t.tag_id}`} transform={`translate(${t.x},${t.y})`} onClick={ev => { ev.stopPropagation(); setTargetTagId(t.tag_id); }} style={{ cursor: "pointer" }}><circle r={state === "target" ? 1.15 : 0.85} fill={state === "current" ? "#22c55e" : state === "next" ? "#38bdf8" : state === "target" ? "#f43f5e" : state === "route" ? "#f59e0b" : "#64748b"} stroke="#fff" strokeWidth="0.22" /><text x="1.2" y="-1" fill="#f8fafc" fontSize="1.45" fontWeight="700">{t.tag_id}</text></g>; })}
+      </g>}
       {layout.cameras.filter((c) => (c.floor ?? 1) === mapFloor).map((c) => <rect key={c.id} x={c.position[0] - 0.5} y={c.position[2] - 0.5} width="1" height="1" fill="#facc15" />)}
       {Object.values(robots).map((r) => r.path.length > r.path_index && (
         <polyline key={"p" + r.id} points={[[r.position[0], r.position[2]], ...r.path.slice(r.path_index).map((c) => [c[0] + 0.5, c[1] + 0.5])].map((p) => p.join(",")).join(" ")} fill="none" stroke={r.id === selected ? "#fff" : "#22d3ee"} strokeWidth={r.id === selected ? 0.5 : 0.25} strokeOpacity={r.id === selected ? 1 : 0.5} strokeDasharray="1 0.6" />

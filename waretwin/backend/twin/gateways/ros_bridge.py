@@ -21,6 +21,12 @@ class RosBridgeGateway(RobotGateway):
             message['type'] = 'CANCEL_NAVIGATION'
         elif action == 'STOP':
             message['type'] = 'CANCEL_NAVIGATION'
+        elif action in ('GO_TO_TAG', 'PAUSE_TAG_NAVIGATION', 'RESUME_TAG_NAVIGATION', 'CANCEL_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION', 'EMERGENCY_STOP'):
+            message['type'] = {
+                'GO_TO_TAG': 'TAG_NAV_GOAL', 'PAUSE_TAG_NAVIGATION': 'TAG_NAV_PAUSE',
+                'RESUME_TAG_NAVIGATION': 'TAG_NAV_RESUME', 'CANCEL_TAG_NAVIGATION': 'TAG_NAV_CANCEL',
+                'REPLAN_TAG_NAVIGATION': 'TAG_NAV_REPLAN', 'EMERGENCY_STOP': 'EMERGENCY_STOP',
+            }[action]
         else:
             raise ValueError(f'unsupported robot action: {action}')
         sent = await registry.send(message)

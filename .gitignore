@@ -1,0 +1,12 @@
+# Generated build/runtime files
+**/__pycache__/
+*.py[cod]
+**/*.sqlite3-shm
+**/*.sqlite3-wal
+**/*.bak_*
+
+# Local dependency/build directories (nested project rules may also cover these)
+**/node_modules/
+**/dist/
+**/.venv/
+**/.mypy_cache/

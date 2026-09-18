@@ -8,6 +8,8 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
+    // Allow other machines on the LAN to open the dev UI.
+    host: "0.0.0.0",
     port: 5173,
   },
 });

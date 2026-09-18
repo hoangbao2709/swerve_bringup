@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import layoutJson from "../layout/warehouse_layout.json";
 import type { WarehouseLayout, LayoutLocation } from "../layout/types";
-import type { TwinState, RobotId, HeatmapLayer } from "../schema/twin_state";
+import type { TwinState, RobotId, HeatmapLayer, TagNavigationState } from "../schema/twin_state";
 import { RUNTIME_MODE, type RuntimeMode } from "../config";
 
 export type ViewTab = "3D" | "MAP" | "TRAFFIC" | "HEATMAP";
@@ -66,6 +66,16 @@ export interface WindowInstance {
 export let layout = layoutJson as unknown as WarehouseLayout;
 
 interface Store {
+  tagNavigation: TagNavigationState | null;
+  tagDetection: { visible: boolean; tagId: number | null; offsetX: number | null; offsetY: number | null; yaw: number | null; timestamp: string | null };
+  localization: { state: string; lastTagId: number | null; expectedTagId: number | null; tagVisible: boolean; lastTagSeenAt: string | null };
+  tagGraph: { warehouse_id: number | null; tags: Array<{ id: number; tag_id: number; x: number; y: number; yaw: number; label?: string }>; edges: Array<{ from_tag_id: number; to_tag_id: number; cost?: number; bidirectional?: boolean }> } | null;
+  targetTagId: number | null;
+  setTagNavigation: (mission: TagNavigationState | null) => void;
+  setTargetTagId: (id: number | null) => void;
+  setTagGraph: (graph: Store["tagGraph"]) => void;
+  setTagDetection: (data: Store["tagDetection"]) => void;
+  setLocalization: (data: Store["localization"]) => void;
   runtimeMode: RuntimeMode;
   setRuntimeMode: (mode: RuntimeMode) => void;
   rosConnected: boolean;
@@ -169,6 +179,16 @@ const EMPTY: TwinState = {
 };
 
 export const useStore = create<Store>((set) => ({
+  tagNavigation: null,
+  tagDetection: { visible: false, tagId: null, offsetX: null, offsetY: null, yaw: null, timestamp: null },
+  localization: { state: "UNANCHORED", lastTagId: null, expectedTagId: null, tagVisible: false, lastTagSeenAt: null },
+  tagGraph: null,
+  targetTagId: null,
+  setTagNavigation: (tagNavigation) => set({ tagNavigation }),
+  setTargetTagId: (targetTagId) => set({ targetTagId }),
+  setTagGraph: (tagGraph) => set({ tagGraph }),
+  setTagDetection: (tagDetection) => set({ tagDetection }),
+  setLocalization: (localization) => set({ localization }),
   twin: EMPTY,
   runtimeMode: RUNTIME_MODE,
   setRuntimeMode: (runtimeMode) => set({ runtimeMode }),

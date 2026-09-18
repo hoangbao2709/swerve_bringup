@@ -334,6 +334,36 @@ class TwinRuntime:
             self.ros_bridge_connected = True
             self.nav2_state = str(data.get('nav2_state') or 'CONNECTED')
             await self.broadcast_runtime_status()
+        elif kind in ('TAG_NAV_STATUS', 'TAG_DETECTION', 'LOCALIZATION_STATUS', 'TAG_NAV_ROUTE', 'TAG_NAV_EVENT'):
+            await self.handle_tag_navigation_message(kind, data)
+
+    async def handle_tag_navigation_message(self, kind: str, data: dict[str, Any]) -> None:
+        from .tag_navigation import apply_ros_tag_status, apply_ros_tag_event, log_ros_tag_detection, apply_ros_localization, mission_snapshot
+        if kind == 'TAG_NAV_STATUS':
+            mission = await sync_to_async(apply_ros_tag_status, thread_sensitive=True)(data)
+            if mission is not None:
+                await self.broadcast({'type': kind, **data, 'mission': mission_snapshot(mission)})
+        elif kind == 'TAG_NAV_EVENT':
+            mission = await sync_to_async(apply_ros_tag_event, thread_sensitive=True)(data)
+            await self.broadcast({'type': kind, **data, 'mission_id': mission.id if mission else data.get('mission_id')})
+        elif kind == 'TAG_DETECTION':
+            await sync_to_async(log_ros_tag_detection, thread_sensitive=True)(data)
+            await self.broadcast({'type': kind, **data})
+        elif kind == 'LOCALIZATION_STATUS':
+            mission = await sync_to_async(apply_ros_localization, thread_sensitive=True)(data)
+            await self.broadcast({'type': kind, **data, 'mission_id': mission.id if mission else data.get('mission_id')})
+        else:
+            await self.broadcast({'type': kind, **data})
+
+    async def tag_command(self, action: str, mission, user=None) -> dict[str, Any]:
+        from .tag_navigation import mission_snapshot
+        payload = {'mission_id': mission.id, 'target_tag_id': mission.target_tag.tag_id}
+        result = await self.gateway().send_command(mission.robot_id, action, payload)
+        if result.get('ok') and action == 'GO_TO_TAG':
+            mission.status = 'NAVIGATING'; mission.started_at = mission.started_at or datetime.now(timezone.utc)
+            await sync_to_async(mission.save, thread_sensitive=True)()
+        await self.broadcast({'type': 'TAG_NAV_STATUS', **mission_snapshot(mission)})
+        return result
 
     def full_message(self) -> dict[str, Any]:
         S = self.engine.state

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore, type ViewTab, type SceneTool, type LabelLayer, type LabelLayers } from "../../state/store";
 import { Icon } from "../ui/primitives";
 import { Scene3D } from "../scene/Scene3D";
@@ -7,6 +7,8 @@ import { MapView2D } from "./MapView2D";
 const TABS: Array<[ViewTab, string]> = [["3D", "3D VIEW"], ["MAP", "MAP VIEW"], ["TRAFFIC", "TRAFFIC VIEW"], ["HEATMAP", "HEATMAP"]];
 
 export function Viewport({ onFullscreenChange }: { onFullscreenChange?: (active: boolean) => void } = {}) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [renderSize, setRenderSize] = useState({ width: 0, height: 0 });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<Array<[number, number, number]>>([]);
@@ -28,7 +30,24 @@ export function Viewport({ onFullscreenChange }: { onFullscreenChange?: (active:
   const resetLabelLayers = useStore((s) => s.resetLabelLayers);
   const focus = useStore((s) => s.focus);
   const activeFloor = useStore((s) => s.activeFloor);
+
   const setActiveFloor = useStore((s) => s.setActiveFloor);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const update = (width: number, height: number) => {
+      const next = { width: Math.round(width), height: Math.round(height) };
+      if (next.width <= 0 || next.height <= 0) return;
+      setRenderSize((previous) => previous.width === next.width && previous.height === next.height ? previous : next);
+    };
+    const observer = new ResizeObserver(([entry]) => update(entry.contentRect.width, entry.contentRect.height));
+    observer.observe(el);
+    const rect = el.getBoundingClientRect();
+    update(rect.width, rect.height);
+
+    return () => observer.disconnect();
+  }, []);
   const chooseMeasurePoint = (point: [number, number, number]) => {
     setMeasurePoints((current) => current.length === 2 ? [point] : [...current, point]);
   };
@@ -43,7 +62,7 @@ export function Viewport({ onFullscreenChange }: { onFullscreenChange?: (active:
     <button className={on ? "on" : ""} title={title} onClick={onClick}>{icon}</button>
   );
   return (
-    <div className={"viewport" + (isFullscreen ? " viewport-fullscreen" : "")}>
+    <div ref={viewportRef} className={"viewport" + (isFullscreen ? " viewport-fullscreen" : "")}>
       <div className="view-tabs">{TABS.map(([k, l]) => <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}</button>)}</div>
       <div className="vp-toolbar">
         <select className="sel" title="Floor" value={String(activeFloor)} onChange={(e) => { const v = e.target.value === "all" || e.target.value === "exploded" ? e.target.value as "all" | "exploded" : Number(e.target.value); setActiveFloor(v); if (v === 2) focus([31, 8, 51]); else focus([50, 0, 31]); }}>
@@ -70,7 +89,11 @@ export function Viewport({ onFullscreenChange }: { onFullscreenChange?: (active:
           onClose={() => setSettingsOpen(false)}
         />
       )}
-      {tab === "3D" ? <Scene3D measurePoints={measurePoints} onMeasurePoint={chooseMeasurePoint} /> : <MapView2D mode={tab} />}
+      {renderSize.width > 0 && renderSize.height > 0
+        ? tab === "3D"
+          ? <Scene3D size={renderSize} measurePoints={measurePoints} onMeasurePoint={chooseMeasurePoint} />
+          : <MapView2D size={renderSize} mode={tab} />
+        : <div className="viewport-loading" aria-label="Preparing viewport" />}
       {tab === "3D" && (
         <div className="scene-toolbar">
           {toolBtn("select", Icon.cursor, "Select robot / shelf")}

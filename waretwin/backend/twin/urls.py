@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views, warehouse_views, scheduler_views
+from . import views, warehouse_views, scheduler_views, navigation_views
 
 urlpatterns = [
     path('conveyors', views.conveyors),
@@ -57,4 +57,12 @@ urlpatterns = [
     path('whatif', views.whatif),
     path('ai/status', views.ai_status),
     path('sim', views.sim),
+    path('navigation/tags', navigation_views.tags),
+    path('navigation/tag-graph', navigation_views.tag_graph),
+    path('navigation/missions/current', navigation_views.current),
+    path('navigation/missions', navigation_views.missions),
+    path('navigation/missions/start', navigation_views.start),
+    path('navigation/missions/<int:mission_id>/<str:action>', navigation_views.mission_action),
+    path('navigation/missions/<int:mission_id>/events', navigation_views.mission_events),
+    path('robots/<str:robot_id>/emergency-stop', navigation_views.emergency_stop),
 ]

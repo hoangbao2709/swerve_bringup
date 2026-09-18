@@ -29,6 +29,14 @@
   --side-r: 300px;
 }
 
+.wt-control-page { min-height: 100vh; background: #05080f; color: #e2e8f0; }
+.wt-control-page .overview-topbar { display:flex; align-items:center; justify-content:space-between; padding:14px 24px; }
+.control-connection { font: 11px var(--mono); color:#94a3b8; }.control-connection .good { color:#4ade80; }.control-connection .bad { color:#fb7185; }
+.control-map-error { min-height:500px; display:grid; place-items:center; padding:24px; color:#fda4af; font:12px var(--mono); text-align:center; }
+.control-main { padding:72px 24px 24px; }.control-strip,.control-grid,.control-bottom { display:grid; gap:12px; }.control-strip { display:flex; align-items:center; gap:12px; margin-bottom:12px; }.control-strip select,.control-mission select { background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:6px; padding:8px; }.control-strip span { padding:7px 10px; border:1px solid #1e293b; border-radius:6px; font:11px var(--mono); }.control-strip .danger { margin-left:auto; background:#991b1b; color:white; border:0; border-radius:6px; padding:9px 12px; font-weight:700; }
+.control-grid { grid-template-columns:minmax(0,1fr) 310px; min-height:500px; }.control-map { background:#0a1020; border:1px solid #1e293b; border-radius:10px; overflow:hidden; }.control-map .map2d { width:100%; height:100%; }.control-mission,.control-bottom section { background:#0b111c; border:1px solid #1e293b; border-radius:10px; padding:16px; }.control-mission h3,.control-bottom h3 { color:#94a3b8; font-size:11px; letter-spacing:.1em; }.control-mission label { display:grid; gap:7px; font-size:12px; margin:16px 0; }.control-mission p { font:12px var(--mono); }.route-text { color:#38bdf8; line-height:1.8; }.control-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:18px; }.control-actions button { background:#164e63; color:#e0f2fe; border:0; border-radius:5px; padding:8px 10px; font-size:11px; font-weight:700; }.control-actions button:disabled { opacity:.35; }.control-error { color:#fda4af; font-size:12px; margin-top:12px; }.control-bottom { grid-template-columns:repeat(3,1fr); margin-top:12px; }.control-bottom p { font-size:12px; color:#94a3b8; line-height:1.7; }
+@media (max-width: 900px) { .control-grid,.control-bottom { grid-template-columns:1fr; }.control-map { min-height:420px; } }
+
 /*
  * Tailwind v4 owns the base/reset layer.
  * Only keep application-wide essentials here.
@@ -1596,3 +1604,16 @@ table.dt.full td { white-space: normal; }
   .wt-has-sidebar, .overview-shell.wt-has-sidebar { padding-left: 0; }
   .wt-sidebar.collapsed { transform: translateX(-100%); }
 }
+
+/* Stable sizing chain for the live viewport. Every ancestor between the shell
+ * and Canvas/SVG must be allowed to shrink and must expose a real height. */
+.overview-shell.wt-has-sidebar { min-height: 0; height: 100vh; }
+.overview-shell.wt-has-sidebar .overview-main { min-height: 0; flex: 1 1 auto; grid-template-rows: minmax(0, 1fr); }
+.overview-shell.wt-has-sidebar .overview-grid { min-height: 0; height: 100%; }
+.overview-shell.wt-has-sidebar .overview-grid > div:first-child { min-width: 0; min-height: 0; height: 100%; display: flex; }
+.overview-shell.wt-has-sidebar .overview-grid > div:first-child > .viewport { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.viewport-loading { width: 100%; height: 100%; min-height: 1px; background: var(--panel); }
+.control-main { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
+.control-grid { flex: 1 1 auto; min-height: 0; }
+.control-map { min-width: 0; min-height: 0; display: flex; }
+.control-map > .map2d, .control-map > div { min-width: 0; min-height: 0; width: 100%; height: 100%; }

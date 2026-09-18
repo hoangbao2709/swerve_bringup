@@ -45,6 +45,7 @@ urlpatterns = [
     path('layout/draft', views.layout_draft),
     path('layout/publish', views.layout_publish),
     path('layout/versions', views.layout_versions),
+    path('map/sync-status', views.map_sync_status_view),
     path('kpi', views.kpi),
     path('events', views.events),
     path('decisions', views.decisions),

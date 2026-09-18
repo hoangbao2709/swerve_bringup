@@ -91,6 +91,8 @@ interface Store {
   layoutRevision: number;
   activeWarehouseId: number | null;
   layoutUpdatedAt: string | null;
+  mapSync: { publishedRevision: number | null; publishedVersion: number; rosRevision: number | null; gazeboRevision: number | null; status: string; error: string | null };
+  setMapSync: (next: Partial<Store["mapSync"]>) => void;
   setLayout: (next: WarehouseLayout, meta?: { revision?: number; warehouse_id?: number | null; updated_at?: string | null }) => void;
   selectedRobot: RobotId | null;
   /** Shelf/rack selected from the live warehouse map. */
@@ -307,6 +309,8 @@ export const useStore = create<Store>((set) => ({
   layoutRevision: 0,
   activeWarehouseId: null,
   layoutUpdatedAt: null,
+  mapSync: { publishedRevision: null, publishedVersion: 0, rosRevision: null, gazeboRevision: null, status: "ROS_OFFLINE", error: null },
+  setMapSync: (next) => set((st) => ({ mapSync: { ...st.mapSync, ...next } })),
   setLayout: (next: WarehouseLayout, meta: { revision?: number; warehouse_id?: number | null; updated_at?: string | null } = {}) => {
     layout = next;
     ZONE_COLOR = Object.fromEntries(next.zones.map((z) => [z.id, z.color]));

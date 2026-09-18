@@ -546,8 +546,9 @@ export type ServerMessage =
   | { type: "WHATIF_RESULT"; request_id?: string | null; result: WhatIfResult }
   | { type: "COPILOT_REPLY"; request_id: string; text: string; citations: Array<{ event_id?: EventId; robot_id?: RobotId; task_id?: TaskId }>; model?: string }
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
+  | { type: "map.published"; warehouse_id: number | string; revision: number; published_version: number; map_revision: number; artifact_manifest?: unknown }
   | { type: "SCHEDULE_UPDATED"; source: string }
-  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; ros_connected: boolean; nav2_state: string; last_telemetry_at: string | null }
+  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; ros_connected: boolean; nav2_state: string; last_telemetry_at: string | null; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; map_sync_status?: string; map_sync_error?: string | null }
   | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
   | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }
   | { type: "LOCALIZATION_STATUS"; robot_id: string; state: string; last_tag_id?: number | null; expected_tag_id?: number | null; tag_visible?: boolean; last_tag_seen_at?: string | null }

@@ -4,6 +4,7 @@ import json
 import math
 import queue
 import threading
+from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime, timezone
 
@@ -33,9 +34,13 @@ class SwerveBridge(Node):
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('navigate_action', '/go_to_tag')
         self.declare_parameter('navigate_server_timeout', 2.0)
+        self.declare_parameter('artifact_root', 'generated/maps')
+        self.declare_parameter('allow_unpublished_fallback', False)
         self.robot_id = str(self.get_parameter('robot_id').value)
         self.ws_url = str(self.get_parameter('django_ws_url').value)
         self.token = str(self.get_parameter('django_token').value)
+        self.artifact_root = Path(str(self.get_parameter('artifact_root').value)).expanduser()
+        self.allow_unpublished_fallback = bool(self.get_parameter('allow_unpublished_fallback').value)
         self.telemetry_period = 1.0 / max(0.1, float(self.get_parameter('telemetry_rate').value))
         self.latest_odom = None
         self.last_joint_state = None
@@ -48,6 +53,14 @@ class SwerveBridge(Node):
         self.ws = None
         self.ws_lock = threading.Lock()
         self.stop_event = threading.Event()
+        self.active_map_revision = None
+        self.active_published_version = None
+        self.gazebo_revision = None
+        self.map_sync_status = 'ROS_OFFLINE'
+        self.map_sync_error = None
+        self.datamatrix_map_path = None
+        self.tag_graph_path = None
+        self.gazebo_world_path = None
 
         self.create_subscription(Odometry, str(self.get_parameter('odom_topic').value), self.odom_cb, 20)
         self.create_subscription(JointState, str(self.get_parameter('joint_states_topic').value), self.joint_cb, 10)
@@ -88,6 +101,7 @@ class SwerveBridge(Node):
                 ws = websocket.create_connection(url, timeout=2, subprotocols=['json'])
                 with self.ws_lock:
                     self.ws = ws
+                self.send_map_revision_status()
                 while not self.stop_event.is_set():
                     try:
                         raw = ws.recv()
@@ -119,6 +133,68 @@ class SwerveBridge(Node):
     def heartbeat_timer(self):
         self.send({'type': 'HEARTBEAT', 'robot_id': self.robot_id,
                    'nav2_state': self.nav_state, 'timestamp': self.now()})
+        self.send_map_revision_status()
+
+    def send_map_revision_status(self):
+        self.send({
+            'type': 'MAP_REVISION_STATUS',
+            'map_revision': self.active_map_revision,
+            'published_version': self.active_published_version,
+            'gazebo_revision': self.gazebo_revision,
+            'status': self.map_sync_status,
+            'error': self.map_sync_error,
+        })
+
+    def apply_published_map(self, data):
+        """Load the immutable ROS artifacts selected by the backend."""
+        raw_revision = data.get('map_revision', data.get('revision'))
+        try:
+            revision = int(raw_revision)
+        except (TypeError, ValueError):
+            self.map_sync_status = 'ERROR'
+            self.map_sync_error = 'published map revision is missing'
+            self.send_map_revision_status()
+            return
+        artifact_dir = data.get('artifact_dir')
+        candidate = Path(str(artifact_dir)).expanduser() if artifact_dir else None
+        fallback = self.artifact_root / str(data.get('warehouse_code') or data.get('warehouse_id')) / str(revision)
+        root = candidate if candidate is not None and candidate.is_dir() else fallback
+        manifest = data.get('artifact_manifest') or {}
+        names = manifest.get('artifacts') if isinstance(manifest, dict) else {}
+        required = [str(names.get('datamatrix_map', 'datamatrix_map.yaml')), str(names.get('tag_graph', 'tag_graph.yaml')), str(names.get('gazebo_world', 'gazebo/warehouse.world'))]
+        missing = [name for name in required if not (root / name).is_file()]
+        if missing:
+            if self.allow_unpublished_fallback:
+                self.map_sync_status = 'ERROR'
+                self.map_sync_error = f'artifacts missing (development fallback enabled): {", ".join(missing)}'
+            else:
+                self.map_sync_status = 'ERROR'
+                self.map_sync_error = f'artifacts missing for revision {revision}: {", ".join(missing)}'
+            self.send_map_revision_status()
+            return
+        # Reading the files here makes the bridge fail fast before acknowledging
+        # a revision.  The ROS navigation nodes can consume the same paths from
+        # the selected immutable artifact directory.
+        try:
+            for name in required:
+                (root / name).read_bytes()
+        except OSError as exc:
+            self.map_sync_status = 'ERROR'
+            self.map_sync_error = str(exc)
+            self.send_map_revision_status()
+            return
+        self.active_map_revision = revision
+        self.active_published_version = data.get('published_version')
+        self.gazebo_revision = revision
+        self.datamatrix_map_path = str(root / required[0])
+        self.tag_graph_path = str(root / required[1])
+        self.gazebo_world_path = str(root / required[2])
+        self.map_sync_error = None
+        self.map_sync_status = 'SYNCED'
+        self.send({'type': 'MAP_REVISION_ACK', 'map_revision': revision,
+                   'published_version': self.active_published_version,
+                   'gazebo_revision': self.gazebo_revision,
+                   'status': self.map_sync_status, 'artifact_dir': str(root)})
 
     def process_commands(self):
         while True:
@@ -127,7 +203,9 @@ class SwerveBridge(Node):
             except queue.Empty:
                 return
             kind = str(data.get('type', '')).upper()
-            if kind == 'NAV_GOAL':
+            if kind == 'MAP_PUBLISHED':
+                self.apply_published_map(data)
+            elif kind == 'NAV_GOAL':
                 self.navigate(data)
             elif kind == 'CANCEL_NAVIGATION':
                 self.cancel_navigation(data)

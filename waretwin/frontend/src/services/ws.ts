@@ -63,6 +63,27 @@ async function refreshLayout(meta: Extract<ServerMessage, { type: "LAYOUT_UPDATE
   }
 }
 
+async function refreshMapSyncStatus() {
+  try {
+    const token = useStore.getState().authToken;
+    const headers: Record<string, string> = {};
+    if (token) headers.authorization = `Bearer ${token}`;
+    const response = await fetch(`${API_URL}/api/map/sync-status`, { headers, credentials: "omit" });
+    if (!response.ok) return;
+    const data = await response.json() as Record<string, unknown>;
+    useStore.getState().setMapSync({
+      publishedRevision: typeof data.published_revision === "number" ? data.published_revision : null,
+      publishedVersion: Number(data.published_version ?? 0),
+      rosRevision: typeof data.ros_revision === "number" ? data.ros_revision : null,
+      gazeboRevision: typeof data.gazebo_revision === "number" ? data.gazebo_revision : null,
+      status: String(data.status ?? "ERROR"),
+      error: data.error ? String(data.error) : null,
+    });
+  } catch (error) {
+    console.warn("[map-sync] status refresh failed", error);
+  }
+}
+
 const scheduleListeners = new Set<(source: string) => void>();
 export function onScheduleUpdated(fn: (source: string) => void): () => void { scheduleListeners.add(fn); return () => scheduleListeners.delete(fn); }
 
@@ -120,6 +141,7 @@ function open() {
   const timeout = window.setTimeout(() => { if (ws.readyState !== WebSocket.OPEN) ws.close(); }, 2500);
   ws.onopen = () => {
     clearTimeout(timeout); onStateChange?.("online");
+    void refreshMapSyncStatus();
     // Pull the database-backed map once on connect so / always matches admin pages.
     const st = useStore.getState();
     const token = st.authToken;
@@ -180,12 +202,24 @@ function handle(msg: ServerMessage) {
       void refreshLayout(msg);
       break;
     }
+    case "map.published": {
+      st.setMapSync({ publishedRevision: msg.map_revision, publishedVersion: msg.published_version, status: st.mapSync.rosRevision === msg.map_revision ? "SYNCED" : "OUT_OF_SYNC", error: null });
+      break;
+    }
     case "SCHEDULE_UPDATED": scheduleListeners.forEach((fn) => fn(msg.source)); break;
     case "RUNTIME_STATUS":
       st.setRuntimeMode(msg.runtime_mode);
       st.setRosConnected(msg.ros_connected);
       st.setNav2State(msg.nav2_state);
       st.setLastTelemetryAt(msg.last_telemetry_at);
+      st.setMapSync({
+        publishedRevision: msg.published_revision ?? st.mapSync.publishedRevision,
+        publishedVersion: msg.published_version ?? st.mapSync.publishedVersion,
+        rosRevision: msg.ros_revision ?? st.mapSync.rosRevision,
+        gazeboRevision: msg.gazebo_revision ?? st.mapSync.gazeboRevision,
+        status: msg.map_sync_status ?? st.mapSync.status,
+        error: msg.map_sync_error ?? null,
+      });
       break;
     case "TAG_NAV_STATUS":
       if (msg.mission) st.setTagNavigation(msg.mission);

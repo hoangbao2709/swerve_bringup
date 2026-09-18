@@ -2470,6 +2470,7 @@ function PropertyInput({
 export function WarehouseEditorPage() {
   const layoutRevision = useStore((s) => s.layoutRevision);
   const activeWarehouseId = useStore((s) => s.activeWarehouseId);
+  const mapSync = useStore((s) => s.mapSync);
   const [draft, setDraft] = useState<Draft>(() => normalizeDraft(base));
   const [selected, setSelected] = useState<Selection[]>([]);
   const [view, setView] = useState<"2d" | "3d" | "code">("2d");
@@ -3989,6 +3990,7 @@ export function WarehouseEditorPage() {
             <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-emerald-300/80">
               {status} · draft r{layoutRevision}{publishedVersion !== null ? ` · published v${publishedVersion}` : ""}{activeWarehouseId ? ` · WH#${activeWarehouseId}` : ""}
               {artifactStatus ? ` · ${artifactStatus}` : ""}
+              {` · MAP ${mapSync.status} · ROS r${mapSync.rosRevision ?? "—"} · GZ r${mapSync.gazeboRevision ?? "—"}`}
             </span>
           </div>
 

@@ -99,6 +99,11 @@ class TwinRuntime:
         self.last_telemetry_iso: str | None = None
         self.last_ros_heartbeat: float | None = None
         self.nav2_state = 'OFFLINE' if self.runtime_mode != 'LOCAL_SIM' else 'LOCAL'
+        self.published_map_revision: int | None = None
+        self.published_map_version: int = 0
+        self.ros_map_revision: int | None = None
+        self.gazebo_map_revision: int | None = None
+        self.map_sync_error: str | None = None
         self._snapshot_prev()
 
     @property
@@ -183,9 +188,14 @@ class TwinRuntime:
         if S['sim']['tick'] % 10 == 0:
             try:
                 if self.is_external:
-                    from .schedule_services import prepare_external_dispatches
-                    goals, changed = await sync_to_async(
-                        prepare_external_dispatches, thread_sensitive=True)(self)
+                    # Never dispatch a scheduler goal against a stale ROS/Gazebo
+                    # map.  E-stop remains a separate explicit gateway command.
+                    if self.runtime_status_message().get('map_sync_status') != 'SYNCED':
+                        goals, changed = [], False
+                    else:
+                        from .schedule_services import prepare_external_dispatches
+                        goals, changed = await sync_to_async(
+                            prepare_external_dispatches, thread_sensitive=True)(self)
                     for goal in goals:
                         result = await self.gateway().send_command(goal['robot_id'], 'NAVIGATE', goal)
                         if not result.get('ok'):
@@ -247,24 +257,101 @@ class TwinRuntime:
         await self.broadcast(self.runtime_status_message())
 
     def runtime_status_message(self) -> dict[str, Any]:
+        from .map_sync import map_sync_status
         return {
             'type': 'RUNTIME_STATUS', 'runtime_mode': self.runtime_mode,
             'ros_connected': self.ros_bridge_connected,
             'nav2_state': self.nav2_state,
             'last_telemetry_at': self.last_telemetry_iso,
+            'published_revision': self.published_map_revision,
+            'published_version': self.published_map_version,
+            'ros_revision': self.ros_map_revision,
+            'gazebo_revision': self.gazebo_map_revision,
+            'map_sync_status': map_sync_status(
+                published_revision=self.published_map_revision,
+                ros_revision=self.ros_map_revision,
+                gazebo_revision=self.gazebo_map_revision,
+                ros_connected=self.ros_bridge_connected,
+                error=self.map_sync_error,
+                external=self.is_external,
+            ),
+            'map_sync_error': self.map_sync_error,
         }
 
     async def bridge_connected(self) -> None:
         self.ros_bridge_connected = True
         self.nav2_state = 'CONNECTED'
+        self.map_sync_error = None
+        await self.send_published_map_to_bridge()
         await self.broadcast_runtime_status()
 
     async def bridge_disconnected(self) -> None:
         self.ros_bridge_connected = False
         self.nav2_state = 'OFFLINE'
+        self.ros_map_revision = None
+        self.gazebo_map_revision = None
+        self.map_sync_error = None
         if self.is_external:
             await self._mark_external_offline()
         await self.broadcast_runtime_status()
+
+    async def send_published_map_to_bridge(self) -> bool:
+        """Send only the immutable published revision to the connected bridge."""
+        from .map_sync import published_map_payload
+        from .ros_bridge_consumer import registry
+        payload = await sync_to_async(published_map_payload, thread_sensitive=True)()
+        self.published_map_revision = payload.get('map_revision')
+        self.published_map_version = int(payload.get('published_version') or 0)
+        if payload.get('artifact_dir'):
+            payload['type'] = 'MAP_PUBLISHED'
+            return await registry.send(payload)
+        return False
+
+    async def map_published(self, payload: dict[str, Any]) -> None:
+        """Broadcast a publish event and push the revision to ROS."""
+        self.published_map_revision = payload.get('map_revision', payload.get('revision'))
+        self.published_map_version = int(payload.get('published_version') or 0)
+        self.map_sync_error = None
+        await self.broadcast({
+            'type': 'map.published',
+            'warehouse_id': payload.get('warehouse_id'),
+            'revision': self.published_map_revision,
+            'published_version': self.published_map_version,
+            'map_revision': self.published_map_revision,
+            'artifact_manifest': payload.get('artifact_manifest'),
+        })
+        from .ros_bridge_consumer import registry
+        ros_payload = dict(payload)
+        ros_payload['type'] = 'MAP_PUBLISHED'
+        sent = await registry.send(ros_payload)
+        if not sent and self.is_external:
+            self.map_sync_error = 'ROS bridge is not connected'
+        await self.broadcast_runtime_status()
+
+    async def handle_map_revision_status(self, data: dict[str, Any]) -> None:
+        raw = data.get('map_revision', data.get('revision'))
+        try:
+            self.ros_map_revision = int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            self.ros_map_revision = None
+        raw_gazebo = data.get('gazebo_revision', raw)
+        try:
+            self.gazebo_map_revision = int(raw_gazebo) if raw_gazebo is not None else None
+        except (TypeError, ValueError):
+            self.gazebo_map_revision = None
+        self.map_sync_error = str(data.get('error') or '') or None
+        await self.broadcast_runtime_status()
+        from .map_sync import map_sync_status
+        status = map_sync_status(
+            published_revision=self.published_map_revision,
+            ros_revision=self.ros_map_revision,
+            gazebo_revision=self.gazebo_map_revision,
+            ros_connected=self.ros_bridge_connected,
+            error=self.map_sync_error,
+            external=self.is_external,
+        )
+        if status == 'OUT_OF_SYNC' and self.ros_bridge_connected:
+            await self.send_published_map_to_bridge()
 
     async def _mark_external_offline(self) -> None:
         changed = False
@@ -334,6 +421,8 @@ class TwinRuntime:
             self.ros_bridge_connected = True
             self.nav2_state = str(data.get('nav2_state') or 'CONNECTED')
             await self.broadcast_runtime_status()
+        elif kind in ('MAP_REVISION_STATUS', 'MAP_REVISION_ACK'):
+            await self.handle_map_revision_status(data)
         elif kind in ('TAG_NAV_STATUS', 'TAG_DETECTION', 'LOCALIZATION_STATUS', 'TAG_NAV_ROUTE', 'TAG_NAV_EVENT'):
             await self.handle_tag_navigation_message(kind, data)
 

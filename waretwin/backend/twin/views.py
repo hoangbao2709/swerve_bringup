@@ -21,6 +21,7 @@ from accounts.models import ApiToken, UserProfile, ensure_profile, public_user, 
 from .auth import user_from_request
 from .models import EventLog
 from .warehouse_services import ensure_active_map, sync_from_layout, save_layout_to_map, publish_layout_to_map, master_to_layout
+from .map_sync import published_map_payload, map_sync_status
 from .runtime import runtime
 from .schema import ScenarioInjection, WhatIfRequest
 from .ai import copilot as copilot_ai
@@ -548,12 +549,40 @@ def layout_publish(request):
         return _error(f'publish artifacts failed: {exc}', 500)
     _audit(request.api_user, 'PUBLISH_LAYOUT', f"{body.get('name', 'warehouse')}@{active.published_version}")
     _broadcast_layout_update(active, 'WAREHOUSE_EDITOR_PUBLISH')
+    map_payload = published_map_payload(active)
+    async_to_sync(runtime.map_published)(map_payload)
     return JsonResponse({
         'ok': True, 'status': 'PUBLISHED', 'version': active.published_version,
         'published_version': active.published_version, 'revision': active.revision,
         'warehouse_id': active.warehouse_id,
-        'artifacts': getattr(active, '_artifact_manifest', None),
+        'artifacts': map_payload.get('artifact_manifest') or getattr(active, '_artifact_manifest', None),
         'simulation_reset': True,
+    })
+
+
+@api_user_required
+@require_http_methods(['GET'])
+def map_sync_status_view(request):
+    active = ensure_active_map(runtime.layout)
+    payload = published_map_payload(active)
+    status = map_sync_status(
+        published_revision=payload.get('map_revision'),
+        ros_revision=runtime.ros_map_revision,
+        gazebo_revision=runtime.gazebo_map_revision,
+        ros_connected=runtime.ros_bridge_connected,
+        error=runtime.map_sync_error,
+        external=runtime.is_external,
+    )
+    return JsonResponse({
+        'warehouse_id': payload.get('warehouse_id'),
+        'published_revision': payload.get('map_revision'),
+        'published_version': payload.get('published_version'),
+        'map_revision': payload.get('map_revision'),
+        'ros_revision': runtime.ros_map_revision,
+        'gazebo_revision': runtime.gazebo_map_revision,
+        'status': status,
+        'artifact_manifest': payload.get('artifact_manifest'),
+        'error': runtime.map_sync_error,
     })
 
 

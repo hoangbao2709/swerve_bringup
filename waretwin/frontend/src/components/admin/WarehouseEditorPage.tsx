@@ -8,6 +8,8 @@ import { onLayoutUpdated, wsSend } from "../../services/ws";
 import { DEMO_MODE } from "../../config";
 import { useStore } from "../../state/store";
 import type { WarehouseLayout } from "../../layout/types";
+import { pointInPolygon, validatePolygon, polylineLength, type Point } from "../../layout/geometry";
+import { generateAisleTags, validateTags } from "../../layout/navigation";
 import layoutJson from "../../layout/warehouse_layout.json";
 
 type Kind =
@@ -36,7 +38,7 @@ type EditorBlock = {
   members: Selection[];
 };
 type Vec3 = [number, number, number];
-type Mode = "select" | "move" | "measure";
+type Mode = "select" | "move" | "measure" | "draw-floor" | "edit-vertex" | "add-hole" | "draw-aisle" | "edit-aisle";
 type ContextAction =
   | "focus"
   | "rotateLeft"
@@ -82,6 +84,17 @@ function normalizeDraft(value: unknown): Draft {
         : fallback.spawn.robots,
     },
   } as Draft;
+
+  normalized.schema_version = 2;
+  normalized.coordinate_system = source.coordinate_system ?? { unit: "meter", frame: "warehouse_map", yaw_unit: "radian" };
+  normalized.aisles = Array.isArray(source.aisles) ? source.aisles : [];
+  normalized.navigation_tags = Array.isArray(source.navigation_tags) ? source.navigation_tags : [];
+  normalized.navigation_edges = Array.isArray(source.navigation_edges) ? source.navigation_edges : [];
+  normalized.floors = normalized.floors.map((floor) => ({
+    ...floor,
+    boundary: floor.boundary ?? floor.footprint ?? [[0, 0], [normalized.size.width, 0], [normalized.size.width, normalized.size.depth], [0, normalized.size.depth]],
+    holes: floor.holes ?? [],
+  }));
 
   const arrayKeys: (keyof Draft)[] = [
     "floors", "columns", "lifts", "zones", "docks", "racks",
@@ -905,14 +918,16 @@ function EditorScene3D({
       <ambientLight intensity={0.55} />
       <directionalLight position={[40, 60, 20]} intensity={1.4} castShadow />
 
-      <mesh
-        rotation-x={-Math.PI / 2}
-        position={[draft.size.width / 2, -0.05, draft.size.depth / 2]}
-        onPointerDown={(e) => e.stopPropagation()}
-      >
-        <planeGeometry args={[draft.size.width, draft.size.depth]} />
-        <meshStandardMaterial color="#0b1220" />
-      </mesh>
+      {draft.floors.filter((item) => floor === "all" || String(item.id) === String(floor)).map((item) => {
+        const boundary = (item.boundary ?? item.footprint ?? [[0, 0], [draft.size.width, 0], [draft.size.width, draft.size.depth], [0, draft.size.depth]]) as Array<[number, number] | { x: number; y: number }>;
+        const xy = (p: [number, number] | { x: number; y: number }) => Array.isArray(p) ? p : [p.x, p.y];
+        const shape = new THREE.Shape(boundary.map((p) => { const [x, y] = xy(p); return new THREE.Vector2(x, -y); }));
+        for (const hole of item.holes ?? []) {
+          const holeShape = new THREE.Path((hole as Array<[number, number] | { x: number; y: number }>).map((p) => { const [x, y] = xy(p); return new THREE.Vector2(x, -y); }));
+          shape.holes.push(holeShape);
+        }
+        return <mesh key={`floor-${item.id}`} geometry={new THREE.ShapeGeometry(shape)} rotation-x={-Math.PI / 2} position={[0, item.elevation - 0.05, 0]} onPointerDown={(e) => e.stopPropagation()}><meshStandardMaterial color="#0b1220" /></mesh>;
+      })}
 
       <Grid
         args={[draft.size.width, draft.size.depth]}
@@ -1234,12 +1249,15 @@ function Editor2DMap({
   backgroundScale,
   mode,
   measurePoints,
+  drawingPoints,
   onSelect,
   onMove,
   onCommitMove,
   onResize,
   onRotate,
   onMeasurePoint,
+  onDrawPoint,
+  onFinishDrawing,
   onBoxSelect,
   onContextMenu,
   smartGuidesEnabled,
@@ -1258,6 +1276,7 @@ function Editor2DMap({
   backgroundScale: number;
   mode: Mode;
   measurePoints: { x: number; z: number }[];
+  drawingPoints: Point[];
   onSelect: (selection: Selection, additive: boolean) => void;
   onMove: (selection: Selection, x: number, z: number) => void;
   onCommitMove: () => void;
@@ -1269,6 +1288,8 @@ function Editor2DMap({
   ) => void;
   onRotate: (selection: Selection, angle: number) => void;
   onMeasurePoint: (point: { x: number; z: number }) => void;
+  onDrawPoint: (point: Point) => void;
+  onFinishDrawing: () => void;
   onBoxSelect: (bounds: { x: number; z: number; w: number; h: number }, additive: boolean) => void;
   onContextMenu?: (selection: Selection | null, x: number, y: number) => void;
   smartGuidesEnabled: boolean;
@@ -1365,6 +1386,10 @@ function Editor2DMap({
       onMeasurePoint(point);
       return;
     }
+    if (mode === "draw-floor" || mode === "add-hole" || mode === "draw-aisle") {
+      onDrawPoint({ x: point.x, y: point.z });
+      return;
+    }
 
     onSelect({ kind, id: obj.id }, additive);
     const box = get2DBox(kind, obj);
@@ -1458,6 +1483,10 @@ function Editor2DMap({
 
     if (mode === "measure") {
       onMeasurePoint(point);
+      return;
+    }
+    if (mode === "draw-floor" || mode === "add-hole" || mode === "draw-aisle") {
+      onDrawPoint({ x: point.x, y: point.z });
       return;
     }
 
@@ -1665,6 +1694,7 @@ function Editor2DMap({
         onPointerMove={moveCanvas}
         onPointerUp={upCanvas}
         onPointerCancel={upCanvas}
+        onDoubleClick={(event) => { if (mode === "draw-floor" || mode === "add-hole" || mode === "draw-aisle") { event.preventDefault(); onFinishDrawing(); } }}
         onWheel={handleWheel}
         onAuxClick={(event) => event.preventDefault()}
         onContextMenu={(event) => {
@@ -1693,6 +1723,20 @@ function Editor2DMap({
         </defs>
 
         <rect x={0} y={0} width={viewW} height={viewH} fill="url(#editor-grid)" />
+
+        {(() => {
+          const active = floor === "all" ? draft.floors[0] : draft.floors.find((item) => String(item.id) === String(floor));
+          const boundary = active?.boundary ?? active?.footprint ?? [[0, 0], [draft.size.width, 0], [draft.size.width, draft.size.depth], [0, draft.size.depth]];
+          const path = (points: Array<Point | [number, number]>) => points.map((p) => { const x = Array.isArray(p) ? p[0] : p.x; const y = Array.isArray(p) ? p[1] : p.y; return `${x * scale.x},${y * scale.z}`; }).join(" ");
+          return <g>
+            <polygon points={path(boundary as Array<Point | [number, number]>)} fill="#0b1727" fillOpacity="0.55" stroke="#38bdf8" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+            {(active?.holes ?? []).map((hole, index) => <polygon key={`editor-hole-${index}`} points={path(hole as Array<Point | [number, number]>)} fill="#020617" stroke="#f97316" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />)}
+            {(draft.aisles ?? []).filter((aisle) => floor === "all" || String(aisle.floor_id ?? 1) === String(floor)).map((aisle) => <g key={`aisle-${aisle.id}`}><polyline points={path(aisle.centerline)} fill="none" stroke="#22d3ee" strokeOpacity="0.22" strokeWidth={Math.max(3, aisle.width * scale.x)} vectorEffect="non-scaling-stroke" /><polyline points={path(aisle.centerline)} fill="none" stroke="#67e8f9" strokeWidth="1.5" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" /></g>)}
+            {(draft.navigation_tags ?? []).filter((tag) => floor === "all" || String(tag.floor_id ?? 1) === String(floor)).map((tag) => <g key={tag.uuid}><circle cx={tag.x * scale.x} cy={tag.y * scale.z} r="5" fill={tag.locked ? "#f59e0b" : "#a78bfa"} vectorEffect="non-scaling-stroke" /><text x={tag.x * scale.x + 7} y={tag.y * scale.z - 6} fill="#e2e8f0" fontSize="10" vectorEffect="non-scaling-stroke">{tag.tag_id}</text></g>)}
+            {drawingPoints.length > 0 && <polyline points={path(drawingPoints)} fill="none" stroke="#facc15" strokeWidth="2" vectorEffect="non-scaling-stroke" />}
+            {drawingPoints.map((p, index) => <circle key={`draw-point-${index}`} cx={p.x * scale.x} cy={p.y * scale.z} r="4" fill="#facc15" vectorEffect="non-scaling-stroke" />)}
+          </g>;
+        })()}
 
         {background && (
           <image
@@ -2269,6 +2313,7 @@ export function WarehouseEditorPage() {
   const [measurePoints, setMeasurePoints] = useState<
     { x: number; z: number }[]
   >([]);
+  const [drawingPoints, setDrawingPoints] = useState<Point[]>([]);
   const [arrayOpen, setArrayOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; selection: Selection | null } | null>(null);
   const [arrayRows, setArrayRows] = useState(2);
@@ -2278,6 +2323,12 @@ export function WarehouseEditorPage() {
   const [arrayGapZ, setArrayGapZ] = useState(1.0);
   const [search, setSearch] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const finish = (event: KeyboardEvent) => { if (event.key === "Enter" && ["draw-floor", "add-hole", "draw-aisle"].includes(mode)) { event.preventDefault(); finishDrawing(); } };
+    window.addEventListener("keydown", finish);
+    return () => window.removeEventListener("keydown", finish);
+  }, [mode, drawingPoints]);
 
   const selectedObjects = useMemo(
     () =>
@@ -2899,6 +2950,45 @@ export function WarehouseEditorPage() {
     commit(next, `${mode.toUpperCase()} · UNSAVED`);
   }
 
+  function onDrawPoint(point: Point) {
+    setDrawingPoints((current) => [...current, point]);
+  }
+
+  function finishDrawing() {
+    if (drawingPoints.length < 3) { setErrors(["A floor/hole polygon requires at least 3 points."]); return; }
+    const geometryErrors = validatePolygon(drawingPoints, mode === "add-hole" ? "hole" : mode === "draw-aisle" ? "aisle" : "floor");
+    if (geometryErrors.length) { setErrors(geometryErrors); return; }
+    const next = clone(draft);
+    const active = next.floors.find((item) => String(item.id) === String(floor)) ?? next.floors[0];
+    if (!active) return;
+    if (mode === "draw-floor") {
+      active.boundary = drawingPoints.map((p) => ({ x: p.x, y: p.y }));
+    } else if (mode === "add-hole") {
+      const boundary = ((active.boundary ?? active.footprint ?? []) as Array<Point | [number, number]>).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
+      if (!boundary.length || !drawingPoints.every((p) => pointInPolygon(p, boundary))) { setErrors(["Hole must be completely inside the floor boundary."]); return; }
+      active.holes = [...(active.holes ?? []), drawingPoints.map((p) => ({ x: p.x, y: p.y }))];
+    } else {
+      const aisleId = `aisle-${String((next.aisles?.length ?? 0) + 1).padStart(3, "0")}`;
+      next.aisles = [...(next.aisles ?? []), { id: aisleId, floor_id: active.id, centerline: drawingPoints, width: 2, direction: "bidirectional", speed_limit: 0.8, tag_rule: { enabled: true, spacing: 2, start_offset: 0.5, end_offset: 0.5 } }];
+    }
+    commit(next, "GEOMETRY DRAWN · UNSAVED");
+    setDrawingPoints([]);
+    setMode("select");
+    setErrors([]);
+  }
+
+  function regenerateTags() {
+    const next = clone(draft);
+    next.navigation_tags = generateAisleTags(next.aisles ?? [], next.navigation_tags ?? []);
+    const active = next.floors[0];
+    if (active) {
+      const boundary = (active.boundary ?? active.footprint ?? []).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
+      const tagErrors = validateTags(next.navigation_tags, boundary, (active.holes ?? []).map((hole) => hole.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p)));
+      if (tagErrors.length) setErrors(tagErrors);
+    }
+    commit(next, "TAGS REGENERATED · UNSAVED");
+  }
+
   function validate(draftToCheck = draft) {
     const nextErrors: string[] = [];
 
@@ -2909,6 +2999,22 @@ export function WarehouseEditorPage() {
     ) {
       nextErrors.push("Warehouse dimensions must be positive");
     }
+
+    const floorIds = new Set(draftToCheck.floors.map((item) => String(item.id)));
+    draftToCheck.floors.forEach((item) => {
+      const boundary = (item.boundary ?? item.footprint ?? []).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
+      nextErrors.push(...validatePolygon(boundary, `Floor ${item.id}`));
+      (item.holes ?? []).forEach((hole, index) => {
+        const points = hole.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p);
+        nextErrors.push(...validatePolygon(points, `Floor ${item.id} hole ${index + 1}`));
+        if (boundary.length && !points.every((point) => pointInPolygon(point, boundary))) nextErrors.push(`Floor ${item.id} hole ${index + 1} is outside floor`);
+      });
+    });
+    (draftToCheck.aisles ?? []).forEach((aisle) => {
+      if (aisle.width <= 0) nextErrors.push(`Aisle ${aisle.id} width must be positive`);
+      if (aisle.centerline.length < 2 || aisle.centerline.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) nextErrors.push(`Aisle ${aisle.id} has invalid centerline`);
+      if (aisle.floor_id != null && !floorIds.has(String(aisle.floor_id))) nextErrors.push(`Aisle ${aisle.id} has invalid floor reference`);
+    });
 
     const ids = new Set<string>();
     (Object.keys(KEY_MAP) as Kind[]).forEach((kind) => {
@@ -3672,6 +3778,11 @@ export function WarehouseEditorPage() {
                   setMeasurePoints([]);
                 }}
               />
+              <ToolButton active={mode === "draw-floor"} label="Draw Floor" icon="⌂" onClick={() => { setMode("draw-floor"); setDrawingPoints([]); setErrors([]); }} />
+              <ToolButton active={mode === "edit-vertex"} label="Edit Vertex" icon="◇" onClick={() => setMode("edit-vertex")} />
+              <ToolButton active={mode === "add-hole"} label="Add Hole" icon="□" onClick={() => { setMode("add-hole"); setDrawingPoints([]); setErrors([]); }} />
+              <ToolButton active={mode === "draw-aisle"} label="Draw Aisle" icon="╱" onClick={() => { setMode("draw-aisle"); setDrawingPoints([]); setErrors([]); }} />
+              <button type="button" onClick={regenerateTags} className="mt-1 w-full rounded-md border border-violet-400/20 bg-violet-400/[0.06] px-2 py-2 text-left text-[9px] font-semibold text-violet-300 hover:bg-violet-400/[0.12]">Generate Navigation Tags</button>
               <div className="mt-1 grid grid-cols-2 gap-1">
                 <button
                   type="button"
@@ -4155,12 +4266,15 @@ export function WarehouseEditorPage() {
                 backgroundScale={backgroundScale}
                 mode={mode}
                 measurePoints={measurePoints}
+                drawingPoints={drawingPoints}
                 onSelect={selectObject}
                 onMove={on2DMove}
                 onCommitMove={commit2DPointer}
                 onResize={onResize}
                 onRotate={onRotate}
                 onMeasurePoint={onMeasurePoint}
+                onDrawPoint={onDrawPoint}
+                onFinishDrawing={finishDrawing}
                 onBoxSelect={onBoxSelect}
                 onContextMenu={(selection, x, y) => setContextMenu({ selection, x, y })}
                 smartGuidesEnabled={smartGuidesEnabled}

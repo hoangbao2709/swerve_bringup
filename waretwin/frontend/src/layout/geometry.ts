@@ -1,0 +1,16 @@
+export type Point = { x: number; y: number };
+
+export function distance(a: Point, b: Point): number { return Math.hypot(a.x - b.x, a.y - b.y); }
+export function polylineLength(points: Point[]): number { return points.slice(1).reduce((sum, p, i) => sum + distance(points[i], p), 0); }
+export function signedArea(points: Point[]): number { return points.reduce((sum, p, i) => { const q = points[(i + 1) % points.length]; return sum + p.x * q.y - q.x * p.y; }, 0) / 2; }
+export function orientation(a: Point, b: Point, c: Point): number { return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); }
+export function onSegment(a: Point, b: Point, p: Point, eps = 1e-8): boolean { return Math.abs(orientation(a, b, p)) <= eps && p.x >= Math.min(a.x, b.x) - eps && p.x <= Math.max(a.x, b.x) + eps && p.y >= Math.min(a.y, b.y) - eps && p.y <= Math.max(a.y, b.y) + eps; }
+export function segmentsIntersect(a: Point, b: Point, c: Point, d: Point): boolean {
+  const o1 = orientation(a, b, c), o2 = orientation(a, b, d), o3 = orientation(c, d, a), o4 = orientation(c, d, b);
+  if (((o1 > 1e-8 && o2 < -1e-8) || (o1 < -1e-8 && o2 > 1e-8)) && ((o3 > 1e-8 && o4 < -1e-8) || (o3 < -1e-8 && o4 > 1e-8))) return true;
+  return (Math.abs(o1) <= 1e-8 && onSegment(a, b, c)) || (Math.abs(o2) <= 1e-8 && onSegment(a, b, d)) || (Math.abs(o3) <= 1e-8 && onSegment(c, d, a)) || (Math.abs(o4) <= 1e-8 && onSegment(c, d, b));
+}
+export function selfIntersects(points: Point[]): boolean { return points.some((a, i) => points.some((c, j) => { if (j <= i || j === i + 1 || (i === 0 && j === points.length - 1)) return false; return segmentsIntersect(a, points[(i + 1) % points.length], c, points[(j + 1) % points.length]); })); }
+export function pointInPolygon(point: Point, polygon: Point[]): boolean { let inside = false; for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) { const a = polygon[i], b = polygon[j]; if (onSegment(a, b, point)) return true; if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / ((b.y - a.y) || 1e-30) + a.x) inside = !inside; } return inside; }
+export function validatePolygon(points: Point[], label: string): string[] { const errors: string[] = []; if (points.length < 3) errors.push(`${label}: requires at least 3 vertices`); if (points.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) errors.push(`${label}: invalid coordinates`); if (new Set(points.map((p) => `${p.x}:${p.y}`)).size !== points.length) errors.push(`${label}: duplicate point`); if (points.length >= 3 && Math.abs(signedArea(points)) < 1e-8) errors.push(`${label}: area must be non-zero`); if (points.length >= 3 && selfIntersects(points)) errors.push(`${label}: self-intersects`); return errors; }
+export function offsetPolyline(points: Point[], width: number): Point[] { if (points.length < 2 || width <= 0) return []; const left: Point[] = [], right: Point[] = []; for (let i = 0; i < points.length; i++) { const prev = points[Math.max(0, i - 1)], next = points[Math.min(points.length - 1, i + 1)]; const dx = next.x - prev.x, dy = next.y - prev.y, len = Math.hypot(dx, dy) || 1; const nx = -dy / len * width / 2, ny = dx / len * width / 2; left.push({ x: points[i].x + nx, y: points[i].y + ny }); right.unshift({ x: points[i].x - nx, y: points[i].y - ny }); } return [...left, ...right]; }

@@ -3,6 +3,7 @@ import { STATUS_COLOR, layout, useStore } from "../../state/store";
 import { buildNavGrid } from "../../layout/navgrid";
 import { getEngine } from "../../simulation/runner";
 import { rackOccupancy } from "../../layout/shelfOccupancy";
+import { floorBoundary, polygonPoints } from "../../layout/coordinates";
 
 /** 俯視 2D 地圖：導航網格障礙、Zone、輸送帶、機器人。TRAFFIC / HEATMAP 模式疊上熱區。 */
 export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP"; size?: { width: number; height: number } }) {
@@ -21,6 +22,8 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
   const tagMission = useStore((s) => s.tagNavigation);
   const setTargetTagId = useStore((s) => s.setTargetTagId);
   const { width: W, depth: D } = layout.size;
+  const activeFloor = layout.floors.find((f) => String(f.id) === String(mapFloor));
+  const boundary = activeFloor ? floorBoundary(activeFloor, W, D) : [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: D }, { x: 0, y: D }];
   const grid = useMemo(() => buildNavGrid(layout, mapFloor), [mapFloor, layoutRevision]);
 
   // 障礙格合併成矩形 (逐列 run-length) 以減少 SVG 元素
@@ -80,7 +83,8 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
 
   return (
     <svg className="map2d" style={size ? { width: "100%", height: "100%" } : undefined} viewBox={`-2 -7 ${W + 4} ${D + 10}`} preserveAspectRatio="xMidYMid meet" onClick={() => selectShelf(null)}>
-      <rect x="0" y="0" width={W} height={D} fill="#0a1020" stroke="#334155" strokeWidth="0.4" />
+      <polygon points={polygonPoints(boundary)} fill="#0a1020" stroke="#334155" strokeWidth="0.4" />
+      {activeFloor?.holes?.map((hole, index) => <polygon key={`floor-hole-${index}`} points={polygonPoints(hole)} fill="#020617" stroke="#475569" strokeWidth="0.25" />)}
       {/* 格線 */}
       {Array.from({ length: W / 10 + 1 }, (_, i) => <line key={"v" + i} x1={i * 10} x2={i * 10} y1="0" y2={D} stroke="#16213a" strokeWidth="0.15" />)}
       {Array.from({ length: D / 10 + 1 }, (_, i) => <line key={"h" + i} y1={i * 10} y2={i * 10} x1="0" x2={W} stroke="#16213a" strokeWidth="0.15" />)}
@@ -94,9 +98,7 @@ export function MapView2D({ mode, size }: { mode: "MAP" | "TRAFFIC" | "HEATMAP";
         const st = zones[z.id]?.status; const col = st === "BLOCKED" ? "#ef4444" : st === "CONGESTED" ? "#f97316" : z.color;
         return <g key={z.id}><polygon points={z.polygon.map((p) => p.join(",")).join(" ")} fill={col} fillOpacity="0.05" stroke={col} strokeWidth="0.35" /><text x={z.polygon[0][0] + 1} y={z.polygon[0][1] - 1} fill={col} fontSize="2.6" fontWeight="700">{z.name.toUpperCase()}</text></g>;
       })}
-      {mapFloor !== 1 && layout.floors.filter((f) => f.id === mapFloor && f.footprint).map((f) => (
-        <polygon key={f.id} points={f.footprint!.map((p) => p.join(",")).join(" ")} fill="#14b8a6" fillOpacity="0.03" stroke="#14b8a6" strokeWidth="0.3" strokeDasharray="1.5 0.8" />
-      ))}
+      {activeFloor && <polygon points={polygonPoints(boundary)} fill="#14b8a6" fillOpacity="0.03" stroke="#14b8a6" strokeWidth="0.3" strokeDasharray="1.5 0.8" />}
       {layout.lifts.map((l) => (
         <g key={l.id}><rect x={l.cell[0] - 0.7} y={l.cell[1] - 0.7} width="2.4" height="2.4" fill="none" stroke="#a78bfa" strokeWidth="0.35" /><text x={l.cell[0] + 2} y={l.cell[1] + 0.6} fill="#a78bfa" fontSize="1.8">{l.id}</text></g>
       ))}

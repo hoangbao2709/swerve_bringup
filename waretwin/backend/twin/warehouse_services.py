@@ -4,6 +4,7 @@ from typing import Any
 from django.db import transaction
 
 from .models import Warehouse, Zone, Shelf
+from .canonical_map import canonicalize_layout
 
 
 def warehouse_to_dict(w: Warehouse, *, counts: bool = True) -> dict[str, Any]:
@@ -213,7 +214,7 @@ def _deepcopy_json(value: Any) -> Any:
 
 def _default_layout_for_warehouse(warehouse: Warehouse, template: dict[str, Any] | None = None) -> dict[str, Any]:
     base = _deepcopy_json(template or {})
-    base.setdefault('schema_version', '1.0')
+    base.setdefault('schema_version', 2)
     base['id'] = warehouse.layout_id or warehouse.code.lower()
     base['name'] = warehouse.name
     base['units'] = warehouse.units or 'm'
@@ -230,7 +231,7 @@ def _default_layout_for_warehouse(warehouse: Warehouse, template: dict[str, Any]
                 'cameras', 'sensors', 'locations', 'obstacles'):
         base.setdefault(key, [])
     base.setdefault('spawn', {'robots': []})
-    return base
+    return canonicalize_layout(base)
 
 
 def master_to_layout(warehouse: Warehouse, base_layout: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -487,6 +488,7 @@ def commit_master_to_map(warehouse: Warehouse, *, user=None, source: str = 'WARE
 @transaction.atomic
 def save_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout: dict[str, Any] | None = None):
     """Save editor geometry as the shared current map without creating a published version."""
+    layout = canonicalize_layout(layout, fallback_layout)
     active = ensure_active_map(fallback_layout or layout)
     sync_from_layout(layout, warehouse=active.warehouse, prune=True)
     active.refresh_from_db()
@@ -500,6 +502,7 @@ def save_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout: di
 
 def publish_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout: dict[str, Any] | None = None):
     from .models import WarehouseMap, WarehouseMapVersion
+    layout = canonicalize_layout(layout, fallback_layout)
     active = ensure_active_map(fallback_layout or layout)
     warehouse = active.warehouse
     with transaction.atomic():

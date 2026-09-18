@@ -26,6 +26,7 @@ from .schema import ScenarioInjection, WhatIfRequest
 from .ai import copilot as copilot_ai
 from .ai import vlm as vlm_ai
 from .sim.whatif import run_whatif
+from .canonical_map import canonicalize_layout, validate_canonical_layout
 
 inject_adapter = TypeAdapter(ScenarioInjection)
 
@@ -335,7 +336,7 @@ def layout_get(request):
         runtime.replace_layout(active.layout)
     # Geometry remains owned by the published map, while shelf occupancy is read
     # from relational master data so current_load is never stale in the live view.
-    response_layout = master_to_layout(active.warehouse, active.layout)
+    response_layout = canonicalize_layout(master_to_layout(active.warehouse, active.layout))
     response = JsonResponse(response_layout)
     response['X-Warehouse-Id'] = str(active.warehouse_id)
     response['X-Layout-Revision'] = str(active.revision)
@@ -347,7 +348,7 @@ def layout_get(request):
 def _validate_layout_doc(doc: dict[str, Any]) -> list[str]:
     import math
 
-    errors: list[str] = []
+    errors: list[str] = validate_canonical_layout(doc)
     required = [
         'schema_version', 'id', 'name', 'size', 'grid', 'floors', 'zones',
         'racks', 'conveyors', 'stations', 'charging_stations', 'docks',
@@ -497,7 +498,7 @@ def layout_draft(request):
     active = ensure_active_map(runtime.layout)
     if request.method == 'GET':
         # The editor always starts from the shared authoritative map.
-        response = JsonResponse(active.layout)
+        response = JsonResponse(canonicalize_layout(active.layout))
         response['X-Warehouse-Id'] = str(active.warehouse_id)
         response['X-Layout-Revision'] = str(active.revision)
         return response
@@ -505,7 +506,7 @@ def layout_draft(request):
     conflict = _layout_revision_conflict(request, active)
     if conflict:
         return conflict
-    body = _body(request)
+    body = canonicalize_layout(_body(request), active.layout)
     errors = _validate_layout_doc(body)
     if errors:
         return _error('; '.join(errors[:10]))
@@ -529,7 +530,7 @@ def layout_publish(request):
     conflict = _layout_revision_conflict(request, current)
     if conflict:
         return conflict
-    body = _body(request)
+    body = canonicalize_layout(_body(request), current.layout)
     errors = _validate_layout_doc(body)
     if errors:
         return _error('; '.join(errors[:10]))

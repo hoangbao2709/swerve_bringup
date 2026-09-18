@@ -47,6 +47,9 @@ def generate_launch_description():
     lidar_topic = LaunchConfiguration('real_lidar_topic')
     imu_topic = LaunchConfiguration('real_imu_topic')
     odom_topic = LaunchConfiguration('real_odom_topic')
+    artifact_root = LaunchConfiguration('artifact_root')
+    datamatrix_map_file = LaunchConfiguration('datamatrix_map_file')
+    tag_graph_file = LaunchConfiguration('tag_graph_file')
     urdf = os.path.join(pkg, 'urdf', 'swerve_base.urdf')
     interface_cfg = os.path.join(pkg, 'config', 'sim_real_interface.yaml')
 
@@ -109,10 +112,13 @@ def generate_launch_description():
                   parameters=[os.path.join(get_package_share_directory('swerve_bridge'), 'config', 'bridge.yaml'),
                               {'use_sim_time': use_sim_time,
                                'django_token': LaunchConfiguration('bridge_token'),
-                               'django_ws_url': LaunchConfiguration('bridge_ws_url')}])
+                               'django_ws_url': LaunchConfiguration('bridge_ws_url'),
+                               'artifact_root': artifact_root}])
     v30e = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'v30e_sim.launch.py')),
-        launch_arguments={'enable_v30e_sim': 'true', 'use_sim_time': use_sim_time}.items(),
+        launch_arguments={'enable_v30e_sim': 'true', 'use_sim_time': use_sim_time,
+                          'datamatrix_map_file': datamatrix_map_file,
+                          'tag_graph_file': tag_graph_file}.items(),
         condition=navigation_mode)
 
     return LaunchDescription([
@@ -142,5 +148,11 @@ def generate_launch_description():
             default_value=EnvironmentVariable('WARETWIN_ROS_BRIDGE_TOKEN', default_value=''),
             description='Token for the Django ROS bridge (defaults to WARETWIN_ROS_BRIDGE_TOKEN)'),
         DeclareLaunchArgument('bridge_ws_url', default_value='ws://127.0.0.1:8000/ws/ros'),
+        DeclareLaunchArgument('artifact_root', default_value='generated/maps',
+                              description='Published map artifact root used by the ROS bridge'),
+        DeclareLaunchArgument('datamatrix_map_file', default_value=os.path.join(pkg, 'config', 'datamatrix_map.yaml'),
+                              description='Published DataMatrix YAML; package config is the development fallback'),
+        DeclareLaunchArgument('tag_graph_file', default_value=os.path.join(pkg, 'config', 'tag_graph.yaml'),
+                              description='Published tag graph YAML; package config is the development fallback'),
         sim, real_driver, real_state_publisher, ekf, v30e, slam, nav, bridge,
     ])

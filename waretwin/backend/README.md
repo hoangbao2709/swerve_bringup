@@ -1,5 +1,9 @@
 # WareTwin Django Backend Base
 
+> Để chạy profile tích hợp với Gazebo/ROS 2, xem
+> [../../SETUP_A_Z.md](../../SETUP_A_Z.md). Backend hỗ trợ `LOCAL_SIM` và
+> `GAZEBO_ROS`; profile đầy đủ dùng `GAZEBO_ROS` cùng node `swerve_bridge`.
+
 Django backend base for the current WareTwin frontend. It is designed for the target architecture:
 
 ```text
@@ -9,15 +13,17 @@ Frontend (React)
       v
 Central Backend (Django on PC)   <-- this project
       |
-      | future Robot Server API
+      | ROS bridge WebSocket (/ws/ros)
       v
-Robot Server (Django/Python on robot)
+swerve_bridge (ROS 2 node)
       |
       v
 ROS2
 ```
 
-At this stage **no Robot Server or ROS2 API is connected**. The existing Python `SimEngine` is kept as the local/mock state provider so the frontend can exercise its complete UI contract before hardware integration.
+`LOCAL_SIM` vẫn giữ `SimEngine` làm state provider cho frontend-only development.
+Ở profile `GAZEBO_ROS`, state robot đến từ ROS bridge; frontend không tự chạy
+browser simulation khi bridge mất kết nối.
 
 ## What is already supported
 
@@ -36,12 +42,11 @@ At this stage **no Robot Server or ROS2 API is connected**. The existing Python 
 - Copilot rule-based fallback without any external AI API.
 - VLM simulated observation without any external AI API.
 - SQLite persistence for users, tokens, audit/events, future robot endpoints and missions.
-- Future `RobotGateway` abstraction for Central Django -> Robot Server -> ROS2.
+- `RobotGateway` boundary for the Central Django -> ROS bridge -> ROS 2 path.
 
-## Not connected yet
+## Chưa nằm trong profile này
 
-- Robot Server HTTP/WebSocket API.
-- ROS2 topics/actions/services.
+- Robot Server HTTP/WebSocket riêng cho phần cứng.
 - Real robot telemetry.
 - Real robot commands.
 - Redis/Celery/multi-process state distribution.
@@ -209,16 +214,17 @@ layouts/
   layout-v*.json         # versions
 ```
 
-## Future LIVE mode
+## Runtime modes
 
-Do not make React talk directly to ROS2. Keep the frontend contract stable and change only the backend state provider:
+React không nói chuyện trực tiếp với ROS2. Chọn state provider bằng
+`WARETWIN_RUNTIME_MODE`:
 
 ```text
-Current development
+LOCAL_SIM
 Frontend -> Django -> SimEngine
 
-Future live system
-Frontend -> Django -> RobotServerGateway -> Robot Django/Python -> ROS2 -> Robot
+GAZEBO_ROS / REAL_ROBOT
+Frontend -> Django -> swerve_bridge -> ROS2 -> robot/simulator
 ```
 
 For LIVE mode, robot telemetry should become authoritative. The frontend must not invent position/state after communication loss; use `ONLINE / STALE / OFFLINE` and wait for telemetry before confirming a command state.

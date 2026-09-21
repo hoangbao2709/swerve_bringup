@@ -8,6 +8,7 @@ from functools import wraps
 from typing import Any
 
 from django.contrib.auth import authenticate
+from django.conf import settings
 from django.http import HttpRequest, JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -113,7 +114,12 @@ def _broadcast_layout_update(map_obj, source: str) -> None:
 
 
 def root(request):
-    return JsonResponse({'service': 'waretwin-django-backend', 'ws': '/ws', 'health': '/api/health', 'mode': 'MOCK'})
+    return JsonResponse({
+        'service': 'waretwin-django-backend',
+        'ws': '/ws',
+        'health': '/api/health',
+        'mode': settings.WARETWIN_RUNTIME_MODE,
+    })
 
 
 @api_user_required
@@ -303,7 +309,7 @@ def health(request):
     task_alive = runtime._task is not None and not runtime._task.done()
     return JsonResponse({
         'ok': True,
-        'mode': 'MOCK',
+        'mode': settings.WARETWIN_RUNTIME_MODE,
         'run_id': runtime.run_id,
         'tick': runtime.engine.state['sim']['tick'],
         'speed': runtime.speed,

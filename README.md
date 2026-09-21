@@ -1,5 +1,9 @@
 # swerve_bringup
 
+Muốn chạy toàn bộ frontend + Django backend + Gazebo + ROS bridge + RViz,
+xem [SETUP_A_Z.md](SETUP_A_Z.md). Lệnh build trong tài liệu đã xử lý package
+lồng `swerve_bridge` và môi trường ROS overlay của máy.
+
 Package ROS 2 (ament_cmake) chứa mô tả URDF + launch hiển thị cho AGV đa hướng:
 - 2 cụm swerve (steer_front, steer_rear): mỗi cụm có khớp xoay đứng (steer) + khớp lăn bánh chủ động (drive)
 - 4 bánh caster bị động ở 4 góc (swivel + roll, mỗi bánh 2 bậc tự do)

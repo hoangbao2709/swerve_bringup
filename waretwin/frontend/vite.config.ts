@@ -7,6 +7,11 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  test: {
+    // The deterministic simulation/perception stress tests intentionally run
+    // thousands of ticks and exceed Vitest's 5 s default on this machine.
+    testTimeout: 30_000,
+  },
   server: {
     // Allow other machines on the LAN to open the dev UI.
     host: "0.0.0.0",

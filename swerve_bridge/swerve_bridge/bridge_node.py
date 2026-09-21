@@ -98,7 +98,12 @@ class SwerveBridge(Node):
             try:
                 separator = '&' if '?' in self.ws_url else '?'
                 url = f'{self.ws_url}{separator}token={quote(self.token)}'
-                ws = websocket.create_connection(url, timeout=2, subprotocols=['json'])
+                # The Django Channels consumer accepts JSON frames but does
+                # not negotiate a WebSocket subprotocol. Passing
+                # subprotocols=['json'] makes websocket-client reject the
+                # otherwise valid 101 response with "Invalid WebSocket
+                # Header".
+                ws = websocket.create_connection(url, timeout=2)
                 with self.ws_lock:
                     self.ws = ws
                 self.send_map_revision_status()
@@ -345,4 +350,7 @@ def main(args=None):
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # Ctrl-C can already have shut down the default context through the
+        # executor. Avoid turning a normal stop into an RCLError traceback.
+        if rclpy.ok():
+            rclpy.shutdown()

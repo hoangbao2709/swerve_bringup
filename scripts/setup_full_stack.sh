@@ -38,19 +38,29 @@ if ! [[ "$NPM_MAJOR" =~ ^[0-9]+$ ]] || ((NPM_MAJOR < 10)); then
   fail "npm >=10 is required (detected $NPM_VERSION). Upgrade Node.js/npm and rerun setup"
 fi
 
-if [[ "${EUID}" -eq 0 ]]; then
-  SUDO=()
-else
-  command -v sudo >/dev/null 2>&1 || fail 'sudo is required to install Ubuntu/ROS packages'
+SUDO=()
+SUDO_READY=0
+ensure_sudo() {
+  ((SUDO_READY)) && return 0
+  if [[ "${EUID}" -eq 0 ]]; then
+    SUDO=()
+    SUDO_READY=1
+    return 0
+  fi
+  command -v sudo >/dev/null 2>&1 || fail 'sudo is required for the privileged operation that is about to run'
+  sudo -v || fail 'sudo authentication failed; re-run with an account allowed to install packages'
   SUDO=(sudo)
-  "${SUDO[@]}" -v || fail 'sudo authentication failed; re-run with an account allowed to install packages'
-fi
+  SUDO_READY=1
+}
 
 ROS_APT_PACKAGES=(
   ros-humble-gazebo-ros-pkgs
   ros-humble-gazebo-ros2-control
   ros-humble-gazebo-plugins
   ros-humble-ros2-controllers
+  ros-humble-joint-state-broadcaster
+  ros-humble-position-controllers
+  ros-humble-velocity-controllers
   ros-humble-controller-manager
   ros-humble-robot-localization
   ros-humble-pointcloud-to-laserscan
@@ -89,10 +99,28 @@ for package in "${ROS_APT_PACKAGES[@]}"; do
     missing+=("$package")
   fi
 done
-if ((${#missing[@]})); then
-  echo "Installing ${#missing[@]} missing system/ROS package(s)..."
+
+# A package can be marked installed while an older ROS archive is ABI
+# incompatible with a newer dependent package.  In particular, newer
+# robot_localization binaries require the C++ diagnostic_updater shared
+# library, whereas older Humble archives only shipped the headers/Python
+# module.  Treat that missing runtime artifact as a real repair operation.
+runtime_repairs=()
+if [[ ! -f /opt/ros/humble/lib/libdiagnostic_updater.so ]] \
+   && dpkg-query -W -f='${Status}' ros-humble-diagnostic-updater 2>/dev/null | grep -q 'install ok installed'; then
+  runtime_repairs+=(ros-humble-diagnostic-updater)
+fi
+
+if ((${#missing[@]} || ${#runtime_repairs[@]})); then
+  echo "Installing ${#missing[@]} missing system/ROS package(s) and repairing ${#runtime_repairs[@]} runtime package(s)..."
+  ensure_sudo
   "${SUDO[@]}" apt-get update
-  "${SUDO[@]}" apt-get install -y "${missing[@]}"
+  if ((${#missing[@]})); then
+    "${SUDO[@]}" apt-get install -y "${missing[@]}"
+  fi
+  if ((${#runtime_repairs[@]})); then
+    "${SUDO[@]}" apt-get install -y --reinstall "${runtime_repairs[@]}"
+  fi
 else
   echo 'All declared Ubuntu/ROS packages are already installed.'
 fi
@@ -112,6 +140,7 @@ command -v rosdep >/dev/null 2>&1 || fail 'rosdep is missing'
 
 if ! rosdep db >/dev/null 2>&1; then
   if [[ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
+    ensure_sudo
     "${SUDO[@]}" rosdep init
   fi
   rosdep update
@@ -127,9 +156,14 @@ cd "$BACKEND_DIR"
 if [[ ! -x .venv/bin/python ]]; then
   python3 -m venv .venv
 fi
-if ! .venv/bin/python -c 'import django, channels, daphne, dotenv, pydantic, websocket, openpyxl' >/dev/null 2>&1 \
-   || ! .venv/bin/python -m pip check >/dev/null 2>&1; then
-  .venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
+backend_python() {
+  # A parent ROS overlay may export PYTHONPATH entries with unrelated package
+  # metadata. Keep backend dependency checks/install isolated and repeatable.
+  env -u PYTHONPATH -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH .venv/bin/python "$@"
+}
+if ! backend_python -c 'import django, channels, daphne, dotenv, pydantic, websocket, openpyxl, pytest, yaml' >/dev/null 2>&1 \
+   || ! backend_python -m pip check >/dev/null 2>&1; then
+  backend_python -m pip install --disable-pip-version-check -r requirements-dev.txt
 else
   echo 'Backend Python dependencies are already installed and consistent.'
 fi
@@ -152,6 +186,15 @@ set_env_default FRONTEND_PORT 5173
 set_env_default ROS_DOMAIN_ID 0
 set_env_default ROS_WS_URL ws://127.0.0.1:8000/ws/ros
 set_env_default WARETWIN_ARTIFACT_ROOT "$ROOT_DIR/generated/maps"
+set_env_default TWIN_ADMIN_PASSWORD ""
+if grep -qE '^TWIN_ADMIN_PASSWORD=(|change-me-before-first-run)$' .env; then
+  # Store a one-time local bootstrap credential in the ignored .env file. It is
+  # deliberately not printed to setup.log; operators can rotate it afterwards.
+  _admin_password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  sed -i "s|^TWIN_ADMIN_PASSWORD=.*|TWIN_ADMIN_PASSWORD=$_admin_password|" .env
+  unset _admin_password
+  echo 'Generated a local TWIN_ADMIN_PASSWORD in waretwin/backend/.env (not printed).'
+fi
 if grep -qE '^WARETWIN_ROS_BRIDGE_TOKEN=(change-me|)$' .env; then
   TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
   sed -i "s|^WARETWIN_ROS_BRIDGE_TOKEN=.*|WARETWIN_ROS_BRIDGE_TOKEN=$TOKEN|" .env
@@ -161,10 +204,16 @@ if grep -qE '^DJANGO_SECRET_KEY=change-me-in-production$' .env; then
   sed -i "s|^DJANGO_SECRET_KEY=.*|DJANGO_SECRET_KEY=$SECRET_KEY|" .env
 fi
 
-.venv/bin/python manage.py migrate --noinput
-.venv/bin/python manage.py seed_demo
-.venv/bin/python manage.py check
-.venv/bin/python manage.py makemigrations --check --dry-run
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+
+backend_python manage.py migrate --noinput
+backend_python manage.py seed_demo
+backend_python manage.py sync_master_data
+backend_python manage.py check
+backend_python manage.py makemigrations --check --dry-run
 
 FRONTEND_DIR="$ROOT_DIR/waretwin/frontend"
 cd "$FRONTEND_DIR"

@@ -9,9 +9,9 @@ Root cause fixed:
 Changes:
 
 1. `ensure_scheduler_master_data()` is now read-only.
-2. Master data is synchronized only by `seed_demo`, warehouse/layout publish hooks, or `POST /api/scheduler/sync`.
+2. Master data is synchronized only by `sync_master_data`, warehouse/layout publish hooks, or `POST /api/scheduler/sync`.
 3. Explicit sync skips unchanged WorkPoint/RobotProfile rows.
-4. SQLite uses a 30s busy timeout and `seed_demo` enables WAL mode.
+4. SQLite uses a 30s busy timeout and `sync_master_data` enables WAL mode.
 5. Frontend does not open `/ws` without an auth token.
 6. Admin no longer creates a second competing WebSocket; App owns one global connection.
 
@@ -21,10 +21,11 @@ After replacing the project run:
 cd backend
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 
-Expected seed output includes:
+Expected sync output includes:
 
 ```text
 SQLite configured: WAL + busy_timeout=30000ms

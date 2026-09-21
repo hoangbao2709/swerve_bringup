@@ -9,7 +9,7 @@ from twin.warehouse_services import sync_from_layout
 
 class WarehouseCrudTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user('admin-test', password='admin12345')
+        self.user = User.objects.create_user('admin-test', password='test-password-123')
         ensure_profile(self.user, 'admin')
         self.token = ApiToken.issue(self.user).key
         self.auth = {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}

@@ -15,6 +15,7 @@ After updating an existing database, run once:
 ```bash
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 ```
 
 On Windows PowerShell, activate `.venv` first and run the same Django commands with `python`.

@@ -15,7 +15,14 @@ RViz2
 Frontend không nói chuyện trực tiếp với ROS. Django là gateway; `swerve_bridge`
 là node ROS duy nhất kết nối tới `/ws/ros`.
 
-## 1. Điều kiện máy
+## 1. Contract và điều kiện máy
+
+Contract hỗ trợ chính thức là **Ubuntu 22.04 đã cài ROS 2 Humble**. Trong tài
+liệu này, “máy Ubuntu sạch” nghĩa là checkout project mới trên host ROS đã
+được cài; `setup_full_stack.sh` cài dependency của project, Python/Node
+packages, rosdep dependencies còn thiếu và build workspace. Script hiện không
+tự thêm ROS apt repository/key hoặc bootstrap toàn bộ ROS 2 Humble từ Ubuntu
+trắng.
 
 - Ubuntu 22.04, ROS 2 Humble.
 - Gazebo Classic 11 (`gazebo`, `gazebo_ros`), không dùng Gazebo Sim/GZ cho
@@ -38,6 +45,9 @@ sudo apt install -y \
   ros-humble-gazebo-ros2-control \
   ros-humble-gazebo-plugins \
   ros-humble-ros2-controllers \
+  ros-humble-joint-state-broadcaster \
+  ros-humble-position-controllers \
+  ros-humble-velocity-controllers \
   ros-humble-controller-manager \
   ros-humble-robot-localization \
   ros-humble-pointcloud-to-laserscan \
@@ -60,11 +70,11 @@ Các package bắt buộc nhất cho Gazebo là `gazebo_ros2_control` và
 `ros2-controllers`; cho pipeline cảm biến là `robot_localization`,
 `pointcloud_to_laserscan`, `slam_toolbox`.
 
-## 3. Cài đặt tự động từ máy Ubuntu sạch
+## 3. Cài đặt tự động trên host đã có ROS 2 Humble
 
 Lệnh dưới đây có thể chạy lại an toàn. Nó kiểm tra Ubuntu/ROS/Python/Node/npm,
-cài package Ubuntu còn thiếu, chạy `rosdep`, tạo virtualenv, migrate/seed
-database, cài và build frontend, build ROS, rồi chạy preflight. Script ghi log
+cài package Ubuntu còn thiếu, chạy `rosdep`, tạo virtualenv, migrate/seed và
+sync master data, cài và build frontend, build ROS, rồi chạy preflight. Script ghi log
 ở `logs/setup.log`.
 
 ```bash
@@ -128,6 +138,7 @@ python3 -m venv .venv
 cp -n .env.example .env
 .venv/bin/python manage.py migrate
 .venv/bin/python manage.py seed_demo
+.venv/bin/python manage.py sync_master_data
 
 cd ../frontend
 npm ci
@@ -146,7 +157,8 @@ WARETWIN_ROS_BRIDGE_TOKEN=đặt-một-token-chung
 WARETWIN_ARTIFACT_ROOT=../generated/maps
 CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 TWIN_ADMIN_USERNAME=admin
-TWIN_ADMIN_PASSWORD=admin12345
+TWIN_ADMIN_EMAIL=admin@example.com
+TWIN_ADMIN_PASSWORD=đặt-một-password-riêng-có-chữ-và-số
 ```
 
 `WARETWIN_ROS_BRIDGE_TOKEN` phải giống token truyền cho ROS launch. Không commit
@@ -157,12 +169,15 @@ TWIN_ADMIN_PASSWORD=admin12345
 Để frontend tự dùng hostname mà trình duyệt đang mở (kể cả truy cập LAN), để
 hai biến `VITE_*_BASE_URL` trống và chỉ đặt `VITE_BACKEND_PORT` nếu cần.
 
-Sau khi đổi `.env`, chạy lại migrate/seed nếu cần:
+`TWIN_ADMIN_PASSWORD` chỉ dùng để tạo admin nếu user chưa tồn tại. `seed_demo`
+không reset password hiện tại khi backend restart hoặc setup chạy lại. Không
+dùng password mặc định yếu cho production. Sau khi đổi `.env`, chạy:
 
 ```bash
 cd waretwin/backend
 .venv/bin/python manage.py migrate
 .venv/bin/python manage.py seed_demo
+.venv/bin/python manage.py sync_master_data
 ```
 
 ## 6. Mở 4 terminal thủ công (debug chi tiết)
@@ -193,12 +208,15 @@ cd /home/yahboom/swerve_bringup/waretwin/frontend
 npm run dev -- --host 0.0.0.0
 ```
 
-Mở `http://127.0.0.1:5173`, đăng nhập bằng tài khoản seed:
+Mở `http://127.0.0.1:5173`, đăng nhập bằng tài khoản đã đặt trong `.env`:
 
 ```text
 username: admin
-password: admin12345
+password: giá-trị-TWIN_ADMIN_PASSWORD
 ```
+
+Nếu setup đã tạo password ngẫu nhiên, chỉ operator trên máy mới có thể đọc nó
+từ `waretwin/backend/.env`; password không được ghi vào log.
 
 Sau khi đăng nhập, runtime đúng sẽ là `GAZEBO_ROS`; trước khi ROS bridge kết
 nối, robot có thể hiện `OFFLINE`.
@@ -263,9 +281,13 @@ Kiểm tra login nhanh:
 cd waretwin/backend
 .venv/bin/python - <<'PY'
 import json, urllib.request
+from dotenv import dotenv_values
 req = urllib.request.Request(
     'http://127.0.0.1:8000/api/auth/login',
-    data=json.dumps({'username': 'admin', 'password': 'admin12345'}).encode(),
+    data=json.dumps({
+        'username': dotenv_values('.env').get('TWIN_ADMIN_USERNAME', 'admin'),
+        'password': dotenv_values('.env')['TWIN_ADMIN_PASSWORD'],
+    }).encode(),
     headers={'Content-Type': 'application/json'},
 )
 print(json.load(urllib.request.urlopen(req)))

@@ -16,6 +16,7 @@ Backend:
 ```bash
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 

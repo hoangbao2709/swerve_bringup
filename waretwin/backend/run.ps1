@@ -10,4 +10,5 @@ if (-not (Test-Path ".env")) {
 }
 & .\.venv\Scripts\python.exe manage.py migrate
 & .\.venv\Scripts\python.exe manage.py seed_demo
+& .\.venv\Scripts\python.exe manage.py sync_master_data
 & .\.venv\Scripts\python.exe manage.py runserver 0.0.0.0:8000

@@ -9,13 +9,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 
-Default development account:
+Configured admin account from `backend/.env`:
 
 - username: `admin`
-- password: `admin12345`
+- password: value of `TWIN_ADMIN_PASSWORD` (only used when the account is created)
 
 ## 2. Configure frontend
 
@@ -84,6 +85,7 @@ cd backend
 source .venv/bin/activate
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 
@@ -105,6 +107,7 @@ cd backend
 source .venv/bin/activate
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 

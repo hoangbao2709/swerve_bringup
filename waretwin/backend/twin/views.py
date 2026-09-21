@@ -318,7 +318,7 @@ def admin_reset_password(request, user_id: int):
     return JsonResponse(public_user(user))
 
 
-def health(request):
+def _database_probe() -> tuple[bool, str | None]:
     database_ok = False
     database_error = None
     try:
@@ -327,13 +327,66 @@ def health(request):
             database_ok = cursor.fetchone() == (1,)
     except Exception as exc:
         database_error = f'{type(exc).__name__}: {exc}'
+    return database_ok, database_error
+
+
+def _robot_telemetry_alive() -> bool:
+    last = runtime.last_telemetry_at
+    if last is None:
+        return False
+    timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+    return (time.monotonic() - last) <= timeout
+
+
+def _system_health_status(
+    runtime_mode: str,
+    components: dict[str, Any],
+    *,
+    database_ok: bool,
+    robot_telemetry_alive: bool,
+) -> str:
+    """Return full-system health independently from backend readiness.
+
+    The HTTP health endpoint is also used as a Django readiness probe, so the
+    backend and the connected robot stack intentionally have separate fields.
+    This helper keeps the overall status truthful for every runtime profile.
+    """
+    if not database_ok or not components.get('websocket'):
+        return 'ERROR'
+    if components.get('runtime_state') == 'ERROR':
+        return 'ERROR'
+    if runtime_mode == 'LOCAL_SIM':
+        return 'OK'
+    if not components.get('ros_bridge') or not components.get('ros'):
+        return 'DISCONNECTED'
+    if not robot_telemetry_alive:
+        return 'DISCONNECTED'
+    if runtime_mode == 'GAZEBO_ROS' and not components.get('gazebo'):
+        return 'DEGRADED'
+    return 'OK'
+
+
+def health(request):
+    database_ok, database_error = _database_probe()
     components = runtime.health_snapshot()
-    backend_ok = database_ok and components['websocket']
-    status = 'ok' if backend_ok else 'degraded'
+    backend_ready = database_ok and components['websocket']
+    backend_status = 'READY' if backend_ready else 'NOT_READY'
+    system_status = _system_health_status(
+        settings.WARETWIN_RUNTIME_MODE,
+        components,
+        database_ok=database_ok,
+        robot_telemetry_alive=_robot_telemetry_alive(),
+    )
+    overall_ok = backend_ready and system_status == 'OK'
+    status = 'ok' if overall_ok else ('error' if system_status == 'ERROR' else 'degraded')
     task_alive = runtime._task is not None and not runtime._task.done()
     return JsonResponse({
         'status': status,
-        'ok': backend_ok,
+        'ok': overall_ok,
+        'backend_status': backend_status,
+        'backend_ready': backend_ready,
+        'system_status': system_status,
+        'system_ready': system_status == 'OK',
         'database': database_ok,
         'ros_bridge': components['ros_bridge'],
         'websocket': components['websocket'],
@@ -398,7 +451,17 @@ def system_status(request):
             metrics['uptime_s'] = float(stream.read().split()[0])
     except (OSError, ValueError):
         pass
+    database_ok, database_error = _database_probe()
     components = runtime.health_snapshot()
+    backend_ready = database_ok and components['websocket']
+    backend_status = 'READY' if backend_ready else 'NOT_READY'
+    system_health = _system_health_status(
+        settings.WARETWIN_RUNTIME_MODE,
+        components,
+        database_ok=database_ok,
+        robot_telemetry_alive=_robot_telemetry_alive(),
+    )
+    overall_ok = backend_ready and system_health == 'OK'
     robot_state = {
         str(robot_id): {
             'status': robot.get('status'),
@@ -412,7 +475,14 @@ def system_status(request):
         for robot_id, robot in runtime.engine.state.get('robots', {}).items()
     }
     return JsonResponse({
-        'status': 'ok' if components['websocket'] else 'degraded',
+        'status': 'ok' if overall_ok else ('error' if system_health == 'ERROR' else 'degraded'),
+        'ok': overall_ok,
+        'backend_status': backend_status,
+        'backend_ready': backend_ready,
+        'system_status': system_health,
+        'system_ready': system_health == 'OK',
+        'database': database_ok,
+        'database_error': database_error,
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'version': getattr(settings, 'WARETWIN_VERSION', '0.1.0'),
         'mode': components['runtime_state'],

@@ -15,7 +15,7 @@ from twin.warehouse_services import (
 
 class WarehouseMapSyncTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="admin2", password="admin12345")
+        self.user = User.objects.create_user(username="admin2", password="test-password-123")
         layout_path = Path(__file__).resolve().parents[1] / "warehouse_layout.json"
         self.layout = json.loads(layout_path.read_text(encoding="utf-8"))
         result = sync_from_layout(self.layout)

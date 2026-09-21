@@ -67,8 +67,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# Set a private non-default TWIN_ADMIN_PASSWORD in .env before the first seed.
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 
@@ -78,14 +80,14 @@ Or simply:
 ./run.sh
 ```
 
-Development account from `.env.example`:
+The configured admin is created from `TWIN_ADMIN_*` in `.env`. A non-default
+`TWIN_ADMIN_PASSWORD` is required only when that user does not exist; rerunning
+the command preserves an existing password and never prints it.
 
 ```text
 username: admin
-password: admin12345
+password: value from TWIN_ADMIN_PASSWORD
 ```
-
-Change this password before any non-local deployment.
 
 ## Frontend configuration
 
@@ -264,9 +266,13 @@ After pulling this version run:
 ```bash
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 ```
 
-`seed_demo` also synchronizes the currently published layout into master data. With the bundled layout this creates 1 warehouse, 5 zones and 184 physical shelf/rack records. Existing matching records are updated geometrically without resetting their operational status/load.
+`sync_master_data` synchronizes the currently published layout into master data.
+With the bundled layout this creates 1 warehouse, 5 zones and 184 physical
+shelf/rack records. Existing matching records are updated geometrically without
+resetting their operational status/load.
 
 Backend tests are in `twin/tests/test_warehouse_crud.py` and can be run with:
 

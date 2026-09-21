@@ -327,14 +327,14 @@ def ensure_scheduler_master_data(runtime) -> Warehouse:
     caused every GET request to become a writer and made SQLite fail with
     "database is locked" under normal dashboard parallel loading.
 
-    Master data is synchronized explicitly by ``seed_demo``, the warehouse/layout
+    Master data is synchronized explicitly by ``sync_master_data``, the warehouse/layout
     publish path, or POST ``/api/scheduler/sync``.  Read APIs must stay read-only.
     """
     warehouse = active_warehouse()
     if not WorkPoint.objects.filter(warehouse=warehouse).exists():
-        raise ValueError('scheduler work-points are not initialized; run: python manage.py seed_demo')
+        raise ValueError('scheduler work-points are not initialized; run: python manage.py sync_master_data')
     if not RobotProfile.objects.filter(warehouse=warehouse).exists():
-        raise ValueError('scheduler robot profiles are not initialized; run: python manage.py seed_demo')
+        raise ValueError('scheduler robot profiles are not initialized; run: python manage.py sync_master_data')
     return warehouse
 
 
@@ -480,7 +480,7 @@ def release_inventory_reservation(order: WarehouseOrder) -> bool:
 def sync_inventory_placeholders(warehouse: Warehouse) -> dict[str, int]:
     """Backfill lightweight demo items so every current_load slot is inspectable.
 
-    This is called by seed_demo after layout/master-data sync. Real imported items
+    This is called by sync_master_data after layout/master-data sync. Real imported items
     are never overwritten or deleted.
     """
     created = 0

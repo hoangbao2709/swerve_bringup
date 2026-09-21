@@ -83,10 +83,8 @@ BACKEND_HOST_SELECTED="${BACKEND_HOST:-0.0.0.0}"
 BACKEND_URL="http://127.0.0.1:$BACKEND_PORT_SELECTED"
 ROS_WS_URL_SELECTED="ws://127.0.0.1:$BACKEND_PORT_SELECTED/ws/ros"
 FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT_SELECTED"
-LOCAL_IPS="$(hostname -I 2>/dev/null | tr ' ' ',' | sed 's/,$//')"
-ALLOWED_HOSTS_SELECTED="${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}"
-[[ -n "$LOCAL_IPS" ]] && ALLOWED_HOSTS_SELECTED="$ALLOWED_HOSTS_SELECTED,$LOCAL_IPS"
-CORS_SELECTED="${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173},http://127.0.0.1:$FRONTEND_PORT_SELECTED,http://localhost:$FRONTEND_PORT_SELECTED"
+ALLOWED_HOSTS_SELECTED="$(stack_allowed_hosts "${DJANGO_ALLOWED_HOSTS:-}")"
+CORS_SELECTED="$(stack_cors_origins "$FRONTEND_PORT_SELECTED" "${CORS_ALLOWED_ORIGINS:-}")"
 
 umask 077
 cat > "$STACK_RUNTIME_DIR/stack.env" <<EOF
@@ -175,7 +173,8 @@ GUI_ARG=true
 RVIZ_ARG=true
 [[ "$NO_GAZEBO_GUI" -eq 1 ]] && GUI_ARG=false
 [[ "$NO_RVIZ" -eq 1 ]] && RVIZ_ARG=false
-ROS_ARGS=(use_sim:=true use_sim_time:=true mode:="$MODE" gui:="$GUI_ARG" start_rviz:="$RVIZ_ARG" robot_id:="$ROBOT_ID" namespace:="$NAMESPACE" bridge_ws_url:="$ROS_WS_URL_SELECTED")
+ROS_ARGS=(use_sim:=true use_sim_time:=true mode:="$MODE" gui:="$GUI_ARG" start_rviz:="$RVIZ_ARG" robot_id:="$ROBOT_ID" bridge_ws_url:="$ROS_WS_URL_SELECTED")
+[[ -n "$NAMESPACE" ]] && ROS_ARGS+=(namespace:="$NAMESPACE")
 if [[ -n "$WORLD_FILE" ]]; then ROS_ARGS+=(world:="$WORLD_FILE"); fi
 if [[ -n "$MAP_FILE" ]]; then ROS_ARGS+=(map_file:="$MAP_FILE"); fi
 if [[ -n "$PUBLISHED_TAG_FILE" ]]; then ROS_ARGS+=(datamatrix_map_file:="$PUBLISHED_TAG_FILE"); fi

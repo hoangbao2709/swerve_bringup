@@ -8,6 +8,78 @@ mkdir -p "$STACK_RUNTIME_DIR" "$STACK_LOG_DIR"
 stack_pid_file() { printf '%s/%s.pid' "$STACK_RUNTIME_DIR" "$1"; }
 stack_log_file() { printf '%s/%s.log' "$STACK_LOG_DIR" "$1"; }
 
+stack_csv_add() {
+  local current="${1:-}" value="${2:-}"
+  if [[ -z "$value" ]]; then
+    printf '%s\n' "$current"
+  elif [[ -z "$current" ]]; then
+    printf '%s\n' "$value"
+  elif [[ ",$current," == *",$value,"* ]]; then
+    printf '%s\n' "$current"
+  else
+    printf '%s,%s\n' "$current" "$value"
+  fi
+}
+
+stack_host_ipv4s() {
+  {
+    if command -v ip >/dev/null 2>&1; then
+      ip -4 -o addr show scope global 2>/dev/null | awk '{split($4, address, "/"); print address[1]}'
+    fi
+    hostname -I 2>/dev/null || true
+  } | awk '
+    function valid(ip, octet, count, i) {
+      count = split(ip, octet, ".")
+      if (count != 4) return 0
+      for (i = 1; i <= 4; i++) {
+        if (octet[i] !~ /^[0-9]+$/ || octet[i] < 0 || octet[i] > 255) return 0
+      }
+      return 1
+    }
+    {
+      for (i = 1; i <= NF; i++) {
+        ip = $i
+        sub(/\/.*/, "", ip)
+        if (valid(ip)) print ip
+      }
+    }
+  ' | sort -u
+}
+
+stack_host_name() {
+  local host
+  host="$(hostname 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && "$host" != *..* ]]; then
+    printf '%s\n' "$host"
+  fi
+}
+
+stack_allowed_hosts() {
+  local result="${1:-}" ip host
+  result="$(stack_csv_add "$result" 'localhost')"
+  result="$(stack_csv_add "$result" '127.0.0.1')"
+  while read -r ip; do
+    [[ -n "$ip" ]] || continue
+    result="$(stack_csv_add "$result" "$ip")"
+  done < <(stack_host_ipv4s)
+  host="$(stack_host_name || true)"
+  [[ -n "$host" ]] && result="$(stack_csv_add "$result" "$host")"
+  printf '%s\n' "$result"
+}
+
+stack_cors_origins() {
+  local port="$1" result="${2:-}" ip host
+  result="$(stack_csv_add "$result" "http://localhost:$port")"
+  result="$(stack_csv_add "$result" "http://127.0.0.1:$port")"
+  while read -r ip; do
+    [[ -n "$ip" ]] || continue
+    result="$(stack_csv_add "$result" "http://$ip:$port")"
+  done < <(stack_host_ipv4s)
+  host="$(stack_host_name || true)"
+  [[ -n "$host" ]] && result="$(stack_csv_add "$result" "http://$host:$port")"
+  printf '%s\n' "$result"
+}
+
 stack_pid() {
   local name="$1" file
   file="$(stack_pid_file "$name")"

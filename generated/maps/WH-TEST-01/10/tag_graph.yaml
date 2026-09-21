@@ -1,0 +1,291 @@
+frame_id: warehouse_map
+units: meter
+tags:
+  "1101":
+    uuid: "tag-l01"
+    floor_id: "1"
+    x: 11.5
+    y: 7.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1102, 1201]
+  "1102":
+    uuid: "tag-l02"
+    floor_id: "1"
+    x: 11.5
+    y: 12.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1101, 1103, 1202]
+  "1103":
+    uuid: "tag-l03"
+    floor_id: "1"
+    x: 11.5
+    y: 17.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1102, 1104, 1203]
+  "1104":
+    uuid: "tag-l04"
+    floor_id: "1"
+    x: 11.5
+    y: 22.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1103, 1105, 1204]
+  "1105":
+    uuid: "tag-l05"
+    floor_id: "1"
+    x: 11.5
+    y: 27.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1104, 1106, 1205]
+  "1106":
+    uuid: "tag-l06"
+    floor_id: "1"
+    x: 11.5
+    y: 32.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1105, 1107, 1206]
+  "1107":
+    uuid: "tag-l07"
+    floor_id: "1"
+    x: 11.5
+    y: 37.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1106, 1108, 1207]
+  "1108":
+    uuid: "tag-l08"
+    floor_id: "1"
+    x: 11.5
+    y: 42.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1107, 1109, 1208]
+  "1109":
+    uuid: "tag-l09"
+    floor_id: "1"
+    x: 11.5
+    y: 47.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1108, 1110, 1209]
+  "1110":
+    uuid: "tag-l10"
+    floor_id: "1"
+    x: 11.5
+    y: 52.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1109, 1210]
+  "1201":
+    uuid: "tag-c01"
+    floor_id: "1"
+    x: 15
+    y: 7.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1101, 1202, 1301]
+  "1202":
+    uuid: "tag-c02"
+    floor_id: "1"
+    x: 15
+    y: 12.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1102, 1201, 1203, 1302]
+  "1203":
+    uuid: "tag-c03"
+    floor_id: "1"
+    x: 15
+    y: 17.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1103, 1202, 1204, 1303]
+  "1204":
+    uuid: "tag-c04"
+    floor_id: "1"
+    x: 15
+    y: 22.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1104, 1203, 1205, 1304]
+  "1205":
+    uuid: "tag-c05"
+    floor_id: "1"
+    x: 15
+    y: 27.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1105, 1204, 1206, 1305]
+  "1206":
+    uuid: "tag-c06"
+    floor_id: "1"
+    x: 15
+    y: 32.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1106, 1205, 1207, 1306]
+  "1207":
+    uuid: "tag-c07"
+    floor_id: "1"
+    x: 15
+    y: 37.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1107, 1206, 1208, 1307]
+  "1208":
+    uuid: "tag-c08"
+    floor_id: "1"
+    x: 15
+    y: 42.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1108, 1207, 1209, 1308]
+  "1209":
+    uuid: "tag-c09"
+    floor_id: "1"
+    x: 15
+    y: 47.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1109, 1208, 1210, 1309]
+  "1210":
+    uuid: "tag-c10"
+    floor_id: "1"
+    x: 15
+    y: 52.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1110, 1209, 1310]
+  "1301":
+    uuid: "tag-r01"
+    floor_id: "1"
+    x: 18.5
+    y: 7.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1201, 1302]
+  "1302":
+    uuid: "tag-r02"
+    floor_id: "1"
+    x: 18.5
+    y: 12.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1202, 1301, 1303]
+  "1303":
+    uuid: "tag-r03"
+    floor_id: "1"
+    x: 18.5
+    y: 17.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1203, 1302, 1304]
+  "1304":
+    uuid: "tag-r04"
+    floor_id: "1"
+    x: 18.5
+    y: 22.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1204, 1303, 1305]
+  "1305":
+    uuid: "tag-r05"
+    floor_id: "1"
+    x: 18.5
+    y: 27.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1205, 1304, 1306]
+  "1306":
+    uuid: "tag-r06"
+    floor_id: "1"
+    x: 18.5
+    y: 32.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1206, 1305, 1307]
+  "1307":
+    uuid: "tag-r07"
+    floor_id: "1"
+    x: 18.5
+    y: 37.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1207, 1306, 1308]
+  "1308":
+    uuid: "tag-r08"
+    floor_id: "1"
+    x: 18.5
+    y: 42.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1208, 1307, 1309]
+  "1309":
+    uuid: "tag-r09"
+    floor_id: "1"
+    x: 18.5
+    y: 47.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1209, 1308, 1310]
+  "1310":
+    uuid: "tag-r10"
+    floor_id: "1"
+    x: 18.5
+    y: 52.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: [1210, 1309]
+edges:
+  - {from: 1101, to: 1102, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1101, to: 1201, aisle_id: "ROW01", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1102, to: 1103, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1102, to: 1202, aisle_id: "ROW02", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1103, to: 1104, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1103, to: 1203, aisle_id: "ROW03", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1104, to: 1105, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1104, to: 1204, aisle_id: "ROW04", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1105, to: 1106, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1105, to: 1205, aisle_id: "ROW05", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1106, to: 1107, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1106, to: 1206, aisle_id: "ROW06", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1107, to: 1108, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1107, to: 1207, aisle_id: "ROW07", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1108, to: 1109, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1108, to: 1208, aisle_id: "ROW08", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1109, to: 1110, aisle_id: "LANE_LEFT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1109, to: 1209, aisle_id: "ROW09", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1110, to: 1210, aisle_id: "ROW10", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1201, to: 1202, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1201, to: 1301, aisle_id: "ROW01", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1202, to: 1203, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1202, to: 1302, aisle_id: "ROW02", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1203, to: 1204, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1203, to: 1303, aisle_id: "ROW03", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1204, to: 1205, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1204, to: 1304, aisle_id: "ROW04", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1205, to: 1206, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1205, to: 1305, aisle_id: "ROW05", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1206, to: 1207, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1206, to: 1306, aisle_id: "ROW06", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1207, to: 1208, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1207, to: 1307, aisle_id: "ROW07", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1208, to: 1209, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1208, to: 1308, aisle_id: "ROW08", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1209, to: 1210, aisle_id: "LANE_CENTER", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1209, to: 1309, aisle_id: "ROW09", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1210, to: 1310, aisle_id: "ROW10", distance: 3.5, cost: 3.5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1301, to: 1302, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1302, to: 1303, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1303, to: 1304, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1304, to: 1305, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1305, to: 1306, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1306, to: 1307, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1307, to: 1308, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1308, to: 1309, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}
+  - {from: 1309, to: 1310, aisle_id: "LANE_RIGHT", distance: 5, cost: 5, direction: "bidirectional", bidirectional: true, enabled: true}

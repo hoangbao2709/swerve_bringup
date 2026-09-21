@@ -1,0 +1,19 @@
+{
+  "artifacts": {
+    "canonical_map": "canonical_map.json",
+    "datamatrix_map": "datamatrix_map.yaml",
+    "gazebo_world": "gazebo/warehouse.world",
+    "tag_graph": "tag_graph.yaml"
+  },
+  "frame_id": "warehouse_map",
+  "published_version": 2,
+  "revision": 10,
+  "schema_version": 1,
+  "sha256": {
+    "canonical_map": "9a0ccb042663c201e5d6f1e1dce6310a190006bcb5de8f5a1c159c9bd4d93f3a",
+    "datamatrix_map": "1833136738c04f5fb95ea9bde8298dc853fead0be22eec3bdfcd4578a8d4c26d",
+    "gazebo_world": "778719628b939f988099fcb7a8695ec347f2e80aa15041c8715d33c0d1edac0b",
+    "tag_graph": "5707da5a9c5324aea69434f6ca5d7e7e6a2d93a3517634bf96958dcf7d7ac88b"
+  },
+  "warehouse_id": "WH-TEST-01"
+}

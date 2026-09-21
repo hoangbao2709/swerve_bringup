@@ -9,16 +9,16 @@ export const floorKey = (id: FloorId): string => String(id);
 export const sameFloor = (a: FloorId | null | undefined, b: FloorId | null | undefined): boolean => a != null && b != null && floorKey(a) === floorKey(b);
 
 export interface LayoutZone { id: string; name: string; color: string; polygon: P2[]; floor?: number }
-export interface LayoutDock { id: string; kind: "INBOUND" | "OUTBOUND"; zone: string; rect: Rect; door: P2 }
+export interface LayoutDock { id: string; kind: "INBOUND" | "OUTBOUND"; zone: string; rect: Rect; door: P2; floor?: number }
 export interface LayoutRack { id: string; zone: string; position: P3; size: P3; rotation: number; levels: number; model: string; blocks_grid: boolean; floor?: FloorId; /** Fixed operational capacity: 8 orders. */ capacity?: number; /** Current number of orders physically on this shelf. */ current_load?: number }
-export interface LayoutConveyor { id: string; name: string; zone: string; path: P2[]; width: number; speed_mps: number; direction: string; blocks_grid: boolean; /** 這條輸送帶供應的工作站；故障時該站的卸貨時間變長 */ feeds?: string }
-export interface LayoutStation { id: string; kind: string; zone: string; rect: Rect; access_point: P2 }
-export interface LayoutCharging { id: string; zone: string; position: P3; heading: number; power_kw: number; access_point: P2 }
-export interface LayoutParking { id: string; zone: string; rect: Rect; slots: number }
-export interface LayoutRestricted { id: string; name: string; rect: Rect; robots_allowed: boolean }
-export interface LayoutWalkway { id: string; polygon: P2[]; robots_allowed: boolean; speed_limit_mps: number }
+export interface LayoutConveyor { id: string; name: string; zone: string; path: P2[]; width: number; speed_mps: number; direction: string; blocks_grid: boolean; floor?: number; /** 這條輸送帶供應的工作站；故障時該站的卸貨時間變長 */ feeds?: string }
+export interface LayoutStation { id: string; kind: string; zone: string; rect: Rect; access_point: P2; floor?: number }
+export interface LayoutCharging { id: string; zone: string; position: P3; heading: number; power_kw: number; access_point: P2; floor?: number }
+export interface LayoutParking { id: string; zone: string; rect: Rect; slots: number; floor?: number }
+export interface LayoutRestricted { id: string; name: string; rect: Rect; robots_allowed: boolean; floor?: number }
+export interface LayoutWalkway { id: string; polygon: P2[]; robots_allowed: boolean; speed_limit_mps: number; floor?: number }
 export interface LayoutCamera { id: string; zone: string; floor?: number; position: P3; look_at: P3; fov_deg: number; range_m: number }
-export interface LayoutSensor { id: string; kind: string; zone: string; position: P3 }
+export interface LayoutSensor { id: string; kind: string; zone: string; position: P3; floor?: number }
 export interface LayoutLocation { id: string; kind: string; zone: string; floor?: number; rack_id: string | null; level_range: [number, number] | null; access_point: P2 }
 export interface LayoutSpawnRobot { id: string; position: P3; heading: number; battery: number; floor?: number }
 export interface LayoutFloor { id: FloorId; name: string; elevation: number; footprint?: P2[]; boundary?: WarehousePoint[] | P2[]; holes?: Array<WarehousePoint[] | P2[]> }

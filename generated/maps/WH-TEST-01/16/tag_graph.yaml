@@ -1,0 +1,244 @@
+frame_id: warehouse_map
+units: meter
+tags:
+  "1101":
+    uuid: "tag-l01"
+    floor_id: "1"
+    x: 10.5
+    y: 5.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1102":
+    uuid: "tag-l02"
+    floor_id: "1"
+    x: 10.5
+    y: 11
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1103":
+    uuid: "tag-l03"
+    floor_id: "1"
+    x: 10.5
+    y: 16.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1104":
+    uuid: "tag-l04"
+    floor_id: "1"
+    x: 10.5
+    y: 22
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1105":
+    uuid: "tag-l05"
+    floor_id: "1"
+    x: 10.5
+    y: 27.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1106":
+    uuid: "tag-l06"
+    floor_id: "1"
+    x: 10.5
+    y: 33
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1107":
+    uuid: "tag-l07"
+    floor_id: "1"
+    x: 10.5
+    y: 38.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1108":
+    uuid: "tag-l08"
+    floor_id: "1"
+    x: 10.5
+    y: 44
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1109":
+    uuid: "tag-l09"
+    floor_id: "1"
+    x: 10.5
+    y: 49.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1110":
+    uuid: "tag-l10"
+    floor_id: "1"
+    x: 10.5
+    y: 55
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1201":
+    uuid: "tag-c01"
+    floor_id: "1"
+    x: 15
+    y: 5.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1202":
+    uuid: "tag-c02"
+    floor_id: "1"
+    x: 15
+    y: 11
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1203":
+    uuid: "tag-c03"
+    floor_id: "1"
+    x: 15
+    y: 16.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1204":
+    uuid: "tag-c04"
+    floor_id: "1"
+    x: 15
+    y: 22
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1205":
+    uuid: "tag-c05"
+    floor_id: "1"
+    x: 15
+    y: 27.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1206":
+    uuid: "tag-c06"
+    floor_id: "1"
+    x: 15
+    y: 33
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1207":
+    uuid: "tag-c07"
+    floor_id: "1"
+    x: 15
+    y: 38.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1208":
+    uuid: "tag-c08"
+    floor_id: "1"
+    x: 15
+    y: 44
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1209":
+    uuid: "tag-c09"
+    floor_id: "1"
+    x: 15
+    y: 49.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1210":
+    uuid: "tag-c10"
+    floor_id: "1"
+    x: 15
+    y: 55
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1301":
+    uuid: "tag-r01"
+    floor_id: "1"
+    x: 19.5
+    y: 5.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1302":
+    uuid: "tag-r02"
+    floor_id: "1"
+    x: 19.5
+    y: 11
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1303":
+    uuid: "tag-r03"
+    floor_id: "1"
+    x: 19.5
+    y: 16.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1304":
+    uuid: "tag-r04"
+    floor_id: "1"
+    x: 19.5
+    y: 22
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1305":
+    uuid: "tag-r05"
+    floor_id: "1"
+    x: 19.5
+    y: 27.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1306":
+    uuid: "tag-r06"
+    floor_id: "1"
+    x: 19.5
+    y: 33
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1307":
+    uuid: "tag-r07"
+    floor_id: "1"
+    x: 19.5
+    y: 38.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1308":
+    uuid: "tag-r08"
+    floor_id: "1"
+    x: 19.5
+    y: 44
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1309":
+    uuid: "tag-r09"
+    floor_id: "1"
+    x: 19.5
+    y: 49.5
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+  "1310":
+    uuid: "tag-r10"
+    floor_id: "1"
+    x: 19.5
+    y: 55
+    z: 0
+    yaw: 1.57079632679
+    neighbors: []
+edges:

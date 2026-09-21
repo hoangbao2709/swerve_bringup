@@ -198,6 +198,7 @@ export interface RobotState {
   vy?: number;
   wz?: number;
   navigation_state?: string;
+  control_mode?: "MANUAL" | "AUTONOMOUS";
   last_telemetry_at?: string | null;
 }
 
@@ -533,6 +534,15 @@ export interface TagNavigationState {
   route_index: number; progress_percent: number; failure_reason: string; started_at?: string | null;
 }
 
+export type RuntimeState = "IDLE" | "SIMULATION" | "MAPPING" | "NAVIGATION" | "ERROR";
+export type RosDiagnostics = {
+  ros: boolean; gazebo: boolean; controller_manager: boolean; slam: boolean;
+  nav2: boolean; tf: boolean; lidar: boolean;
+  nodes: string[]; topics: string[]; controllers: Array<{ name: string; state: string }>;
+  simulation_time: number | null; last_update_at: string | null;
+  metrics?: Record<string, number | string | null>;
+};
+
 /**
  * 策略：連線時送一次 FULL，之後每 tick 送 PATCH (只含變動欄位)。
  * 前端若發現 patch.base_tick !== 本地 tick，送 RESYNC 請求 FULL。
@@ -548,7 +558,8 @@ export type ServerMessage =
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
   | { type: "map.published"; warehouse_id: number | string; revision: number; published_version: number; map_revision: number; artifact_manifest?: unknown }
   | { type: "SCHEDULE_UPDATED"; source: string }
-  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; ros_connected: boolean; nav2_state: string; last_telemetry_at: string | null; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; map_sync_status?: string; map_sync_error?: string | null }
+  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; map_sync_status?: string; map_sync_error?: string | null }
+  | { type: "ROBOT_CONTROL_STATUS"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS"; accepted: boolean; reason?: string | null; timestamp?: string }
   | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
   | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }
   | { type: "LOCALIZATION_STATUS"; robot_id: string; state: string; last_tag_id?: number | null; expected_tag_id?: number | null; tag_visible?: boolean; last_tag_seen_at?: string | null }
@@ -565,6 +576,8 @@ export type ClientMessage =
   | { type: "ASSIGN_TASK"; task_id: TaskId; robot_id: RobotId }
   | { type: "ACK_ALERT"; alert_id: AlertId }
   | { type: "SELECT_ROBOT"; robot_id: RobotId | null }           // 讓後端提高該機器人更新頻率 (可選)
+  | { type: "ROBOT_MODE"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS" }
+  | { type: "ROBOT_MANUAL"; robot_id: RobotId; action: "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT" | "STOP" }
   | { type: "WHATIF_RUN"; request: WhatIfRequest; request_id?: string }
   | { type: "COPILOT_ASK"; request_id: string; question: string };
 

@@ -75,7 +75,8 @@ class Readiness(Node):
             return None
         try:
             return future.result()
-        except Exception:
+        except Exception as exc:
+            self.get_logger().warning(f'service call failed: {type(exc).__name__}: {exc}')
             return None
 
     def _wait_entity(self, deadline):

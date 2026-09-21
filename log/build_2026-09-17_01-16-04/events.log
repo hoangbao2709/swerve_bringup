@@ -1,3 +1,0 @@
-[0.000000] (-) TimerEvent: {}
-[0.001540] (-) JobUnselected: {'identifier': 'swerve_bringup'}
-[0.005286] (-) EventReactorShutdown: {}

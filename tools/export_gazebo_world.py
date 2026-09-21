@@ -245,14 +245,16 @@ def _cylinder_model(name: str, pose: str, radius: float, height: float) -> str:
     </model>'''
 
 
-def _tag_model(name: str, pose: str) -> str:
-    # A small inline marker keeps generated worlds standalone; tag_id is also
-    # carried by the model name and manifest for camera/ROS integration later.
+def _tag_model(name: str, pose: str, size: float = 0.15, family: str = "DATAMATRIX") -> str:
+    # A small inline marker keeps generated worlds standalone; tag_id/family are
+    # also carried by the model name and manifest for camera/ROS integration.
+    side = max(0.01, float(size))
+    inner = side * 0.75
     return f'''    <model name="{_xml(name)}">
       <static>true</static><pose>{pose}</pose>
       <link name="link">
-        <visual name="substrate"><pose>0 0 0.003 0 0 0</pose><geometry><box><size>0.20 0.20 0.006</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
-        <visual name="id_marker"><pose>0 0 0.007 0 0 0</pose><geometry><box><size>0.15 0.15 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+        <visual name="substrate"><pose>0 0 0.003 0 0 0</pose><geometry><box><size>{_fmt(side)} {_fmt(side)} 0.006</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <visual name="id_marker"><pose>0 0 0.007 0 0 0</pose><geometry><box><size>{_fmt(inner)} {_fmt(inner)} 0.004</size></box></geometry><material><ambient>0.01 0.01 0.01 1</ambient><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
       </link>
     </model>'''
 
@@ -438,7 +440,10 @@ def export_gazebo_world(layout: dict[str, Any], output: Path) -> dict[str, Any]:
                 ax, ay = map(float, a); bx, by = map(float, b); length = math.hypot(bx - ax, by - ay); yaw = math.atan2(by - ay, bx - ax); model = f"conveyor_{_safe_name(ident)}_{index}"; world_models.append(_box_model(model, _pose((ax + bx) / 2, (ay + by) / 2, elevation + 0.35, yaw), (length, width, 0.7), "0.15 0.55 0.65 1")); object_manifest.append({"kind": "conveyor", "id": ident, "segment": index, "model": model, "floor_id": conveyor.get("floor", conveyor.get("floor_id", default_floor))})
         tag_manifest: list[dict[str, Any]] = []
         for tag in doc.get("navigation_tags", []):
-            uid = str(tag.get("uuid")); fid = str(tag.get("floor_id", default_floor)); elevation = _number(floors[fid].get("elevation", 0), f"floor {fid} elevation"); x = _number(tag.get("x"), f"tag {uid} x"); y = _number(tag.get("y"), f"tag {uid} y"); z = elevation + _number(tag.get("z", 0), f"tag {uid} z"); yaw = _number(tag.get("yaw"), f"tag {uid} yaw"); tag_id = int(tag.get("tag_id")); model = f"nav_tag_{_safe_name(tag_id)}"; world_models.append(_tag_model(model, _pose(x, y, z, yaw))); tag_manifest.append({"uuid": uid, "tag_id": tag_id, "floor_id": tag.get("floor_id", default_floor), "model": model, "pose": [x, y, z, yaw]})
+            uid = str(tag.get("uuid")); fid = str(tag.get("floor_id", default_floor)); elevation = _number(floors[fid].get("elevation", 0), f"floor {fid} elevation"); x = _number(tag.get("x"), f"tag {uid} x"); y = _number(tag.get("y"), f"tag {uid} y"); z = elevation + _number(tag.get("z", 0), f"tag {uid} z"); yaw = _number(tag.get("yaw"), f"tag {uid} yaw"); tag_id = int(tag.get("tag_id")); family = str(tag.get("family") or "DATAMATRIX").upper(); size = _number(tag.get("size", 0.15), f"tag {uid} size");
+            if size <= 0.0 or size > 2.0:
+                raise ExportValidationError([f"tag {uid} size must be in (0, 2] m"])
+            model = f"nav_tag_{_safe_name(tag_id)}"; world_models.append(_tag_model(model, _pose(x, y, z, yaw), size, family)); tag_manifest.append({"uuid": uid, "tag_id": tag_id, "family": family, "size": size, "floor_id": tag.get("floor_id", default_floor), "lane_id": tag.get("lane_id"), "zone_id": tag.get("zone_id"), "model": model, "pose": [x, y, z, yaw]})
 
         robot_manifest = _spawn_robot_records(doc, floors)
         canonical_json = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

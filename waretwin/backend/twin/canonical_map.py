@@ -192,6 +192,13 @@ def canonicalize_layout(value: dict[str, Any], fallback: dict[str, Any] | None =
     source['floors'] = normalized_floors
     for key in ('aisles', 'navigation_tags', 'navigation_edges', 'stations', 'holes'):
         if not isinstance(source.get(key), list): source[key] = []
+    for tag in source['navigation_tags']:
+        if isinstance(tag, dict):
+            tag.setdefault('family', 'DATAMATRIX')
+            tag.setdefault('size', 0.15)
+            tag.setdefault('z', 0.0)
+            tag.setdefault('lane_id', '')
+            tag.setdefault('metadata', {})
     return source
 
 
@@ -251,6 +258,11 @@ def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
             x, y, z, yaw = float(tag.get('x')), float(tag.get('y')), float(tag.get('z', 0)), float(tag.get('yaw'))
         except (TypeError, ValueError): errors.append(f'navigation_tags {uid or tag_id}: invalid x/y/z/yaw'); continue
         if not all(math.isfinite(value) for value in (x, y, z, yaw)): errors.append(f'navigation_tags {uid or tag_id}: invalid x/y/z/yaw'); continue
+        family = str(tag.get('family') or '').strip().upper()
+        if not family or len(family) > 32: errors.append(f'navigation_tags {uid or tag_id}: invalid family')
+        try: size = float(tag.get('size', 0.15))
+        except (TypeError, ValueError): size = float('nan')
+        if not math.isfinite(size) or size <= 0.0 or size > 2.0: errors.append(f'navigation_tags {uid or tag_id}: size must be in (0, 2] m')
         boundary = floor_polys.get(fid, [])
         floor = next((item for item in floors if str(item.get('id')) == fid), {})
         holes = []

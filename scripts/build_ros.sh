@@ -12,8 +12,11 @@ fi
 # The interactive shell on this machine may preload another ROS workspace.
 # Build against a clean Humble underlay so CMake does not cache the wrong
 # Python interpreter or Nav2 overlay.
-unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH AMENT_TRACE_SETUP_FILES COLCON_TRACE
+export AMENT_TRACE_SETUP_FILES=""
+set +u
 source /opt/ros/humble/setup.bash
+set -u
 
 # The bridge is intentionally kept under swerve_bridge/. Colcon stops normal
 # discovery at the top-level swerve_bringup package, so both base paths are

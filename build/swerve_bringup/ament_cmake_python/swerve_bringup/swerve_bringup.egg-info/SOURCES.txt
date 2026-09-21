@@ -1,8 +1,0 @@
-setup.py
-swerve_bringup/__init__.py
-swerve_bringup.egg-info/PKG-INFO
-swerve_bringup.egg-info/SOURCES.txt
-swerve_bringup.egg-info/dependency_links.txt
-swerve_bringup.egg-info/top_level.txt
-swerve_bringup/action/__init__.py
-swerve_bringup/action/_go_to_tag.py

@@ -225,7 +225,7 @@
   <!-- ========================= BASE LINK ========================= -->
   <link name="base_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/base_frame.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="package://swerve_bringup/meshes/base_frame.stl" scale="0.001 0.001 0.001"/></geometry>
       <material name="grey"/>
     </visual>
     <!-- Collision follows the measured mesh bbox (X/Y/Z = 1.196/0.596/0.460 m).
@@ -243,7 +243,7 @@
   <!-- ===================== CỤM XOAY PHÍA TRƯỚC (steer_front) ===================== -->
   <link name="steer_front_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_front_housing_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="package://swerve_bringup/meshes/steer_front_housing_v2.stl" scale="0.001 0.001 0.001"/></geometry>
       <material name="orange"/>
     </visual>
     <collision>
@@ -268,7 +268,7 @@
   <!-- ===================== CỤM XOAY PHÍA SAU (steer_rear) ===================== -->
   <link name="steer_rear_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_rear_housing_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="package://swerve_bringup/meshes/steer_rear_housing_v2.stl" scale="0.001 0.001 0.001"/></geometry>
       <material name="orange"/>
     </visual>
     <collision>
@@ -386,7 +386,7 @@
   <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->
   <link name="wheel_front_drive_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_front_wheel_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="package://swerve_bringup/meshes/steer_front_wheel_v2.stl" scale="0.001 0.001 0.001"/></geometry>
       <material name="dark"/>
       <origin xyz="0 0 0" rpy="0 0 0"/>
     </visual>
@@ -414,7 +414,7 @@
   <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->
   <link name="wheel_rear_drive_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_rear_wheel_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <geometry><mesh filename="package://swerve_bringup/meshes/steer_rear_wheel_v2.stl" scale="0.001 0.001 0.001"/></geometry>
       <material name="dark"/>
       <origin xyz="0 0 0" rpy="0 0 0"/>
     </visual>

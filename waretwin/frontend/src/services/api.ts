@@ -2,9 +2,21 @@ import { API_URL } from "./ws";
 import { useStore } from "../state/store";
 import type { TagNavigationState } from "../schema/twin_state";
 
+async function responseError(response: Response): Promise<string> {
+  try {
+    const body = await response.json() as {
+      detail?: string;
+      error?: { message?: string };
+    };
+    return body.detail || body.error?.message || response.statusText || `HTTP ${response.status}`;
+  } catch {
+    return response.statusText || `HTTP ${response.status}`;
+  }
+}
+
 export async function navigationApi(path: string, init: RequestInit = {}) {
   const response = await apiFetch(`/api/navigation/${path}`, init);
-  if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || response.statusText); }
+  if (!response.ok) throw new Error(await responseError(response));
   return response.json();
 }
 export const startTagMission = (robot_id: string, target_tag_id: number) => {
@@ -15,7 +27,16 @@ export const startTagMission = (robot_id: string, target_tag_id: number) => {
   return navigationApi("missions/start", { method: "POST", body: JSON.stringify({ robot_id, target_tag_id }) }) as Promise<TagNavigationState>;
 };
 export const missionAction = (id: number, action: "pause" | "resume" | "cancel" | "replan") => navigationApi(`missions/${id}/${action}`, { method: "POST" });
-export const emergencyStop = (robotId: string) => apiFetch(`/api/robots/${encodeURIComponent(robotId)}/emergency-stop`, { method: "POST" }).then(async r => { if (!r.ok) throw new Error((await r.json()).detail); return r.json(); });
+export const emergencyStop = async (robotId: string) => {
+  const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/emergency-stop`, { method: "POST" });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json();
+};
+export const clearEmergencyStop = async (robotId: string) => {
+  const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/clear-emergency-stop`, { method: "POST" });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json();
+};
 
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const token = useStore.getState().authToken;

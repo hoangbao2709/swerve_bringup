@@ -1,12 +1,19 @@
 swerve_controller:
   ros__parameters:
     wheel_radius: 0.0675
+    max_linear_velocity: 0.75
+    max_angular_velocity: 1.5
     max_wheel_velocity: 30.0
     max_wheel_acceleration: 10.0
     max_steering_rate: 2.0
+    max_steering_angle: 3.141592653589793
     command_timeout: 0.5
     control_rate: 50.0
     speed_deadband: 0.01
+    cmd_vel_topic: /cmd_vel
+    emergency_stop_topic: /emergency_stop
+    steering_command_topic: /steering_controller/commands
+    drive_command_topic: /drive_controller/commands
 
     modules.front.x: 0.300042
     modules.front.y: 0.0

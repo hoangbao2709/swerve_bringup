@@ -15,18 +15,22 @@ import type { ServerMessage, ClientMessage, TwinState, HeatmapLayer, RobotState 
 import { THRESHOLDS } from "../schema/twin_state";
 import { useStore } from "../state/store";
 
-export type ConnState = "connecting" | "online" | "offline" | "unauthorized";
+export type ConnState = "connecting" | "online" | "reconnecting" | "offline" | "error" | "unauthorized";
 
 const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
 const defaultWsProtocol = location.protocol === "https:" ? "wss" : "ws";
-/** Django Channels endpoint. Override with VITE_WS_URL when backend is on another host/port. */
-export const WS_URL = (env.VITE_WS_URL ?? `${defaultWsProtocol}://${location.hostname}:8000/ws`).replace(/\/$/, "");
-/** Django REST base. Prefer explicit VITE_API_URL; otherwise derive it from VITE_WS_URL. */
-export const API_URL = (env.VITE_API_URL ?? WS_URL.replace(/^wss:/, "https:").replace(/^ws:/, "http:").replace(/\/ws$/, "")).replace(/\/$/, "");
+const browserHost = location.hostname || "127.0.0.1";
+const backendPort = env.VITE_BACKEND_PORT || "8000";
+const defaultWsBase = `${defaultWsProtocol}://${browserHost}:${backendPort}`;
+/** Django Channels endpoint. BASE_URL is canonical; old VITE_WS_URL remains supported. */
+export const WS_URL = (env.VITE_WS_BASE_URL || env.VITE_WS_URL || `${defaultWsBase}/ws`).replace(/\/$/, "");
+/** Django REST base. Prefer explicit BASE_URL, then legacy alias, then browser hostname. */
+export const API_URL = (env.VITE_API_BASE_URL || env.VITE_API_URL || WS_URL.replace(/^wss:/, "https:").replace(/^ws:/, "http:").replace(/\/ws$/, "")).replace(/\/$/, "");
 const COLLECTIONS = ["tasks", "lifts", "zones", "conveyors", "cameras", "sensors", "people", "alerts"] as const;
 
 let socket: WebSocket | null = null;
 let reconnectTimer = 0;
+let reconnectAttempt = 0;
 let stopped = false;
 let localTick = -1;
 let onStateChange: ((s: ConnState) => void) | null = null;
@@ -101,6 +105,18 @@ export function wsSend(msg: ClientMessage): boolean {
   return false;
 }
 
+export type ManualAction = "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT" | "STOP";
+
+/** Change the authoritative ROS control mode for one robot. */
+export function wsSetRobotMode(robot_id: string, mode: "MANUAL" | "AUTONOMOUS"): boolean {
+  return wsSend({ type: "ROBOT_MODE", robot_id, mode });
+}
+
+/** Send one dead-man manual command. The bridge stops when commands expire. */
+export function wsManualCommand(robot_id: string, action: ManualAction): boolean {
+  return wsSend({ type: "ROBOT_MANUAL", robot_id, action });
+}
+
 // 分頁從背景回到前景：累積的 PATCH 可能被瀏覽器節流，直接要一份 FULL 最省事（具名 listener 才能在 disconnect 時移除）
 const onVisible = () => { if (document.visibilityState === "visible") { localTick = -1; wsSend({ type: "RESYNC" }); } };
 
@@ -112,6 +128,7 @@ export function wsConnect(onChange: (s: ConnState) => void) {
 }
 export function wsDisconnect() {
   stopped = true; clearTimeout(reconnectTimer);
+  reconnectAttempt = 0;
   document.removeEventListener("visibilitychange", onVisible);
   if (socket) { const s = socket; socket = null; s.onclose = null; s.onmessage = null; s.close(); }
   onStateChange = null; localTick = -1;
@@ -134,13 +151,13 @@ function open() {
     ws = new WebSocket(url);
   } catch (e) {
     console.warn("[ws] cannot open", WS_URL, e, "— backend unavailable");
-    onStateChange?.("offline");
+    onStateChange?.("error");
     return;
   }
   socket = ws;
   const timeout = window.setTimeout(() => { if (ws.readyState !== WebSocket.OPEN) ws.close(); }, 2500);
   ws.onopen = () => {
-    clearTimeout(timeout); onStateChange?.("online");
+    clearTimeout(timeout); reconnectAttempt = 0; onStateChange?.("online");
     void refreshMapSyncStatus();
     // Pull the database-backed map once on connect so / always matches admin pages.
     const st = useStore.getState();
@@ -163,7 +180,7 @@ function open() {
     try { handle(JSON.parse(ev.data) as ServerMessage); }
     catch (e) { console.warn("[ws] invalid server message", e); }
   };
-  ws.onerror = () => { /* onclose 會處理 */ };
+  ws.onerror = () => { onStateChange?.("error"); };
   ws.onclose = (ev) => {
     clearTimeout(timeout);
     if (socket === ws) socket = null;
@@ -174,8 +191,17 @@ function open() {
       return;
     }
     if (whatifPending) { const id = whatifPending; whatifPending = null; whatifErrorListeners.forEach((fn) => fn("connection lost — please run again", id)); }
-    onStateChange?.("offline");
-    if (!stopped) reconnectTimer = window.setTimeout(open, 3000);
+    if (!stopped) {
+      onStateChange?.("reconnecting");
+      // A backend restart or Wi-Fi handover should not create a reconnect
+      // storm.  Back off exponentially, add a small jitter so multiple tabs
+      // do not reconnect on the same millisecond, and cap recovery at 30s.
+      const delay = Math.min(30000, 1000 * (2 ** Math.min(reconnectAttempt, 5))) + Math.floor(Math.random() * 250);
+      reconnectAttempt += 1;
+      reconnectTimer = window.setTimeout(open, delay);
+    } else {
+      onStateChange?.("offline");
+    }
   };
 }
 
@@ -209,9 +235,12 @@ function handle(msg: ServerMessage) {
     case "SCHEDULE_UPDATED": scheduleListeners.forEach((fn) => fn(msg.source)); break;
     case "RUNTIME_STATUS":
       st.setRuntimeMode(msg.runtime_mode);
+      if (msg.runtime_state) st.setRuntimeState(msg.runtime_state);
+      if (msg.bridge_state) st.setBridgeState(msg.bridge_state);
       st.setRosConnected(msg.ros_connected);
       st.setNav2State(msg.nav2_state);
       st.setLastTelemetryAt(msg.last_telemetry_at);
+      if (msg.diagnostics) st.setRosDiagnostics(msg.diagnostics);
       st.setMapSync({
         publishedRevision: msg.published_revision ?? st.mapSync.publishedRevision,
         publishedVersion: msg.published_version ?? st.mapSync.publishedVersion,
@@ -220,6 +249,9 @@ function handle(msg: ServerMessage) {
         status: msg.map_sync_status ?? st.mapSync.status,
         error: msg.map_sync_error ?? null,
       });
+      break;
+    case "ROBOT_CONTROL_STATUS":
+      if (!msg.accepted) st.setNotice(`Robot control rejected: ${msg.reason || "command was rejected"}`);
       break;
     case "TAG_NAV_STATUS":
       if (msg.mission) st.setTagNavigation(msg.mission);

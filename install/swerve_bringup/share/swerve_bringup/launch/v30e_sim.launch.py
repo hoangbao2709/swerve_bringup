@@ -1,1 +1,0 @@
-/home/yahboom/swerve_bringup/launch/v30e_sim.launch.py

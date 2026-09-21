@@ -102,8 +102,26 @@ def _action(request, mission_id: int, action: str, status: str):
             mission.route = shortest_tag_route(mission.current_tag_id, mission.target_tag.tag_id, mission.warehouse_id)
             mission.route_index = 0; mission.next_tag_id = mission.route[1] if len(mission.route) > 1 else mission.target_tag.tag_id
         except (ValueError, TypeError) as exc: return _error(str(exc))
+    previous = {
+        'status': mission.status,
+        'route': mission.route,
+        'route_index': mission.route_index,
+        'next_tag_id': mission.next_tag_id,
+    }
     mission.status = status; mission.save(update_fields=['status', 'route', 'route_index', 'next_tag_id', 'updated_at'])
     result = async_to_sync(runtime.tag_command)(action, mission, request.api_user)
+    if runtime.is_external and not result.get('ok'):
+        # Do not leave a persisted mission in PAUSED/CANCELLED/REPLAN state
+        # when ROS never accepted the command. Restore the exact DB state and
+        # expose a machine-readable failure to the browser.
+        mission.status = previous['status']
+        mission.route = previous['route']
+        mission.route_index = previous['route_index']
+        mission.next_tag_id = previous['next_tag_id']
+        mission.save(update_fields=['status', 'route', 'route_index', 'next_tag_id', 'updated_at'])
+        async_to_sync(runtime.broadcast)({'type': 'TAG_NAV_STATUS', **mission_snapshot(mission)})
+        return _error('ROS bridge is offline; mission state was not changed', 503)
+    async_to_sync(runtime.broadcast)({'type': 'TAG_NAV_STATUS', **mission_snapshot(mission)})
     return JsonResponse(mission_snapshot(mission) | {'command': result})
 
 
@@ -123,9 +141,24 @@ def mission_action(request, mission_id: int, action: str):
 def emergency_stop(request, robot_id: str):
     mission = current_mission(robot_id)
     result = async_to_sync(runtime.gateway().send_command)(robot_id, 'EMERGENCY_STOP', {'mission_id': mission.id if mission else None})
+    if not result.get('ok'):
+        runtime.engine.emit('EMERGENCY_STOP_FAILED', 'USER', 'CRITICAL', f'Emergency stop failed: ROS bridge offline for {robot_id}', robot_id=robot_id)
+        return _error('ROS bridge is offline; emergency stop was not acknowledged', 503)
     if mission: mission.status = 'EMERGENCY_STOPPED'; mission.save(update_fields=['status', 'updated_at'])
     runtime.engine.emit('EMERGENCY_STOP', 'USER', 'CRITICAL', f'Emergency stop {robot_id}', robot_id=robot_id)
     return JsonResponse({'ok': result.get('ok', False), 'mission': mission_snapshot(mission) if mission else None})
+
+
+@csrf_exempt
+@_auth
+@require_http_methods(['POST'])
+def clear_emergency_stop(request, robot_id: str):
+    """Clear the ROS stop latch without resuming a mission automatically."""
+    result = async_to_sync(runtime.gateway().send_command)(robot_id, 'CLEAR_EMERGENCY_STOP', {})
+    if not result.get('ok'):
+        return _error('ROS bridge is offline; emergency stop remains active', 503)
+    runtime.engine.emit('EMERGENCY_STOP_CLEARED', 'USER', 'HIGH', f'Emergency stop cleared for {robot_id}', robot_id=robot_id)
+    return JsonResponse({'ok': True, 'robot_id': robot_id, 'mission': mission_snapshot(current_mission(robot_id)) if current_mission(robot_id) else None})
 
 
 @_auth

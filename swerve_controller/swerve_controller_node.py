@@ -12,8 +12,9 @@ from typing import Dict, Optional
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Bool, Float64MultiArray
 
 
 def normalize_angle(angle: float) -> float:
@@ -30,22 +31,32 @@ class SwerveController(Node):
         super().__init__('swerve_controller')
 
         self.declare_parameter('wheel_radius', 0.0675)
+        self.declare_parameter('max_linear_velocity', 0.75)
+        self.declare_parameter('max_angular_velocity', 1.5)
         self.declare_parameter('max_wheel_velocity', 30.0)
         self.declare_parameter('max_wheel_acceleration', 10.0)
         self.declare_parameter('max_steering_rate', 2.0)
+        self.declare_parameter('max_steering_angle', math.pi)
         self.declare_parameter('command_timeout', 0.5)
         self.declare_parameter('control_rate', 50.0)
         self.declare_parameter('speed_deadband', 0.01)
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('emergency_stop_topic', '/emergency_stop')
+        self.declare_parameter('steering_command_topic', '/steering_controller/commands')
+        self.declare_parameter('drive_command_topic', '/drive_controller/commands')
         self.declare_parameter('modules.front.x', 0.300042)
         self.declare_parameter('modules.front.y', 0.0)
         self.declare_parameter('modules.rear.x', -0.300042)
         self.declare_parameter('modules.rear.y', 0.0)
 
         self.wheel_radius = float(self.get_parameter('wheel_radius').value)
+        self.max_linear_velocity = max(0.0, float(self.get_parameter('max_linear_velocity').value))
+        self.max_angular_velocity = max(0.0, float(self.get_parameter('max_angular_velocity').value))
         self.max_wheel_velocity = float(self.get_parameter('max_wheel_velocity').value)
         self.max_wheel_acceleration = float(
             self.get_parameter('max_wheel_acceleration').value)
         self.max_steering_rate = float(self.get_parameter('max_steering_rate').value)
+        self.max_steering_angle = min(math.pi, max(0.0, float(self.get_parameter('max_steering_angle').value)))
         self.command_timeout = float(self.get_parameter('command_timeout').value)
         self.speed_deadband = float(self.get_parameter('speed_deadband').value)
         control_rate = float(self.get_parameter('control_rate').value)
@@ -74,20 +85,34 @@ class SwerveController(Node):
         self.steering_command: Dict[str, float] = {'front': 0.0, 'rear': 0.0}
         self.wheel_command = {'front': 0.0, 'rear': 0.0}
         self.last_cmd_time: Optional[float] = None
+        self.emergency_stop = False
         self.last_update_time = self.get_clock().now()
         self.last_timeout_warning = self.get_clock().now()
+        self.targets = {
+            module: (self.steering_command[module], 0.0)
+            for module in self.modules
+        }
 
         self.steer_pub = self.create_publisher(
-            Float64MultiArray, '/steering_controller/commands', 10)
+            Float64MultiArray, str(self.get_parameter('steering_command_topic').value), 10)
         self.drive_pub = self.create_publisher(
-            Float64MultiArray, '/drive_controller/commands', 10)
-        self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+            Float64MultiArray, str(self.get_parameter('drive_command_topic').value), 10)
+        self.create_subscription(
+            Twist, str(self.get_parameter('cmd_vel_topic').value), self.cmd_vel_callback, 10)
+        estop_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            Bool, str(self.get_parameter('emergency_stop_topic').value), self.emergency_stop_callback, estop_qos)
         self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
         self.timer = self.create_timer(1.0 / control_rate, self.update)
 
         self.get_logger().info(
             f'Swerve controller ready: radius={self.wheel_radius:.4f} m, '
-            f'modules={self.module_xy}')
+            f'modules={self.module_xy}, limits={self.max_linear_velocity:.2f} m/s '
+            f'{self.max_angular_velocity:.2f} rad/s')
 
     def joint_state_callback(self, msg: JointState) -> None:
         values = dict(zip(msg.name, msg.position))
@@ -96,9 +121,30 @@ class SwerveController(Node):
             if joint in values and math.isfinite(values[joint]):
                 self.steering_state[module] = normalize_angle(values[joint])
 
+    def emergency_stop_callback(self, msg: Bool) -> None:
+        self.emergency_stop = bool(msg.data)
+        if self.emergency_stop:
+            self.last_cmd_time = None
+            self.targets = {
+                module: (self.steering_command[module], 0.0)
+                for module in self.modules
+            }
+            self.get_logger().error('EMERGENCY STOP asserted; drive commands are blocked')
+        else:
+            self.get_logger().info('Emergency stop cleared; waiting for a fresh cmd_vel')
+
     def cmd_vel_callback(self, msg: Twist) -> None:
+        if self.emergency_stop:
+            return
         self.last_cmd_time = self.get_clock().now().nanoseconds * 1e-9
         vx, vy, wz = msg.linear.x, msg.linear.y, msg.angular.z
+        linear_speed = math.hypot(vx, vy)
+        if self.max_linear_velocity > 0.0 and linear_speed > self.max_linear_velocity:
+            scale = self.max_linear_velocity / linear_speed
+            vx *= scale
+            vy *= scale
+        if self.max_angular_velocity > 0.0:
+            wz = max(-self.max_angular_velocity, min(self.max_angular_velocity, wz))
         targets = {}
 
         for module in self.modules:
@@ -114,6 +160,7 @@ class SwerveController(Node):
                 continue
 
             angle = normalize_angle(math.atan2(module_vy, module_vx))
+            angle = max(-self.max_steering_angle, min(self.max_steering_angle, angle))
             # Calibrated against Gazebo contact motion: positive joint speed
             # rolls this model in Nav2's positive body direction.
             speed = linear_speed / self.wheel_radius
@@ -131,7 +178,7 @@ class SwerveController(Node):
         dt = max(1e-4, (now - self.last_update_time).nanoseconds * 1e-9)
         self.last_update_time = now
 
-        timed_out = (
+        timed_out = self.emergency_stop or (
             self.last_cmd_time is None or
             (now.nanoseconds * 1e-9 - self.last_cmd_time) > self.command_timeout)
         if timed_out:
@@ -185,7 +232,8 @@ def main(args=None) -> None:
             node.steering_command['front'], node.steering_command['rear']]))
         node.drive_pub.publish(Float64MultiArray(data=[0.0, 0.0]))
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

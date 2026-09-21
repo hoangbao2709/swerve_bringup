@@ -2,63 +2,198 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG_DIR="$ROOT_DIR/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/setup.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+fail() {
+  echo "[ERROR] $*" >&2
+  echo "Setup failed. See $LOG_FILE" >&2
+  exit 1
+}
+
+if [[ ! -r /etc/os-release ]]; then
+  fail 'cannot detect Ubuntu version'
+fi
+# shellcheck disable=SC1091
+source /etc/os-release
+[[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == 22.04 ]] || \
+  fail "Ubuntu 22.04 is required (detected ${PRETTY_NAME:-unknown})"
+
+# Node is intentionally validated before any privileged package operation.  It
+# is not installed by the ROS apt bundle, so a Node mismatch should produce the
+# actionable version error immediately even on a machine where sudo is not
+# available in the current terminal.
+command -v node >/dev/null 2>&1 || fail 'Node.js >=20 is required; install Node 22 LTS before rerunning setup'
+NODE_VERSION="$(node -p 'process.versions.node')"
+NODE_MAJOR="${NODE_VERSION%%.*}"
+if ! [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] || ((NODE_MAJOR < 20)); then
+  fail "Node.js >=20 is required (Node 22 LTS recommended; detected $NODE_VERSION). Install with nvm: nvm install 22 && nvm use 22"
+fi
+command -v npm >/dev/null 2>&1 || fail 'npm is missing; install Node 22 LTS before rerunning setup'
+NPM_VERSION="$(npm --version)"
+NPM_MAJOR="${NPM_VERSION%%.*}"
+if ! [[ "$NPM_MAJOR" =~ ^[0-9]+$ ]] || ((NPM_MAJOR < 10)); then
+  fail "npm >=10 is required (detected $NPM_VERSION). Upgrade Node.js/npm and rerun setup"
+fi
+
+if [[ "${EUID}" -eq 0 ]]; then
+  SUDO=()
+else
+  command -v sudo >/dev/null 2>&1 || fail 'sudo is required to install Ubuntu/ROS packages'
+  SUDO=(sudo)
+  "${SUDO[@]}" -v || fail 'sudo authentication failed; re-run with an account allowed to install packages'
+fi
+
 ROS_APT_PACKAGES=(
   ros-humble-gazebo-ros-pkgs
   ros-humble-gazebo-ros2-control
   ros-humble-gazebo-plugins
   ros-humble-ros2-controllers
+  ros-humble-controller-manager
   ros-humble-robot-localization
   ros-humble-pointcloud-to-laserscan
   ros-humble-slam-toolbox
   ros-humble-navigation2
   ros-humble-nav2-bringup
+  ros-humble-nav2-controller
+  ros-humble-nav2-planner
+  ros-humble-nav2-map-server
+  ros-humble-nav2-behaviors
+  ros-humble-nav2-bt-navigator
+  ros-humble-nav2-waypoint-follower
+  ros-humble-nav2-lifecycle-manager
+  ros-humble-nav2-msgs
+  ros-humble-ros2-control
   ros-humble-rviz2
   ros-humble-xacro
+  ros-humble-joint-state-publisher
   ros-humble-joint-state-publisher-gui
+  ros-humble-tf2-tools
+  ros-humble-diagnostic-updater
   python3-colcon-common-extensions
   python3-rosdep
   python3-venv
   python3-yaml
   python3-websocket
+  python3-psutil
+  curl
+  lsof
+  ripgrep
 )
 
-if [[ "${EUID}" -eq 0 ]]; then
-  SUDO=()
+missing=()
+for package in "${ROS_APT_PACKAGES[@]}"; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
+    missing+=("$package")
+  fi
+done
+if ((${#missing[@]})); then
+  echo "Installing ${#missing[@]} missing system/ROS package(s)..."
+  "${SUDO[@]}" apt-get update
+  "${SUDO[@]}" apt-get install -y "${missing[@]}"
 else
-  SUDO=(sudo)
+  echo 'All declared Ubuntu/ROS packages are already installed.'
 fi
 
-echo "Installing ROS/system dependencies..."
-"${SUDO[@]}" apt-get update
-"${SUDO[@]}" apt-get install -y "${ROS_APT_PACKAGES[@]}"
+[[ -f /opt/ros/humble/setup.bash ]] || fail 'ROS 2 Humble not found at /opt/ros/humble'
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH AMENT_TRACE_SETUP_FILES COLCON_TRACE
+export AMENT_TRACE_SETUP_FILES=""
+# shellcheck disable=SC1091
+set +u
+source /opt/ros/humble/setup.bash
+set -u
 
-command -v node >/dev/null || { echo "Node.js 18+ is required" >&2; exit 1; }
-command -v npm >/dev/null || { echo "npm is required" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || fail 'python3 is missing'
+command -v gazebo >/dev/null 2>&1 || fail 'Gazebo Classic executable is missing'
+command -v colcon >/dev/null 2>&1 || fail 'colcon is missing'
+command -v rosdep >/dev/null 2>&1 || fail 'rosdep is missing'
 
-cd "$ROOT_DIR/waretwin/backend"
-[[ -x .venv/bin/python ]] || python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-[[ -f .env ]] || cp .env.example .env
+if ! rosdep db >/dev/null 2>&1; then
+  if [[ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
+    "${SUDO[@]}" rosdep init
+  fi
+  rosdep update
+fi
+
+cd "$ROOT_DIR"
+echo 'Resolving ROS package dependencies with rosdep...'
+rosdep install --from-paths "$ROOT_DIR" "$ROOT_DIR/swerve_bridge" \
+  --ignore-src --rosdistro humble -r -y
+
+BACKEND_DIR="$ROOT_DIR/waretwin/backend"
+cd "$BACKEND_DIR"
+if [[ ! -x .venv/bin/python ]]; then
+  python3 -m venv .venv
+fi
+if ! .venv/bin/python -c 'import django, channels, daphne, dotenv, pydantic, websocket, openpyxl' >/dev/null 2>&1 \
+   || ! .venv/bin/python -m pip check >/dev/null 2>&1; then
+  .venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
+else
+  echo 'Backend Python dependencies are already installed and consistent.'
+fi
+if [[ ! -f .env ]]; then
+  cp .env.example .env
+fi
+
+set_env_default() {
+  local key="$1" value="$2"
+  if grep -qE "^${key}=" .env; then
+    return 0
+  fi
+  printf '%s=%s\n' "$key" "$value" >> .env
+}
+
+set_env_default BACKEND_HOST 0.0.0.0
+set_env_default BACKEND_PORT 8000
+set_env_default FRONTEND_HOST 0.0.0.0
+set_env_default FRONTEND_PORT 5173
+set_env_default ROS_DOMAIN_ID 0
+set_env_default ROS_WS_URL ws://127.0.0.1:8000/ws/ros
+set_env_default WARETWIN_ARTIFACT_ROOT "$ROOT_DIR/generated/maps"
+if grep -qE '^WARETWIN_ROS_BRIDGE_TOKEN=(change-me|)$' .env; then
+  TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  sed -i "s|^WARETWIN_ROS_BRIDGE_TOKEN=.*|WARETWIN_ROS_BRIDGE_TOKEN=$TOKEN|" .env
+fi
+if grep -qE '^DJANGO_SECRET_KEY=change-me-in-production$' .env; then
+  SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+  sed -i "s|^DJANGO_SECRET_KEY=.*|DJANGO_SECRET_KEY=$SECRET_KEY|" .env
+fi
+
 .venv/bin/python manage.py migrate --noinput
 .venv/bin/python manage.py seed_demo
+.venv/bin/python manage.py check
+.venv/bin/python manage.py makemigrations --check --dry-run
 
-cd "$ROOT_DIR/waretwin/frontend"
-npm ci
+FRONTEND_DIR="$ROOT_DIR/waretwin/frontend"
+cd "$FRONTEND_DIR"
+if [[ ! -f .env ]]; then
+  cp .env.example .env
+fi
+if [[ ! -d node_modules || ! -f node_modules/.package-lock.json || package-lock.json -nt node_modules/.package-lock.json ]]; then
+  npm ci --no-audit --no-fund
+else
+  npm ls --depth=0 >/dev/null 2>&1 || npm ci --no-audit --no-fund
+fi
+npm run build
+npm test
 
 cd "$ROOT_DIR"
 scripts/build_ros.sh
+source scripts/ros_env.sh
+scripts/preflight_check.sh
 
 cat <<EOF
 
-Setup complete.
+[OK] Full stack setup complete.
+Backend:  http://127.0.0.1:${BACKEND_PORT:-8000}
+Frontend: http://127.0.0.1:${FRONTEND_PORT:-5173}
+ROS:      source $ROOT_DIR/scripts/ros_env.sh
+Logs:     $LOG_FILE
 
-Start ROS with:
-  source $ROOT_DIR/scripts/ros_env.sh
-  ros2 launch swerve_bringup system.launch.py
-
-Start backend with:
+Start manually:
   cd $ROOT_DIR/waretwin/backend && ./run.sh
-
-Start frontend with:
-  cd $ROOT_DIR/waretwin/frontend && npm run dev -- --host 0.0.0.0
+  cd $ROOT_DIR/waretwin/frontend && npm run dev -- --host "${FRONTEND_HOST:-0.0.0.0}"
+  cd $ROOT_DIR && source scripts/ros_env.sh && ros2 launch swerve_bringup system.launch.py
 EOF

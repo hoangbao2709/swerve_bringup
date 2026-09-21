@@ -1,2 +1,0 @@
-Invoking command in '/home/yahboom/swerve_bringup/build/swerve_bridge': /usr/bin/cmake /home/yahboom/swerve_bringup/swerve_bridge -DCATKIN_INSTALL_INTO_PREFIX_ROOT=0 -DCATKIN_SYMLINK_INSTALL=ON -DCMAKE_INSTALL_PREFIX=/home/yahboom/swerve_bringup/install/swerve_bridge
-Invoked command in '/home/yahboom/swerve_bringup/build/swerve_bridge' returned '1': /usr/bin/cmake /home/yahboom/swerve_bringup/swerve_bridge -DCATKIN_INSTALL_INTO_PREFIX_ROOT=0 -DCATKIN_SYMLINK_INSTALL=ON -DCMAKE_INSTALL_PREFIX=/home/yahboom/swerve_bringup/install/swerve_bridge

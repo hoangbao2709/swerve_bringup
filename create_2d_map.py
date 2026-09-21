@@ -219,11 +219,12 @@ def terminate_process(proc):
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGINT)
         proc.wait(timeout=5)
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"[WARN] Could not interrupt mapping process cleanly: {exc}", file=sys.stderr)
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except Exception:
-            pass
+        except OSError as cleanup_exc:
+            print(f"[WARN] Could not terminate mapping process: {cleanup_exc}", file=sys.stderr)
 
 
 def main():

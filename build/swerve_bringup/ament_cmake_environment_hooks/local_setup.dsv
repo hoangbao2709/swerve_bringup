@@ -1,4 +1,0 @@
-source;share/swerve_bringup/environment/ament_prefix_path.sh
-source;share/swerve_bringup/environment/library_path.sh
-source;share/swerve_bringup/environment/path.sh
-source;share/swerve_bringup/environment/pythonpath.sh

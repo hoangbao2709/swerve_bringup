@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 from django.db import transaction
 
 from .models import Warehouse, Zone, Shelf, NavigationTag, NavigationTagEdge
 from .canonical_map import canonicalize_layout, validate_canonical_layout
 from .map_artifacts import build_revision_artifacts, cleanup_artifact_dir
+
+log = logging.getLogger(__name__)
 
 
 def warehouse_to_dict(w: Warehouse, *, counts: bool = True) -> dict[str, Any]:
@@ -444,9 +447,22 @@ def sync_from_layout(layout: dict[str, Any], *, warehouse: Warehouse | None = No
             continue
         tag, _ = NavigationTag.objects.get_or_create(
             warehouse=warehouse, tag_id=tag_id,
-            defaults={'x': x, 'y': y, 'yaw': yaw},
+            defaults={
+                'family': str(raw_tag.get('family') or 'DATAMATRIX').upper(),
+                'size': max(0.001, float(raw_tag.get('size', 0.15) or 0.15)),
+                'floor_id': str(raw_tag.get('floor_id', 1)),
+                'x': x, 'y': y, 'z': float(raw_tag.get('z', 0) or 0), 'yaw': yaw,
+            },
         )
-        tag.x, tag.y, tag.yaw = x, y, yaw
+        tag.family = str(raw_tag.get('family') or 'DATAMATRIX').upper()
+        tag.size = max(0.001, float(raw_tag.get('size', 0.15) or 0.15))
+        tag.floor_id = str(raw_tag.get('floor_id', 1))
+        tag.x, tag.y = x, y
+        tag.z, tag.yaw = float(raw_tag.get('z', 0) or 0), yaw
+        tag.lane_id = str(raw_tag.get('lane_id') or raw_tag.get('aisle_id') or '')
+        tag.zone = zone_map.get(str(raw_tag.get('zone_id') or raw_tag.get('zone') or ''))
+        raw_metadata = raw_tag.get('metadata')
+        tag.metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         tag.enabled = bool(raw_tag.get('enabled', True))
         tag.label = str(raw_tag.get('label') or raw_tag.get('uuid') or '')
         tag.save()
@@ -608,7 +624,8 @@ def publish_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout:
             staging = None
             moved = True
         active = locked
-    except Exception:
+    except Exception as exc:
+        log.exception('Warehouse map publish transaction failed: %s', type(exc).__name__)
         cleanup_artifact_dir(staging)
         if moved:
             cleanup_artifact_dir(final)

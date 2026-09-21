@@ -41,17 +41,21 @@ browser simulation khi bridge mất kết nối.
 - What-if simulation.
 - Copilot rule-based fallback without any external AI API.
 - VLM simulated observation without any external AI API.
-- SQLite persistence for users, tokens, audit/events, future robot endpoints and missions.
-- `RobotGateway` boundary for the Central Django -> ROS bridge -> ROS 2 path.
+- SQLite persistence for users, tokens, warehouse master data, orders, missions,
+  reservations, audit/events and robot profiles.
+- `RobotGateway` boundary for the Central Django -> authenticated ROS bridge -> ROS 2 path.
 
 ## Chưa nằm trong profile này
 
-- Robot Server HTTP/WebSocket riêng cho phần cứng.
-- Real robot telemetry.
-- Real robot commands.
-- Redis/Celery/multi-process state distribution.
+- A separate Robot Server HTTP API for physical hardware.
+- Redis/Celery/multi-process state distribution; the included Channels layer is
+  intentionally single-process for the Ubuntu development stack.
 
-The current runtime is intentionally **single-process and in-memory**. This is appropriate for frontend/backend development. When LIVE robot integration begins, replace the mock runtime source with `RobotServerGateway` and move realtime state to the production architecture.
+`LOCAL_SIM` remains an in-process UI/demo provider. In `GAZEBO_ROS` and
+`REAL_ROBOT`, robot pose/status is accepted only from the authenticated ROS
+bridge; a lost bridge marks robots offline and does not simulate movement.
+The bridge registry routes commands by `robot_id`, while the default launch
+still runs one robot for backward compatibility.
 
 ## Quick start
 
@@ -89,7 +93,9 @@ Change the frontend `.env` to:
 
 ```env
 VITE_DEMO_MODE=false
-VITE_WS_URL=ws://127.0.0.1:8000/ws
+VITE_BACKEND_PORT=8000
+VITE_API_BASE_URL=
+VITE_WS_BASE_URL=
 ```
 
 Then run the frontend:
@@ -101,17 +107,9 @@ npm run dev
 
 Open the frontend and log in with the development admin account.
 
-The frontend derives the REST base URL from `VITE_WS_URL`, so:
-
-```text
-ws://127.0.0.1:8000/ws
-```
-
-becomes:
-
-```text
-http://127.0.0.1:8000
-```
+When the base URLs are empty, the browser hostname plus
+`VITE_BACKEND_PORT` is used automatically. Legacy `VITE_API_URL` and
+`VITE_WS_URL` remain supported for existing installations.
 
 ## Main REST endpoints
 
@@ -129,6 +127,9 @@ DELETE /api/admin/users/:id
 POST   /api/admin/users/:id/reset-password
 
 GET    /api/health
+GET    /api/health/
+GET    /api/system/status/
+GET    /api/map/sync-status
 GET    /api/state
 GET    /api/state/validate
 GET    /api/kpi
@@ -232,7 +233,10 @@ For LIVE mode, robot telemetry should become authoritative. The frontend must no
 
 ## Frontend API-connected build
 
-Use the paired `frontend_api_connected` package. Its backend mode is authoritative: WebSocket loss shows OFFLINE and does not fall back to a browser simulation. REST uses `VITE_API_URL`; Channels uses `VITE_WS_URL`.
+Use the paired frontend. Its backend mode is authoritative: WebSocket loss shows
+OFFLINE and does not fall back to a browser simulation. REST uses
+`VITE_API_BASE_URL` and Channels uses `VITE_WS_BASE_URL`; the legacy aliases
+remain backward compatible.
 
 For another browser PC, add its Vite origin to `CORS_ALLOWED_ORIGINS` and set the frontend URLs to this Django PC IP.
 

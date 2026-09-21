@@ -2,11 +2,22 @@ swerve_bridge:
   ros__parameters:
     robot_id: R01
     namespace: ""
-    django_ws_url: ws://127.0.0.1:8000/ws/ros
+    runtime_state: MAPPING
+    # Set by bridge.launch.py from ROS_WS_URL. Keeping this empty prevents a
+    # machine-local loopback URL from overriding LAN/container deployments.
+    django_ws_url: ""
     django_token: ""
+    gazebo_world_file: ""
     telemetry_rate: 10.0
     heartbeat_rate: 1.0
     odom_topic: /odometry/filtered
     joint_states_topic: /joint_states
+    lidar_topic: /lidar/points
+    clock_topic: /clock
+    cmd_vel_topic: /cmd_vel
+    emergency_stop_topic: /emergency_stop
     navigate_action: /go_to_tag
     navigate_server_timeout: 2.0
+    manual_linear_velocity: 0.25
+    manual_angular_velocity: 0.60
+    manual_command_timeout: 0.40

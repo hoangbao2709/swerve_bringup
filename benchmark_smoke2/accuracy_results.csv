@@ -1,2 +1,0 @@
-run,test,gt_goal_error,localization_error_xy,localization_error_yaw,odom_error_xy,v30e_error_xy,final_navigation_error_xy,final_yaw_error,travelled_distance,action_status
-1,X+,0.9999975960536733,0.04977209940769832,3.77427389417484e-05,0.8345936803106261,0.0,0.9999975960536733,5.575474969710115e-06,3.6186448637520303e-06,TIMEOUT

@@ -11,10 +11,13 @@ LIVE 引擎完全不受影響。
 from __future__ import annotations
 
 import os
+import logging
 import time
 from typing import Any
 
 from .engine import SimEngine
+
+log = logging.getLogger(__name__)
 
 METRICS = [
     # key, label, higher_is_better
@@ -145,6 +148,12 @@ def recommendation(request: dict[str, Any], base: dict[str, Any] | None, scen: d
                 llm = (resp.choices[0].message.content or "").strip()
                 if llm:
                     return llm
-        except Exception:
-            pass
+        except Exception as exc:
+            # The LLM recommendation is optional; the deterministic result is
+            # still valid, but the failure must remain visible in diagnostics.
+            log.warning(
+                'Optional what-if LLM recommendation unavailable: %s',
+                type(exc).__name__,
+                exc_info=True,
+            )
     return text

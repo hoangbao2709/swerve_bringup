@@ -248,7 +248,9 @@ def main(args=None):
     rclpy.init(args=args); node = TagRoutePlanner(); executor = MultiThreadedExecutor(num_threads=4); executor.add_node(node)
     try: executor.spin()
     except KeyboardInterrupt: pass
-    finally: executor.shutdown(); node.destroy_node(); rclpy.shutdown()
+    finally:
+        executor.shutdown(); node.destroy_node()
+        if rclpy.ok(): rclpy.shutdown()
 
 
 if __name__ == '__main__': main()

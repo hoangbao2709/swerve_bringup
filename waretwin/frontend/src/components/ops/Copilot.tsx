@@ -47,7 +47,7 @@ export function Copilot() {
     const request_id = `q${++seq.current}`;
     setMsgs((m) => [...m, { role: "user", text: sent }, { role: "ai", text: "…", pending: true, request_id }]);
     setQ("");
-    if (source !== "online") { setMsgs((m) => m.map((x) => (x.request_id === request_id ? { role: "ai", text: "Copilot runs on the Django backend. Start `python manage.py runserver 0.0.0.0:8000` and check the BACKEND badge." } : x))); return; }
+    if (source !== "online") { setMsgs((m) => m.map((x) => (x.request_id === request_id ? { role: "ai", text: "Copilot runs on the Django backend. Start the backend with `./run.sh` and check the BACKEND badge." } : x))); return; }
     wsSend({ type: "COPILOT_ASK", request_id, question: sent });
   };
 

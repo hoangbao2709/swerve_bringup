@@ -1,8 +1,10 @@
 from unittest import IsolatedAsyncioTestCase
+from pydantic import TypeAdapter
 
 from twin.coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin
 from twin.gateways.ros_bridge import RosBridgeGateway
 from twin.ros_bridge_consumer import registry
+from twin.schema import ClientMessage
 
 
 class RosCoordinateTests(IsolatedAsyncioTestCase):
@@ -25,5 +27,33 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             result = await RosBridgeGateway().send_command('R01', 'NAVIGATE', {'x': 1, 'y': 2, 'yaw': 0})
             self.assertFalse(result['ok'])
             self.assertEqual(result['message']['type'], 'NAV_GOAL')
+        finally:
+            registry.consumer = previous
+
+    async def test_manual_control_messages_are_schema_validated(self):
+        mode = TypeAdapter(ClientMessage).validate_python({
+            'type': 'ROBOT_MODE', 'robot_id': 'R01', 'mode': 'MANUAL',
+        })
+        command = TypeAdapter(ClientMessage).validate_python({
+            'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'FORWARD',
+        })
+        self.assertEqual(mode.type, 'ROBOT_MODE')
+        self.assertEqual(command.type, 'ROBOT_MANUAL')
+
+    async def test_gateway_maps_manual_control_actions(self):
+        previous = registry.consumer
+
+        class Capture:
+            async def send_json(self, payload):
+                self.payload = payload
+
+        capture = Capture()
+        registry.consumer = capture
+        try:
+            mode = await RosBridgeGateway().send_command('R01', 'CONTROL_MODE', {'mode': 'MANUAL'})
+            manual = await RosBridgeGateway().send_command('R01', 'MANUAL_CMD', {'action': 'STOP'})
+            self.assertTrue(mode['ok'])
+            self.assertTrue(manual['ok'])
+            self.assertEqual(manual['message'], {'mode': 'MANUAL', 'action': 'STOP', 'robot_id': 'R01', 'type': 'MANUAL_CMD'})
         finally:
             registry.consumer = previous

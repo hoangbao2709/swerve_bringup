@@ -1,2 +1,0 @@
-CLOCK_READY=FAIL
-NAV_READY FAIL: Gazebo /clock has no non-zero sample

@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "/home/yahboom/swerve_bringup/scripts/nav_accuracy_case.py", line 6, in <module>
-    import accuracy_benchmark
-ModuleNotFoundError: No module named 'accuracy_benchmark'

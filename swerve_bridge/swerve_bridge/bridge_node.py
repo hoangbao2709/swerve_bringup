@@ -24,6 +24,8 @@ from sensor_msgs.msg import JointState, PointCloud2
 from std_msgs.msg import Bool
 from geometry_msgs.msg import Twist
 
+from .qos import gazebo_clock_qos_profile
+
 
 def yaw_from_quaternion(q) -> float:
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
@@ -121,12 +123,7 @@ class SwerveBridge(Node):
         # default rclpy profile is reliable, which is incompatible and leaves
         # simulation_time permanently null.  Match the Gazebo profile without
         # changing the publisher or any robot-control topic.
-        clock_qos = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-        )
-        self.create_subscription(Clock, clock_topic, self.clock_cb, clock_qos)
+        self.create_subscription(Clock, clock_topic, self.clock_cb, gazebo_clock_qos_profile())
         self.cmd_pub = self.create_publisher(
             Twist, cmd_vel_topic, 20)
         estop_qos = QoSProfile(

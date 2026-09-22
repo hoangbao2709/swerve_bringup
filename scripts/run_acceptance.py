@@ -19,6 +19,67 @@ from datetime import datetime
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def read_simple_env(path, key):
+    """Read one shell-compatible KEY=value without sourcing arbitrary code."""
+    try:
+        with open(path, encoding='utf-8') as stream:
+            for raw in stream:
+                line = raw.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                name, value = line.split('=', 1)
+                if name.strip() == key:
+                    return value.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return None
+
+
+def runtime_stack_active():
+    """Return true only when a recorded project process is still alive."""
+    runtime_dir = os.path.join(ROOT, '.runtime')
+    checks = {
+        'backend': lambda cwd, cmd: cwd.endswith('/waretwin/backend') and (
+            'manage.py runserver' in cmd or 'backend/run.sh' in cmd),
+        'frontend': lambda cwd, cmd: cwd.endswith('/waretwin/frontend') and (
+            'vite' in cmd or 'npm' in cmd),
+        'ros': lambda cwd, cmd: (cwd == ROOT or f'{ROOT}/install/' in cmd) and (
+            'ros2 launch swerve_bringup' in cmd or 'system.launch.py' in cmd or
+            'gzserver' in cmd),
+    }
+    for name, matches in checks.items():
+        try:
+            with open(os.path.join(runtime_dir, f'{name}.pid'), encoding='utf-8') as stream:
+                pid = int(stream.readline().strip())
+            os.kill(pid, 0)
+            cmd = open(f'/proc/{pid}/cmdline', 'rb').read().replace(b'\0', b' ').decode(errors='replace')
+            cwd = os.path.realpath(os.readlink(f'/proc/{pid}/cwd'))
+        except (OSError, ValueError):
+            continue
+        if matches(cwd, cmd):
+            return True
+    return False
+
+
+def resolve_ros_domain(requested=None):
+    """Use the running stack domain before any shell/CLI fallback.
+
+    The acceptance runner launches an isolated case when no stack is running,
+    so an explicit ``--domain`` remains useful there.  A live .runtime state is
+    authoritative and cannot be overridden by a stale shell environment.
+    """
+    runtime = os.path.join(ROOT, '.runtime', 'stack.env')
+    value = read_simple_env(runtime, 'ROS_DOMAIN_ID')
+    if value is not None and runtime_stack_active():
+        return int(value), 'runtime stack.env'
+    if requested is not None:
+        return int(requested), 'command line'
+    backend = read_simple_env(os.path.join(ROOT, 'waretwin', 'backend', '.env'), 'ROS_DOMAIN_ID')
+    if backend is not None:
+        return int(backend), 'backend/.env'
+    return int(os.environ.get('ROS_DOMAIN_ID', '0')), 'shell/default'
+
+
 def descendants_dead(pgid):
     try:
         output = subprocess.check_output(['ps', '-eo', 'pgid='], text=True)
@@ -81,7 +142,9 @@ def run_case(args, case_name, domain, outdir):
     env['CMAKE_PREFIX_PATH'] = ':'.join(prefixes + [p for p in env.get('CMAKE_PREFIX_PATH', '').split(':') if p])
     launch_log = open(os.path.join(outdir, 'launch.log'), 'w', encoding='utf-8')
     launch_command = ['ros2', 'launch', 'swerve_bringup', 'system.launch.py',
-                      'use_sim:=true', 'mode:=navigation', 'gui:=false']
+                      'use_sim:=true', f'mode:={args.mode}', 'gui:=false', 'start_rviz:=false']
+    if args.map_file:
+        launch_command.append(f'map_file:={os.path.realpath(args.map_file)}')
     if env.get('ACCEPTANCE_CONTACT_DIAGNOSTICS', '').lower() in ('1', 'true', 'yes'):
         launch_command.append('contact_diagnostics:=true')
     if env.get('ACCEPTANCE_CASTER_FRICTIONLESS', '').lower() in ('1', 'true', 'yes'):
@@ -104,9 +167,13 @@ def run_case(args, case_name, domain, outdir):
         cwd=ROOT, env=env, stdout=launch_log, stderr=subprocess.STDOUT,
         start_new_session=True)
     readiness_json = os.path.join(outdir, 'readiness.json')
+    readiness_command = [sys.executable, os.path.join(ROOT, 'scripts', 'navigation_readiness.py'),
+                         '--mode', args.mode,
+                         '--timeout', str(args.readiness_timeout), '--json', readiness_json]
+    if args.map_file:
+        readiness_command.extend(['--map-file', os.path.realpath(args.map_file)])
     readiness = subprocess.run(
-        [sys.executable, os.path.join(ROOT, 'scripts', 'navigation_readiness.py'),
-         '--timeout', str(args.readiness_timeout), '--json', readiness_json],
+        readiness_command,
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, timeout=args.readiness_timeout + 15)
     with open(os.path.join(outdir, 'readiness.log'), 'w', encoding='utf-8') as stream:
@@ -168,8 +235,11 @@ def run_case(args, case_name, domain, outdir):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--runs', type=int, default=1)
-    parser.add_argument('--domain', type=int, default=80)
-    parser.add_argument('--readiness-timeout', type=float, default=120.0)
+    parser.add_argument('--domain', type=int)
+    parser.add_argument('--mode', choices=('mapping', 'navigation'), default='navigation')
+    parser.add_argument('--map-file', help='absolute or relative Nav2 map YAML for navigation readiness')
+    parser.add_argument('--readiness-timeout', type=float, default=300.0,
+                        help='finite startup/data readiness deadline (seconds)')
     parser.add_argument('--shutdown-grace', type=float, default=15.0)
     parser.add_argument('--evaluator-timeout', type=float, default=900.0)
     parser.add_argument('--evaluator', nargs='+', help='command run only after NAV_READY')
@@ -178,6 +248,10 @@ def main():
     parser.add_argument('--continue-on-failure', action='store_true',
                         help='diagnostic sweeps collect later cases even when an earlier physics gate fails')
     args = parser.parse_args()
+    domain, domain_source = resolve_ros_domain(args.domain)
+    if not 0 <= domain <= 232:
+        parser.error(f'ROS domain must be in [0, 232], got {domain}')
+    print(f'ROS domain: {domain} ({domain_source})', flush=True)
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     root = args.outdir or os.path.join(ROOT, 'artifacts', f'acceptance_{stamp}')
     os.makedirs(os.path.join(root, 'cases'), exist_ok=True)
@@ -186,7 +260,12 @@ def main():
     for index, case in enumerate(case_names[:args.runs]):
         case_dir = os.path.join(root, 'cases', case)
         os.makedirs(case_dir, exist_ok=False)
-        row = run_case(args, case, args.domain + index, case_dir)
+        # A live stack.env is the active DDS source of truth. Do not create a
+        # mixed-domain acceptance case by adding the old per-run offset while
+        # that stack is still running. Isolated runs may keep their historical
+        # domain offset when no runtime stack is active.
+        case_domain = domain if domain_source == 'runtime stack.env' else domain + index
+        row = run_case(args, case, case_domain, case_dir)
         rows.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
         if row['status'] != 'PASS' and not args.continue_on_failure:

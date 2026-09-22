@@ -3,7 +3,8 @@
 Launch: hien thi swerve AGV trong RViz.
 - robot_state_publisher: publish TF tu URDF
 - joint_state_publisher_gui: cho phep keo thanh truot de test tung khop
-    (steer_front_joint, steer_rear_joint, wheel_*_drive_joint, wheel_*_swivel_joint, wheel_*_roll_joint)
+    (steer_front_joint, steer_rear_joint, wheel_*_drive_joint). Caster
+    swivel/roll sliders exist only with proper_caster_test:=true.
 - rviz2: hien thi mesh + TF
 
 Chay:

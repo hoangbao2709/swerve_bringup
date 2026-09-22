@@ -62,8 +62,18 @@ ros2 run tf2_ros tf2_echo odom base_link
 
 Check that `/clock`, `/odom`, `/odometry/filtered`, `/lidar/points`,
 `/lidar/points_filtered` and `/scan` have data. In mapping, SLAM must be the
-only `map -> odom` owner. In navigation, do not launch `slam.launch.py` in
-parallel; the static map and localization path own the map correction.
+only `map -> odom` owner. In navigation, the system launch starts the LiDAR
+preprocessor and scan projection with SLAM disabled; do not launch a second
+`slam.launch.py` manually because the static map and localization path own
+the map correction.
+
+For visual debugging, `use_cad_visuals:=true` loads the optimized CAD-derived
+OBJ meshes under `meshes/visual/`; `false` selects lightweight URDF primitives.
+This switch changes visuals only, not collision geometry, inertials, joint axes
+or controller physics. The default caster physics remains a simplified passive
+collision model; the mount/fork/wheel caster visual is an approximation.
+`proper_caster_test:=true` is the separate experimental swivel+roll physics
+branch and must not be read as the default mechanical model.
 
 ## Mapping and navigation
 

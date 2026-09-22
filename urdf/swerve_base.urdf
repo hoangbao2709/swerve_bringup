@@ -11,10 +11,10 @@
   2. Trục xoay của 2 cụm xoay (steer_front, steer_rear) - giả định trục đứng Z
      tại đúng tâm bbox của cụm - có thể lệch so với trục xoay cơ khí thật
      (trục xoay thật thường là tâm ổ bi/bạc đạn, cần xác nhận lại trên CAD).
-  3. Trục lăn của 4 bánh bị động - giả định trục ngang Y (vuông góc hướng đi) -
-     CẦN XÁC NHẬN - bánh CFAV2-D50-120 là bánh lăn cố định 1 bậc tự do, hay là
-     bánh caster tự lựa hướng (2 bậc tự do - xoay quanh Z + lăn quanh trục ngang)?
-     Nếu là caster, cần thêm 1 khớp revolute/continuous quanh Z trước khớp lăn.
+  3. Physics mặc định của 4 bánh bị động là collision cylinder thụ động đơn giản
+     với visual mount + fork + wheel approximation. Nhánh test-only
+     proper_caster_test=true mới thêm swivel + roll DOFs; đó là mô hình thử
+     nghiệm zero-trail, chưa phải calibration cơ khí của CFAV2-D50-120.
   4. Cụm xoay (096626040011 / 096626040016) trong STEP chỉ chứa driver+heatsink+
      board, CHƯA thấy bánh xe dẫn động tách biệt trong cây assembly cấp này -
      có thể bánh nằm trong subassembly con (096626040035 / 096626040018) chưa
@@ -172,7 +172,7 @@
 
   <!-- Visual-only passive caster approximation.  The audited physics branch
        remains a single low-friction cylinder at the existing joint origin;
-       these parts only replace the misleading sphere rendered in Gazebo. -->
+       these parts make the default visual read as mount + fork + wheel. -->
   <xacro:macro name="passive_caster_visuals">
     <visual>
       <origin xyz="0 0 0.012" rpy="0 0 0"/>
@@ -386,7 +386,7 @@
   <!-- ===================== 4 BÁNH BỊ ĐỘNG (CFAV2-D50-120) ===================== -->
 
   <xacro:unless value="$(arg proper_caster_test)">
-  <!-- Banh bi dong FRONT LEFT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
+  <!-- Passive caster FRONT LEFT; simplified collision, visual-only mount/fork/wheel. -->
   <link name="wheel_front_left_link">
     <xacro:passive_caster_visuals/>
     <!-- Stable low-friction primitive; the swivel DOF and low contact
@@ -405,7 +405,7 @@
     <axis xyz="0 0 1"/><dynamics friction="0.02" damping="0.05"/>
   </joint>
 
-  <!-- Banh bi dong FRONT RIGHT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
+  <!-- Passive caster FRONT RIGHT; simplified collision, visual-only mount/fork/wheel. -->
   <link name="wheel_front_right_link">
     <xacro:passive_caster_visuals/>
     <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
@@ -422,7 +422,7 @@
     <axis xyz="0 0 1"/><dynamics friction="0.02" damping="0.05"/>
   </joint>
 
-  <!-- Banh bi dong REAR LEFT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
+  <!-- Passive caster REAR LEFT; simplified collision, visual-only mount/fork/wheel. -->
   <link name="wheel_rear_left_link">
     <xacro:passive_caster_visuals/>
     <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
@@ -439,7 +439,7 @@
     <axis xyz="0 0 1"/><dynamics friction="0.02" damping="0.05"/>
   </joint>
 
-  <!-- Banh bi dong REAR RIGHT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
+  <!-- Passive caster REAR RIGHT; simplified collision, visual-only mount/fork/wheel. -->
   <link name="wheel_rear_right_link">
     <xacro:passive_caster_visuals/>
     <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
@@ -469,12 +469,14 @@
     <visual>
       <xacro:if value="$(arg use_cad_visuals)">
         <geometry><mesh filename="package://swerve_bringup/meshes/visual/drive_front_visual.obj" scale="1 1 1"/></geometry>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
       </xacro:if>
       <xacro:unless value="$(arg use_cad_visuals)">
         <!-- APPROXIMATED_VISUAL - render-only fallback, not collision truth. -->
         <geometry><cylinder radius="0.0675" length="0.065"/></geometry>
+        <!-- A URDF cylinder is Z-aligned; the driven axle/joint is Y-aligned. -->
+        <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       </xacro:unless>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
       <material name="rubber"/>
     </visual>
     <collision>
@@ -503,12 +505,14 @@
     <visual>
       <xacro:if value="$(arg use_cad_visuals)">
         <geometry><mesh filename="package://swerve_bringup/meshes/visual/drive_rear_visual.obj" scale="1 1 1"/></geometry>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
       </xacro:if>
       <xacro:unless value="$(arg use_cad_visuals)">
         <!-- APPROXIMATED_VISUAL - render-only fallback, not collision truth. -->
         <geometry><cylinder radius="0.0675" length="0.065"/></geometry>
+        <!-- A URDF cylinder is Z-aligned; the driven axle/joint is Y-aligned. -->
+        <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       </xacro:unless>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
       <material name="rubber"/>
     </visual>
     <collision>

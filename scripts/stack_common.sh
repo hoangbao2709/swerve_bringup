@@ -163,6 +163,20 @@ stack_owned_group() {
   return 1
 }
 
+stack_runtime_active() {
+  # stack.env is a launch snapshot, not proof that the processes still exist.
+  # Treat it as authoritative only while at least one owned project process or
+  # process group is alive. This prevents a reset/crash from pinning status and
+  # smoke probes to a stale DDS domain or fallback port.
+  local component
+  for component in backend frontend ros; do
+    if stack_owned_pid "$component" || stack_owned_group "$component"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 stack_port_pid() {
   local port="$1"
   if command -v lsof >/dev/null 2>&1; then
@@ -221,6 +235,86 @@ stack_wait_http() {
   for _ in $(seq 1 "$attempts"); do
     if curl -fsS --max-time 1 "$url" >/dev/null 2>&1; then return 0; fi
     sleep 1
+  done
+  return 1
+}
+
+# A finite data probe is deliberately shared by status/smoke/readiness callers.
+# `ros2 topic list` only proves graph discovery; the sensor_data-compatible
+# subscriber below proves that at least one sample can actually be received.
+stack_ros_topic_message() {
+  local topic="$1" timeout_s="${2:-5}"
+  local qos_args=(--qos-profile sensor_data --qos-reliability best_effort --qos-durability volatile)
+  # /map is a latched OccupancyGrid in both Nav2 and the SLAM contract. Match
+  # its reliable/transient-local profile so a late readiness probe receives
+  # the existing map instead of waiting forever for a new publish.
+  if [[ "$topic" == /map ]]; then
+    qos_args=(--qos-reliability reliable --qos-durability transient_local)
+  fi
+  local deadline=$((SECONDS + timeout_s)) remaining attempt
+  # Discovery can lose the first short-lived CLI subscriber on a busy Gazebo
+  # host. Retry finite probes within the same overall deadline; this is still a
+  # real message check and never falls back to topic-list membership.
+  while (( SECONDS < deadline )); do
+    remaining=$((deadline - SECONDS))
+    attempt=$remaining
+    (( attempt > 4 )) && attempt=4
+    timeout "$attempt" ros2 topic echo --once \
+      --no-daemon --spin-time 2 \
+      "${qos_args[@]}" \
+      "$topic" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+stack_ros_data_probe() {
+  local timeout_s="${1:-15}"
+  shift
+  # The probe owns its finite deadline; the outer guard catches a broken ROS
+  # context without turning normal retries into an unbounded command.
+  timeout "$((timeout_s + 5))" python3 "$STACK_ROOT/scripts/ros_data_probe.py" \
+    --timeout "$timeout_s" "$@"
+}
+
+stack_ros_lifecycle_probe() {
+  local timeout_s="${1:-20}"
+  shift
+  timeout "$((timeout_s + 5))" python3 "$STACK_ROOT/scripts/lifecycle_probe.py" \
+    --timeout "$timeout_s" "$@"
+}
+
+stack_ros_tf_resolves() {
+  local target="$1" source="$2" timeout_s="${3:-10}" output
+  # Keep one tf2_echo process alive for the complete deadline. It retains its
+  # TF buffer and naturally retries Invalid frame ID/extrapolation warnings;
+  # restarting it every second would discard the buffer just as startup data
+  # arrives.
+  output="$(timeout "$timeout_s" ros2 run tf2_ros tf2_echo "$target" "$source" 2>&1 || true)"
+  printf '%s\n' "$output" | rg -q 'Translation:|At time'
+}
+
+stack_ros_tf_probe() {
+  local timeout_s="${1:-15}"
+  shift
+  timeout "$((timeout_s + 5))" python3 "$STACK_ROOT/scripts/tf_probe.py" \
+    --timeout "$timeout_s" "$@"
+}
+
+stack_ros_lifecycle_active() {
+  local node="$1" timeout_s="${2:-5}" deadline remaining probe output
+  deadline=$((SECONDS + timeout_s))
+  # A lifecycle service can miss one response while Gazebo is compiling or
+  # servicing a sensor callback. Retry the same finite query until the caller's
+  # deadline instead of treating one DDS round-trip as a state transition.
+  while (( SECONDS < deadline )); do
+    remaining=$((deadline - SECONDS))
+    probe=$((remaining < 2 ? remaining : 2))
+    (( probe < 1 )) && probe=1
+    output="$(timeout "$probe" ros2 lifecycle get "/${node#/}" 2>/dev/null || true)"
+    if printf '%s\n' "$output" | rg -qi '(^|[[:space:]])active([[:space:]]|$)'; then
+      return 0
+    fi
+    sleep 0.2
   done
   return 1
 }

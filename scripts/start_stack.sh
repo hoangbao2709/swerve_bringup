@@ -42,19 +42,13 @@ done
 
 [[ -f "$ROOT_DIR/waretwin/backend/.env" ]] || { echo 'Missing backend/.env; run setup_full_stack.sh first' >&2; exit 1; }
 [[ -f "$ROOT_DIR/waretwin/frontend/.env" ]] || { echo 'Missing frontend/.env; run setup_full_stack.sh first' >&2; exit 1; }
-# Preserve an explicitly selected domain across the dotenv load.  The value is
-# persisted below so status/smoke never inherit a stale domain from their shell.
-ROS_DOMAIN_ID_EXPLICIT=""
-if [[ ${ROS_DOMAIN_ID+x} ]]; then
-  ROS_DOMAIN_ID_EXPLICIT="$ROS_DOMAIN_ID"
-fi
+# The backend dotenv is the launch source of truth.  In particular, do not let
+# a stale ROS_DOMAIN_ID exported by an IDE terminal silently select a different
+# DDS domain than the backend and the runtime status file.
 set -a
 # shellcheck disable=SC1091
 source "$ROOT_DIR/waretwin/backend/.env"
 set +a
-if [[ -n "$ROS_DOMAIN_ID_EXPLICIT" ]]; then
-  ROS_DOMAIN_ID="$ROS_DOMAIN_ID_EXPLICIT"
-fi
 ROS_DOMAIN_ID_SELECTED="${ROS_DOMAIN_ID:-0}"
 if ! stack_valid_ros_domain "$ROS_DOMAIN_ID_SELECTED"; then
   echo "Invalid ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED; use an integer from 0 to 232" >&2
@@ -112,6 +106,7 @@ MAP_FILE=$MAP_FILE
 ROBOT_ID=$ROBOT_ID
 NAMESPACE=$NAMESPACE
 ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
+ROS_DOMAIN_ID_SOURCE=backend/.env
 EOF
 
 echo "Starting backend on $BACKEND_URL"
@@ -232,66 +227,30 @@ echo '[OK] Stack processes started'
 echo 'Waiting for ROS readiness...'
 
 ros_readiness_report() {
+  local probe_timeout="${1:-15}"
   (
     set +e
     export ROS_DOMAIN_ID="$ROS_DOMAIN_ID_SELECTED"
     source "$ROOT_DIR/scripts/ros_env.sh" >/dev/null 2>&1 || exit 1
-
-    nodes="$(timeout 15 ros2 node list 2>/dev/null || true)"
-    controllers="$(timeout 25 ros2 control list_controllers --controller-manager /controller_manager --spin-time 2 2>/dev/null || true)"
-    topics="$(timeout 15 ros2 topic list 2>/dev/null || true)"
-    robot_info="$(timeout 10 gz model -m swerve_base -i 2>/dev/null || true)"
-    node_present() {
-      printf '%s\n' "$nodes" | rg -q "(^|/)${1}$"
-    }
-    controller_active() {
-      stack_controller_active "$controllers" "$1"
-    }
-    topic_present() {
-      printf '%s\n' "$topics" | rg -q "^${1}$"
-    }
-
-    ready=1
-    node_present gazebo || ready=0
-    node_present controller_manager || ready=0
-    controller_active joint_state_broadcaster || ready=0
-    controller_active steering_controller || ready=0
-    controller_active drive_controller || ready=0
-    topic_present /odom || ready=0
-    topic_present /scan || ready=0
-    [[ "$robot_info" == *'swerve_base'* ]] || ready=0
-    if [[ "$MODE" == mapping ]]; then
-      node_present slam_toolbox || ready=0
-      topic_present /map || ready=0
-    else
-      node_present map_server || ready=0
+    readiness_args=(
+      --mode "$MODE"
+      --model swerve_base
+      --timeout "$probe_timeout"
+    )
+    if [[ "$MODE" == navigation && -n "$MAP_FILE" ]]; then
+      readiness_args+=(--map-file "$MAP_FILE")
     fi
-
-    printf '  ROS_DOMAIN_ID=%s\n' "$ROS_DOMAIN_ID_SELECTED"
-    printf '  gazebo=%s controller_manager=%s robot=%s\n' \
-      "$(node_present gazebo && echo ready || echo waiting)" \
-      "$(node_present controller_manager && echo ready || echo waiting)" \
-      "$( [[ "$robot_info" == *'swerve_base'* ]] && echo spawned || echo waiting )"
-    printf '  controllers: joint_state_broadcaster=%s steering_controller=%s drive_controller=%s\n' \
-      "$(controller_active joint_state_broadcaster && echo active || echo waiting)" \
-      "$(controller_active steering_controller && echo active || echo waiting)" \
-      "$(controller_active drive_controller && echo active || echo waiting)"
-    printf '  topics: /odom=%s /scan=%s\n' \
-      "$(topic_present /odom && echo ready || echo waiting)" \
-      "$(topic_present /scan && echo ready || echo waiting)"
-    if [[ "$MODE" == mapping ]]; then
-      printf '  mapping: slam_toolbox=%s /map=%s\n' \
-        "$(node_present slam_toolbox && echo ready || echo waiting)" \
-        "$(topic_present /map && echo ready || echo waiting)"
-    else
-      printf '  navigation: map_server=%s\n' \
-        "$(node_present map_server && echo ready || echo waiting)"
-    fi
-    exit $((ready ? 0 : 1))
+    # The Python probe owns its own deadline.  Wrapping it in GNU timeout sends
+    # SIGTERM while rclpy is inside a wait set and turns a normal retry into a
+    # misleading ExternalShutdownException traceback.
+    python3 "$ROOT_DIR/scripts/navigation_readiness.py" "${readiness_args[@]}"
   )
 }
 
-ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-180}"
+# Nav2 and Gazebo initialize concurrently. On a resource-constrained VM the
+# robot can be spawned after lifecycle servers have already started, so keep a
+# generous finite gate rather than reporting a false startup failure.
+ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-300}"
 if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); then
   echo "Invalid WARETWIN_ROS_READY_TIMEOUT_S=$ROS_READY_TIMEOUT_S; use a positive integer" >&2
   stack_kill_owned ros; stack_kill_owned frontend; stack_kill_owned backend
@@ -300,9 +259,17 @@ if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); 
 fi
 ros_ready=0
 last_ros_report=''
+READINESS_PROBE_TIMEOUT_S="${WARETWIN_READINESS_PROBE_TIMEOUT_S:-15}"
+if ! [[ "$READINESS_PROBE_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( READINESS_PROBE_TIMEOUT_S < 2 )); then
+  echo "Invalid WARETWIN_READINESS_PROBE_TIMEOUT_S=$READINESS_PROBE_TIMEOUT_S; use an integer >= 2" >&2
+  exit 2
+fi
 ready_deadline=$((SECONDS + ROS_READY_TIMEOUT_S))
 while (( SECONDS < ready_deadline )); do
-  if last_ros_report="$(ros_readiness_report)"; then
+  remaining=$((ready_deadline - SECONDS))
+  probe_timeout="$READINESS_PROBE_TIMEOUT_S"
+  (( probe_timeout > remaining )) && probe_timeout="$remaining"
+  if last_ros_report="$(ros_readiness_report "$probe_timeout")"; then
     ros_ready=1
     break
   fi
@@ -312,16 +279,20 @@ while (( SECONDS < ready_deadline )); do
   sleep 2
 done
 if ((ros_ready == 0)); then
-  echo "ROS/Gazebo readiness timed out after ${ROS_READY_TIMEOUT_S}s; no PASS was reported." >&2
-  printf '%s\n' "${last_ros_report:-  readiness probe did not return a snapshot}" >&2
-  echo "See $(stack_log_file ros) and $(stack_log_file ros_bridge)" >&2
-  stack_kill_owned ros
-  stack_kill_owned frontend
-  stack_kill_owned backend
-  rm -f "$STACK_RUNTIME_DIR/stack.env"
+  echo "${last_ros_report:-[FAIL] readiness probe did not return a snapshot}"
+  if ! stack_owned_pid ros && ! stack_owned_group ros; then
+    echo "ROS/Gazebo launch exited during readiness; cleaning its remaining web processes." >&2
+    stack_kill_owned frontend
+    stack_kill_owned backend
+    rm -f "$STACK_RUNTIME_DIR/stack.env"
+  else
+    echo "[FAIL] ${MODE^} stack NOT READY"
+    echo "Stack processes are left running for debugging. See $(stack_log_file ros) and $(stack_log_file ros_bridge)." >&2
+  fi
   exit 1
 fi
 
+printf '%s\n' "$last_ros_report"
 echo
 if [[ "$MODE" == mapping ]]; then
   echo '[OK] Mapping stack READY'

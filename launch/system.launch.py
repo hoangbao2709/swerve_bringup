@@ -124,6 +124,14 @@ def generate_launch_description():
                                    launch_arguments={'use_sim_time': use_sim_time, 'input_topic': lidar_topic,
                                                      'start_slam': 'true'}.items(),
                                    condition=mapping_mode)
+    # The point-cloud preprocessor and 2D projection are needed by Nav2 too.
+    # Only SLAM itself is mapping-only; navigation gets the same /scan
+    # contract while V30E owns map -> odom.
+    navigation_lidar = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'slam.launch.py')),
+        launch_arguments={'use_sim_time': use_sim_time, 'input_topic': lidar_topic,
+                          'start_slam': 'false'}.items(),
+        condition=navigation_mode)
     nav = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'navigation.launch.py')),
                                   launch_arguments={'use_sim_time': use_sim_time,
                                                     'map_file': map_file}.items(),
@@ -199,5 +207,6 @@ def generate_launch_description():
                               description='Published DataMatrix YAML; package config is the development fallback'),
         DeclareLaunchArgument('tag_graph_file', default_value=os.path.join(pkg, 'config', 'tag_graph.yaml'),
                               description='Published tag graph YAML; package config is the development fallback'),
-        mode_guard, sim, real_driver, real_state_publisher, ekf, v30e, slam, nav, bridge, rviz,
+        mode_guard, sim, real_driver, real_state_publisher, ekf, v30e, slam, navigation_lidar,
+        nav, bridge, rviz,
     ])

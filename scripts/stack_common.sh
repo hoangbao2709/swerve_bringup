@@ -8,6 +8,19 @@ mkdir -p "$STACK_RUNTIME_DIR" "$STACK_LOG_DIR"
 stack_pid_file() { printf '%s/%s.pid' "$STACK_RUNTIME_DIR" "$1"; }
 stack_log_file() { printf '%s/%s.log' "$STACK_LOG_DIR" "$1"; }
 
+stack_valid_ros_domain() {
+  local domain="${1:-}"
+  [[ "$domain" =~ ^[0-9]+$ ]] || return 1
+  (( domain >= 0 && domain <= 232 ))
+}
+
+stack_controller_active() {
+  local controller_output="${1:-}" wanted="${2:-}"
+  printf '%s\n' "$controller_output" |
+    sed $'s/\033\[[0-9;]*[[:alpha:]]//g' |
+    awk -v wanted="$wanted" '$1 == wanted || index($1, wanted "[") == 1 { for (i = 2; i <= NF; i++) if (tolower($i) ~ /^active([[:space:]]|$)/) found = 1 } END { exit !found }'
+}
+
 stack_csv_add() {
   local current="${1:-}" value="${2:-}"
   if [[ -z "$value" ]]; then

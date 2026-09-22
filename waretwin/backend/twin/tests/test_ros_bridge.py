@@ -1,9 +1,11 @@
+from copy import deepcopy
 from unittest import IsolatedAsyncioTestCase
 from pydantic import TypeAdapter
 
 from twin.coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin
 from twin.gateways.ros_bridge import RosBridgeGateway
 from twin.ros_bridge_consumer import registry
+from twin.runtime import runtime
 from twin.schema import ClientMessage
 
 
@@ -57,3 +59,53 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             self.assertEqual(manual['message'], {'mode': 'MANUAL', 'action': 'STOP', 'robot_id': 'R01', 'type': 'MANUAL_CMD'})
         finally:
             registry.consumer = previous
+
+
+class RosTelemetryTests(IsolatedAsyncioTestCase):
+    async def test_external_robot_state_merges_pose_twist_and_metadata(self):
+        old_mode = runtime.runtime_mode
+        old_robots = deepcopy(runtime.engine.state['robots'])
+        old_connected = set(runtime.connected_robot_ids)
+        old_bridge_connected = runtime.ros_bridge_connected
+        old_bridge_status = runtime.bridge_status
+        old_ros_diagnostics = deepcopy(runtime.ros_diagnostics)
+        old_last_telemetry_at = runtime.last_telemetry_at
+        old_last_telemetry_iso = runtime.last_telemetry_iso
+        try:
+            runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.client_count = 0
+            await runtime.update_external_robot_state({
+                'type': 'ROBOT_STATE',
+                'robot_id': 'R01',
+                'x': 1.2,
+                'y': 2.3,
+                'z': 0.1,
+                'yaw': 0.4,
+                'vx': 0.5,
+                'vy': 0.2,
+                'wz': -0.1,
+                'navigation_state': 'NAVIGATING',
+                'control_mode': 'MANUAL',
+                'timestamp': '2026-09-22T00:00:00+00:00',
+            })
+            robot = runtime.engine.state['robots']['R01']
+            self.assertEqual(robot['position'], [1.2, 0.1, 2.3])
+            self.assertAlmostEqual(robot['heading'], 0.4)
+            self.assertEqual(robot['vx'], 0.5)
+            self.assertEqual(robot['vy'], 0.2)
+            self.assertEqual(robot['wz'], -0.1)
+            self.assertEqual(robot['navigation_state'], 'NAVIGATING')
+            self.assertEqual(robot['control_mode'], 'MANUAL')
+            self.assertEqual(robot['status'], 'ACTIVE')
+            self.assertEqual(robot['fsm'], 'NAVIGATING')
+            self.assertTrue(runtime.ros_bridge_connected)
+            self.assertEqual(runtime.last_telemetry_iso, '2026-09-22T00:00:00+00:00')
+        finally:
+            runtime.runtime_mode = old_mode
+            runtime.engine.state['robots'] = old_robots
+            runtime.connected_robot_ids = old_connected
+            runtime.ros_bridge_connected = old_bridge_connected
+            runtime.bridge_status = old_bridge_status
+            runtime.ros_diagnostics = old_ros_diagnostics
+            runtime.last_telemetry_at = old_last_telemetry_at
+            runtime.last_telemetry_iso = old_last_telemetry_iso

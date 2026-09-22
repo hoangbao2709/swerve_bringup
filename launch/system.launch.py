@@ -36,6 +36,7 @@ def generate_launch_description():
     contact_diagnostics = LaunchConfiguration('contact_diagnostics')
     caster_frictionless = LaunchConfiguration('caster_frictionless')
     proper_caster_test = LaunchConfiguration('proper_caster_test')
+    use_cad_visuals = LaunchConfiguration('use_cad_visuals')
     caster_axle_offset_x_m = LaunchConfiguration('caster_axle_offset_x_m')
     caster_axle_offset_y_m = LaunchConfiguration('caster_axle_offset_y_m')
     proper_caster_dynamics = {name: LaunchConfiguration(name) for name in (
@@ -90,6 +91,7 @@ def generate_launch_description():
     for name, value in zip(('imu_roll', 'imu_pitch', 'imu_yaw'), imu_extrinsics['rpy']): args += xacro_arg(name, value)
     args += [' caster_axle_offset_x_m:=', caster_axle_offset_x_m]
     args += [' caster_axle_offset_y_m:=', caster_axle_offset_y_m]
+    args += [' use_cad_visuals:=', use_cad_visuals]
     for name, value in proper_caster_dynamics.items(): args += [f' {name}:=', value]
     robot_description = ParameterValue(Command(['xacro ', urdf] + args), value_type=str)
 
@@ -103,6 +105,7 @@ def generate_launch_description():
                           'contact_diagnostics': contact_diagnostics,
                           'caster_frictionless': caster_frictionless,
                           'proper_caster_test': proper_caster_test,
+                          'use_cad_visuals': use_cad_visuals,
                           'caster_axle_offset_x_m': caster_axle_offset_x_m,
                           'caster_axle_offset_y_m': caster_axle_offset_y_m,
                           **proper_caster_dynamics,
@@ -167,6 +170,8 @@ def generate_launch_description():
         DeclareLaunchArgument('contact_diagnostics', default_value='false', description='Enable temporary Gazebo contact sensors'),
         DeclareLaunchArgument('caster_frictionless', default_value='false', description='Test-only caster friction A/B variant'),
         DeclareLaunchArgument('proper_caster_test', default_value='false', description='Test-only four-caster swivel+roll model'),
+        DeclareLaunchArgument('use_cad_visuals', default_value='true',
+                              description='Use optimized CAD-derived visual meshes; false selects visual-only primitives'),
         DeclareLaunchArgument('caster_axle_offset_x_m', default_value='0.0', description='Test-only caster axle offset in local +X (m)'),
         DeclareLaunchArgument('caster_axle_offset_y_m', default_value='0.0', description='Test-only caster axle offset in local +Y (m)'),
         DeclareLaunchArgument('proper_caster_mu1', default_value='0.01', description='TEST-ONLY proper caster mu1'),

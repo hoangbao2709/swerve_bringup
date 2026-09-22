@@ -429,9 +429,15 @@ class TwinRuntime:
         control_mode = str(data.get('control_mode') or robot.get('control_mode') or 'AUTONOMOUS').upper()
         if control_mode not in ('MANUAL', 'AUTONOMOUS'):
             control_mode = 'AUTONOMOUS'
-        robot.update(pose, twist, {'navigation_state': nav, 'last_telemetry_at': now_iso,
-                                   'control_mode': control_mode, 'status': 'ACTIVE',
-                                   'fsm': self._fsm_from_nav(nav)})
+        # ``robot`` is the persisted state dictionary.  ``dict.update`` takes
+        # one mapping, so merge the ROS pose, twist and metadata explicitly;
+        # the previous three-argument call raised on every ROBOT_STATE frame
+        # and silently prevented external telemetry from reaching the Web UI.
+        robot.update(pose)
+        robot.update(twist)
+        robot.update({'navigation_state': nav, 'last_telemetry_at': now_iso,
+                      'control_mode': control_mode, 'status': 'ACTIVE',
+                      'fsm': self._fsm_from_nav(nav)})
         self.last_telemetry_at = time.monotonic()
         self.last_ros_heartbeat = self.last_telemetry_at
         self.ros_bridge_connected = True

@@ -42,6 +42,7 @@ else
   BACKEND_URL="http://127.0.0.1:$BACKEND_PORT"
   FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT"
   ROS_WS_URL="ws://127.0.0.1:$BACKEND_PORT/ws/ros"
+  ROS_DOMAIN_ID=0
 fi
 
 if [[ -n "$BACKEND_PORT_OVERRIDE" ]]; then
@@ -99,17 +100,33 @@ else
 fi
 
 if command -v ros2 >/dev/null 2>&1 && [[ -f "$ROOT_DIR/install/local_setup.bash" ]]; then
+  ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+  if ! stack_valid_ros_domain "$ROS_DOMAIN_ID"; then
+    warn "invalid ROS_DOMAIN_ID in stack runtime: $ROS_DOMAIN_ID"
+    failures=$((failures + 1))
+    ROS_DOMAIN_ID=0
+  fi
+  export ROS_DOMAIN_ID
   set +u
   source "$ROOT_DIR/scripts/ros_env.sh" >/dev/null 2>&1 || true
   set -u
-  if timeout 5 ros2 node list 2>/dev/null | rg -q '/swerve_bridge$|^/swerve_bridge$'; then ok 'ROS bridge node'; else warn 'ROS bridge node not visible'; failures=$((failures + 1)); fi
-  if timeout 5 ros2 node list 2>/dev/null | rg -q '/controller_manager$|^/controller_manager$'; then ok 'controller_manager'; else warn 'controller_manager not visible'; failures=$((failures + 1)); fi
-  if timeout 5 ros2 topic info /odometry/filtered >/dev/null 2>&1; then ok '/odometry/filtered'; else warn '/odometry/filtered unavailable'; failures=$((failures + 1)); fi
-  if timeout 5 ros2 topic info /scan >/dev/null 2>&1; then ok '/scan'; else warn '/scan unavailable'; failures=$((failures + 1)); fi
+  ROS_NODES="$(timeout 15 ros2 node list 2>/dev/null || true)"
+  ROS_CONTROLLERS="$(timeout 20 ros2 control list_controllers --controller-manager /controller_manager --spin-time 2 2>/dev/null || true)"
+  ROS_TOPICS="$(timeout 15 ros2 topic list 2>/dev/null || true)"
+  topic_present() { printf '%s\n' "$ROS_TOPICS" | rg -q "^${1}$"; }
+  if printf '%s\n' "$ROS_NODES" | rg -q '(^|/)swerve_bridge$'; then ok 'ROS bridge node'; else warn 'ROS bridge node not visible'; failures=$((failures + 1)); fi
+  if printf '%s\n' "$ROS_NODES" | rg -q '(^|/)controller_manager$'; then ok 'controller_manager'; else warn 'controller_manager not visible'; failures=$((failures + 1)); fi
+  for controller in joint_state_broadcaster steering_controller drive_controller; do
+    if stack_controller_active "$ROS_CONTROLLERS" "$controller"; then ok "$controller active"; else warn "$controller not active"; failures=$((failures + 1)); fi
+  done
+  if topic_present /odom; then ok '/odom'; else warn '/odom unavailable'; failures=$((failures + 1)); fi
+  if topic_present /odometry/filtered; then ok '/odometry/filtered'; else warn '/odometry/filtered unavailable'; failures=$((failures + 1)); fi
+  if topic_present /scan; then ok '/scan'; else warn '/scan unavailable'; failures=$((failures + 1)); fi
   if [[ "${MODE:-}" == mapping ]]; then
-    if timeout 5 ros2 node list 2>/dev/null | rg -q '/slam_toolbox$|^/slam_toolbox$'; then ok 'SLAM Toolbox'; else warn 'SLAM Toolbox not visible'; failures=$((failures + 1)); fi
+    if printf '%s\n' "$ROS_NODES" | rg -q '(^|/)slam_toolbox$'; then ok 'SLAM Toolbox'; else warn 'SLAM Toolbox not visible'; failures=$((failures + 1)); fi
+    if topic_present /map; then ok '/map'; else warn '/map unavailable'; failures=$((failures + 1)); fi
   elif [[ "${MODE:-}" == navigation ]]; then
-    if timeout 5 ros2 node list 2>/dev/null | rg -q '/map_server$|^/map_server$'; then ok 'Nav2 map_server'; else warn 'Nav2 map_server not visible'; failures=$((failures + 1)); fi
+    if printf '%s\n' "$ROS_NODES" | rg -q '(^|/)map_server$'; then ok 'Nav2 map_server'; else warn 'Nav2 map_server not visible'; failures=$((failures + 1)); fi
   fi
 else
   warn 'ROS environment unavailable'
@@ -117,4 +134,5 @@ else
 fi
 
 printf 'Status summary: %d failed check(s), mode=%s\n' "$failures" "${MODE:-unknown}"
-exit 0
+if (( failures == 0 )); then exit 0; fi
+exit 1

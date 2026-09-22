@@ -117,7 +117,16 @@ class SwerveBridge(Node):
         self.create_subscription(Odometry, odom_topic, self.odom_cb, 20)
         self.create_subscription(JointState, joint_states_topic, self.joint_cb, 10)
         self.create_subscription(PointCloud2, lidar_topic, self.lidar_cb, 10)
-        self.create_subscription(Clock, clock_topic, self.clock_cb, 10)
+        # Gazebo Classic publishes /clock as best-effort + volatile.  The
+        # default rclpy profile is reliable, which is incompatible and leaves
+        # simulation_time permanently null.  Match the Gazebo profile without
+        # changing the publisher or any robot-control topic.
+        clock_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.create_subscription(Clock, clock_topic, self.clock_cb, clock_qos)
         self.cmd_pub = self.create_publisher(
             Twist, cmd_vel_topic, 20)
         estop_qos = QoSProfile(

@@ -15,7 +15,11 @@ if [[ ! -f /opt/ros/humble/setup.bash ]]; then
   return 1
 fi
 
-unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
+# Do not let a Snap-hosted desktop (for example VS Code) inject its GTK
+# libraries into native ROS GUI tools.  The Snap core20 libpthread is not
+# ABI-compatible with Ubuntu 22.04 and otherwise makes RViz fail at startup.
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
+unset GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE
 export AMENT_TRACE_SETUP_FILES="${AMENT_TRACE_SETUP_FILES:-}"
 set +u
 source /opt/ros/humble/setup.bash

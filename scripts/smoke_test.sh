@@ -19,6 +19,14 @@ check() {
   fi
 }
 
+check_controllers() {
+  local controllers
+  controllers="$(timeout 20 ros2 control list_controllers --controller-manager /controller_manager --spin-time 2 2>/dev/null)" || return 1
+  for name in joint_state_broadcaster steering_controller drive_controller; do
+    stack_controller_active "$controllers" "$name" || return 1
+  done
+}
+
 if [[ -f "$ROOT_DIR/waretwin/backend/.env" ]]; then
   # Load the local bridge token for the authentication probe, then let the
   # selected fallback ports below override the .env defaults.
@@ -31,6 +39,13 @@ if [[ -f "$STACK_RUNTIME_DIR/stack.env" ]]; then
   # shellcheck disable=SC1091
   source "$STACK_RUNTIME_DIR/stack.env"
 fi
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+if ! stack_valid_ros_domain "$ROS_DOMAIN_ID"; then
+  printf '[FAIL] valid stack ROS_DOMAIN_ID\n'
+  failed=$((failed + 1))
+  ROS_DOMAIN_ID=0
+fi
+export ROS_DOMAIN_ID
 # Resolve URLs only after both environment files have been loaded.  This keeps
 # direct `run.sh` deployments and fallback-port stack deployments consistent.
 BACKEND_URL="${BACKEND_URL:-http://127.0.0.1:${BACKEND_PORT:-8000}}"
@@ -64,7 +79,10 @@ if [[ -f "$ROOT_DIR/install/local_setup.bash" ]]; then
   set -u
   check 'ROS bridge node' timeout 5 bash -c "ros2 node list | rg -q '/swerve_bridge$|^/swerve_bridge$'"
   check 'controller_manager' timeout 5 bash -c 'ros2 node list | rg -q "/controller_manager$|^/controller_manager$"'
+  check 'controllers active' check_controllers
+  check 'robot spawned in Gazebo' timeout 8 bash -c 'gz model -m swerve_base -i | rg -q swerve_base'
   check '/odom or /odometry/filtered' timeout 5 bash -c 'ros2 topic info /odometry/filtered >/dev/null || ros2 topic info /odom >/dev/null'
+  check '/odom' timeout 5 ros2 topic info /odom
   check '/scan' timeout 5 ros2 topic info /scan
   if [[ "${MODE:-mapping}" == mapping ]]; then check '/map (mapping)' timeout 5 ros2 topic info /map; fi
   if [[ "${MODE:-mapping}" == navigation ]]; then check 'Nav2 map_server' timeout 5 bash -c 'ros2 node list | rg -q "/map_server$|^/map_server$"'; fi

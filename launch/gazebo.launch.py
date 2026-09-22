@@ -66,6 +66,7 @@ def generate_launch_description():
         return [f' {name}:={value}']
 
     xacro_args = [' enable_contact_sensors:=', LaunchConfiguration('contact_diagnostics'),
+                   ' use_cad_visuals:=', LaunchConfiguration('use_cad_visuals'),
                    ' caster_frictionless:=', LaunchConfiguration('caster_frictionless'),
                    ' proper_caster_test:=', LaunchConfiguration('proper_caster_test'),
                    ' caster_axle_offset_x_m:=', LaunchConfiguration('caster_axle_offset_x_m'),
@@ -234,6 +235,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'use_sim_time', default_value='true',
             description='Use the Gazebo /clock for every ROS node.',
+        ),
+        DeclareLaunchArgument(
+            'use_cad_visuals', default_value='true',
+            description='Use the optimized CAD-derived visual meshes; false selects visual-only primitives.',
         ),
         DeclareLaunchArgument(
             'gui', default_value='true',

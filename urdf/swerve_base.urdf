@@ -66,6 +66,11 @@
   <!-- Diagnostic switch: lets Gazebo physics be tested independently from
        gazebo_ros2_control without changing production's default behaviour. -->
   <xacro:arg name="enable_gazebo_ros2_control" default="true"/>
+  <!-- Render the CAD-derived, decimated visual assets by default.  Setting
+       use_cad_visuals:=false selects the deliberately simple visual-only
+       primitives below; it never changes collision, inertial, joints or
+       ros2_control. -->
+  <xacro:arg name="use_cad_visuals" default="true"/>
 
   <xacro:property name="lidar_x" value="$(arg lidar_x)"/>
   <xacro:property name="lidar_y" value="$(arg lidar_y)"/>
@@ -165,14 +170,60 @@
     </gazebo>
   </xacro:macro>
 
-  <material name="grey"><color rgba="0.6 0.6 0.6 1"/></material>
-  <material name="orange"><color rgba="0.9 0.5 0.1 1"/></material>
-  <material name="dark"><color rgba="0.2 0.2 0.2 1"/></material>
+  <!-- Visual-only passive caster approximation.  The audited physics branch
+       remains a single low-friction cylinder at the existing joint origin;
+       these parts only replace the misleading sphere rendered in Gazebo. -->
+  <xacro:macro name="passive_caster_visuals">
+    <visual>
+      <origin xyz="0 0 0.012" rpy="0 0 0"/>
+      <geometry><box size="0.090 0.090 0.018"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0.026 -0.014" rpy="0 0 0"/>
+      <geometry><box size="0.060 0.012 0.060"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual>
+      <origin xyz="0 -0.026 -0.014" rpy="0 0 0"/>
+      <geometry><box size="0.060 0.012 0.060"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 -0.0234" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.040" length="0.040"/></geometry>
+      <material name="rubber"/>
+    </visual>
+  </xacro:macro>
+
+  <material name="grey"><color rgba="0.32 0.35 0.38 1"/></material>
+  <material name="orange"><color rgba="0.95 0.32 0.04 1"/></material>
+  <material name="dark"><color rgba="0.08 0.09 0.10 1"/></material>
+  <material name="metal"><color rgba="0.16 0.18 0.21 1"/></material>
+  <material name="rubber"><color rgba="0.025 0.025 0.03 1"/></material>
+  <material name="sensor_black"><color rgba="0.015 0.015 0.018 1"/></material>
+  <material name="front_marker"><color rgba="0.95 0.75 0.05 1"/></material>
 
   <link name="lidar_link">
     <visual>
-      <geometry><cylinder radius="0.055" length="0.07"/></geometry>
+      <origin xyz="0 0 -0.026" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.018"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.000" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.055" length="0.050"/></geometry>
       <material name="dark"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.031" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.046" length="0.012"/></geometry>
+      <material name="sensor_black"/>
+    </visual>
+    <visual>
+      <origin xyz="0.032 0 0.039" rpy="0 0 0"/>
+      <geometry><box size="0.020 0.012 0.006"/></geometry>
+      <material name="front_marker"/>
     </visual>
     <collision>
       <geometry><cylinder radius="0.055" length="0.07"/></geometry>
@@ -204,7 +255,23 @@
 
   <!-- V30E DataMatrix reader, downward-facing, nominal working height 0.10 m. -->
   <link name="v30e_link">
-    <visual><geometry><box size="0.09 0.07 0.025"/></geometry><material name="dark"/></visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.09 0.07 0.025"/></geometry>
+      <material name="dark"/>
+    </visual>
+    <!-- Visual-only downward lens/window; the fixed frame and sensing pose
+         remain exactly the audited v30e_link transform. -->
+    <visual>
+      <origin xyz="0 0 -0.014" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.016" length="0.003"/></geometry>
+      <material name="sensor_black"/>
+    </visual>
+    <visual>
+      <origin xyz="0.030 0 0.014" rpy="0 0 0"/>
+      <geometry><box size="0.028 0.008 0.004"/></geometry>
+      <material name="front_marker"/>
+    </visual>
   </link>
   <joint name="base_v30e_joint" type="fixed">
     <parent link="base_link"/><child link="v30e_link"/>
@@ -225,8 +292,22 @@
   <!-- ========================= BASE LINK ========================= -->
   <link name="base_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/base_frame.stl" scale="0.001 0.001 0.001"/></geometry>
+      <xacro:if value="$(arg use_cad_visuals)">
+        <!-- CAD-derived visual mesh; OBJ coordinates are metres.  The source
+             600k-triangle STL remains available in meshes/ unchanged. -->
+        <geometry><mesh filename="package://swerve_bringup/meshes/visual/base_frame_visual.obj" scale="1 1 1"/></geometry>
+      </xacro:if>
+      <xacro:unless value="$(arg use_cad_visuals)">
+        <!-- APPROXIMATED_VISUAL - render-only fallback, not collision truth. -->
+        <geometry><box size="1.196 0.596 0.460"/></geometry>
+      </xacro:unless>
       <material name="grey"/>
+    </visual>
+    <!-- Visual-only front marker, +X is the robot FRONT. -->
+    <visual>
+      <origin xyz="0.598 0 0.055" rpy="0 0 0"/>
+      <geometry><box size="0.012 0.230 0.130"/></geometry>
+      <material name="front_marker"/>
     </visual>
     <!-- Collision follows the measured mesh bbox (X/Y/Z = 1.196/0.596/0.460 m).
          The former Y/Z-swapped box penetrated the ground at the nominal footprint. -->
@@ -243,7 +324,13 @@
   <!-- ===================== CỤM XOAY PHÍA TRƯỚC (steer_front) ===================== -->
   <link name="steer_front_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_front_housing_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <xacro:if value="$(arg use_cad_visuals)">
+        <geometry><mesh filename="package://swerve_bringup/meshes/visual/steer_front_visual.obj" scale="1 1 1"/></geometry>
+      </xacro:if>
+      <xacro:unless value="$(arg use_cad_visuals)">
+        <!-- APPROXIMATED_VISUAL - render-only fallback, not collision truth. -->
+        <geometry><box size="0.2296 0.1862 0.2703"/></geometry>
+      </xacro:unless>
       <material name="orange"/>
     </visual>
     <collision>
@@ -268,7 +355,13 @@
   <!-- ===================== CỤM XOAY PHÍA SAU (steer_rear) ===================== -->
   <link name="steer_rear_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_rear_housing_v2.stl" scale="0.001 0.001 0.001"/></geometry>
+      <xacro:if value="$(arg use_cad_visuals)">
+        <geometry><mesh filename="package://swerve_bringup/meshes/visual/steer_rear_visual.obj" scale="1 1 1"/></geometry>
+      </xacro:if>
+      <xacro:unless value="$(arg use_cad_visuals)">
+        <!-- APPROXIMATED_VISUAL - render-only fallback, not collision truth. -->
+        <geometry><box size="0.2296 0.1862 0.2834"/></geometry>
+      </xacro:unless>
       <material name="orange"/>
     </visual>
     <collision>
@@ -295,10 +388,7 @@
   <xacro:unless value="$(arg proper_caster_test)">
   <!-- Banh bi dong FRONT LEFT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
   <link name="wheel_front_left_link">
-    <visual>
-      <geometry><sphere radius="0.0414"/></geometry>
-      <material name="dark"/>
-    </visual>
+    <xacro:passive_caster_visuals/>
     <!-- Stable low-friction primitive; the swivel DOF and low contact
          friction keep this passive support from locking the chassis. -->
     <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
@@ -317,10 +407,7 @@
 
   <!-- Banh bi dong FRONT RIGHT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
   <link name="wheel_front_right_link">
-    <visual>
-      <geometry><sphere radius="0.0414"/></geometry>
-      <material name="dark"/>
-    </visual>
+    <xacro:passive_caster_visuals/>
     <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -337,10 +424,7 @@
 
   <!-- Banh bi dong REAR LEFT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
   <link name="wheel_rear_left_link">
-    <visual>
-      <geometry><sphere radius="0.043"/></geometry>
-      <material name="dark"/>
-    </visual>
+    <xacro:passive_caster_visuals/>
     <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -357,10 +441,7 @@
 
   <!-- Banh bi dong REAR RIGHT - don gian hoa thanh khoi cau (bo swivel+roll, phu hop caster tu do) -->
   <link name="wheel_rear_right_link">
-    <visual>
-      <geometry><sphere radius="0.043"/></geometry>
-      <material name="dark"/>
-    </visual>
+    <xacro:passive_caster_visuals/>
     <collision><origin xyz="0 0 -0.0234"/><geometry><cylinder radius="0.040" length="0.040"/></geometry></collision>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -386,9 +467,15 @@
   <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->
   <link name="wheel_front_drive_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_front_wheel_v2.stl" scale="0.001 0.001 0.001"/></geometry>
-      <material name="dark"/>
+      <xacro:if value="$(arg use_cad_visuals)">
+        <geometry><mesh filename="package://swerve_bringup/meshes/visual/drive_front_visual.obj" scale="1 1 1"/></geometry>
+      </xacro:if>
+      <xacro:unless value="$(arg use_cad_visuals)">
+        <!-- APPROXIMATED_VISUAL - render-only fallback, not collision truth. -->
+        <geometry><cylinder radius="0.0675" length="0.065"/></geometry>
+      </xacro:unless>
       <origin xyz="0 0 0" rpy="0 0 0"/>
+      <material name="rubber"/>
     </visual>
     <collision>
       <geometry><cylinder radius="0.0675" length="0.065"/></geometry>
@@ -414,9 +501,15 @@
   <!-- Banh chu dong (uoc luong - hinh hoc that nam trong khoi opaque HZ-CS95, khong tach duoc) -->
   <link name="wheel_rear_drive_link">
     <visual>
-      <geometry><mesh filename="file:///home/yahboom/swerve_bringup/meshes/steer_rear_wheel_v2.stl" scale="0.001 0.001 0.001"/></geometry>
-      <material name="dark"/>
+      <xacro:if value="$(arg use_cad_visuals)">
+        <geometry><mesh filename="package://swerve_bringup/meshes/visual/drive_rear_visual.obj" scale="1 1 1"/></geometry>
+      </xacro:if>
+      <xacro:unless value="$(arg use_cad_visuals)">
+        <!-- APPROXIMATED_VISUAL - render-only fallback, not collision truth. -->
+        <geometry><cylinder radius="0.0675" length="0.065"/></geometry>
+      </xacro:unless>
       <origin xyz="0 0 0" rpy="0 0 0"/>
+      <material name="rubber"/>
     </visual>
     <collision>
       <geometry><cylinder radius="0.0675" length="0.065"/></geometry>

@@ -9,13 +9,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 
-Default development account:
+Configured admin account from `backend/.env`:
 
 - username: `admin`
-- password: `admin12345`
+- password: value of `TWIN_ADMIN_PASSWORD` (only used when the account is created)
 
 ## 2. Configure frontend
 
@@ -24,11 +25,14 @@ For frontend and Django on the same PC, keep:
 ```env
 VITE_DEMO_MODE=false
 VITE_BACKEND_MODE=true
-VITE_API_URL=http://127.0.0.1:8000
-VITE_WS_URL=ws://127.0.0.1:8000/ws
+VITE_BACKEND_PORT=8000
+VITE_API_BASE_URL=
+VITE_WS_BASE_URL=
 ```
 
-If the browser opens the frontend from another PC, replace `127.0.0.1` with the Django PC IP, for example `192.168.1.10`.
+The empty base URLs resolve the Django hostname from the browser automatically.
+Set explicit `VITE_API_BASE_URL`/`VITE_WS_BASE_URL` for a reverse proxy or a
+backend on another host/port.
 
 Also add that frontend origin to backend `.env`:
 
@@ -81,6 +85,7 @@ cd backend
 source .venv/bin/activate
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 
@@ -102,6 +107,7 @@ cd backend
 source .venv/bin/activate
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 

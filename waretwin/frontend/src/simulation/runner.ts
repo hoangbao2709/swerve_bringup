@@ -123,13 +123,15 @@ export function useBackendRealtime() {
     st.setSource("connecting");
     wsConnect((conn) => {
       const s = useStore.getState();
+      const wsStates = { connecting: "CONNECTING", online: "CONNECTED", reconnecting: "RECONNECTING", offline: "DISCONNECTED", error: "ERROR", unauthorized: "DISCONNECTED" } as const;
+      s.setWebsocketState(wsStates[conn]);
       if (conn === "online") {
         s.setSource("online");
         s.setHeat(null);
       } else if (conn === "unauthorized") {
         s.setSource("unauthorized");
         s.clearAuth();
-      } else if (conn === "offline") {
+      } else if (conn === "offline" || conn === "error") {
         s.setSource("offline");
         s.setHeat(null);
       } else {

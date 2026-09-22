@@ -36,6 +36,7 @@ def generate_launch_description():
     contact_diagnostics = LaunchConfiguration('contact_diagnostics')
     caster_frictionless = LaunchConfiguration('caster_frictionless')
     proper_caster_test = LaunchConfiguration('proper_caster_test')
+    use_cad_visuals = LaunchConfiguration('use_cad_visuals')
     caster_axle_offset_x_m = LaunchConfiguration('caster_axle_offset_x_m')
     caster_axle_offset_y_m = LaunchConfiguration('caster_axle_offset_y_m')
     proper_caster_dynamics = {name: LaunchConfiguration(name) for name in (
@@ -49,10 +50,25 @@ def generate_launch_description():
     odom_topic = LaunchConfiguration('real_odom_topic')
     artifact_root = LaunchConfiguration('artifact_root')
     robot_id = LaunchConfiguration('robot_id')
+    namespace = LaunchConfiguration('namespace')
     datamatrix_map_file = LaunchConfiguration('datamatrix_map_file')
     tag_graph_file = LaunchConfiguration('tag_graph_file')
+    map_file = LaunchConfiguration('map_file')
     urdf = os.path.join(pkg, 'urdf', 'swerve_base.urdf')
     interface_cfg = os.path.join(pkg, 'config', 'sim_real_interface.yaml')
+    default_artifact_root = os.environ.get('WARETWIN_ARTIFACT_ROOT') or os.path.abspath(
+        os.path.join(os.getcwd(), 'generated', 'maps'))
+    default_rviz_config = os.path.join(pkg, 'rviz', 'swerve.rviz')
+
+    def validate_mode(context):
+        selected = LaunchConfiguration('mode').perform(context).strip().lower()
+        if selected not in ('mapping', 'navigation'):
+            raise RuntimeError(
+                f'Unsupported mode={selected!r}; choose exactly mapping or navigation '
+                '(SLAM and Nav2 are mutually exclusive)')
+        return [LogInfo(msg=f'WareTwin runtime mode: {selected.upper()}')]
+
+    mode_guard = OpaqueFunction(function=validate_mode)
 
     # Keep URDF calibration in one place. Gazebo consumes the same values for
     # its sensor plugins; on a real robot the fixed TF is published here.
@@ -75,6 +91,7 @@ def generate_launch_description():
     for name, value in zip(('imu_roll', 'imu_pitch', 'imu_yaw'), imu_extrinsics['rpy']): args += xacro_arg(name, value)
     args += [' caster_axle_offset_x_m:=', caster_axle_offset_x_m]
     args += [' caster_axle_offset_y_m:=', caster_axle_offset_y_m]
+    args += [' use_cad_visuals:=', use_cad_visuals]
     for name, value in proper_caster_dynamics.items(): args += [f' {name}:=', value]
     robot_description = ParameterValue(Command(['xacro ', urdf] + args), value_type=str)
 
@@ -88,6 +105,7 @@ def generate_launch_description():
                           'contact_diagnostics': contact_diagnostics,
                           'caster_frictionless': caster_frictionless,
                           'proper_caster_test': proper_caster_test,
+                          'use_cad_visuals': use_cad_visuals,
                           'caster_axle_offset_x_m': caster_axle_offset_x_m,
                           'caster_axle_offset_y_m': caster_axle_offset_y_m,
                           **proper_caster_dynamics,
@@ -108,14 +126,24 @@ def generate_launch_description():
                                    condition=mapping_mode)
     nav = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'navigation.launch.py')),
                                   launch_arguments={'use_sim_time': use_sim_time,
-                                                    'map_file': os.path.join(pkg, 'swerve_navigation', 'maps', 'warehouse.yaml')}.items(),
+                                                    'map_file': map_file}.items(),
                                   condition=navigation_mode)
     bridge = Node(package='swerve_bridge', executable='swerve_bridge_node', name='swerve_bridge', output='screen',
                   parameters=[os.path.join(get_package_share_directory('swerve_bridge'), 'config', 'bridge.yaml'),
                               {'use_sim_time': use_sim_time,
+                               'robot_id': robot_id,
+                               'namespace': namespace,
+                               'runtime_state': mode,
                                'django_token': LaunchConfiguration('bridge_token'),
                                'django_ws_url': LaunchConfiguration('bridge_ws_url'),
-                               'artifact_root': artifact_root}])
+                               'artifact_root': artifact_root,
+                               'gazebo_world_file': LaunchConfiguration('world')}])
+    rviz = Node(
+        package='rviz2', executable='rviz2', name='rviz2', output='screen',
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(LaunchConfiguration('start_rviz')),
+    )
     v30e = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'v30e_sim.launch.py')),
         launch_arguments={'enable_v30e_sim': 'true', 'use_sim_time': use_sim_time,
@@ -128,12 +156,22 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true', description='Use Gazebo clock; set false for real robot'),
         DeclareLaunchArgument('mode', default_value='mapping',
                               description='mapping=SLAM owns map->odom; navigation=static map + V30E owns map->odom'),
+        DeclareLaunchArgument(
+            'map_file',
+            default_value=os.path.join(pkg, 'swerve_navigation', 'maps', 'warehouse.yaml'),
+            description='Static Nav2 map YAML; used only when mode=navigation',
+        ),
         DeclareLaunchArgument('world', default_value=os.path.join(pkg, 'worlds', 'warehouse.world')),
         DeclareLaunchArgument('robot_id', default_value='R01', description='Robot ID selected from the published Gazebo manifest'),
+        DeclareLaunchArgument('namespace', default_value='', description='Optional ROS namespace for the bridge/topic contract'),
         DeclareLaunchArgument('gui', default_value='true', description='Start the Gazebo client window'),
+        DeclareLaunchArgument('start_rviz', default_value='true', description='Start RViz with the project display configuration'),
+        DeclareLaunchArgument('rviz_config', default_value=default_rviz_config, description='RViz display configuration'),
         DeclareLaunchArgument('contact_diagnostics', default_value='false', description='Enable temporary Gazebo contact sensors'),
         DeclareLaunchArgument('caster_frictionless', default_value='false', description='Test-only caster friction A/B variant'),
         DeclareLaunchArgument('proper_caster_test', default_value='false', description='Test-only four-caster swivel+roll model'),
+        DeclareLaunchArgument('use_cad_visuals', default_value='true',
+                              description='Use optimized CAD-derived visual meshes; false selects visual-only primitives'),
         DeclareLaunchArgument('caster_axle_offset_x_m', default_value='0.0', description='Test-only caster axle offset in local +X (m)'),
         DeclareLaunchArgument('caster_axle_offset_y_m', default_value='0.0', description='Test-only caster axle offset in local +Y (m)'),
         DeclareLaunchArgument('proper_caster_mu1', default_value='0.01', description='TEST-ONLY proper caster mu1'),
@@ -150,12 +188,16 @@ def generate_launch_description():
             'bridge_token',
             default_value=EnvironmentVariable('WARETWIN_ROS_BRIDGE_TOKEN', default_value=''),
             description='Token for the Django ROS bridge (defaults to WARETWIN_ROS_BRIDGE_TOKEN)'),
-        DeclareLaunchArgument('bridge_ws_url', default_value='ws://127.0.0.1:8000/ws/ros'),
-        DeclareLaunchArgument('artifact_root', default_value='generated/maps',
+        DeclareLaunchArgument(
+            'bridge_ws_url',
+            default_value=EnvironmentVariable('ROS_WS_URL', default_value='ws://127.0.0.1:8000/ws/ros'),
+            description='Django ROS bridge WebSocket URL.',
+        ),
+        DeclareLaunchArgument('artifact_root', default_value=default_artifact_root,
                               description='Published map artifact root used by the ROS bridge'),
         DeclareLaunchArgument('datamatrix_map_file', default_value=os.path.join(pkg, 'config', 'datamatrix_map.yaml'),
                               description='Published DataMatrix YAML; package config is the development fallback'),
         DeclareLaunchArgument('tag_graph_file', default_value=os.path.join(pkg, 'config', 'tag_graph.yaml'),
                               description='Published tag graph YAML; package config is the development fallback'),
-        sim, real_driver, real_state_publisher, ekf, v30e, slam, nav, bridge,
+        mode_guard, sim, real_driver, real_state_publisher, ekf, v30e, slam, nav, bridge, rviz,
     ])

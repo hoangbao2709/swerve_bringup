@@ -4,14 +4,17 @@ import os
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = BASE_DIR.parent.parent
+LOG_DIR = PROJECT_ROOT / 'logs'
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load the backend-local environment before reading any setting.  override=False
 # keeps explicit process/container environment variables authoritative.
 load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'development-only-change-me')
-DEBUG = os.getenv('DJANGO_DEBUG', '1') == '1'
-ALLOWED_HOSTS = [x.strip() for x in os.getenv('DJANGO_ALLOWED_HOSTS', '*').split(',') if x.strip()]
+DEBUG = os.getenv('DJANGO_DEBUG', '0') == '1'
+ALLOWED_HOSTS = [x.strip() for x in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if x.strip()]
 
 INSTALLED_APPS = [
     'daphne',
@@ -73,6 +76,36 @@ CHANNEL_LAYERS = {
 }
 DATA_UPLOAD_MAX_MEMORY_SIZE = 12 * 1024 * 1024
 
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'waretwin': {
+            'format': '{asctime} {levelname} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'backend_file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(LOG_DIR / 'backend.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 5,
+            'encoding': 'utf-8',
+            'formatter': 'waretwin',
+        },
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'waretwin',
+        },
+    },
+    'loggers': {
+        'django': {'handlers': ['backend_file', 'console'], 'level': 'INFO', 'propagate': False},
+        'django.server': {'handlers': ['backend_file', 'console'], 'level': 'INFO', 'propagate': False},
+        'twin': {'handlers': ['backend_file', 'console'], 'level': 'INFO', 'propagate': False},
+    },
+}
+
 WARETWIN_RUNTIME_MODES = ('LOCAL_SIM', 'GAZEBO_ROS', 'REAL_ROBOT')
 WARETWIN_RUNTIME_MODE = os.getenv('WARETWIN_RUNTIME_MODE', 'LOCAL_SIM').upper()
 if WARETWIN_RUNTIME_MODE not in WARETWIN_RUNTIME_MODES:
@@ -82,8 +115,12 @@ if WARETWIN_RUNTIME_MODE not in WARETWIN_RUNTIME_MODES:
     )
 WARETWIN_ROS_BRIDGE_TOKEN = os.getenv('WARETWIN_ROS_BRIDGE_TOKEN', '')
 WARETWIN_ROS_HEARTBEAT_TIMEOUT_S = float(os.getenv('WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', '3.0'))
-# Immutable publish artifacts live outside the source/config tree.  Tests and
-# deployments may override this with a warehouse-specific volume.
-WARETWIN_ARTIFACT_ROOT = Path(os.getenv('WARETWIN_ARTIFACT_ROOT', str(BASE_DIR.parent.parent / 'generated' / 'maps')))
+WARETWIN_VERSION = os.getenv('WARETWIN_VERSION', '0.1.0')
+# Immutable publish artifacts live outside the source/config tree. Tests and
+# deployments may override this with a warehouse-specific volume. Treat an
+# empty env value as "use the project default" rather than Path('.') so a
+# clean `.env.example` remains portable.
+_artifact_root = os.getenv('WARETWIN_ARTIFACT_ROOT', '').strip()
+WARETWIN_ARTIFACT_ROOT = Path(_artifact_root or (BASE_DIR.parent.parent / 'generated' / 'maps'))
 
 print(f'WARETWIN runtime mode: {WARETWIN_RUNTIME_MODE}', flush=True)

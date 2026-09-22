@@ -1,5 +1,9 @@
 # swerve_bringup
 
+Muốn chạy toàn bộ frontend + Django backend + Gazebo + ROS bridge + RViz,
+xem [SETUP_A_Z.md](SETUP_A_Z.md). Lệnh build trong tài liệu đã xử lý package
+lồng `swerve_bridge` và môi trường ROS overlay của máy.
+
 Package ROS 2 (ament_cmake) chứa mô tả URDF + launch hiển thị cho AGV đa hướng:
 - 2 cụm swerve (steer_front, steer_rear): mỗi cụm có khớp xoay đứng (steer) + khớp lăn bánh chủ động (drive)
 - 4 bánh caster bị động ở 4 góc (swivel + roll, mỗi bánh 2 bậc tự do)
@@ -240,11 +244,12 @@ ros2 launch swerve_bringup slam.launch.py
 ros2 launch swerve_bringup navigation.launch.py
 ```
 
-The navigation launch starts controller, planner, behavior, BT navigator,
-waypoint follower and lifecycle manager. The controller's `/cmd_vel` goes
-directly to the existing swerve controller, which converts `vx`, `vy`, `wz`
-to steering and drive commands. No Nav2 map server or AMCL is started because
-SLAM Toolbox owns `/map` and `map -> odom`.
+The navigation launch starts the static `map_server`, controller, planner,
+behavior, BT navigator, waypoint follower and lifecycle manager. The
+controller's `/cmd_vel` goes directly to the existing swerve controller, which
+converts `vx`, `vy`, `wz` to steering and drive commands. SLAM Toolbox is not
+started in navigation mode; the selected saved map plus the V30E/tag
+localization filter own the `map -> odom` correction.
 
 Navigation checks:
 
@@ -333,14 +338,14 @@ v_i = vy + wz*x_i
 
 Hai module được giải bằng least-squares cho `(vx, vy, wz)`. Vận tốc thân
 được đổi từ frame robot sang frame `odom` và tích phân thành `(x, y, yaw)`.
-Odometry encoder publish `/odom`; TF duy nhất do node này publish là
-`odom -> base_footprint`. `robot_state_publisher` tiếp tục publish
-`base_footprint -> base_link`.
+Odometry encoder publish `/odom` nhưng không publish TF. `robot_localization`
+fuses `/odom` + IMU and is the single owner of `odom -> base_footprint`;
+`robot_state_publisher` publishes `base_footprint -> base_link`.
 
 Frame convention: ROS REP-103, `x` tiến, `y` trái, `z` lên; yaw dương ngược
-chiều kim đồng hồ nhìn từ +Z. Vì wheel joint trong URDF có trục `+Y`,
-`wheel_velocity_sign=-1.0` trong `config/swerve_odometry.yaml` biến chiều quay
-joint thành chiều lăn +X.
+chiều kim đồng hồ nhìn từ +Z. Dấu wheel hiện tại là
+`wheel_velocity_sign=1.0`; nếu thay đổi mô hình joint hoặc driver thực, hiệu
+chuẩn dấu ở cùng một tham số thay vì đổi UI.
 
 Debug:
 

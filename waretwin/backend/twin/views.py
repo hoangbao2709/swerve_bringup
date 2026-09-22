@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import shutil
 import time
+from datetime import datetime, timezone
 from functools import wraps
 from typing import Any
 
 from django.contrib.auth import authenticate
+from django.conf import settings
 from django.http import HttpRequest, JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import IntegrityError
+from django.db import connection
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from pydantic import TypeAdapter, ValidationError
@@ -29,6 +34,7 @@ from .ai import vlm as vlm_ai
 from .sim.whatif import run_whatif
 from .canonical_map import canonicalize_layout, validate_canonical_layout
 
+log = logging.getLogger(__name__)
 inject_adapter = TypeAdapter(ScenarioInjection)
 
 
@@ -38,12 +44,17 @@ def _body(request: HttpRequest) -> dict[str, Any]:
     try:
         data = json.loads(request.body.decode('utf-8'))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 
-def _error(message: str, status: int = 400):
-    return JsonResponse({'detail': message}, status=status)
+def _error(message: str, status: int = 400, details: dict[str, Any] | None = None):
+    return JsonResponse({
+        'success': False,
+        'error': {'code': f'HTTP_{status}', 'message': message, 'details': details or {}},
+        # Keep the legacy field while clients migrate to the common envelope.
+        'detail': message,
+    }, status=status)
 
 
 def _valid_password(password: str) -> str | None:
@@ -91,10 +102,13 @@ def _broadcast_layout_update(map_obj, source: str) -> None:
         from .schedule_services import sync_workpoints_from_layout, sync_robot_profiles
         sync_workpoints_from_layout(map_obj.warehouse, map_obj.layout, prune=False)
         sync_robot_profiles(map_obj.warehouse, runtime.engine.state.get('robots') or {})
-    except Exception:
+    except Exception as exc:
         # Scheduler tables may not exist before migration; layout publishing must
         # remain available so initial migrations/seed can recover cleanly.
-        pass
+        log.exception(
+            'Unable to synchronize scheduler data after layout update: %s',
+            type(exc).__name__,
+        )
     layer = get_channel_layer()
     if layer is None:
         return
@@ -113,7 +127,12 @@ def _broadcast_layout_update(map_obj, source: str) -> None:
 
 
 def root(request):
-    return JsonResponse({'service': 'waretwin-django-backend', 'ws': '/ws', 'health': '/api/health', 'mode': 'MOCK'})
+    return JsonResponse({
+        'service': 'waretwin-django-backend',
+        'ws': '/ws',
+        'health': '/api/health/',
+        'mode': settings.WARETWIN_RUNTIME_MODE,
+    })
 
 
 @api_user_required
@@ -299,11 +318,88 @@ def admin_reset_password(request, user_id: int):
     return JsonResponse(public_user(user))
 
 
+def _database_probe() -> tuple[bool, str | None]:
+    database_ok = False
+    database_error = None
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT 1')
+            database_ok = cursor.fetchone() == (1,)
+    except Exception as exc:
+        database_error = f'{type(exc).__name__}: {exc}'
+    return database_ok, database_error
+
+
+def _robot_telemetry_alive() -> bool:
+    last = runtime.last_telemetry_at
+    if last is None:
+        return False
+    timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+    return (time.monotonic() - last) <= timeout
+
+
+def _system_health_status(
+    runtime_mode: str,
+    components: dict[str, Any],
+    *,
+    database_ok: bool,
+    robot_telemetry_alive: bool,
+) -> str:
+    """Return full-system health independently from backend readiness.
+
+    The HTTP health endpoint is also used as a Django readiness probe, so the
+    backend and the connected robot stack intentionally have separate fields.
+    This helper keeps the overall status truthful for every runtime profile.
+    """
+    if not database_ok or not components.get('websocket'):
+        return 'ERROR'
+    if components.get('runtime_state') == 'ERROR':
+        return 'ERROR'
+    if runtime_mode == 'LOCAL_SIM':
+        return 'OK'
+    if not components.get('ros_bridge') or not components.get('ros'):
+        return 'DISCONNECTED'
+    if not robot_telemetry_alive:
+        return 'DISCONNECTED'
+    if runtime_mode == 'GAZEBO_ROS' and not components.get('gazebo'):
+        return 'DEGRADED'
+    return 'OK'
+
+
 def health(request):
+    database_ok, database_error = _database_probe()
+    components = runtime.health_snapshot()
+    backend_ready = database_ok and components['websocket']
+    backend_status = 'READY' if backend_ready else 'NOT_READY'
+    system_status = _system_health_status(
+        settings.WARETWIN_RUNTIME_MODE,
+        components,
+        database_ok=database_ok,
+        robot_telemetry_alive=_robot_telemetry_alive(),
+    )
+    overall_ok = backend_ready and system_status == 'OK'
+    status = 'ok' if overall_ok else ('error' if system_status == 'ERROR' else 'degraded')
     task_alive = runtime._task is not None and not runtime._task.done()
     return JsonResponse({
-        'ok': True,
-        'mode': 'MOCK',
+        'status': status,
+        'ok': overall_ok,
+        'backend_status': backend_status,
+        'backend_ready': backend_ready,
+        'system_status': system_status,
+        'system_ready': system_status == 'OK',
+        'database': database_ok,
+        'ros_bridge': components['ros_bridge'],
+        'websocket': components['websocket'],
+        'ros': components['ros'],
+        'gazebo': components['gazebo'],
+        'mode': components['runtime_state'],
+        'runtime_mode': settings.WARETWIN_RUNTIME_MODE,
+        'runtime_state': components['runtime_state'],
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'version': getattr(settings, 'WARETWIN_VERSION', '0.1.0'),
+        'components': components,
+        'database_error': database_error,
+        'configured_runtime_mode': settings.WARETWIN_RUNTIME_MODE,
         'run_id': runtime.run_id,
         'tick': runtime.engine.state['sim']['tick'],
         'speed': runtime.speed,
@@ -313,9 +409,98 @@ def health(request):
         'robots': len(runtime.engine.state['robots']),
         'sim_task_alive': task_alive,
         'standby': not task_alive,
-        'db_ok': True,
+        'db_ok': database_ok,
         'loop_errors': runtime.loop_errors,
         'last_error': runtime.last_error,
+    })
+
+
+def system_status(request):
+    """Measured host + ROS diagnostics for the operator diagnostics page."""
+    metrics: dict[str, Any] = {'cpu_load_1m': None, 'cpu_count': os.cpu_count() or 1, 'memory': {}, 'disk': {}, 'uptime_s': None}
+    try:
+        metrics['cpu_load_1m'] = os.getloadavg()[0]
+    except (AttributeError, OSError):
+        pass
+    try:
+        meminfo = {}
+        with open('/proc/meminfo', encoding='utf-8') as stream:
+            for line in stream:
+                key, value = line.split(':', 1)
+                meminfo[key] = int(value.strip().split()[0]) * 1024
+        total = meminfo.get('MemTotal', 0)
+        available = meminfo.get('MemAvailable', meminfo.get('MemFree', 0))
+        metrics['memory'] = {
+            'total_bytes': total,
+            'available_bytes': available,
+            'used_bytes': max(0, total - available),
+            'used_percent': round((total - available) * 100 / total, 2) if total else None,
+        }
+    except (OSError, ValueError):
+        pass
+    try:
+        usage = shutil.disk_usage(settings.BASE_DIR)
+        metrics['disk'] = {
+            'total_bytes': usage.total, 'used_bytes': usage.used,
+            'free_bytes': usage.free, 'used_percent': round(usage.used * 100 / usage.total, 2),
+        }
+    except OSError:
+        pass
+    try:
+        with open('/proc/uptime', encoding='utf-8') as stream:
+            metrics['uptime_s'] = float(stream.read().split()[0])
+    except (OSError, ValueError):
+        pass
+    database_ok, database_error = _database_probe()
+    components = runtime.health_snapshot()
+    backend_ready = database_ok and components['websocket']
+    backend_status = 'READY' if backend_ready else 'NOT_READY'
+    system_health = _system_health_status(
+        settings.WARETWIN_RUNTIME_MODE,
+        components,
+        database_ok=database_ok,
+        robot_telemetry_alive=_robot_telemetry_alive(),
+    )
+    overall_ok = backend_ready and system_health == 'OK'
+    robot_state = {
+        str(robot_id): {
+            'status': robot.get('status'),
+            'fsm': robot.get('fsm'),
+            'position': robot.get('position'),
+            'vx': robot.get('vx'),
+            'vy': robot.get('vy'),
+            'wz': robot.get('wz'),
+            'last_telemetry_at': robot.get('last_telemetry_at'),
+        }
+        for robot_id, robot in runtime.engine.state.get('robots', {}).items()
+    }
+    return JsonResponse({
+        'status': 'ok' if overall_ok else ('error' if system_health == 'ERROR' else 'degraded'),
+        'ok': overall_ok,
+        'backend_status': backend_status,
+        'backend_ready': backend_ready,
+        'system_status': system_health,
+        'system_ready': system_health == 'OK',
+        'database': database_ok,
+        'database_error': database_error,
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'version': getattr(settings, 'WARETWIN_VERSION', '0.1.0'),
+        'mode': components['runtime_state'],
+        'runtime_mode': settings.WARETWIN_RUNTIME_MODE,
+        'system': metrics,
+        'ros': components['diagnostics'],
+        'runtime': {
+            'bridge_state': components['bridge_state'],
+            'ros_connected': components['ros_connected'],
+            'nav2_state': runtime.nav2_state,
+            'last_telemetry_at': runtime.last_telemetry_iso,
+            'loop_errors': runtime.loop_errors,
+            'last_error': runtime.last_error,
+            'clients': runtime.client_count,
+        },
+        'simulation_state': runtime.engine.state.get('sim', {}),
+        'controller_state': components['diagnostics'].get('controllers', []),
+        'robots': robot_state,
     })
 
 
@@ -328,7 +513,8 @@ def state_validate(request):
         runtime.validate_state()
         return JsonResponse({'valid': True})
     except Exception as exc:
-        return JsonResponse({'valid': False, 'error': str(exc)}, status=500)
+        log.exception('Runtime state validation failed: %s', type(exc).__name__)
+        return _error('runtime state validation failed', 500, {'reason': str(exc), 'valid': False})
 
 
 def layout_get(request):
@@ -365,7 +551,7 @@ def _validate_layout_doc(doc: dict[str, Any]) -> list[str]:
         height = float(doc['size']['height'])
         if width <= 0 or depth <= 0 or height <= 0:
             errors.append('warehouse size must be positive')
-    except Exception:
+    except (TypeError, ValueError):
         width = depth = height = 0.0
         errors.append('invalid size')
 
@@ -382,7 +568,7 @@ def _validate_layout_doc(doc: dict[str, Any]) -> list[str]:
                 errors.append(
                     f'grid does not match warehouse size: expected {expected_cols}x{expected_rows}, got {cols}x{rows}'
                 )
-    except Exception:
+    except (TypeError, ValueError, KeyError):
         errors.append('invalid grid')
 
     ids: set[str] = set()
@@ -432,7 +618,7 @@ def _validate_layout_doc(doc: dict[str, Any]) -> list[str]:
         try:
             x, y, z = map(float, rack.get('position') or [])
             w, h, d = map(float, rack.get('size') or [])
-        except Exception:
+        except (TypeError, ValueError):
             errors.append(f'rack {rid}: invalid position/size')
             continue
         if w <= 0 or h <= 0 or d <= 0:
@@ -485,10 +671,11 @@ def _layout_revision_conflict(request, active):
     except ValueError:
         return _error('X-Layout-Revision must be an integer')
     if expected != active.revision:
-        return JsonResponse({
-            'detail': f'layout changed by another session (expected r{expected}, current r{active.revision}); reload before saving',
-            'current_revision': active.revision,
-        }, status=409)
+        return _error(
+            f'layout changed by another session (expected r{expected}, current r{active.revision}); reload before saving',
+            409,
+            {'current_revision': active.revision},
+        )
     return None
 
 
@@ -546,6 +733,7 @@ def layout_publish(request):
     except Exception as exc:
         # Artifact generation is part of publishing.  Do not report a
         # successful DB publish when an external artifact failed.
+        log.exception('Map publish failed while generating artifacts: %s', type(exc).__name__)
         return _error(f'publish artifacts failed: {exc}', 500)
     _audit(request.api_user, 'PUBLISH_LAYOUT', f"{body.get('name', 'warehouse')}@{active.published_version}")
     _broadcast_layout_update(active, 'WAREHOUSE_EDITOR_PUBLISH')
@@ -590,15 +778,15 @@ def map_sync_status_view(request):
 @require_http_methods(['GET'])
 def layout_versions(request):
     active = ensure_active_map(runtime.layout)
-    from .map_artifacts import artifact_root
-    artifact_base = artifact_root() / re.sub(r'[^A-Za-z0-9_.-]+', '_', str(active.warehouse.code)).strip('._-')
+    from .map_artifacts import artifact_revision_dir
     return JsonResponse([
         {
             'version': row.version,
             'revision': row.revision,
             'created_at': row.created_at.isoformat(),
             'created_by': row.created_by.username if row.created_by else None,
-            'artifacts': str(artifact_base / str(row.revision)) if (artifact_base / str(row.revision)).is_dir() else None,
+            'artifacts': str(artifact_revision_dir(active.warehouse.code, row.revision))
+            if artifact_revision_dir(active.warehouse.code, row.revision).is_dir() else None,
         }
         for row in active.versions.all()[:100]
     ], safe=False)

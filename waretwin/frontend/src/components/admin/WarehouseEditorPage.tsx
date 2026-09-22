@@ -3467,7 +3467,7 @@ export function WarehouseEditorPage() {
     const active = floor === "all" ? draft.floors[0] : draft.floors.find((item) => String(item.id) === String(floor));
     if (!active) return;
     const used = new Set((draft.navigation_tags ?? []).map((tag) => tag.tag_id)); let tagId = Math.max(1000, ...used) + 1; while (used.has(tagId)) tagId += 1;
-    const tag = { id: `tag-manual-${tagId}`, uuid: `tag-manual-${tagId}`, tag_id: tagId, floor_id: active.id, x: point?.x ?? draft.size.width / 2, y: point?.y ?? draft.size.depth / 2, z: 0, yaw: 0, placement: "manual" as const, locked: true };
+    const tag = { id: `tag-manual-${tagId}`, uuid: `tag-manual-${tagId}`, tag_id: tagId, family: "DATAMATRIX", size: 0.15, floor_id: active.id, x: point?.x ?? draft.size.width / 2, y: point?.y ?? draft.size.depth / 2, z: 0, yaw: 0, placement: "manual" as const, locked: true };
     const next = clone(draft); next.navigation_tags = [...(next.navigation_tags ?? []), tag]; commit(next, "MANUAL TAG ADDED · UNSAVED"); setSelected([{ kind: "navigation-tag", id: tag.uuid }]); setMode("select");
   }
 
@@ -5090,6 +5090,8 @@ export function WarehouseEditorPage() {
                   {primary.selection.kind === "navigation-tag" && (
                     <>
                       <PropertyInput label="Tag ID" type="number" step="1" value={primary.obj.tag_id} onChange={(value) => updateProperty("tag_id", value)} />
+                      <label className="block"><span className="mb-1 block text-[9px] font-medium uppercase tracking-[0.08em] text-slate-500">Family</span><select value={primary.obj.family ?? "DATAMATRIX"} onChange={(event) => updateProperty("family", event.target.value)} className="w-full rounded-md border border-white/[0.08] bg-[#070d16] px-2.5 py-2 text-[11px] text-slate-200 outline-none"><option value="DATAMATRIX">DataMatrix</option><option value="APRILTAG">AprilTag</option><option value="QR">QR</option></select></label>
+                      <div className="grid grid-cols-2 gap-2"><PropertyInput label="Size (m)" type="number" step="0.001" value={primary.obj.size ?? 0.15} onChange={(value) => updateProperty("size", value)} /><PropertyInput label="Lane ID" value={primary.obj.lane_id ?? ""} onChange={(value) => updateProperty("lane_id", value)} /></div>
                       <div className="grid grid-cols-2 gap-2"><PropertyInput label="X" type="number" step="0.01" value={primary.obj.x} onChange={(value) => updateProperty("x", value)} /><PropertyInput label="Y" type="number" step="0.01" value={primary.obj.y} onChange={(value) => updateProperty("y", value)} /></div>
                       <div className="grid grid-cols-2 gap-2"><PropertyInput label="Z" type="number" step="0.01" value={primary.obj.z ?? 0} onChange={(value) => updateProperty("z", value)} /><PropertyInput label="Yaw" type="number" step="0.01" value={primary.obj.yaw ?? 0} onChange={(value) => updateProperty("yaw", value)} /></div>
                       <label className="flex items-center justify-between text-[10px] text-slate-400"><span>Locked</span><input type="checkbox" checked={Boolean(primary.obj.locked)} onChange={(event) => updateProperty("locked", event.target.checked ? "true" : "false")} /></label>

@@ -66,6 +66,7 @@ def generate_launch_description():
         return [f' {name}:={value}']
 
     xacro_args = [' enable_contact_sensors:=', LaunchConfiguration('contact_diagnostics'),
+                   ' use_cad_visuals:=', LaunchConfiguration('use_cad_visuals'),
                    ' caster_frictionless:=', LaunchConfiguration('caster_frictionless'),
                    ' proper_caster_test:=', LaunchConfiguration('proper_caster_test'),
                    ' caster_axle_offset_x_m:=', LaunchConfiguration('caster_axle_offset_x_m'),
@@ -170,21 +171,25 @@ def generate_launch_description():
             executable='spawner',
             name='spawn_joint_state_broadcaster',
             output='screen',
-            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60', '--service-call-timeout', '30', '--switch-timeout', '30'],
+            # Keep to the controller_manager Humble CLI contract.  The
+            # service/switch timeout flags were added in newer releases and
+            # make the spawner exit immediately on the supported Ubuntu 22.04
+            # + ROS 2 Humble package set.
+            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_steering_controller',
             output='screen',
-            arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60', '--service-call-timeout', '30', '--switch-timeout', '30'],
+            arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_drive_controller',
             output='screen',
-            arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60', '--service-call-timeout', '30', '--switch-timeout', '30'],
+            arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
     ]
 
@@ -230,6 +235,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'use_sim_time', default_value='true',
             description='Use the Gazebo /clock for every ROS node.',
+        ),
+        DeclareLaunchArgument(
+            'use_cad_visuals', default_value='true',
+            description='Use the optimized CAD-derived visual meshes; false selects visual-only primitives.',
         ),
         DeclareLaunchArgument(
             'gui', default_value='true',

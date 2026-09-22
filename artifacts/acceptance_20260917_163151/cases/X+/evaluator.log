@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/home/yahboom/swerve_bringup/scripts/raw_motion.py", line 108, in <module>
-    if __name__ == '__main__': raise SystemExit(main())
-  File "/home/yahboom/swerve_bringup/scripts/raw_motion.py", line 98, in main
-    try: result, trace = node.run(name, CASES[name])
-  File "/home/yahboom/swerve_bringup/scripts/raw_motion.py", line 88, in run
-    result = {'case': name, 'duration_s': duration, 'gt_dx': gt_d[0], 'gt_dy': gt_d[1], 'gt_dyaw': gt_d[2], 'odom_dx': odom_d[0], 'odom_dy': odom_d[1], 'odom_dyaw': odom_d[2], 'local_dx': local_d[0], 'local_dy': local_d[1], 'local_dyaw': local_d[2], 'expected_dx': expected[0], 'expected_dy': expected[1], 'expected_dyaw': expected[2], 'direction_correct': ((gt_d[0] > 0 if command[0] > 0 else gt_d[0] < 0) if abs(command[0]) > 0 else (gt_d[1] > 0 if command[1] > 0 else gt_d[1] < 0) if abs(command[1]) > 0 else (gt_d[2] > 0 if command[2] > 0 else gt_d[2] < 0)) if gt_d else False}
-TypeError: '>' not supported between instances of 'NoneType' and 'int'

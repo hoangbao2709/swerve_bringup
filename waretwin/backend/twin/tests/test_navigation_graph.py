@@ -12,7 +12,7 @@ class NavigationGraphSyncTests(TestCase):
             'size': {'width': 20, 'depth': 10, 'height': 4},
             'floors': [{'id': 'F1', 'boundary': [[0, 0], [20, 0], [20, 10], [0, 10]]}],
             'navigation_tags': [
-                {'uuid': 't1', 'tag_id': 1, 'floor_id': 'F1', 'x': 2, 'y': 5, 'yaw': 0},
+                {'uuid': 't1', 'tag_id': 1, 'family': 'APRILTAG', 'size': 0.2, 'lane_id': 'A-01', 'floor_id': 'F1', 'x': 2, 'y': 5, 'z': 0.15, 'yaw': 0},
                 {'uuid': 't2', 'tag_id': 2, 'floor_id': 'F1', 'x': 8, 'y': 5, 'yaw': 0},
                 {'uuid': 't3', 'tag_id': 3, 'floor_id': 'F1', 'x': 14, 'y': 5, 'yaw': 0},
             ],
@@ -30,6 +30,11 @@ class NavigationGraphSyncTests(TestCase):
         sync_from_layout(layout, prune=True)
         self.assertEqual(NavigationTag.objects.count(), 3)
         self.assertEqual(NavigationTagEdge.objects.count(), 2)
+        tag = NavigationTag.objects.get(tag_id=1)
+        self.assertEqual(tag.family, 'APRILTAG')
+        self.assertAlmostEqual(tag.size, 0.2)
+        self.assertEqual(tag.lane_id, 'A-01')
+        self.assertAlmostEqual(tag.z, 0.15)
         self.assertEqual(shortest_tag_route(1, 3), [1, 2, 3])
         with self.assertRaises(ValueError):
             shortest_tag_route(3, 1)

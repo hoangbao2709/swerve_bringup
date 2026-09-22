@@ -1,3 +1,0 @@
-[console_scripts]
-swerve_bridge_node = swerve_bridge.bridge_node:main
-

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Any
 
 from django.db import IntegrityError
@@ -20,20 +22,30 @@ from .warehouse_services import (
     apply_warehouse_data, apply_zone_data, apply_shelf_data,
     warehouse_to_dict, zone_to_dict, shelf_to_dict, sync_from_layout,
     commit_master_to_map, ensure_active_map, ensure_warehouse_map, set_active_map,
+    publish_layout_to_map,
 )
+from .map_artifacts import artifact_revision_dir
+from .map_sync import published_map_payload
 from accounts.models import role_of
+
+log = logging.getLogger(__name__)
 
 
 def _body(request: HttpRequest) -> dict[str, Any]:
     try:
         data = json.loads(request.body.decode('utf-8')) if request.body else {}
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 
 def _error(message: str, status: int = 400):
-    return JsonResponse({'detail': message}, status=status)
+    return JsonResponse({
+        'success': False,
+        'error': {'code': f'HTTP_{status}', 'message': message, 'details': {}},
+        # Keep the legacy field for existing warehouse-admin clients.
+        'detail': message,
+    }, status=status)
 
 
 def _user(request: HttpRequest, *, admin: bool = False):
@@ -60,6 +72,26 @@ def _map_meta(map_obj: WarehouseMap) -> dict[str, Any]:
     }
 
 
+def _exported_artifacts(warehouse: Warehouse, revision: int) -> dict[str, Any]:
+    root = artifact_revision_dir(warehouse.code, revision)
+    files = {
+        'artifact_dir': str(root),
+        'canonical_map': str(root / 'canonical_map.json'),
+        'datamatrix_map': str(root / 'datamatrix_map.yaml'),
+        'tag_graph': str(root / 'tag_graph.yaml'),
+        'gazebo_world': str(root / 'gazebo' / 'warehouse.world'),
+        'manifest': str(root / 'manifest.json'),
+    }
+    files['ready'] = all(
+        (root / relative).is_file()
+        for relative in (
+            'canonical_map.json', 'datamatrix_map.yaml', 'tag_graph.yaml',
+            'gazebo/warehouse.world', 'manifest.json',
+        )
+    )
+    return files
+
+
 def _broadcast_map(map_obj: WarehouseMap, source: str) -> None:
     """Update runtime if this is the active map and notify every connected page."""
     if map_obj.is_active:
@@ -69,8 +101,14 @@ def _broadcast_map(map_obj: WarehouseMap, source: str) -> None:
         sync_workpoints_from_layout(map_obj.warehouse, map_obj.layout, prune=False)
         if map_obj.is_active:
             sync_robot_profiles(map_obj.warehouse, runtime.engine.state.get('robots') or {})
-    except Exception:
-        pass
+    except Exception as exc:
+        # Scheduler tables can be unavailable during the first migration pass,
+        # but a map edit must still be persisted.  Keep this compatibility
+        # fallback explicit and observable instead of silently swallowing it.
+        log.exception(
+            'Unable to synchronize scheduler workpoints after map update: %s',
+            type(exc).__name__,
+        )
     layer = get_channel_layer()
     if layer is None:
         return
@@ -85,6 +123,76 @@ def _commit_map(warehouse: Warehouse, user, source: str) -> WarehouseMap:
     obj = commit_master_to_map(warehouse, user=user, source=source, fallback_layout=fallback)
     _broadcast_map(obj, source)
     return obj
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def warehouse_export_gazebo(request: HttpRequest, warehouse_id: int):
+    """Export the database-backed warehouse map as an immutable artifact bundle.
+
+    With ``{"version": N}`` this is a read-only lookup of an existing map
+    version. Without it, the current draft is published as a new immutable
+    revision before returning the canonical JSON, ROS metadata and Gazebo world
+    paths. This keeps export and runtime deployment on the same source of truth.
+    """
+    user, error = _user(request, admin=True)
+    if error:
+        return error
+    try:
+        warehouse = Warehouse.objects.get(pk=warehouse_id)
+    except Warehouse.DoesNotExist:
+        return _error('warehouse not found', 404)
+
+    body = _body(request)
+    raw_version = body.get('version')
+    if raw_version not in (None, ''):
+        try:
+            version_number = int(raw_version)
+        except (TypeError, ValueError):
+            return _error('version must be an integer')
+        map_obj = ensure_warehouse_map(warehouse, runtime.layout)
+        version = map_obj.versions.filter(version=version_number).first()
+        if version is None:
+            return _error('map version not found', 404)
+        artifacts = _exported_artifacts(warehouse, version.revision)
+        if not artifacts['ready']:
+            return _error('immutable artifacts for this version are missing; publish a new version', 409)
+        return JsonResponse({
+            'success': True,
+            'warehouse_id': warehouse.id,
+            'version': version.version,
+            'revision': version.revision,
+            'published': False,
+            'artifacts': artifacts,
+        })
+
+    try:
+        current = ensure_warehouse_map(warehouse, runtime.layout)
+        if not current.is_active:
+            return _error('activate this warehouse map before exporting it', 409)
+        active = publish_layout_to_map(
+            current.draft or current.layout,
+            user=user,
+            fallback_layout=current.layout,
+        )
+        _broadcast_map(active, 'WAREHOUSE_GAZEBO_EXPORT')
+        payload = published_map_payload(active)
+        async_to_sync(runtime.map_published)(payload)
+        artifacts = _exported_artifacts(warehouse, active.revision)
+    except ValueError as exc:
+        return _error(str(exc), 400)
+    except Exception as exc:
+        log.exception('Gazebo export failed for warehouse %s: %s', warehouse.code, type(exc).__name__)
+        return _error('Gazebo export failed', 500)
+    return JsonResponse({
+        'success': True,
+        'warehouse_id': warehouse.id,
+        'version': active.published_version,
+        'revision': active.revision,
+        'published': True,
+        'artifacts': artifacts,
+        'manifest': payload.get('artifact_manifest'),
+    })
 
 
 def _save(obj, apply, data, **kwargs):

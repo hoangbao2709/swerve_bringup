@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import layoutJson from "../layout/warehouse_layout.json";
 import type { WarehouseLayout, LayoutLocation } from "../layout/types";
-import type { TwinState, RobotId, HeatmapLayer, TagNavigationState } from "../schema/twin_state";
+import type { TwinState, RobotId, HeatmapLayer, TagNavigationState, RosDiagnostics, RuntimeState } from "../schema/twin_state";
 import { RUNTIME_MODE, type RuntimeMode } from "../config";
 
 export type ViewTab = "3D" | "MAP" | "TRAFFIC" | "HEATMAP";
@@ -53,6 +53,7 @@ export function labelZIndexRange(priority: number): [number, number] {
   return [p * 10 + 9, p * 10];
 }
 export type AuthStatus = "loading" | "guest" | "authenticated";
+export type WebSocketState = "CONNECTING" | "CONNECTED" | "RECONNECTING" | "DISCONNECTED" | "ERROR";
 export type AuthUser = { id: number; username: string; email: string; role: "admin" | "user"; is_active?: boolean };
 export type ModalKind = "audit" | "tasks" | "robot" | "fleet" | "scheduler" | "flows" | "shelf" | "conveyor";
 
@@ -69,7 +70,7 @@ interface Store {
   tagNavigation: TagNavigationState | null;
   tagDetection: { visible: boolean; tagId: number | null; offsetX: number | null; offsetY: number | null; yaw: number | null; timestamp: string | null };
   localization: { state: string; lastTagId: number | null; expectedTagId: number | null; tagVisible: boolean; lastTagSeenAt: string | null };
-  tagGraph: { warehouse_id: number | null; tags: Array<{ id: number; tag_id: number; x: number; y: number; yaw: number; label?: string }>; edges: Array<{ from_tag_id: number; to_tag_id: number; cost?: number; bidirectional?: boolean }> } | null;
+  tagGraph: { warehouse_id: number | null; tags: Array<{ id: number; tag_id: number; family?: string; size?: number; floor_id?: string; x: number; y: number; z?: number; yaw: number; lane_id?: string; zone_id?: number | null; metadata?: Record<string, unknown>; label?: string }>; edges: Array<{ from_tag_id: number; to_tag_id: number; cost?: number; bidirectional?: boolean }> } | null;
   targetTagId: number | null;
   setTagNavigation: (mission: TagNavigationState | null) => void;
   setTargetTagId: (id: number | null) => void;
@@ -78,6 +79,14 @@ interface Store {
   setLocalization: (data: Store["localization"]) => void;
   runtimeMode: RuntimeMode;
   setRuntimeMode: (mode: RuntimeMode) => void;
+  runtimeState: RuntimeState;
+  setRuntimeState: (state: RuntimeState) => void;
+  bridgeState: string;
+  setBridgeState: (state: string) => void;
+  websocketState: WebSocketState;
+  setWebsocketState: (state: WebSocketState) => void;
+  rosDiagnostics: RosDiagnostics | null;
+  setRosDiagnostics: (value: RosDiagnostics | null) => void;
   rosConnected: boolean;
   setRosConnected: (connected: boolean) => void;
   nav2State: string;
@@ -194,6 +203,14 @@ export const useStore = create<Store>((set) => ({
   twin: EMPTY,
   runtimeMode: RUNTIME_MODE,
   setRuntimeMode: (runtimeMode) => set({ runtimeMode }),
+  runtimeState: RUNTIME_MODE === "LOCAL_SIM" ? "SIMULATION" : "IDLE",
+  setRuntimeState: (runtimeState) => set({ runtimeState }),
+  bridgeState: RUNTIME_MODE === "LOCAL_SIM" ? "LOCAL" : "DISCONNECTED",
+  setBridgeState: (bridgeState) => set({ bridgeState }),
+  websocketState: "DISCONNECTED",
+  setWebsocketState: (websocketState) => set({ websocketState }),
+  rosDiagnostics: null,
+  setRosDiagnostics: (rosDiagnostics) => set({ rosDiagnostics }),
   rosConnected: false,
   setRosConnected: (rosConnected) => set({ rosConnected }),
   nav2State: RUNTIME_MODE === "LOCAL_SIM" ? "LOCAL" : "OFFLINE",

@@ -1,1 +1,0 @@
-/home/yahboom/swerve_bringup/build/swerve_bringup/rosidl_typesupport_introspection_c/swerve_bringup/msg/rosidl_typesupport_introspection_c__visibility_control.h

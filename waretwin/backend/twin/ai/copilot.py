@@ -9,11 +9,14 @@ AI Operations Copilot（規格 1️⃣6️⃣）
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any
 
 from .context import summarize_state
+
+log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are the AI Operations Copilot of an autonomous warehouse digital twin (20 AMRs, 4 zones A-D, 3 conveyors, packing/sorting stations, 6 chargers).
 You receive a JSON snapshot of the live twin state and a question from the operations manager.
@@ -49,7 +52,8 @@ def _client():
     try:
         from openai import OpenAI
         return OpenAI(api_key=key, base_url=os.environ.get("OPENAI_BASE_URL") or None, timeout=30)
-    except Exception:
+    except Exception as exc:
+        log.warning('OpenAI copilot client initialization failed: %s', type(exc).__name__, exc_info=True)
         return None
 
 
@@ -173,6 +177,7 @@ def answer(question: str, S: dict[str, Any], layout: dict[str, Any]) -> dict[str
         if r:
             return r
     except Exception as e:  # 金鑰錯誤、網路、限流 → 退回規則式，不讓 UI 掛掉
+        log.warning('Copilot request failed; using deterministic fallback: %s', type(e).__name__, exc_info=True)
         fb = rule_based_answer(question, S)
         fb["text"] = f"[LLM unavailable: {type(e).__name__}] " + fb["text"]
         return fb

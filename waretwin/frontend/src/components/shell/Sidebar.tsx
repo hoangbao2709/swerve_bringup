@@ -37,6 +37,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     { label: "Overview", caption: "Operations overview", icon: "⌂", path: "/" },
     { label: "Operations", caption: "Live warehouse console", icon: "◫", path: "/operations" },
     { label: "Robot Control", caption: "Tag navigation", icon: "◎", path: "/control" },
+    { label: "Diagnostics", caption: "System & ROS health", icon: "⚙", path: "/diagnostics" },
     { label: "Robot Fleet", caption: "Fleet status", icon: "▣", modal: "fleet" },
     { label: "Robot Scheduler", caption: "Plans & assignments", icon: "◌", modal: "scheduler" },
     { label: "Inbound / Outbound", caption: "Order flows", icon: "⇄", modal: "flows" },

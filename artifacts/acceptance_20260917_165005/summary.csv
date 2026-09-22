@@ -1,2 +1,0 @@
-run,startup_wall_time,startup_sim_time,controller_ready,local_tf_ready,global_tf_ready,nav2_ready,action_ready,shutdown_clean,no_old_gzserver,no_old_test_launch,no_old_evaluator,evaluator_rc,status
-X+,37.75383959900137,1789635044.6145613,True,True,True,True,True,True,True,True,True,1,FAIL

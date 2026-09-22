@@ -258,6 +258,7 @@ class RobotState(_Base):
     vy: float = 0.0
     wz: float = 0.0
     navigation_state: str = "IDLE"
+    control_mode: Literal["MANUAL", "AUTONOMOUS"] = "AUTONOMOUS"
     last_telemetry_at: Optional[str] = None
 
 
@@ -717,6 +718,18 @@ class CmdSelectRobot(_Base):
     robot_id: Optional[RobotId] = None
 
 
+class CmdRobotMode(_Base):
+    type: Literal["ROBOT_MODE"] = "ROBOT_MODE"
+    robot_id: RobotId = Field(min_length=1, max_length=64)
+    mode: Literal["MANUAL", "AUTONOMOUS"]
+
+
+class CmdRobotManual(_Base):
+    type: Literal["ROBOT_MANUAL"] = "ROBOT_MANUAL"
+    robot_id: RobotId = Field(min_length=1, max_length=64)
+    action: Literal["FORWARD", "BACKWARD", "LEFT", "RIGHT", "ROTATE_LEFT", "ROTATE_RIGHT", "STOP"]
+
+
 class CmdWhatIfRun(_Base):
     type: Literal["WHATIF_RUN"] = "WHATIF_RUN"
     request: WhatIfRequest
@@ -753,7 +766,8 @@ class SimControlBody(_Base):
 
 ClientMessage = Annotated[
     Union[CmdResync, CmdSimControl, CmdInject, CmdClearInjection, CmdCreateTask,
-          CmdAssignTask, CmdAckAlert, CmdSelectRobot, CmdWhatIfRun, CmdCopilotAsk],
+          CmdAssignTask, CmdAckAlert, CmdSelectRobot, CmdRobotMode, CmdRobotManual,
+          CmdWhatIfRun, CmdCopilotAsk],
     Field(discriminator="type"),
 ]
 

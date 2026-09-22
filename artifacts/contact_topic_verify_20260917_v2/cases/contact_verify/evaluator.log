@@ -1,9 +1,0 @@
-[INFO] [1789650219.052682935] [contact_topic_verify]: waiting /clock
-Traceback (most recent call last):
-  File "/home/yahboom/swerve_bringup/scripts/contact_topic_verify.py", line 36, in <module>
-    if __name__=='__main__':raise SystemExit(main())
-  File "/home/yahboom/swerve_bringup/scripts/contact_topic_verify.py", line 32, in main
-    try:r=n.run()
-  File "/home/yahboom/swerve_bringup/scripts/contact_topic_verify.py", line 21, in run
-    while time.monotonic()<end and len(self.clock)<3:self.get_logger().info('waiting /clock');rclpy.spin_once(self,.05)
-TypeError: spin_once() takes 1 positional argument but 2 were given

@@ -1,2 +1,0 @@
-run,test,gt_goal_error,localization_error_xy,localization_error_yaw,odom_error_xy,v30e_error_xy,final_navigation_error_xy,final_yaw_error,travelled_distance,action_status,gt_yaw_displacement,motion_ok,path_generated,cmd_vel_nonzero,distance_remaining_last,elapsed_sim_time,elapsed_wall_time,real_time_factor
-1,X+,0.1886394562489524,0.1435028812086844,0.014169404845999267,0.024903507418592923,,0.1886394562489524,0.22039968362682538,0.8113676745345743,TIMEOUT,0.22039968362682538,True,True,False,0.026726769283413887,60.00123405456543,60.001216746000864,1.0000002884702262

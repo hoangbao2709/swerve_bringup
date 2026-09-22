@@ -39,7 +39,7 @@ class EventLog(models.Model):
         return data
 
 class RobotEndpoint(models.Model):
-    """Future LIVE-mode registry. Not used by the mock runtime yet."""
+    """Persistent endpoint metadata for hardware/bridge fleet integrations."""
     robot_id = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=128, blank=True)
     base_url = models.URLField(blank=True)
@@ -418,9 +418,16 @@ class ResourceReservation(models.Model):
 class NavigationTag(models.Model):
     warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name='navigation_tags')
     tag_id = models.IntegerField()
+    family = models.CharField(max_length=32, default='DATAMATRIX')
+    size = models.FloatField(default=0.15)
+    floor_id = models.CharField(max_length=64, default='1')
     x = models.FloatField()
     y = models.FloatField()
+    z = models.FloatField(default=0.0)
     yaw = models.FloatField(default=0.0)
+    lane_id = models.CharField(max_length=96, blank=True)
+    zone = models.ForeignKey(Zone, on_delete=models.SET_NULL, null=True, blank=True, related_name='navigation_tags')
+    metadata = models.JSONField(default=dict, blank=True)
     enabled = models.BooleanField(default=True, db_index=True)
     label = models.CharField(max_length=160, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

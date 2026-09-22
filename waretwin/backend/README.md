@@ -1,5 +1,9 @@
 # WareTwin Django Backend Base
 
+> Để chạy profile tích hợp với Gazebo/ROS 2, xem
+> [../../SETUP_A_Z.md](../../SETUP_A_Z.md). Backend hỗ trợ `LOCAL_SIM` và
+> `GAZEBO_ROS`; profile đầy đủ dùng `GAZEBO_ROS` cùng node `swerve_bridge`.
+
 Django backend base for the current WareTwin frontend. It is designed for the target architecture:
 
 ```text
@@ -9,15 +13,17 @@ Frontend (React)
       v
 Central Backend (Django on PC)   <-- this project
       |
-      | future Robot Server API
+      | ROS bridge WebSocket (/ws/ros)
       v
-Robot Server (Django/Python on robot)
+swerve_bridge (ROS 2 node)
       |
       v
 ROS2
 ```
 
-At this stage **no Robot Server or ROS2 API is connected**. The existing Python `SimEngine` is kept as the local/mock state provider so the frontend can exercise its complete UI contract before hardware integration.
+`LOCAL_SIM` vẫn giữ `SimEngine` làm state provider cho frontend-only development.
+Ở profile `GAZEBO_ROS`, state robot đến từ ROS bridge; frontend không tự chạy
+browser simulation khi bridge mất kết nối.
 
 ## What is already supported
 
@@ -35,18 +41,21 @@ At this stage **no Robot Server or ROS2 API is connected**. The existing Python 
 - What-if simulation.
 - Copilot rule-based fallback without any external AI API.
 - VLM simulated observation without any external AI API.
-- SQLite persistence for users, tokens, audit/events, future robot endpoints and missions.
-- Future `RobotGateway` abstraction for Central Django -> Robot Server -> ROS2.
+- SQLite persistence for users, tokens, warehouse master data, orders, missions,
+  reservations, audit/events and robot profiles.
+- `RobotGateway` boundary for the Central Django -> authenticated ROS bridge -> ROS 2 path.
 
-## Not connected yet
+## Chưa nằm trong profile này
 
-- Robot Server HTTP/WebSocket API.
-- ROS2 topics/actions/services.
-- Real robot telemetry.
-- Real robot commands.
-- Redis/Celery/multi-process state distribution.
+- A separate Robot Server HTTP API for physical hardware.
+- Redis/Celery/multi-process state distribution; the included Channels layer is
+  intentionally single-process for the Ubuntu development stack.
 
-The current runtime is intentionally **single-process and in-memory**. This is appropriate for frontend/backend development. When LIVE robot integration begins, replace the mock runtime source with `RobotServerGateway` and move realtime state to the production architecture.
+`LOCAL_SIM` remains an in-process UI/demo provider. In `GAZEBO_ROS` and
+`REAL_ROBOT`, robot pose/status is accepted only from the authenticated ROS
+bridge; a lost bridge marks robots offline and does not simulate movement.
+The bridge registry routes commands by `robot_id`, while the default launch
+still runs one robot for backward compatibility.
 
 ## Quick start
 
@@ -58,8 +67,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# Set a private non-default TWIN_ADMIN_PASSWORD in .env before the first seed.
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 python manage.py runserver 0.0.0.0:8000
 ```
 
@@ -69,14 +80,14 @@ Or simply:
 ./run.sh
 ```
 
-Development account from `.env.example`:
+The configured admin is created from `TWIN_ADMIN_*` in `.env`. A non-default
+`TWIN_ADMIN_PASSWORD` is required only when that user does not exist; rerunning
+the command preserves an existing password and never prints it.
 
 ```text
 username: admin
-password: admin12345
+password: value from TWIN_ADMIN_PASSWORD
 ```
-
-Change this password before any non-local deployment.
 
 ## Frontend configuration
 
@@ -84,7 +95,9 @@ Change the frontend `.env` to:
 
 ```env
 VITE_DEMO_MODE=false
-VITE_WS_URL=ws://127.0.0.1:8000/ws
+VITE_BACKEND_PORT=8000
+VITE_API_BASE_URL=
+VITE_WS_BASE_URL=
 ```
 
 Then run the frontend:
@@ -96,17 +109,9 @@ npm run dev
 
 Open the frontend and log in with the development admin account.
 
-The frontend derives the REST base URL from `VITE_WS_URL`, so:
-
-```text
-ws://127.0.0.1:8000/ws
-```
-
-becomes:
-
-```text
-http://127.0.0.1:8000
-```
+When the base URLs are empty, the browser hostname plus
+`VITE_BACKEND_PORT` is used automatically. Legacy `VITE_API_URL` and
+`VITE_WS_URL` remain supported for existing installations.
 
 ## Main REST endpoints
 
@@ -124,6 +129,9 @@ DELETE /api/admin/users/:id
 POST   /api/admin/users/:id/reset-password
 
 GET    /api/health
+GET    /api/health/
+GET    /api/system/status/
+GET    /api/map/sync-status
 GET    /api/state
 GET    /api/state/validate
 GET    /api/kpi
@@ -209,16 +217,17 @@ layouts/
   layout-v*.json         # versions
 ```
 
-## Future LIVE mode
+## Runtime modes
 
-Do not make React talk directly to ROS2. Keep the frontend contract stable and change only the backend state provider:
+React không nói chuyện trực tiếp với ROS2. Chọn state provider bằng
+`WARETWIN_RUNTIME_MODE`:
 
 ```text
-Current development
+LOCAL_SIM
 Frontend -> Django -> SimEngine
 
-Future live system
-Frontend -> Django -> RobotServerGateway -> Robot Django/Python -> ROS2 -> Robot
+GAZEBO_ROS / REAL_ROBOT
+Frontend -> Django -> swerve_bridge -> ROS2 -> robot/simulator
 ```
 
 For LIVE mode, robot telemetry should become authoritative. The frontend must not invent position/state after communication loss; use `ONLINE / STALE / OFFLINE` and wait for telemetry before confirming a command state.
@@ -226,7 +235,10 @@ For LIVE mode, robot telemetry should become authoritative. The frontend must no
 
 ## Frontend API-connected build
 
-Use the paired `frontend_api_connected` package. Its backend mode is authoritative: WebSocket loss shows OFFLINE and does not fall back to a browser simulation. REST uses `VITE_API_URL`; Channels uses `VITE_WS_URL`.
+Use the paired frontend. Its backend mode is authoritative: WebSocket loss shows
+OFFLINE and does not fall back to a browser simulation. REST uses
+`VITE_API_BASE_URL` and Channels uses `VITE_WS_BASE_URL`; the legacy aliases
+remain backward compatible.
 
 For another browser PC, add its Vite origin to `CORS_ALLOWED_ORIGINS` and set the frontend URLs to this Django PC IP.
 
@@ -254,9 +266,13 @@ After pulling this version run:
 ```bash
 python manage.py migrate
 python manage.py seed_demo
+python manage.py sync_master_data
 ```
 
-`seed_demo` also synchronizes the currently published layout into master data. With the bundled layout this creates 1 warehouse, 5 zones and 184 physical shelf/rack records. Existing matching records are updated geometrically without resetting their operational status/load.
+`sync_master_data` synchronizes the currently published layout into master data.
+With the bundled layout this creates 1 warehouse, 5 zones and 184 physical
+shelf/rack records. Existing matching records are updated geometrically without
+resetting their operational status/load.
 
 Backend tests are in `twin/tests/test_warehouse_crud.py` and can be run with:
 

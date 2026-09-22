@@ -11,10 +11,13 @@ VLM Perception（規格 1️⃣4️⃣）：Virtual CCTV 畫面 → 視覺語言
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
 from .context import robots_near
+
+log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a safety perception model watching a CCTV frame from inside an automated warehouse.
 The scene is a 3D simulation: orange rack shelving with cardboard boxes, grey floor with yellow lane lines, small white/black autonomous mobile robots (AMRs) about 1.3 m long, conveyors, and occasionally a human worker wearing a yellow/green hi-vis vest and a yellow hard hat.
@@ -47,7 +50,8 @@ def _client():
     try:
         from openai import OpenAI
         return OpenAI(api_key=key, base_url=os.environ.get("OPENAI_BASE_URL") or None, timeout=30)
-    except Exception:
+    except Exception as exc:
+        log.warning('OpenAI VLM client initialization failed: %s', type(exc).__name__, exc_info=True)
         return None
 
 
@@ -93,6 +97,7 @@ def observe(camera_id: str, image_b64: str | None, S: dict[str, Any], layout: di
         try:
             result = observe_llm(camera_id, zone, image_b64, hint)
         except Exception as e:
+            log.warning('VLM observation failed; using explicit simulation fallback: %s', type(e).__name__, exc_info=True)
             result = simulated_observation(camera_id, S, layout)
             result["raw"] = f"simulated (LLM error: {type(e).__name__})"
     if result is None:

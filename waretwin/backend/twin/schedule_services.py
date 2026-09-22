@@ -190,6 +190,83 @@ def sync_workpoints_from_layout(warehouse: Warehouse, layout: dict[str, Any], *,
             'enabled': True, 'capacity': 1, 'metadata': {'dock': dock, 'dock_kind': dock_kind},
         }
 
+    # Stations, chargers and parking areas are part of the canonical warehouse
+    # document too.  They must be scheduler work-points rather than frontend-only
+    # geometry, otherwise an order can be drawn on the map but cannot be routed
+    # through the persistent mission engine.
+    for station in layout.get('stations') or []:
+        code = str(station.get('id') or '').strip()
+        if not code:
+            continue
+        point = station.get('access_point') or station.get('position') or []
+        rect = station.get('rect') or []
+        if len(point) < 2 and len(rect) >= 4:
+            point = [(float(rect[0]) + float(rect[2])) / 2, (float(rect[1]) + float(rect[3])) / 2]
+        if len(point) < 2:
+            continue
+        raw_kind = str(station.get('kind') or 'STATION').upper()
+        kind = raw_kind if raw_kind in ('PACKING', 'SORTING', 'BUFFER', 'STATION') else 'STATION'
+        wanted.setdefault(code, {
+            'name': str(station.get('name') or code), 'kind': kind, 'floor': int(station.get('floor') or 1),
+            'x': float(point[0]), 'y': float(point[1]), 'z': 0.0,
+            'yaw': float(station.get('yaw') or station.get('heading') or 0.0),
+            'zone': _zone_for(warehouse, station.get('zone')), 'resource_type': 'STATION',
+            'resource_id': code, 'enabled': True, 'capacity': max(1, int(station.get('capacity') or 1)),
+            'metadata': {'station': station},
+        })
+
+    for charger in layout.get('charging_stations') or []:
+        code = str(charger.get('id') or '').strip()
+        if not code:
+            continue
+        point = charger.get('access_point') or []
+        if len(point) < 2:
+            position = charger.get('position') or []
+            if len(position) >= 3:
+                point = [position[0], position[2]]
+            elif len(position) >= 2:
+                point = [position[0], position[1]]
+        if len(point) < 2:
+            continue
+        wanted.setdefault(code, {
+            'name': str(charger.get('name') or code), 'kind': 'CHARGING', 'floor': int(charger.get('floor') or 1),
+            'x': float(point[0]), 'y': float(point[1]), 'z': 0.0,
+            'yaw': float(charger.get('yaw') or charger.get('heading') or 0.0),
+            'zone': _zone_for(warehouse, charger.get('zone')), 'resource_type': 'CHARGING',
+            'resource_id': code, 'enabled': True, 'capacity': max(1, int(charger.get('capacity') or 1)),
+            'metadata': {'charging_station': charger},
+        })
+
+    for parking in layout.get('parking') or []:
+        code = str(parking.get('id') or '').strip()
+        rect = parking.get('rect') or []
+        if not code or len(rect) < 4:
+            continue
+        wanted.setdefault(code, {
+            'name': str(parking.get('name') or code), 'kind': 'PARKING', 'floor': int(parking.get('floor') or 1),
+            'x': (float(rect[0]) + float(rect[2])) / 2, 'y': (float(rect[1]) + float(rect[3])) / 2,
+            'z': 0.0, 'yaw': float(parking.get('yaw') or 0.0),
+            'zone': _zone_for(warehouse, parking.get('zone')), 'resource_type': 'PARKING',
+            'resource_id': code, 'enabled': True, 'capacity': max(1, int(parking.get('slots') or 1)),
+            'metadata': {'parking': parking},
+        })
+
+    # Older persisted map revisions may contain relational Shelf rows but no
+    # `locations` array.  Keep those maps schedulable without rewriting or
+    # deleting their existing data; the next publish will regenerate locations.
+    for shelf in Shelf.objects.filter(zone__warehouse=warehouse).select_related('zone').order_by('id'):
+        rack_id = str(shelf.layout_rack_id or shelf.code)
+        code = f'SHELF-{rack_id}-1'
+        if any(str(value.get('resource_id') or '') == rack_id for value in wanted.values()):
+            continue
+        wanted[code] = {
+            'name': shelf.name or f'Shelf {rack_id}', 'kind': 'SHELF', 'floor': int(shelf.floor or 1),
+            'x': float(shelf.access_x), 'y': float(shelf.access_y), 'z': 0.0,
+            'yaw': math.radians(float(shelf.rotation_deg or 0.0)), 'zone': shelf.zone,
+            'resource_type': 'SHELF', 'resource_id': rack_id, 'enabled': True,
+            'capacity': max(1, int(shelf.capacity or 1)), 'metadata': {'relational_shelf_fallback': True},
+        }
+
     created = updated = 0
     with transaction.atomic():
         for code, values in wanted.items():
@@ -250,14 +327,14 @@ def ensure_scheduler_master_data(runtime) -> Warehouse:
     caused every GET request to become a writer and made SQLite fail with
     "database is locked" under normal dashboard parallel loading.
 
-    Master data is synchronized explicitly by ``seed_demo``, the warehouse/layout
+    Master data is synchronized explicitly by ``sync_master_data``, the warehouse/layout
     publish path, or POST ``/api/scheduler/sync``.  Read APIs must stay read-only.
     """
     warehouse = active_warehouse()
     if not WorkPoint.objects.filter(warehouse=warehouse).exists():
-        raise ValueError('scheduler work-points are not initialized; run: python manage.py seed_demo')
+        raise ValueError('scheduler work-points are not initialized; run: python manage.py sync_master_data')
     if not RobotProfile.objects.filter(warehouse=warehouse).exists():
-        raise ValueError('scheduler robot profiles are not initialized; run: python manage.py seed_demo')
+        raise ValueError('scheduler robot profiles are not initialized; run: python manage.py sync_master_data')
     return warehouse
 
 
@@ -403,7 +480,7 @@ def release_inventory_reservation(order: WarehouseOrder) -> bool:
 def sync_inventory_placeholders(warehouse: Warehouse) -> dict[str, int]:
     """Backfill lightweight demo items so every current_load slot is inspectable.
 
-    This is called by seed_demo after layout/master-data sync. Real imported items
+    This is called by sync_master_data after layout/master-data sync. Real imported items
     are never overwritten or deleted.
     """
     created = 0

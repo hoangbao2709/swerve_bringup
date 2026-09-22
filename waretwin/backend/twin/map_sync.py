@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .map_artifacts import artifact_root
+from .map_artifacts import artifact_revision_dir
 from .models import WarehouseMap
 
 
@@ -20,7 +20,7 @@ def published_map_payload(active: WarehouseMap | None = None) -> dict[str, Any]:
         }
     version = active.versions.order_by("-version").first()
     revision = int(version.revision) if version else (int(active.revision) if active.published_version else None)
-    root = artifact_root() / str(active.warehouse.code) / str(revision) if revision is not None else None
+    root = artifact_revision_dir(active.warehouse.code, revision) if revision is not None else None
     manifest = None
     if root is not None:
         path = root / "manifest.json"

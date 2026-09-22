@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import shutil
@@ -26,6 +27,8 @@ if str(ROOT) not in sys.path:
 
 from tools.export_gazebo_world import export_gazebo_world  # noqa: E402
 
+log = logging.getLogger(__name__)
+
 
 def _safe_name(value: Any) -> str:
     text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._-")
@@ -35,6 +38,16 @@ def _safe_name(value: Any) -> str:
 def artifact_root() -> Path:
     configured = getattr(settings, "WARETWIN_ARTIFACT_ROOT", None)
     return Path(configured) if configured else ROOT / "generated" / "maps"
+
+
+def artifact_revision_dir(warehouse_id: Any, revision: int) -> Path:
+    """Return the canonical on-disk directory for one immutable revision.
+
+    Every producer and consumer must use the same sanitized warehouse key.  In
+    particular, a warehouse code containing spaces or slashes must not publish
+    into one directory and later be looked up in another directory.
+    """
+    return artifact_root() / _safe_name(warehouse_id) / str(int(revision))
 
 
 def _num(value: Any, default: float = 0.0) -> str:
@@ -194,7 +207,7 @@ def build_revision_artifacts(layout: dict[str, Any], *, warehouse_id: Any, revis
         (staging / "canonical_map.json").write_text(json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
         (staging / "datamatrix_map.yaml").write_text(render_datamatrix_yaml(doc), encoding="utf-8")
         (staging / "tag_graph.yaml").write_text(render_tag_graph_yaml(doc), encoding="utf-8")
-        export_gazebo_world(doc, staging / "gazebo")
+        export_manifest = export_gazebo_world(doc, staging / "gazebo")
         # PART 7 writes absolute mesh URIs into the world.  Its output is
         # generated in our hidden staging directory, so rewrite only that
         # prefix to the immutable final revision path before hashing/rename.
@@ -220,16 +233,21 @@ def build_revision_artifacts(layout: dict[str, Any], *, warehouse_id: Any, revis
             "frame_id": "warehouse_map",
             "artifacts": rel_artifacts,
             "sha256": hashes,
+            # Gazebo spawn resolution reads the same canonical robot records
+            # from the immutable manifest; do not discard them when wrapping
+            # the exporter output in the backend artifact manifest.
+            "robots": export_manifest.get("robots", []),
         }
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return staging, final, manifest
-    except Exception:
+    except Exception as exc:
+        log.exception('Warehouse artifact staging failed: %s', type(exc).__name__)
         shutil.rmtree(staging, ignore_errors=True)
         try:
             if warehouse_dir.exists() and not any(warehouse_dir.iterdir()):
                 warehouse_dir.rmdir()
-        except OSError:
-            pass
+        except OSError as cleanup_exc:
+            log.debug('Unable to remove empty artifact directory %s: %s', warehouse_dir, cleanup_exc)
         raise
 
 

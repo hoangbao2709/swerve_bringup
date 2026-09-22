@@ -25,7 +25,15 @@ def get_tag_graph(warehouse_id: int | None = None) -> dict[str, Any]:
     edges = list(NavigationTagEdge.objects.filter(warehouse=wh, enabled=True).select_related('from_tag', 'to_tag'))
     return {
         'warehouse_id': wh.id,
-        'tags': [{'id': t.id, 'tag_id': t.tag_id, 'x': t.x, 'y': t.y, 'yaw': t.yaw, 'label': t.label, 'enabled': t.enabled} for t in tags],
+        'tags': [
+            {
+                'id': t.id, 'tag_id': t.tag_id, 'family': t.family, 'size': t.size,
+                'floor_id': t.floor_id, 'x': t.x, 'y': t.y, 'z': t.z, 'yaw': t.yaw,
+                'lane_id': t.lane_id, 'zone_id': t.zone_id, 'metadata': t.metadata,
+                'label': t.label, 'enabled': t.enabled,
+            }
+            for t in tags
+        ],
         'edges': [{'from_tag_id': e.from_tag.tag_id, 'to_tag_id': e.to_tag.tag_id,
                    'cost': e.cost if e.cost is not None else ((e.from_tag.x-e.to_tag.x)**2 + (e.from_tag.y-e.to_tag.y)**2) ** 0.5,
                    'bidirectional': e.bidirectional} for e in edges],

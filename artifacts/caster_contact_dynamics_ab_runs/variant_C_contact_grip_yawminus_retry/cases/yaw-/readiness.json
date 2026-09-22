@@ -1,8 +1,0 @@
-{
-  "stages": {
-    "CLOCK_READY": false
-  },
-  "startup_wall_time": null,
-  "nav_ready": false,
-  "reason": "Gazebo /clock has no non-zero sample"
-}

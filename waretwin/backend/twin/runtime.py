@@ -51,11 +51,11 @@ def _persist_events(run_id: str, events: list[dict[str, Any]]) -> None:
 
 
 class TwinRuntime:
-    """In-process mock digital twin used until Robot Server / ROS2 is connected.
+    """Authoritative runtime adapter for local simulation or ROS telemetry.
 
-    The frontend contract is intentionally the same as the existing FastAPI backend:
-    FULL/PATCH/HEATMAP and the current REST payloads. Later, SimEngine can be replaced
-    by a live RobotGateway without rewriting the React UI.
+    The frontend contract remains FULL/PATCH/HEATMAP plus persistent REST state.
+    ``LOCAL_SIM`` advances ``SimEngine``; ``GAZEBO_ROS`` and ``REAL_ROBOT`` only
+    update robot state from the authenticated bridge and never invent movement.
     """
 
     SECTIONS = ('tasks', 'lifts', 'zones', 'conveyors', 'cameras', 'sensors', 'people', 'alerts')
@@ -67,7 +67,13 @@ class TwinRuntime:
         if active.exists():
             try:
                 self.layout = json.loads(active.read_text(encoding='utf-8'))
-            except Exception:
+            except Exception as exc:
+                log.warning(
+                    'Unable to load active layout %s; falling back to packaged layout: %s',
+                    active,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
                 self.layout = load_layout()
         else:
             self.layout = load_layout()
@@ -95,10 +101,19 @@ class TwinRuntime:
         self._whatif_lock = asyncio.Lock()
         self.channel_layer = None
         self.ros_bridge_connected = False
+        self.connected_robot_ids: set[str] = set()
+        self.bridge_status = 'DISCONNECTED' if self.is_external else 'LOCAL'
         self.last_telemetry_at: float | None = None
         self.last_telemetry_iso: str | None = None
         self.last_ros_heartbeat: float | None = None
         self.nav2_state = 'OFFLINE' if self.runtime_mode != 'LOCAL_SIM' else 'LOCAL'
+        self.operation_mode = 'IDLE' if self.is_external else 'SIMULATION'
+        self.ros_diagnostics: dict[str, Any] = {
+            'ros': False, 'gazebo': False, 'controller_manager': False,
+            'slam': False, 'nav2': False, 'tf': False, 'lidar': False,
+            'nodes': [], 'topics': [], 'controllers': [],
+            'simulation_time': None, 'last_update_at': None,
+        }
         self.published_map_revision: int | None = None
         self.published_map_version: int = 0
         self.ros_map_revision: int | None = None
@@ -260,6 +275,8 @@ class TwinRuntime:
         from .map_sync import map_sync_status
         return {
             'type': 'RUNTIME_STATUS', 'runtime_mode': self.runtime_mode,
+            'runtime_state': self.operation_mode,
+            'bridge_state': self.bridge_status,
             'ros_connected': self.ros_bridge_connected,
             'nav2_state': self.nav2_state,
             'last_telemetry_at': self.last_telemetry_iso,
@@ -276,18 +293,40 @@ class TwinRuntime:
                 external=self.is_external,
             ),
             'map_sync_error': self.map_sync_error,
+            'diagnostics': self.ros_diagnostics,
         }
 
-    async def bridge_connected(self) -> None:
+    async def bridge_connected(self, robot_id: str | None = None) -> None:
+        if robot_id:
+            self.connected_robot_ids.add(str(robot_id))
         self.ros_bridge_connected = True
+        self.bridge_status = 'CONNECTED'
+        self.ros_diagnostics['ros'] = True
         self.nav2_state = 'CONNECTED'
         self.map_sync_error = None
         await self.send_published_map_to_bridge()
         await self.broadcast_runtime_status()
 
-    async def bridge_disconnected(self) -> None:
-        self.ros_bridge_connected = False
+    async def bridge_disconnected(self, robot_id: str | None = None) -> None:
+        if robot_id:
+            self.connected_robot_ids.discard(str(robot_id))
+        else:
+            self.connected_robot_ids.clear()
+        self.ros_bridge_connected = bool(self.connected_robot_ids) if robot_id else False
+        if self.ros_bridge_connected:
+            # One namespaced bridge went away; keep the other robots and the
+            # global ROS connection healthy.
+            await self.broadcast_runtime_status()
+            return
+        self.bridge_status = 'DISCONNECTED'
         self.nav2_state = 'OFFLINE'
+        self.operation_mode = 'ERROR' if self.is_external else self.operation_mode
+        self.ros_diagnostics = {
+            **self.ros_diagnostics,
+            'ros': False, 'gazebo': False, 'controller_manager': False,
+            'slam': False, 'nav2': False, 'tf': False, 'lidar': False,
+            'nodes': [], 'topics': [], 'controllers': [],
+        }
         self.ros_map_revision = None
         self.gazebo_map_revision = None
         self.map_sync_error = None
@@ -371,6 +410,7 @@ class TwinRuntime:
         rid = str(data.get('robot_id') or '').strip()
         if not rid:
             return
+        self.connected_robot_ids.add(rid)
         robots = self.engine.state.setdefault('robots', {})
         robot = robots.get(rid)
         if robot is None:
@@ -386,11 +426,23 @@ class TwinRuntime:
                                       float(data.get('wz', 0.0)))
         now_iso = str(data.get('timestamp') or datetime.now(timezone.utc).isoformat())
         nav = str(data.get('navigation_state') or 'IDLE').upper()
-        robot.update(pose, twist, {'navigation_state': nav, 'last_telemetry_at': now_iso,
-                                   'status': 'ACTIVE', 'fsm': self._fsm_from_nav(nav)})
+        control_mode = str(data.get('control_mode') or robot.get('control_mode') or 'AUTONOMOUS').upper()
+        if control_mode not in ('MANUAL', 'AUTONOMOUS'):
+            control_mode = 'AUTONOMOUS'
+        # ``robot`` is the persisted state dictionary.  ``dict.update`` takes
+        # one mapping, so merge the ROS pose, twist and metadata explicitly;
+        # the previous three-argument call raised on every ROBOT_STATE frame
+        # and silently prevented external telemetry from reaching the Web UI.
+        robot.update(pose)
+        robot.update(twist)
+        robot.update({'navigation_state': nav, 'last_telemetry_at': now_iso,
+                      'control_mode': control_mode, 'status': 'ACTIVE',
+                      'fsm': self._fsm_from_nav(nav)})
         self.last_telemetry_at = time.monotonic()
         self.last_ros_heartbeat = self.last_telemetry_at
         self.ros_bridge_connected = True
+        self.bridge_status = 'CONNECTED'
+        self.ros_diagnostics['ros'] = True
         self.last_telemetry_iso = now_iso
         if self.client_count:
             patch = self.make_patch()
@@ -417,14 +469,86 @@ class TwinRuntime:
         elif kind == 'NAV_STATUS':
             await self.handle_nav_status(data)
         elif kind == 'HEARTBEAT':
+            robot_id = str(data.get('robot_id') or '').strip()
+            if robot_id:
+                self.connected_robot_ids.add(robot_id)
             self.last_ros_heartbeat = time.monotonic()
             self.ros_bridge_connected = True
+            self.bridge_status = str(data.get('bridge_state') or 'CONNECTED').upper()
             self.nav2_state = str(data.get('nav2_state') or 'CONNECTED')
+            self.operation_mode = str(data.get('runtime_state') or self.operation_mode).upper()
+            if self.operation_mode not in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'ERROR'):
+                self.operation_mode = 'SIMULATION' if self.is_external else self.operation_mode
+            self.ros_diagnostics['ros'] = True
+            self.ros_diagnostics['last_update_at'] = data.get('timestamp')
+            await self.broadcast_runtime_status()
+        elif kind in ('ROS_DIAGNOSTICS', 'DIAGNOSTICS'):
+            await self.handle_ros_diagnostics(data)
+        elif kind == 'BRIDGE_STATUS':
+            robot_id = str(data.get('robot_id') or '').strip()
+            if robot_id and str(data.get('state') or '').upper() in ('CONNECTED', 'CONNECTING', 'RECONNECTING'):
+                self.connected_robot_ids.add(robot_id)
+            self.bridge_status = str(data.get('state') or 'ERROR').upper()
+            runtime_state = str(data.get('runtime_state') or '').upper()
+            if runtime_state in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'ERROR'):
+                self.operation_mode = runtime_state
+            if self.bridge_status in ('CONNECTED', 'CONNECTING', 'RECONNECTING'):
+                self.ros_bridge_connected = True
+            elif robot_id:
+                self.connected_robot_ids.discard(robot_id)
+                self.ros_bridge_connected = bool(self.connected_robot_ids)
             await self.broadcast_runtime_status()
         elif kind in ('MAP_REVISION_STATUS', 'MAP_REVISION_ACK'):
             await self.handle_map_revision_status(data)
+        elif kind == 'ROBOT_CONTROL_STATUS':
+            await self.broadcast(data)
         elif kind in ('TAG_NAV_STATUS', 'TAG_DETECTION', 'LOCALIZATION_STATUS', 'TAG_NAV_ROUTE', 'TAG_NAV_EVENT'):
             await self.handle_tag_navigation_message(kind, data)
+
+    async def handle_ros_diagnostics(self, data: dict[str, Any]) -> None:
+        """Accept measured ROS graph/sensor/controller state from the bridge."""
+        values = data.get('diagnostics') if isinstance(data.get('diagnostics'), dict) else data
+        for key in ('ros', 'gazebo', 'controller_manager', 'slam', 'nav2', 'tf', 'lidar'):
+            if key in values:
+                self.ros_diagnostics[key] = bool(values[key])
+        for key in ('nodes', 'topics', 'controllers'):
+            if isinstance(values.get(key), list):
+                self.ros_diagnostics[key] = values[key][:200]
+        if isinstance(values.get('metrics'), dict):
+            self.ros_diagnostics['metrics'] = dict(values['metrics'])
+        if values.get('simulation_time') is not None:
+            self.ros_diagnostics['simulation_time'] = values.get('simulation_time')
+        self.ros_diagnostics['last_update_at'] = data.get('timestamp') or datetime.now(timezone.utc).isoformat()
+        self.ros_bridge_connected = True
+        self.bridge_status = 'CONNECTED'
+        if self.operation_mode == 'ERROR' and self.ros_diagnostics.get('ros'):
+            self.operation_mode = 'SIMULATION' if self.is_external else self.operation_mode
+        await self.broadcast_runtime_status()
+
+    def health_snapshot(self) -> dict[str, Any]:
+        timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        heartbeat_alive = self.last_ros_heartbeat is not None and (time.monotonic() - self.last_ros_heartbeat) <= timeout
+        ros_connected = bool(self.ros_bridge_connected and heartbeat_alive) if self.is_external else False
+        diagnostics = dict(self.ros_diagnostics)
+        diagnostics['ros'] = bool(diagnostics.get('ros') and ros_connected)
+        gazebo = bool(diagnostics.get('gazebo') and ros_connected)
+        # The in-process channel layer is initialized lazily by the first HTTP
+        # or WebSocket request.  Health must describe whether the configured
+        # WebSocket service is usable, not whether a client happened to connect
+        # before this request.
+        websocket_ready = bool(getattr(settings, 'CHANNEL_LAYERS', {}))
+        return {
+            # A socket that stopped sending heartbeats is not healthy even if
+            # Channels has not delivered its disconnect callback yet.
+            'ros_bridge': bool(self.ros_bridge_connected and heartbeat_alive) if self.is_external else False,
+            'websocket': websocket_ready,
+            'ros': diagnostics['ros'],
+            'gazebo': gazebo,
+            'runtime_state': self.operation_mode,
+            'bridge_state': self.bridge_status,
+            'ros_connected': ros_connected,
+            'diagnostics': diagnostics,
+        }
 
     async def handle_tag_navigation_message(self, kind: str, data: dict[str, Any]) -> None:
         from .tag_navigation import apply_ros_tag_status, apply_ros_tag_event, log_ros_tag_detection, apply_ros_localization, mission_snapshot
@@ -543,7 +667,16 @@ class TwinRuntime:
         self.last_telemetry_at = None
         self.last_telemetry_iso = None
         self.ros_bridge_connected = False
+        self.connected_robot_ids.clear()
+        self.bridge_status = 'DISCONNECTED' if self.is_external else 'LOCAL'
         self.nav2_state = 'OFFLINE' if self.is_external else 'LOCAL'
+        self.operation_mode = 'IDLE' if self.is_external else 'SIMULATION'
+        self.ros_diagnostics = {
+            'ros': False, 'gazebo': False, 'controller_manager': False,
+            'slam': False, 'nav2': False, 'tf': False, 'lidar': False,
+            'nodes': [], 'topics': [], 'controllers': [],
+            'simulation_time': None, 'last_update_at': None,
+        }
         self.run_id = uuid.uuid4().hex[:8]
         self._prev = {}
         self._prev_subsys = ''
@@ -684,6 +817,34 @@ class TwinRuntime:
             await self.broadcast_full()
         elif t == 'SELECT_ROBOT':
             return
+        elif t == 'ROBOT_MODE':
+            if not self.is_external:
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'Manual robot control requires an active ROS/Gazebo bridge',
+                })
+                return
+            result = await self.gateway().send_command(
+                msg.robot_id, 'CONTROL_MODE', {'mode': msg.mode})
+            await consumer.send_json({
+                'type': 'ROBOT_CONTROL_STATUS', 'robot_id': msg.robot_id,
+                'mode': msg.mode, 'accepted': bool(result.get('ok')),
+                'reason': None if result.get('ok') else 'ROS bridge is offline',
+            })
+        elif t == 'ROBOT_MANUAL':
+            if not self.is_external:
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'Manual robot control requires an active ROS/Gazebo bridge',
+                })
+                return
+            result = await self.gateway().send_command(
+                msg.robot_id, 'MANUAL_CMD', {'action': msg.action})
+            if not result.get('ok'):
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'ROS bridge is offline; manual command was not sent',
+                })
         elif t == 'COPILOT_ASK':
             snapshot = json.loads(json.dumps(eng.state))
             reply = await asyncio.to_thread(copilot_ai.answer, msg.question, snapshot, self.layout)

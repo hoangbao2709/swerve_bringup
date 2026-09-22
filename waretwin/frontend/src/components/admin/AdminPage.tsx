@@ -39,7 +39,12 @@ export function AdminPage(){
    if(h.ok)setHealth(await h.json()); if(a.ok)setAi(await a.json()); if(e.ok)setEvents(await e.json());
  }
  useEffect(()=>{if(tab==="users")void loadUsers().catch(e=>setErr(String(e)));},[tab]);
- useEffect(()=>{void loadAux().catch(()=>{}); const id=window.setInterval(()=>void loadAux().catch(()=>{}),5000); return()=>clearInterval(id)},[]);
+ useEffect(()=>{
+   const report = (error: unknown) => console.warn("[admin] auxiliary data refresh failed", error);
+   void loadAux().catch(report);
+   const id=window.setInterval(()=>void loadAux().catch(report),5000);
+   return()=>clearInterval(id)
+ },[]);
 
  const robots=Object.values(twin.robots);
  const tasks=Object.values(twin.tasks);

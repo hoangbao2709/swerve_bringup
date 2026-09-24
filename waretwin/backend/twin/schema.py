@@ -730,6 +730,20 @@ class CmdRobotManual(_Base):
     action: Literal["FORWARD", "BACKWARD", "LEFT", "RIGHT", "ROTATE_LEFT", "ROTATE_RIGHT", "STOP"]
 
 
+class CmdNavGoal(_Base):
+    type: Literal["NAV_GOAL"] = "NAV_GOAL"
+    robot_id: RobotId = Field(min_length=1, max_length=64)
+    x: float
+    y: float
+    yaw: float
+    frame_id: str = Field(default="map", min_length=1, max_length=64)
+
+
+class CmdNavControl(_Base):
+    type: Literal["NAV_CANCEL", "NAV_PAUSE", "NAV_RESUME"]
+    robot_id: RobotId = Field(min_length=1, max_length=64)
+
+
 class CmdWhatIfRun(_Base):
     type: Literal["WHATIF_RUN"] = "WHATIF_RUN"
     request: WhatIfRequest
@@ -767,6 +781,7 @@ class SimControlBody(_Base):
 ClientMessage = Annotated[
     Union[CmdResync, CmdSimControl, CmdInject, CmdClearInjection, CmdCreateTask,
           CmdAssignTask, CmdAckAlert, CmdSelectRobot, CmdRobotMode, CmdRobotManual,
+          CmdNavGoal, CmdNavControl,
           CmdWhatIfRun, CmdCopilotAsk],
     Field(discriminator="type"),
 ]

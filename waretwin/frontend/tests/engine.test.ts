@@ -46,7 +46,7 @@ describe("SimEngine", () => {
     }
     expect(eng.state.kpi.operation.completed_today).toBeGreaterThan(40);
     expect(minD).toBeGreaterThanOrEqual(0.5);
-  }, 30000);   // 12000 tick 在測試平行負載下偶爾超過預設 5 s —— 給明確上限（與 Demo 10 相同）
+  }, 60000);   // Long deterministic simulation stress case; allow slower CI/VM runners.
   it("does not gridlock under compound failure (Demo 10)", () => {
     const eng = new SimEngine(layout, { seed: 42 });
     for (let t = 0; t < 3000; t++) eng.step();
@@ -54,7 +54,7 @@ describe("SimEngine", () => {
     const before = eng.state.kpi.operation.completed_today;
     for (let t = 0; t < 18000; t++) eng.step();
     expect(eng.state.kpi.operation.completed_today - before).toBeGreaterThan(120);
-  }, 30000);
+  }, 60000);
   it("is deterministic for the same seed", () => {
     const a = new SimEngine(layout, { seed: 3 }), b = new SimEngine(layout, { seed: 3 });
     for (let t = 0; t < 3000; t++) { a.step(); b.step(); }

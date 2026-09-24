@@ -42,6 +42,18 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         self.assertEqual(mode.type, 'ROBOT_MODE')
         self.assertEqual(command.type, 'ROBOT_MANUAL')
 
+    async def test_detail_navigation_messages_are_schema_validated(self):
+        goal = TypeAdapter(ClientMessage).validate_python({
+            'type': 'NAV_GOAL', 'robot_id': 'R02', 'x': 4.5, 'y': 1.25,
+            'yaw': 1.57, 'frame_id': 'map',
+        })
+        pause = TypeAdapter(ClientMessage).validate_python({
+            'type': 'NAV_PAUSE', 'robot_id': 'R02',
+        })
+        self.assertEqual(goal.type, 'NAV_GOAL')
+        self.assertEqual(goal.robot_id, 'R02')
+        self.assertEqual(pause.type, 'NAV_PAUSE')
+
     async def test_gateway_maps_manual_control_actions(self):
         previous = registry.consumer
 
@@ -57,6 +69,25 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             self.assertTrue(mode['ok'])
             self.assertTrue(manual['ok'])
             self.assertEqual(manual['message'], {'mode': 'MANUAL', 'action': 'STOP', 'robot_id': 'R01', 'type': 'MANUAL_CMD'})
+        finally:
+            registry.consumer = previous
+
+    async def test_gateway_maps_detail_navigation_actions(self):
+        previous = registry.consumer
+
+        class Capture:
+            robot_id = 'R02'
+
+            async def send_json(self, payload):
+                self.payload = payload
+
+        capture = Capture()
+        registry.consumer = capture
+        try:
+            for action in ('NAV_CANCEL', 'NAV_PAUSE', 'NAV_RESUME'):
+                result = await RosBridgeGateway().send_command('R02', action, {})
+                self.assertTrue(result['ok'])
+                self.assertEqual(result['message'], {'robot_id': 'R02', 'type': action})
         finally:
             registry.consumer = previous
 

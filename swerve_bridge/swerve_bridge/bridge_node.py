@@ -15,14 +15,18 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from controller_manager_msgs.srv import ListControllers
 from rclpy.action import ActionClient
+from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from nav_msgs.msg import Odometry
+from rclpy.time import Time
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from nav_msgs.msg import OccupancyGrid, Odometry, Path as RosPath
+from nav2_msgs.action import NavigateToPose
 from rosgraph_msgs.msg import Clock
 from swerve_bringup.action import GoToTag
-from sensor_msgs.msg import JointState, PointCloud2
+from sensor_msgs.msg import JointState, LaserScan, PointCloud2
 from std_msgs.msg import Bool
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, Twist
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from .qos import gazebo_clock_qos_profile
 
@@ -44,10 +48,19 @@ class SwerveBridge(Node):
         self.declare_parameter('odom_topic', '/odometry/filtered')
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('lidar_topic', '/lidar/points')
+        self.declare_parameter('scan_topic', '/scan')
+        self.declare_parameter('map_topic', '/map')
+        self.declare_parameter('global_path_topic', '/plan')
+        self.declare_parameter('local_path_topic', '/local_plan')
+        self.declare_parameter('goal_topic', '/goal_pose')
+        self.declare_parameter('map_frame', 'map')
+        self.declare_parameter('lidar_ui_hz', 5.0)
+        self.declare_parameter('lidar_max_points', 720)
         self.declare_parameter('clock_topic', '/clock')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('emergency_stop_topic', '/emergency_stop')
         self.declare_parameter('navigate_action', '/go_to_tag')
+        self.declare_parameter('navigate_pose_action', '/navigate_to_pose')
         self.declare_parameter('navigate_server_timeout', 2.0)
         self.declare_parameter('manual_linear_velocity', 0.25)
         self.declare_parameter('manual_angular_velocity', 0.60)
@@ -75,15 +88,38 @@ class SwerveBridge(Node):
         self.last_lidar_frame_id = None
         self.last_lidar_stamp = None
         self.lidar_intervals = deque(maxlen=20)
+        self.scan_intervals = deque(maxlen=20)
+        self.scan_sim_intervals = deque(maxlen=20)
+        self.last_scan_monotonic = None
+        self.last_scan_stamp = None
+        self.latest_scan = None
+        self.last_scan_publish_monotonic = 0.0
+        self.latest_map = None
+        self.latest_map_signature = None
+        self.latest_global_path = None
+        self.latest_local_path = None
+        self.latest_goal_pose = None
+        self.last_global_path_signature = None
+        self.last_local_path_signature = None
+        self.last_goal_signature = None
+        self.last_sent_map_signature = None
+        self.last_tf_error = None
         self.last_clock_monotonic = None
         self.simulation_time = None
+        self.previous_simulation_time = None
+        self.previous_simulation_wall = None
+        self.gazebo_rtf = None
+        self.scan_topic_name = None
         self.nav_state = 'IDLE'
         self.control_mode = 'AUTONOMOUS'
         self.manual_twist = Twist()
         self.manual_deadline = 0.0
         self.emergency_stop_active = False
         self.active_goal = None
+        self.active_pose_goal = None
         self.active_context = None
+        self.active_pose_context = None
+        self.paused_pose_context = None
         self.goal_request_pending = False
         self.cancel_pending = False
         self.pending_cancel_state = None
@@ -137,6 +173,22 @@ class SwerveBridge(Node):
         self.controller_client = self.create_client(
             ListControllers, controller_service)
         self.nav_client = ActionClient(self, GoToTag, navigate_action)
+        navigate_pose_action = self._scoped_topic(self.get_parameter('navigate_pose_action').value) if self.has_parameter('navigate_pose_action') else self._scoped_topic('/navigate_to_pose')
+        self.nav_pose_client = ActionClient(self, NavigateToPose, navigate_pose_action)
+        scan_topic = self._scoped_topic(self.get_parameter('scan_topic').value)
+        map_topic = self._scoped_topic(self.get_parameter('map_topic').value)
+        global_path_topic = self._scoped_topic(self.get_parameter('global_path_topic').value)
+        local_path_topic = self._scoped_topic(self.get_parameter('local_path_topic').value)
+        goal_topic = self._scoped_topic(self.get_parameter('goal_topic').value)
+        self.scan_topic_name = scan_topic
+        self.create_subscription(LaserScan, scan_topic, self.scan_cb, qos_profile_sensor_data)
+        self.create_subscription(OccupancyGrid, map_topic, self.map_cb, 1)
+        self.create_subscription(RosPath, global_path_topic, self.global_path_cb, 1)
+        self.create_subscription(RosPath, local_path_topic, self.local_path_cb, 1)
+        self.create_subscription(PoseStamped, goal_topic, self.goal_pose_cb, 1)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.create_timer(1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)), self.detail_timer)
         self.create_timer(self.telemetry_period, self.telemetry_timer)
         self.create_timer(1.0 / max(0.1, float(self.get_parameter('heartbeat_rate').value)), self.heartbeat_timer)
         self.create_timer(0.05, self.manual_timer)
@@ -198,10 +250,66 @@ class SwerveBridge(Node):
         stamp = msg.header.stamp
         self.last_lidar_stamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
+    def scan_cb(self, msg):
+        now = time.monotonic()
+        stamp = msg.header.stamp
+        stamp_value = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        if self.last_scan_monotonic is not None:
+            interval = now - self.last_scan_monotonic
+            if interval > 0.0:
+                self.scan_intervals.append(interval)
+        if self.last_scan_stamp is not None:
+            interval = stamp_value - self.last_scan_stamp
+            if interval > 0.0:
+                self.scan_sim_intervals.append(interval)
+        self.last_scan_monotonic = now
+        self.last_scan_stamp = stamp_value
+        self.latest_scan = msg
+        self.last_lidar_monotonic = now
+        self.last_lidar_frame_id = str(msg.header.frame_id or '')
+        self.last_lidar_stamp = stamp_value
+
+    def map_cb(self, msg):
+        # Header timestamps can advance even when the occupancy content is
+        # unchanged.  Keep the snapshot cache content-addressed so a map
+        # publisher running at 10 Hz does not push the same full grid over the
+        # bridge on every callback.
+        origin = msg.info.origin
+        signature = (
+            str(msg.header.frame_id or 'map'),
+            msg.info.width,
+            msg.info.height,
+            float(msg.info.resolution),
+            round(float(origin.position.x), 6),
+            round(float(origin.position.y), 6),
+            round(yaw_from_quaternion(origin.orientation), 6),
+            hash(bytes((int(value) + 1) % 256 for value in msg.data)),
+        )
+        self.latest_map = msg
+        self.latest_map_signature = signature
+
+    def global_path_cb(self, msg):
+        self.latest_global_path = msg
+
+    def local_path_cb(self, msg):
+        self.latest_local_path = msg
+
+    def goal_pose_cb(self, msg):
+        self.latest_goal_pose = msg
+
     def clock_cb(self, msg):
-        self.last_clock_monotonic = time.monotonic()
+        now = time.monotonic()
         stamp = msg.clock
-        self.simulation_time = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        simulation_time = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        if self.simulation_time is not None and self.previous_simulation_wall is not None:
+            sim_delta = simulation_time - self.simulation_time
+            wall_delta = now - self.previous_simulation_wall
+            if sim_delta >= 0.0 and wall_delta > 0.0:
+                self.gazebo_rtf = sim_delta / wall_delta
+        self.previous_simulation_time = self.simulation_time
+        self.previous_simulation_wall = now
+        self.simulation_time = simulation_time
+        self.last_clock_monotonic = now
 
     def send(self, payload):
         if not isinstance(payload, dict):
@@ -301,8 +409,16 @@ class SwerveBridge(Node):
                    'nav2_state': self.nav_state, 'bridge_state': 'CONNECTED',
                    'runtime_state': self.runtime_state, 'control_mode': self.control_mode,
                    'timestamp': self.now()})
+        diagnostics = self.collect_diagnostics()
         self.send({'type': 'ROS_DIAGNOSTICS', 'robot_id': self.robot_id,
-                   'diagnostics': self.collect_diagnostics(), 'timestamp': self.now()})
+                   'diagnostics': diagnostics, 'timestamp': self.now()})
+        self.send({'type': 'SYSTEM_DIAGNOSTICS', 'robot_id': self.robot_id,
+                   'diagnostics': {**diagnostics, 'ros_bridge': True, 'gazebo_rtf': self.gazebo_rtf,
+                                   'errors': self.detail_errors(diagnostics)},
+                   'timestamp': self.now()})
+        self.send({'type': 'CONTROLLER_STATE', 'controller': {
+            'robot_id': self.robot_id, 'controllers': self.controller_states[:100], 'timestamp': self.now(),
+        }})
         self.send_map_revision_status()
 
         with self.ws_lock:
@@ -312,6 +428,157 @@ class SwerveBridge(Node):
                     ws.ping()
                 except Exception as exc:
                     self.get_logger().warning(f'ROS bridge heartbeat ping failed: {exc}')
+
+    @staticmethod
+    def _frequency(intervals):
+        if not intervals:
+            return None
+        average = sum(intervals) / len(intervals)
+        return 1.0 / average if average > 0.0 else None
+
+    @staticmethod
+    def _pose_path_payload(msg, robot_id):
+        if msg is None:
+            return None
+        points = []
+        for pose in msg.poses:
+            points.append([float(pose.pose.position.x), float(pose.pose.position.y)])
+        stamp = msg.header.stamp
+        return {
+            'robot_id': robot_id,
+            'frame_id': str(msg.header.frame_id or ''),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'points': points,
+            'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+        }
+
+    @staticmethod
+    def _goal_payload(msg, robot_id, status=None):
+        if msg is None:
+            return None
+        pose = msg.pose
+        return {
+            'robot_id': robot_id,
+            'frame_id': str(msg.header.frame_id or 'map'),
+            'x': float(pose.position.x), 'y': float(pose.position.y),
+            'yaw': yaw_from_quaternion(pose.orientation),
+            'status': status,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _transform_scan(self, scan):
+        source_frame = str(scan.header.frame_id or '')
+        target_frame = str(self.get_parameter('map_frame').value or 'map')
+        if not source_frame:
+            raise TransformException('LaserScan frame_id is empty')
+        transform = None
+        if source_frame != target_frame:
+            transform = self.tf_buffer.lookup_transform(
+                target_frame, source_frame, Time.from_msg(scan.header.stamp), timeout=Duration(seconds=0.05))
+        if transform is None:
+            translation = (0.0, 0.0, 0.0)
+            quaternion = (0.0, 0.0, 0.0, 1.0)
+        else:
+            t = transform.transform.translation
+            q = transform.transform.rotation
+            translation = (float(t.x), float(t.y), float(t.z))
+            quaternion = (float(q.x), float(q.y), float(q.z), float(q.w))
+
+        qx, qy, qz, qw = quaternion
+        valid = []
+        for index, value in enumerate(scan.ranges):
+            distance = float(value)
+            if not math.isfinite(distance) or distance < float(scan.range_min) or distance > float(scan.range_max):
+                continue
+            angle = float(scan.angle_min) + index * float(scan.angle_increment)
+            lx, ly, lz = distance * math.cos(angle), distance * math.sin(angle), 0.0
+            # Quaternion rotation, expanded to avoid a dependency on
+            # tf2_geometry_msgs in the bridge process.
+            tx = 2.0 * (qy * lz - qz * ly)
+            ty = 2.0 * (qz * lx - qx * lz)
+            tz = 2.0 * (qx * ly - qy * lx)
+            rx = lx + qw * tx + (qy * tz - qz * ty)
+            ry = ly + qw * ty + (qz * tx - qx * tz)
+            rz = lz + qw * tz + (qx * ty - qy * tx)
+            valid.append((distance, [translation[0] + rx, translation[1] + ry]))
+
+        limit = max(1, int(self.get_parameter('lidar_max_points').value))
+        stride = max(1, math.ceil(len(valid) / limit))
+        sampled = valid[::stride][:limit]
+        return {
+            'robot_id': self.robot_id,
+            'topic': self.scan_topic_name,
+            'frame_id': target_frame,
+            'source_frame_id': source_frame,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'stamp': self.last_scan_stamp,
+            'angle_min': float(scan.angle_min), 'angle_max': float(scan.angle_max),
+            'angle_increment': float(scan.angle_increment),
+            'range_min': float(scan.range_min), 'range_max': float(scan.range_max),
+            'point_count': len(sampled),
+            'minimum_range': min((item[0] for item in valid), default=None),
+            'maximum_range': max((item[0] for item in valid), default=None),
+            'scan_hz_sim': self._frequency(self.scan_sim_intervals),
+            'scan_hz_wall': self._frequency(self.scan_intervals),
+            'points': [point for _distance, point in sampled],
+        }
+
+    def detail_timer(self):
+        """Publish bounded, robot-scoped detail snapshots to Django."""
+        if self.latest_scan is not None and time.monotonic() - self.last_scan_publish_monotonic >= 1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)):
+            try:
+                payload = self._transform_scan(self.latest_scan)
+                self.send({'type': 'LIDAR_SCAN', 'scan': payload})
+                self.last_scan_publish_monotonic = time.monotonic()
+                self.last_tf_error = None
+            except (TransformException, ValueError, TypeError) as exc:
+                self.last_tf_error = str(exc)[:300]
+
+        if self.latest_map is not None and self.latest_map_signature != self.last_sent_map_signature:
+            msg = self.latest_map
+            origin = msg.info.origin
+            stamp = msg.header.stamp
+            sent = self.send({'type': 'MAP_SNAPSHOT', 'map': {
+                'robot_id': self.robot_id, 'frame_id': str(msg.header.frame_id or 'map'),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+                'width': int(msg.info.width), 'height': int(msg.info.height),
+                'resolution': float(msg.info.resolution),
+                'origin': {'x': float(origin.position.x), 'y': float(origin.position.y), 'yaw': yaw_from_quaternion(origin.orientation)},
+                'data': [int(value) for value in msg.data],
+            }})
+            if sent:
+                self.last_sent_map_signature = self.latest_map_signature
+
+        for attr, kind in (("latest_global_path", "NAV_GLOBAL_PATH"), ("latest_local_path", "NAV_LOCAL_PATH")):
+            msg = getattr(self, attr)
+            if msg is None:
+                continue
+            signature = (len(msg.poses), tuple((round(float(p.pose.position.x), 3), round(float(p.pose.position.y), 3)) for p in msg.poses))
+            marker = 'last_global_path_signature' if kind == 'NAV_GLOBAL_PATH' else 'last_local_path_signature'
+            if signature != getattr(self, marker):
+                if self.send({'type': kind, 'path': self._pose_path_payload(msg, self.robot_id)}):
+                    setattr(self, marker, signature)
+
+        if self.latest_goal_pose is not None:
+            payload = self._goal_payload(self.latest_goal_pose, self.robot_id)
+            signature = (payload['x'], payload['y'], payload['yaw'], payload['frame_id'])
+            if signature != self.last_goal_signature:
+                if self.send({'type': 'NAV_GOAL', 'goal': payload}):
+                    self.last_goal_signature = signature
+
+    def detail_errors(self, diagnostics=None):
+        errors = []
+        now = datetime.now(timezone.utc).isoformat()
+        if self.last_scan_monotonic is not None and time.monotonic() - self.last_scan_monotonic > 3.0:
+            errors.append({'severity': 'WARNING', 'code': 'LIDAR_TIMEOUT', 'message': 'LiDAR timeout', 'timestamp': now})
+        if self.last_tf_error:
+            errors.append({'severity': 'ERROR', 'code': 'TF_UNAVAILABLE', 'message': f'TF unavailable: {self.last_tf_error}', 'timestamp': now})
+        if self.controller_states and any(str(item.get('state', '')).lower() != 'active' for item in self.controller_states):
+            errors.append({'severity': 'ERROR', 'code': 'CONTROLLER_INACTIVE', 'message': 'controller inactive', 'timestamp': now})
+        if self.nav_state == 'FAILED':
+            errors.append({'severity': 'ERROR', 'code': 'NAV_GOAL_FAILED', 'message': 'Nav2 goal failed', 'timestamp': now})
+        return errors
 
     def collect_diagnostics(self):
         """Collect a measured ROS graph snapshot for Django diagnostics."""
@@ -349,13 +616,9 @@ class SwerveBridge(Node):
                     self.controller_list_future = None
 
         lidar_age = None
-        lidar_frequency = None
+        lidar_frequency = self._frequency(self.scan_intervals) or self._frequency(self.lidar_intervals)
         if self.last_lidar_monotonic is not None:
             lidar_age = max(0.0, time.monotonic() - self.last_lidar_monotonic)
-        if self.lidar_intervals:
-            average = sum(self.lidar_intervals) / len(self.lidar_intervals)
-            if average > 0.0:
-                lidar_frequency = 1.0 / average
         gazebo = (
             any('gazebo' in name.lower() for name in node_names)
             or (self.last_clock_monotonic is not None and time.monotonic() - self.last_clock_monotonic <= 3.0)
@@ -378,11 +641,15 @@ class SwerveBridge(Node):
             'topics': topic_names[:300],
             'controllers': self.controller_states[:100],
             'simulation_time': self.simulation_time,
+            'gazebo_rtf': self.gazebo_rtf,
+            'errors': self.detail_errors(),
             'metrics': {
                 'lidar_age_s': lidar_age,
                 'lidar_frequency_hz': lidar_frequency,
+                'scan_frequency_sim_hz': self._frequency(self.scan_sim_intervals),
                 'lidar_frame_id': self.last_lidar_frame_id,
                 'lidar_stamp': self.last_lidar_stamp,
+                'gazebo_rtf': self.gazebo_rtf,
                 # DDS does not expose dropped samples through this API. Keep
                 # this explicitly unknown instead of presenting fabricated 0.
                 'lidar_dropped_messages': None,
@@ -480,6 +747,13 @@ class SwerveBridge(Node):
                     self.cancel_navigation(data)
                 elif kind == 'TAG_NAV_RESUME':
                     self.resume_navigation(data)
+                elif kind == 'NAV_CANCEL':
+                    self.cancel_navigation(data)
+                elif kind == 'NAV_PAUSE':
+                    data = {**data, 'type': 'TAG_NAV_PAUSE'}
+                    self.cancel_navigation(data)
+                elif kind == 'NAV_RESUME':
+                    self.resume_navigation(data)
                 elif kind == 'TAG_NAV_REPLAN':
                     self.cancel_navigation(data)
                 elif kind == 'CONTROL_MODE':
@@ -504,10 +778,11 @@ class SwerveBridge(Node):
         self.pending_replan = None
         self.cmd_pub.publish(Twist())
         self.estop_pub.publish(Bool(data=True))
-        if self.active_goal is not None and not self.cancel_pending:
+        if (self.active_goal is not None or self.active_pose_goal is not None) and not self.cancel_pending:
             self.cancel_pending = True
             try:
-                future = self.active_goal.cancel_goal_async()
+                active_handle = self.active_pose_goal or self.active_goal
+                future = active_handle.cancel_goal_async()
                 future.add_done_callback(lambda _future: setattr(self, 'cancel_pending', False))
             except Exception as exc:
                 self.cancel_pending = False
@@ -544,12 +819,13 @@ class SwerveBridge(Node):
         if self.emergency_stop_active:
             self.send_control_status(False, 'emergency stop is active')
             return
-        if mode == 'MANUAL' and self.active_goal is not None and not self.cancel_pending:
+        if mode == 'MANUAL' and (self.active_goal is not None or self.active_pose_goal is not None) and not self.cancel_pending:
             self.pending_cancel_state = 'CANCELLED'
             self.pending_replan = None
             self.cancel_pending = True
             try:
-                future = self.active_goal.cancel_goal_async()
+                active_handle = self.active_pose_goal or self.active_goal
+                future = active_handle.cancel_goal_async()
                 future.add_done_callback(lambda _future: setattr(self, 'cancel_pending', False))
             except Exception as exc:
                 self.cancel_pending = False
@@ -594,6 +870,9 @@ class SwerveBridge(Node):
         self.send_control_status(True)
 
     def navigate(self, data):
+        if data.get('x') is not None and data.get('y') is not None:
+            self.navigate_pose(data)
+            return
         context = {
             'schedule_id': data.get('schedule_id'),
             'stop_id': data.get('stop_id'),
@@ -606,7 +885,7 @@ class SwerveBridge(Node):
         if self.control_mode != 'AUTONOMOUS':
             self.send_nav_status(context, 'FAILED', 'switch to AUTONOMOUS mode before navigation')
             return
-        if self.active_goal is not None or self.goal_request_pending:
+        if self.active_goal is not None or self.active_pose_goal is not None or self.goal_request_pending:
             self.send_nav_status(context, 'FAILED', 'another tag-navigation goal is already active')
             return
         if data.get('target_tag_id') is None:
@@ -637,6 +916,42 @@ class SwerveBridge(Node):
             self.nav_state = 'FAILED'
             self.send_nav_status(context, 'FAILED', f'failed to send Nav2 goal: {exc}')
 
+    def navigate_pose(self, data):
+        context = {
+            'robot_id': self.robot_id, 'x': float(data.get('x')), 'y': float(data.get('y')),
+            'yaw': float(data.get('yaw') or 0.0), 'frame_id': str(data.get('frame_id') or 'map'),
+        }
+        if self.emergency_stop_active:
+            self.send_nav_status(context, 'FAILED', 'emergency stop is active')
+            return
+        if self.control_mode != 'AUTONOMOUS':
+            self.send_nav_status(context, 'FAILED', 'switch to AUTONOMOUS mode before navigation')
+            return
+        if self.active_goal is not None or self.active_pose_goal is not None or self.goal_request_pending:
+            self.send_nav_status(context, 'FAILED', 'another navigation goal is already active')
+            return
+        timeout = float(self.get_parameter('navigate_server_timeout').value)
+        if not self.nav_pose_client.wait_for_server(timeout_sec=timeout):
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', f'NavigateToPose action server unavailable after {timeout:.1f}s')
+            return
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = context['frame_id']
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.pose.position.x = context['x']
+        goal.pose.pose.position.y = context['y']
+        goal.pose.pose.orientation.z = math.sin(context['yaw'] / 2.0)
+        goal.pose.pose.orientation.w = math.cos(context['yaw'] / 2.0)
+        self.nav_state = 'PENDING'
+        self.goal_request_pending = True
+        try:
+            future = self.nav_pose_client.send_goal_async(goal)
+            future.add_done_callback(lambda f: self.pose_goal_response(f, context))
+        except Exception as exc:
+            self.goal_request_pending = False
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', f'failed to send NavigateToPose goal: {exc}')
+
     def send_nav_status(self, context, status, reason=None):
         payload = {
             'type': 'NAV_STATUS', **context, 'status': status,
@@ -666,6 +981,65 @@ class SwerveBridge(Node):
         self.send_nav_status(context, 'ACTIVE')
         result_future = handle.get_result_async()
         result_future.add_done_callback(lambda f: self.goal_result(f, handle, context))
+
+    def pose_goal_response(self, future, context):
+        self.goal_request_pending = False
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', f'NavigateToPose request failed: {exc}')
+            return
+        if handle is None or not handle.accepted:
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', 'NavigateToPose rejected the goal')
+            return
+        self.active_pose_goal = handle
+        self.active_pose_context = context
+        self.paused_pose_context = None
+        self.cancel_pending = False
+        self.pending_cancel_state = None
+        self.nav_state = 'NAVIGATING'
+        self.send({'type': 'NAV_GOAL', 'goal': {
+            **context, 'status': 'ACTIVE', 'timestamp': self.now(),
+        }})
+        self.send_nav_status(context, 'ACTIVE')
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(lambda f: self.pose_goal_result(f, handle, context))
+
+    def pose_goal_result(self, future, handle, context):
+        try:
+            response = future.result()
+            status_code = response.status
+        except Exception as exc:
+            if self.active_pose_goal is handle:
+                self.active_pose_goal = None
+                self.active_pose_context = None
+                self.cancel_pending = False
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', f'NavigateToPose result failed: {exc}')
+            return
+        status = {
+            GoalStatus.STATUS_SUCCEEDED: 'SUCCEEDED',
+            GoalStatus.STATUS_ABORTED: 'FAILED',
+            GoalStatus.STATUS_CANCELED: 'CANCELED',
+        }.get(status_code, 'FAILED')
+        pending_cancel_state = self.pending_cancel_state
+        self.pending_cancel_state = None
+        self.pending_replan = None
+        if self.emergency_stop_active:
+            status = 'EMERGENCY_STOPPED'
+        elif status == 'CANCELED' and pending_cancel_state:
+            status = pending_cancel_state
+        self.nav_state = 'IDLE' if status == 'SUCCEEDED' else status
+        if status == 'PAUSED':
+            self.paused_pose_context = context
+        if self.active_pose_goal is handle:
+            self.active_pose_goal = None
+            self.active_pose_context = None
+            self.cancel_pending = False
+        reason = None if status != 'FAILED' else f'NavigateToPose finished with status code {status_code}'
+        self.send_nav_status(context, status, reason)
 
     def goal_result(self, future, handle, context):
         try:
@@ -709,7 +1083,7 @@ class SwerveBridge(Node):
         kind = str(data.get('type') or '').upper()
         is_replan = kind == 'TAG_NAV_REPLAN'
         cancel_state = 'PLANNING' if is_replan else 'PAUSED' if kind == 'TAG_NAV_PAUSE' else 'CANCELLED'
-        context = self.active_context or {
+        context = self.active_pose_context or self.active_context or self.paused_pose_context or {
             'robot_id': self.robot_id,
             'schedule_id': data.get('schedule_id'),
             'stop_id': data.get('stop_id'),
@@ -717,6 +1091,9 @@ class SwerveBridge(Node):
         }
         if is_replan and not data.get('target_tag_id'):
             data = {**data, 'target_tag_id': context.get('target_tag_id')}
+        if self.active_pose_goal is not None:
+            self.cancel_pose_navigation(context, cancel_state)
+            return
         if self.active_goal is None:
             self.cmd_pub.publish(Twist())
             if is_replan and data.get('target_tag_id') is not None:
@@ -739,6 +1116,25 @@ class SwerveBridge(Node):
             self.pending_replan = None
             self.send_nav_status(context, 'FAILED', f'failed to request Nav2 cancellation: {exc}')
 
+    def cancel_pose_navigation(self, context, cancel_state):
+        if self.active_pose_goal is None:
+            self.cmd_pub.publish(Twist())
+            self.nav_state = cancel_state
+            self.send_nav_status(context, cancel_state, 'no accepted NavigateToPose goal; state updated locally')
+            return
+        if self.cancel_pending:
+            return
+        self.pending_cancel_state = cancel_state
+        self.pending_replan = None
+        self.cancel_pending = True
+        try:
+            future = self.active_pose_goal.cancel_goal_async()
+            future.add_done_callback(lambda f: self.cancel_response(f, context))
+        except Exception as exc:
+            self.cancel_pending = False
+            self.pending_cancel_state = None
+            self.send_nav_status(context, 'FAILED', f'failed to request NavigateToPose cancellation: {exc}')
+
     def cancel_response(self, future, context):
         try:
             response = future.result()
@@ -759,8 +1155,14 @@ class SwerveBridge(Node):
 
     def resume_navigation(self, data):
         """Resume a paused mission by submitting its approved tag goal again."""
+        if self.active_pose_goal is not None:
+            self.send_nav_status(self.active_pose_context or {'robot_id': self.robot_id}, 'ACTIVE')
+            return
         if self.active_goal is not None or self.goal_request_pending:
             self.send_nav_status(self.active_context or {'robot_id': self.robot_id}, 'ACTIVE')
+            return
+        if self.paused_pose_context and self.paused_pose_context.get('x') is not None:
+            self.navigate(self.paused_pose_context)
             return
         target = data.get('target_tag_id')
         if target is None and self.active_context:

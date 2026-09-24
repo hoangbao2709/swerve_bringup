@@ -35,6 +35,7 @@ import { SchedulerModal } from "./SchedulerModal";
 import { InboundOutboundModal } from "./InboundOutboundModal";
 import { ShelfInventoryWindow } from "./ShelfInventoryWindow";
 import { ConveyorWindow } from "./ConveyorWindow";
+import { RobotQuickDetailModal } from "../robot/RobotQuickDetailModal";
 
 import {
   schedulerApi,
@@ -1132,6 +1133,7 @@ export function Modals() {
       </div>
 
       <WindowTaskbar />
+      <RobotQuickDetailModal />
     </div>,
 
     document.body,
@@ -2286,15 +2288,9 @@ function FleetList() {
         s.twin.tasks,
     );
 
-  const select =
-    useStore(
-      (s) => s.select,
-    );
-
-  const openWindow =
-    useStore(
-      (s) => s.openWindow,
-    );
+  const openRobotQuickDetail = useStore(
+    (s) => s.openRobotQuickDetail,
+  );
 
   const [
     status,
@@ -2539,20 +2535,7 @@ function FleetList() {
                         "pointer",
                     }}
                     onClick={() => {
-                      select(
-                        robot.id,
-                      );
-
-                      /*
-                       * Fleet vẫn mở.
-                       * Robot Detail mở thêm.
-                       */
-                      openWindow({
-                        id: `robot:${robot.id}`,
-                        kind: "robot",
-                        entityId: robot.id,
-                        title: `Robot ${robot.id}`,
-                      });
+                      openRobotQuickDetail(robot.id);
                     }}
                   >
                     <td

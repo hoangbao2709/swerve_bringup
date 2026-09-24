@@ -18,6 +18,7 @@ import { OverviewPage } from "./components/overview/OverviewPage";
 import { bootstrapAuth } from "./services/auth";
 import { DEMO_MODE, DEMO_USER } from "./config";
 import { RobotControlPage } from "./components/control/RobotControlPage";
+import { RobotControlDetailPage } from "./components/control/RobotControlDetailPage";
 import { DiagnosticsPage } from "./components/diagnostics/DiagnosticsPage";
 
 /**
@@ -98,6 +99,11 @@ function usePathname() {
   return [path, (next: string) => { window.history.pushState({}, "", next); setPath(next); }] as const;
 }
 
+function decodeRouteSegment(value: string | undefined): string | null {
+  if (!value) return null;
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
 /** 模擬 runner 放在 gate 內層：手機提示頁顯示時不啟動 WebSocket 與本地引擎，不白耗 CPU */
 function Console() {
   useFitScale();
@@ -153,6 +159,8 @@ function Console() {
 export default function App() {
   useBackendRealtime();
   const [path, navigate] = usePathname();
+  const detailMatch = path.match(/^\/robots\/([^/]+)\/control\/?$/);
+  const detailRobotId = detailMatch ? decodeRouteSegment(detailMatch[1]) : null;
   const authStatus = useStore((s) => s.authStatus);
   const authUser = useStore((s) => s.authUser);
 
@@ -177,8 +185,12 @@ export default function App() {
 
     if (authStatus === "loading") return;
     const loggedIn = authStatus === "authenticated" && !!authUser;
-    if (!loggedIn && path !== "/login" && path !== "/register") navigate("/login");
-    if (loggedIn && (path === "/login" || path === "/register")) navigate("/");
+    if (!loggedIn && path !== "/login" && path !== "/register") {
+      if (detailRobotId) {
+        try { window.sessionStorage.setItem("waretwin.robot-control.return-path", path); } catch { /* storage may be disabled */ }
+      }
+      navigate("/login");
+    }
     if (loggedIn && path.startsWith("/admin") && authUser?.role !== "admin") navigate("/");
   }, [authStatus, authUser, path, navigate]);
 
@@ -192,6 +204,7 @@ export default function App() {
     }
     if (path === "/operations") return <NarrowScreenGate><Console /></NarrowScreenGate>;
     if (path === "/control") return <NarrowScreenGate><RobotControlPage /></NarrowScreenGate>;
+    if (detailRobotId) return <NarrowScreenGate><RobotControlDetailPage robotId={detailRobotId} /></NarrowScreenGate>;
     if (path === "/diagnostics") return <DiagnosticsPage />;
     return <OverviewPage />;
   }
@@ -214,6 +227,7 @@ export default function App() {
   }
   if (path === "/operations") return <NarrowScreenGate><Console /></NarrowScreenGate>;
   if (path === "/control") return <NarrowScreenGate><RobotControlPage /></NarrowScreenGate>;
+  if (detailRobotId) return <NarrowScreenGate><RobotControlDetailPage robotId={detailRobotId} /></NarrowScreenGate>;
   if (path === "/diagnostics") return <DiagnosticsPage />;
   return <OverviewPage />;
 }

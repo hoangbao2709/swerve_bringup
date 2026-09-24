@@ -468,6 +468,10 @@ class TwinRuntime:
             await self.update_external_robot_state(data)
         elif kind == 'NAV_STATUS':
             await self.handle_nav_status(data)
+            # Keep the control console independent from scheduler persistence;
+            # the browser needs the measured Nav2 state even when no schedule
+            # row is associated with a manually selected map goal.
+            await self.broadcast(data)
         elif kind == 'HEARTBEAT':
             robot_id = str(data.get('robot_id') or '').strip()
             if robot_id:
@@ -484,6 +488,14 @@ class TwinRuntime:
             await self.broadcast_runtime_status()
         elif kind in ('ROS_DIAGNOSTICS', 'DIAGNOSTICS'):
             await self.handle_ros_diagnostics(data)
+        elif kind == 'SYSTEM_DIAGNOSTICS':
+            # Some bridge versions emit the richer packet without a separate
+            # ROS_DIAGNOSTICS frame.  Ingest it as measured runtime health as
+            # well as forwarding the robot-scoped console payload.
+            await self.handle_ros_diagnostics(data)
+            await self.broadcast(data)
+        elif kind in ('LIDAR_SCAN', 'MAP_SNAPSHOT', 'NAV_GLOBAL_PATH', 'NAV_LOCAL_PATH', 'NAV_GOAL', 'CONTROLLER_STATE'):
+            await self.broadcast(data)
         elif kind == 'BRIDGE_STATUS':
             robot_id = str(data.get('robot_id') or '').strip()
             if robot_id and str(data.get('state') or '').upper() in ('CONNECTED', 'CONNECTING', 'RECONNECTING'):
@@ -516,6 +528,8 @@ class TwinRuntime:
                 self.ros_diagnostics[key] = values[key][:200]
         if isinstance(values.get('metrics'), dict):
             self.ros_diagnostics['metrics'] = dict(values['metrics'])
+        if isinstance(values.get('errors'), list):
+            self.ros_diagnostics['errors'] = values['errors'][:100]
         if values.get('simulation_time') is not None:
             self.ros_diagnostics['simulation_time'] = values.get('simulation_time')
         self.ros_diagnostics['last_update_at'] = data.get('timestamp') or datetime.now(timezone.utc).isoformat()
@@ -844,6 +858,30 @@ class TwinRuntime:
                 await consumer.send_json({
                     'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
                     'message': 'ROS bridge is offline; manual command was not sent',
+                })
+        elif t in ('NAV_GOAL', 'NAV_CANCEL', 'NAV_PAUSE', 'NAV_RESUME'):
+            if not self.is_external:
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'Autonomous robot control requires an active ROS/Gazebo bridge',
+                })
+                return
+            if t == 'NAV_GOAL':
+                result = await self.gateway().send_command(msg.robot_id, 'NAVIGATE', {
+                    'x': msg.x, 'y': msg.y, 'yaw': msg.yaw, 'frame_id': msg.frame_id,
+                })
+                if result.get('ok'):
+                    await self.broadcast({'type': 'NAV_GOAL', 'goal': {
+                        'robot_id': msg.robot_id, 'frame_id': msg.frame_id,
+                        'x': msg.x, 'y': msg.y, 'yaw': msg.yaw,
+                        'status': 'SENT', 'timestamp': datetime.now(timezone.utc).isoformat(),
+                    }})
+            else:
+                result = await self.gateway().send_command(msg.robot_id, t, {})
+            if not result.get('ok'):
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'ROS bridge is offline; navigation command was not sent',
                 })
         elif t == 'COPILOT_ASK':
             snapshot = json.loads(json.dumps(eng.state))

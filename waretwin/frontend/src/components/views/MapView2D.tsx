@@ -3,7 +3,7 @@ import { STATUS_COLOR, layout, useStore, type TagGraph } from "../../state/store
 import { buildNavGrid } from "../../layout/navgrid";
 import { getEngine } from "../../simulation/runner";
 import { rackOccupancy } from "../../layout/shelfOccupancy";
-import { floorBoundary, polygonPoints } from "../../layout/coordinates";
+import { floorBoundary, polygonPoints, worldToSvgTransform } from "../../layout/coordinates";
 import { buildAisleFootprint, rackFootprint2D, resolveNavigationEdgeEndpoints, zoneLabelLayout } from "../../layout/geometry";
 import { canonicalFloorId, resolveRuntimeFloorIndex, sameFloor, type WarehouseLayout } from "../../layout/types";
 import type { TwinState } from "../../schema/twin_state";
@@ -93,16 +93,23 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
   const { width: W, depth: D } = mapLayout.size;
   const activeFloor = mapLayout.floors.find((f) => sameFloor(f.id, canonicalMapFloor));
   const boundary = activeFloor ? floorBoundary(activeFloor, W, D) : [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: D }, { x: 0, y: D }];
+  const mapBounds = {
+    minX: Math.min(...boundary.map((point) => point.x)), maxX: Math.max(...boundary.map((point) => point.x)),
+    minY: Math.min(...boundary.map((point) => point.y)), maxY: Math.max(...boundary.map((point) => point.y)),
+  };
+  const mapOrigin = { x: mapBounds.minX, y: mapBounds.minY };
   const sameLayoutFloor = (id: number | string | undefined) => {
     const value = id ?? 1;
     return sameFloor(value, canonicalMapFloor) || resolveRuntimeFloorIndex(mapLayout, value) === resolveRuntimeFloorIndex(mapLayout, canonicalMapFloor);
   };
   const activeAisles = mapLayout.aisles.filter((aisle) => sameLayoutFloor(aisle.floor_id));
   const canonicalTags = mapLayout.navigation_tags.filter((tag) => sameLayoutFloor(tag.floor_id));
-  const renderTags = canonicalTags.length > 0 ? canonicalTags : (Array.isArray(tagGraph?.tags) ? tagGraph.tags : EMPTY_TAGS);
+  const graphTags = tagGraph?.frame_id === "map" && tagGraph.units === "m" && Array.isArray(tagGraph.tags) ? tagGraph.tags : EMPTY_TAGS;
+  const renderTags = canonicalTags.length > 0 ? canonicalTags : graphTags;
   const canonicalEdges = mapLayout.navigation_edges.filter((edge) => sameLayoutFloor(edge.floor_id));
-  const renderEdges = canonicalEdges.length > 0 ? canonicalEdges : (Array.isArray(tagGraph?.edges) ? tagGraph.edges : EMPTY_EDGES);
-  const grid = useMemo(() => buildNavGrid(mapLayout, canonicalMapFloor), [canonicalMapFloor, layoutRevision, mapLayout]);
+  const graphEdges = tagGraph?.frame_id === "map" && tagGraph.units === "m" && Array.isArray(tagGraph.edges) ? tagGraph.edges : EMPTY_EDGES;
+  const renderEdges = canonicalEdges.length > 0 ? canonicalEdges : graphEdges;
+  const grid = useMemo(() => buildNavGrid(mapLayout, canonicalMapFloor, { origin: mapOrigin }), [canonicalMapFloor, layoutRevision, mapLayout, mapBounds.minX, mapBounds.minY]);
 
   // 障礙格合併成矩形 (逐列 run-length) 以減少 SVG 元素
   const blocks = useMemo(() => {
@@ -157,7 +164,10 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
     return `rgb(${Math.round(r0 + (r1 - r0) * k)},${Math.round(g0 + (g1 - g0) * k)},${Math.round(b0 + (b1 - b0) * k)})`;
   };
 
-  const baseView = { x: -2, y: -7, width: W + 4, height: D + 10 };
+  const viewPadding = Math.max(mapBounds.maxX - mapBounds.minX, mapBounds.maxY - mapBounds.minY) * 0.03;
+  const baseView = { x: mapBounds.minX - viewPadding, y: mapBounds.minY - viewPadding,
+    width: mapBounds.maxX - mapBounds.minX + viewPadding * 2,
+    height: mapBounds.maxY - mapBounds.minY + viewPadding * 2 };
   const zoomBy = (factor: number) => setZoom((value) => Math.max(0.5, Math.min(4, value * factor)));
   const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
   const beginPan = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -209,14 +219,15 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
         <button type="button" onClick={resetView} aria-label="Reset map view">⌂</button>
       </div>
       <svg className={`map2d-canvas${panDrag ? " is-panning" : ""}`} viewBox={`${baseView.x + pan.x} ${baseView.y + pan.y} ${baseView.width / zoom} ${baseView.height / zoom}`} preserveAspectRatio="xMidYMid meet" onClick={() => selectShelf(null)} onPointerDown={beginPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan} onWheel={zoomWheel}>
+      <g className="map2d-world" transform={worldToSvgTransform(mapBounds)}>
       <polygon points={polygonPoints(boundary)} fill={mapColors.floor} stroke={mapColors.border} strokeWidth="0.4" />
       {activeFloor?.holes?.map((hole, index) => <polygon key={`floor-hole-${index}`} points={polygonPoints(hole)} fill={mapColors.hole} stroke={mapColors.border} strokeWidth="0.25" />)}
       {/* 格線 */}
-      {Array.from({ length: W / 10 + 1 }, (_, i) => <line key={"v" + i} x1={i * 10} x2={i * 10} y1="0" y2={D} stroke={mapColors.grid} strokeWidth="0.15" />)}
-      {Array.from({ length: D / 10 + 1 }, (_, i) => <line key={"h" + i} y1={i * 10} y2={i * 10} x1="0" x2={W} stroke={mapColors.grid} strokeWidth="0.15" />)}
+      {Array.from({ length: W / 10 + 1 }, (_, i) => <line key={"v" + i} x1={mapBounds.minX + i * 10} x2={mapBounds.minX + i * 10} y1={mapBounds.minY} y2={mapBounds.maxY} stroke={mapColors.grid} strokeWidth="0.15" />)}
+      {Array.from({ length: D / 10 + 1 }, (_, i) => <line key={"h" + i} y1={mapBounds.minY + i * 10} y2={mapBounds.minY + i * 10} x1={mapBounds.minX} x2={mapBounds.maxX} stroke={mapColors.grid} strokeWidth="0.15" />)}
       {heat && (
         <g opacity="0.75">
-          {Array.from(heat.v).map((s, i) => { const t = s / heat.max; if (t < 0.08) return null; return <rect key={i} x={(i % heat.cols) * heat.cs} y={Math.floor(i / heat.cols) * heat.cs} width={heat.cs} height={heat.cs} fill={heatColor(t)} opacity={Math.min(0.85, t + 0.15)} />; })}
+          {Array.from(heat.v).map((s, i) => { const t = s / heat.max; if (t < 0.08) return null; return <rect key={i} x={mapBounds.minX + (i % heat.cols) * heat.cs} y={mapBounds.minY + Math.floor(i / heat.cols) * heat.cs} width={heat.cs} height={heat.cs} fill={heatColor(t)} opacity={Math.min(0.85, t + 0.15)} />; })}
         </g>
       )}
       {mapFloor !== 1 && <text x={1.5} y={-3.5} fill="#0f766e" fontSize="2.6" fontWeight="700">FLOOR {mapFloor} · MEZZANINE</text>}
@@ -239,7 +250,7 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
       {mapLayout.lifts.map((l) => (
         <g key={l.id}><rect x={l.cell[0] - 0.7} y={l.cell[1] - 0.7} width="2.4" height="2.4" fill="none" stroke="#a78bfa" strokeWidth="0.35" /><text x={l.cell[0] + 2} y={l.cell[1] + 0.6} fill="#a78bfa" fontSize="1.8">{l.id}</text></g>
       ))}
-      {blocks.map(([c, r, len], i) => <rect key={i} x={c * mapLayout.grid.cell_size} y={r * mapLayout.grid.cell_size} width={len * mapLayout.grid.cell_size} height={mapLayout.grid.cell_size} fill={mapColors.blocked} />)}
+      {blocks.map(([c, r, len], i) => <rect key={i} x={mapBounds.minX + c * mapLayout.grid.cell_size} y={mapBounds.minY + r * mapLayout.grid.cell_size} width={len * mapLayout.grid.cell_size} height={mapLayout.grid.cell_size} fill={mapColors.blocked} />)}
       {/* Exact rack footprints from the shared database map (nav cells above are only a conservative collision mask). */}
       {mapLayout.racks.filter((r) => sameLayoutFloor(r.floor)).map((r) => {
         const footprint = rackFootprint2D(r.position, r.size);
@@ -293,6 +304,7 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
           <text x="20" y="-3" fill={mapColors.label} fontSize="1.7" textAnchor="end" fontWeight="600">{mode === "TRAFFIC" ? "LIVE ROBOT DENSITY" : "ACCUMULATED TRAFFIC"}</text>
         </g>
       )}
+      </g>
       </svg>
     </div>
   );

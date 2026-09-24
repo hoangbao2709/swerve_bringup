@@ -10,11 +10,16 @@ launch is responsible only for starting the vendor drivers; its topics are
 remapped to the standard interface below.
 """
 
+import hashlib
+import json
+import math
 import os
+from pathlib import Path
+import xml.etree.ElementTree as ET
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, SetLaunchConfiguration
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, Command, EnvironmentVariable, PythonExpression
@@ -45,12 +50,20 @@ def generate_launch_description():
     mode = LaunchConfiguration('mode')
     mapping_mode = IfCondition(PythonExpression(["'", mode, "' == 'mapping'"]))
     navigation_mode = IfCondition(PythonExpression(["'", mode, "' == 'navigation'"]))
+    simulated_mapping_mode = IfCondition(PythonExpression([
+        "'", use_sim, "' == 'true' and '", mode, "' == 'mapping'"]))
+    require_canonical_map = ParameterValue(PythonExpression([
+        "'", use_sim, "' == 'true' or '", mode, "' == 'navigation'"]), value_type=bool)
+    require_tag_map = ParameterValue(PythonExpression([
+        "'", use_sim, "' == 'true' or '", mode, "' == 'navigation'"]), value_type=bool)
     lidar_topic = LaunchConfiguration('real_lidar_topic')
     imu_topic = LaunchConfiguration('real_imu_topic')
     odom_topic = LaunchConfiguration('real_odom_topic')
     artifact_root = LaunchConfiguration('artifact_root')
     robot_id = LaunchConfiguration('robot_id')
     namespace = LaunchConfiguration('namespace')
+    allow_dev_world = LaunchConfiguration('allow_dev_world')
+    map_sync_request_file = LaunchConfiguration('map_sync_request_file')
     datamatrix_map_file = LaunchConfiguration('datamatrix_map_file')
     tag_graph_file = LaunchConfiguration('tag_graph_file')
     map_file = LaunchConfiguration('map_file')
@@ -68,7 +81,108 @@ def generate_launch_description():
                 '(SLAM and Nav2 are mutually exclusive)')
         return [LogInfo(msg=f'WareTwin runtime mode: {selected.upper()}')]
 
+    def validate_map_bundle(context):
+        if LaunchConfiguration('use_sim').perform(context).lower() != 'true':
+            return []
+        if LaunchConfiguration('allow_dev_world').perform(context).lower() == 'true':
+            return [LogInfo(msg='Explicit development-world fallback is enabled')]
+        world = Path(LaunchConfiguration('world').perform(context)).expanduser().resolve()
+        artifact_root = world.parent.parent
+        manifest_path = artifact_root / 'manifest.json'
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            revision = int(manifest['revision'])
+            if manifest.get('frame_id') != 'map' or manifest.get('units') != 'm':
+                raise ValueError('manifest must declare frame_id=map and units=m')
+            if world != (artifact_root / manifest['artifacts']['gazebo_world']).resolve():
+                raise ValueError('selected Gazebo world is not the manifest world artifact')
+            world_xml = ET.parse(world).getroot()
+            if world_xml.find(".//plugin[@name='gazebo_ros_state'][@filename='libgazebo_ros_state.so']") is None:
+                raise ValueError('Gazebo world lacks gazebo_ros_state plugin required for V30E simulation')
+            wanted = str(LaunchConfiguration('robot_id').perform(context))
+            robot = next((row for row in manifest.get('robots', []) if str(row.get('id')) == wanted), None)
+            if robot is None:
+                raise ValueError(f'robot {wanted} has no canonical spawn pose')
+            spawn = robot.get('pose')
+            if not isinstance(spawn, list) or len(spawn) != 4:
+                raise ValueError(f'robot {wanted} spawn pose must be [x, y, z, yaw]')
+            spawn = [float(value) for value in spawn]
+            if not all(math.isfinite(value) for value in spawn):
+                raise ValueError(f'robot {wanted} spawn pose contains a non-finite value')
+            nav2_rel = (manifest.get('nav2_maps') or {}).get(str(robot.get('floor_id')))
+            if not nav2_rel:
+                nav2_rel = manifest['artifacts']['nav2_map']
+            expected = {
+                'datamatrix_map_file': (artifact_root / manifest['artifacts']['datamatrix_map']).resolve(),
+                'tag_graph_file': (artifact_root / manifest['artifacts']['tag_graph']).resolve(),
+            }
+            expected['map_file'] = (artifact_root / nav2_rel).resolve()
+            for arg, path in expected.items():
+                actual = Path(LaunchConfiguration(arg).perform(context)).expanduser().resolve()
+                if actual != path:
+                    raise ValueError(f'{arg} is not from published revision {revision}: {actual}')
+            for relative, expected_hash in (manifest.get('sha256') or {}).items():
+                path = (artifact_root / relative).resolve(strict=True)
+                if not path.is_relative_to(artifact_root):
+                    raise ValueError(f'artifact path escapes revision bundle: {relative}')
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                if digest != expected_hash:
+                    raise ValueError(f'artifact hash mismatch: {relative}')
+            canonical = json.loads((artifact_root / manifest['artifacts']['canonical_map']).read_text(encoding='utf-8'))
+            if canonical.get('frame_id') != 'map' or int(canonical.get('revision', -1)) != revision:
+                raise ValueError('canonical map frame/revision does not match manifest')
+            origin = canonical.get('origin') or {}
+            expected_bounds = {
+                'min_x': float(origin['x']), 'min_y': float(origin['y']),
+                'max_x': float(origin['x']) + float(canonical['width']),
+                'max_y': float(origin['y']) + float(canonical['height']),
+            }
+            actual_bounds = manifest.get('gazebo_bounds') or {}
+            if any(abs(float(actual_bounds[key]) - value) > 1e-6 for key, value in expected_bounds.items()):
+                raise ValueError('Gazebo world bounds do not match canonical map bounds')
+            gazebo_manifest = json.loads(
+                (artifact_root / manifest['artifacts']['gazebo_manifest']).read_text(encoding='utf-8'))
+            canonical_floors = {str(item.get('id')): item for item in canonical.get('floors', [])}
+            gazebo_floors = {str(item.get('id')): item for item in gazebo_manifest.get('floors', [])}
+            if set(canonical_floors) != set(gazebo_floors):
+                raise ValueError('Gazebo floor set does not match canonical map')
+            for floor_id, floor in canonical_floors.items():
+                if (floor.get('boundary') != gazebo_floors[floor_id].get('boundary')
+                        or floor.get('holes', []) != gazebo_floors[floor_id].get('holes', [])):
+                    raise ValueError(f'Gazebo floor {floor_id} geometry does not match canonical map')
+            floor = canonical_floors.get(str(robot.get('floor_id')))
+            nav_bounds = (manifest.get('nav2_bounds') or {}).get(str(robot.get('floor_id')))
+            if floor is None or nav_bounds is None:
+                raise ValueError('Nav2 bounds are missing for selected robot floor')
+            ring = floor.get('boundary') or []
+            xs = [float(point['x'] if isinstance(point, dict) else point[0]) for point in ring]
+            ys = [float(point['y'] if isinstance(point, dict) else point[1]) for point in ring]
+            resolution = float(nav_bounds['resolution'])
+            nav_origin = nav_bounds['origin']
+            nav_size = (float(nav_bounds['width']) * resolution,
+                        float(nav_bounds['height']) * resolution)
+            if (abs(float(nav_origin[0]) - min(xs)) > 1e-6
+                    or abs(float(nav_origin[1]) - min(ys)) > 1e-6
+                    or resolution <= 0
+                    or nav_size[0] + 1e-6 < max(xs) - min(xs)
+                    or nav_size[1] + 1e-6 < max(ys) - min(ys)
+                    or nav_size[0] - (max(xs) - min(xs)) >= resolution + 1e-6
+                    or nav_size[1] - (max(ys) - min(ys)) >= resolution + 1e-6):
+                raise ValueError('Nav2 bounds/origin do not match canonical floor')
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f'Published map bundle validation failed before simulation startup: {exc}. '
+                'Publish a valid map or explicitly set allow_dev_world:=true.') from exc
+        return [
+            SetLaunchConfiguration('v30e_initial_x', str(spawn[0])),
+            SetLaunchConfiguration('v30e_initial_y', str(spawn[1])),
+            SetLaunchConfiguration('v30e_initial_yaw', str(spawn[3])),
+            LogInfo(msg=f'Published canonical map bundle verified: revision={revision}, frame=map'),
+            LogInfo(msg=f'Global localization prior loaded from robot spawn: x={spawn[0]}, y={spawn[1]}, yaw={spawn[3]}'),
+        ]
+
     mode_guard = OpaqueFunction(function=validate_mode)
+    map_guard = OpaqueFunction(function=validate_map_bundle)
 
     # Keep URDF calibration in one place. Gazebo consumes the same values for
     # its sensor plugins; on a real robot the fixed TF is published here.
@@ -100,6 +214,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'gazebo.launch.py')),
         condition=IfCondition(use_sim),
         launch_arguments={'world': LaunchConfiguration('world'), 'gui': LaunchConfiguration('gui'),
+                          'allow_dev_world': allow_dev_world,
                           'robot_id': robot_id,
                           'use_sim_time': use_sim_time,
                           'contact_diagnostics': contact_diagnostics,
@@ -121,8 +236,14 @@ def generate_launch_description():
                parameters=[os.path.join(pkg, 'config', 'ekf.yaml'), {'use_sim_time': use_sim_time}],
                remappings=[('/odom', odom_topic), ('/imu/data', imu_topic)])
     slam = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'slam.launch.py')),
-                                   launch_arguments={'use_sim_time': use_sim_time, 'input_topic': lidar_topic,
-                                                     'start_slam': 'true'}.items(),
+                                   launch_arguments={
+                                       'use_sim_time': use_sim_time, 'input_topic': lidar_topic,
+                                       'start_slam': 'true',
+                                       'map_topic': PythonExpression([
+                                           "'/slam/map' if '", use_sim, "' == 'true' else '/map'"]),
+                                       'transform_publish_period': PythonExpression([
+                                           "'0.0' if '", use_sim, "' == 'true' else '0.02'"]),
+                                   }.items(),
                                    condition=mapping_mode)
     # The point-cloud preprocessor and 2D projection are needed by Nav2 too.
     # Only SLAM itself is mapping-only; navigation gets the same /scan
@@ -134,7 +255,8 @@ def generate_launch_description():
         condition=navigation_mode)
     nav = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'navigation.launch.py')),
                                   launch_arguments={'use_sim_time': use_sim_time,
-                                                    'map_file': map_file}.items(),
+                                                    'map_file': map_file,
+                                                    'allow_dev_map': allow_dev_world}.items(),
                                   condition=navigation_mode)
     bridge = Node(package='swerve_bridge', executable='swerve_bridge_node', name='swerve_bridge', output='screen',
                   parameters=[os.path.join(get_package_share_directory('swerve_bridge'), 'config', 'bridge.yaml'),
@@ -145,7 +267,25 @@ def generate_launch_description():
                                'django_token': LaunchConfiguration('bridge_token'),
                                'django_ws_url': LaunchConfiguration('bridge_ws_url'),
                                'artifact_root': artifact_root,
-                               'gazebo_world_file': LaunchConfiguration('world')}])
+                               'gazebo_world_file': LaunchConfiguration('world'),
+                               'nav2_map_file': map_file,
+                               'datamatrix_map_file': datamatrix_map_file,
+                               'tag_graph_file': tag_graph_file,
+                               'map_sync_request_file': map_sync_request_file,
+                               'require_nav2_map': require_canonical_map,
+                               'require_tag_map': require_tag_map}])
+    mapping_map_server = Node(
+        package='nav2_map_server', executable='map_server', name='map_server', output='screen',
+        parameters=[{'use_sim_time': use_sim_time, 'yaml_filename': map_file}],
+        condition=simulated_mapping_mode,
+    )
+    mapping_map_lifecycle = Node(
+        package='nav2_lifecycle_manager', executable='lifecycle_manager',
+        name='lifecycle_manager_mapping_map', output='screen',
+        parameters=[{'use_sim_time': use_sim_time, 'autostart': True,
+                     'node_names': ['map_server']}],
+        condition=simulated_mapping_mode,
+    )
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2', output='screen',
         arguments=['-d', LaunchConfiguration('rviz_config')],
@@ -156,14 +296,23 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'v30e_sim.launch.py')),
         launch_arguments={'enable_v30e_sim': 'true', 'use_sim_time': use_sim_time,
                           'datamatrix_map_file': datamatrix_map_file,
-                          'tag_graph_file': tag_graph_file}.items(),
-        condition=navigation_mode)
+                          'tag_graph_file': tag_graph_file,
+                          'initial_x': LaunchConfiguration('v30e_initial_x'),
+                          'initial_y': LaunchConfiguration('v30e_initial_y'),
+                          'initial_yaw': LaunchConfiguration('v30e_initial_yaw')}.items(),
+        condition=IfCondition(use_sim))
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim', default_value='true', description='true=Gazebo, false=physical robot drivers'),
+        DeclareLaunchArgument('allow_dev_world', default_value='false',
+                              description='Explicitly permit development world/map fallback.'),
+        DeclareLaunchArgument('map_sync_request_file', default_value='.runtime/map-sync-request.json'),
+        DeclareLaunchArgument('v30e_initial_x', default_value='0.0'),
+        DeclareLaunchArgument('v30e_initial_y', default_value='0.0'),
+        DeclareLaunchArgument('v30e_initial_yaw', default_value='0.0'),
         DeclareLaunchArgument('use_sim_time', default_value='true', description='Use Gazebo clock; set false for real robot'),
         DeclareLaunchArgument('mode', default_value='mapping',
-                              description='mapping=SLAM owns map->odom; navigation=static map + V30E owns map->odom'),
+                              description='Sim mapping uses canonical map + tag localization; real mapping uses SLAM; navigation uses canonical map + tag localization.'),
         DeclareLaunchArgument(
             'map_file',
             default_value=os.path.join(pkg, 'swerve_navigation', 'maps', 'warehouse.yaml'),
@@ -207,6 +356,7 @@ def generate_launch_description():
                               description='Published DataMatrix YAML; package config is the development fallback'),
         DeclareLaunchArgument('tag_graph_file', default_value=os.path.join(pkg, 'config', 'tag_graph.yaml'),
                               description='Published tag graph YAML; package config is the development fallback'),
-        mode_guard, sim, real_driver, real_state_publisher, ekf, v30e, slam, navigation_lidar,
-        nav, bridge, rviz,
+        mode_guard, map_guard, sim, real_driver, real_state_publisher, ekf,
+        v30e, slam, navigation_lidar, nav, mapping_map_server, mapping_map_lifecycle,
+        bridge, rviz,
     ])

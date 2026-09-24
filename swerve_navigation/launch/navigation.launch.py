@@ -91,6 +91,10 @@ def _validate_saved_map(yaml_path: str, default_map: Path) -> Path:
 
 def _nav_nodes(context, *, params_default: str, default_map: Path):
     map_path = _validate_saved_map(LaunchConfiguration('map_file').perform(context), default_map)
+    if map_path == default_map.resolve() and LaunchConfiguration('allow_dev_map').perform(context).lower() != 'true':
+        raise RuntimeError(
+            'The package Nav2 map is development-only; provide the selected published revision map '
+            'or explicitly set allow_dev_map:=true')
     params_path = Path(LaunchConfiguration('params_file').perform(context) or params_default).expanduser().resolve()
     if not params_path.is_file():
         raise RuntimeError(f'Nav2 params_file does not exist: {params_path}')
@@ -145,6 +149,8 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument('map_file', default_value=str(default_map), description='Static Nav2 map YAML'),
+        DeclareLaunchArgument('allow_dev_map', default_value='false',
+                              description='Explicitly permit the package development Nav2 map.'),
         DeclareLaunchArgument('params_file', default_value=params, description='Nav2 parameter file'),
         OpaqueFunction(function=lambda context: _nav_nodes(context, params_default=params, default_map=default_map)),
     ])

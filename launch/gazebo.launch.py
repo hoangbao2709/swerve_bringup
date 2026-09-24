@@ -17,7 +17,7 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
-def resolve_robot_spawn(world_path, robot_id, fallback):
+def resolve_robot_spawn(world_path, robot_id, fallback, allow_dev_world=False):
     """Return ``(x, y, z, yaw, source)`` for a world and selected robot.
 
     Published worlds carry a sibling ``manifest.json``.  Legacy development
@@ -25,6 +25,10 @@ def resolve_robot_spawn(world_path, robot_id, fallback):
     """
     manifest_path = Path(world_path).expanduser().resolve().parent / 'manifest.json'
     if not manifest_path.exists():
+        if not allow_dev_world:
+            raise RuntimeError(
+                f'Gazebo world has no generated map manifest: {manifest_path}; '
+                'publish a canonical map or explicitly set allow_dev_world:=true')
         return tuple(float(value) for value in fallback) + ('fallback',)
     try:
         manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
@@ -141,13 +145,14 @@ def generate_launch_description():
     def configure_spawn(context):
         world = LaunchConfiguration('world').perform(context)
         robot_id = LaunchConfiguration('robot_id').perform(context).strip() or 'R01'
+        allow_dev_world = LaunchConfiguration('allow_dev_world').perform(context).lower() == 'true'
         fallback = (
             LaunchConfiguration('spawn_x').perform(context),
             LaunchConfiguration('spawn_y').perform(context),
             LaunchConfiguration('spawn_z').perform(context),
             LaunchConfiguration('spawn_yaw').perform(context),
         )
-        x, y, z, yaw, source = resolve_robot_spawn(world, robot_id, fallback)
+        x, y, z, yaw, source = resolve_robot_spawn(world, robot_id, fallback, allow_dev_world)
         # Set substitutions before the concrete Node executes.  Keeping Node
         # concrete preserves the existing controller OnProcessExit chain.
         resolved = [
@@ -253,6 +258,8 @@ def generate_launch_description():
             'robot_id', default_value='R01',
             description='Robot ID selected from the published Gazebo manifest.',
         ),
+        DeclareLaunchArgument('allow_dev_world', default_value='false',
+                              description='Explicitly permit a development world and fallback spawn pose.'),
         DeclareLaunchArgument('spawn_x', default_value='0.0', description='Development-only fallback spawn X.'),
         DeclareLaunchArgument('spawn_y', default_value='0.0', description='Development-only fallback spawn Y.'),
         DeclareLaunchArgument('spawn_z', default_value='0.002', description='Development-only fallback spawn Z.'),

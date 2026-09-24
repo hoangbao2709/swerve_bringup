@@ -20,11 +20,13 @@ def active_warehouse(warehouse_id: int | None = None) -> Warehouse:
 def get_tag_graph(warehouse_id: int | None = None) -> dict[str, Any]:
     wh = active_warehouse(warehouse_id)
     if wh is None:
-        return {'warehouse_id': None, 'tags': [], 'edges': []}
+        return {'warehouse_id': None, 'frame_id': 'map', 'units': 'm', 'tags': [], 'edges': []}
     tags = list(NavigationTag.objects.filter(warehouse=wh, enabled=True))
     edges = list(NavigationTagEdge.objects.filter(warehouse=wh, enabled=True).select_related('from_tag', 'to_tag'))
     return {
         'warehouse_id': wh.id,
+        'frame_id': 'map',
+        'units': 'm',
         'tags': [
             {
                 'id': t.id, 'tag_id': t.tag_id, 'family': t.family, 'size': t.size,

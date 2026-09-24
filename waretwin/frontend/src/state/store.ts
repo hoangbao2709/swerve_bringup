@@ -58,6 +58,8 @@ export type AuthUser = { id: number; username: string; email: string; role: "adm
 export type ModalKind = "audit" | "tasks" | "robot" | "fleet" | "scheduler" | "flows" | "shelf" | "conveyor";
 export type TagGraph = {
   warehouse_id: number | null;
+  frame_id?: string;
+  units?: string;
   tags: Array<{ id: number; tag_id: number; family?: string; size?: number; floor_id?: string; x: number; y: number; z?: number; yaw: number; lane_id?: string; zone_id?: number | null; metadata?: Record<string, unknown>; label?: string }>;
   edges: Array<{ from_tag_id: number; to_tag_id: number; cost?: number; bidirectional?: boolean }>;
 };
@@ -118,7 +120,7 @@ interface Store {
   layoutRevision: number;
   activeWarehouseId: number | null;
   layoutUpdatedAt: string | null;
-  mapSync: { publishedRevision: number | null; publishedVersion: number; rosRevision: number | null; gazeboRevision: number | null; status: string; error: string | null };
+  mapSync: { publishedRevision: number | null; publishedVersion: number; rosRevision: number | null; gazeboRevision: number | null; nav2Revision: number | null; tagMapRevision: number | null; tfStatus: boolean; status: string; error: string | null; robots: Record<string, { rosRevision: number | null; gazeboRevision: number | null; nav2Revision: number | null; tagMapRevision: number | null; tfStatus: boolean; error: string | null; status: string }> };
   setMapSync: (next: Partial<Store["mapSync"]>) => void;
   setLayout: (next: WarehouseLayout, meta?: { revision?: number; warehouse_id?: number | null; updated_at?: string | null }) => void;
   selectedRobot: RobotId | null;
@@ -372,7 +374,7 @@ export const useStore = create<Store>((set) => ({
   layoutRevision: 0,
   activeWarehouseId: null,
   layoutUpdatedAt: null,
-  mapSync: { publishedRevision: null, publishedVersion: 0, rosRevision: null, gazeboRevision: null, status: "ROS_OFFLINE", error: null },
+  mapSync: { publishedRevision: null, publishedVersion: 0, rosRevision: null, gazeboRevision: null, nav2Revision: null, tagMapRevision: null, tfStatus: false, status: "ROS_OFFLINE", error: null, robots: {} },
   setMapSync: (next) => set((st) => ({ mapSync: { ...st.mapSync, ...next } })),
   setLayout: (next: WarehouseLayout, meta: { revision?: number; warehouse_id?: number | null; updated_at?: string | null } = {}) => {
     const nextLayout = canonicalLayout(next);

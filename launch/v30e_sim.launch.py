@@ -3,7 +3,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -25,10 +25,24 @@ def generate_launch_description():
                   output='screen', condition=IfCondition(enabled),
                   parameters=[sim_cfg, {'marker_map': marker_map,
                                         'use_sim_time': LaunchConfiguration('use_sim_time')}])
-    ekf = Node(package='robot_localization', executable='ekf_node', name='ekf_v30e',
-               output='screen', condition=IfCondition(enabled),
-               parameters=[ekf_cfg, {'use_sim_time': LaunchConfiguration('use_sim_time')}],
-               remappings=[('odometry/filtered', '/odometry/v30e')])
+    def ekf_from_spawn(context):
+        x = float(LaunchConfiguration('initial_x').perform(context))
+        y = float(LaunchConfiguration('initial_y').perform(context))
+        yaw = float(LaunchConfiguration('initial_yaw').perform(context))
+        # robot_localization state ordering is x,y,z,roll,pitch,yaw,vx,vy,vz,
+        # vroll,vpitch,vyaw,ax,ay,az. Only the map-frame spawn prior is set;
+        # encoder odometry remains local and starts at zero in `odom`.
+        initial_state = [x, y, 0.0, 0.0, 0.0, yaw] + [0.0] * 9
+        use_sim_time = LaunchConfiguration('use_sim_time').perform(context).lower() == 'true'
+        return [Node(
+            package='robot_localization', executable='ekf_node', name='ekf_v30e',
+            output='screen', parameters=[ekf_cfg, {
+                'use_sim_time': use_sim_time,
+                'initial_state': initial_state,
+            }], remappings=[('odometry/filtered', '/odometry/v30e')],
+        )]
+
+    ekf = OpaqueFunction(function=ekf_from_spawn, condition=IfCondition(enabled))
     tag_navigation = Node(package='swerve_bringup', executable='tag_route_planner',
                           name='tag_route_planner', output='screen', condition=IfCondition(enabled),
                           parameters=[tag_nav_cfg, {'tag_graph_file': tag_graph,
@@ -38,4 +52,7 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('datamatrix_map_file', default_value=map_file),
         DeclareLaunchArgument('tag_graph_file', default_value=os.path.join(pkg, 'config', 'tag_graph.yaml')),
+        DeclareLaunchArgument('initial_x', default_value='0.0'),
+        DeclareLaunchArgument('initial_y', default_value='0.0'),
+        DeclareLaunchArgument('initial_yaw', default_value='0.0'),
         reader, tag_navigation, ekf])

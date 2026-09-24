@@ -9,6 +9,8 @@ ekf_v30e:
     odom_frame: odom
     base_link_frame: base_footprint
     world_frame: map
+    # `initial_state` is injected by v30e_sim.launch.py from the selected
+    # published robot spawn pose. Local wheel odometry remains in `odom`.
     # Continuous local estimate remains the source of odom->base_footprint.
     odom0: /odom
     # Only wheel velocities are propagated here.  Raw odom x/y/yaw is not an

@@ -118,8 +118,20 @@ async function refreshMapSyncStatus() {
       publishedVersion: Number(data.published_version ?? 0),
       rosRevision: typeof data.ros_revision === "number" ? data.ros_revision : null,
       gazeboRevision: typeof data.gazebo_revision === "number" ? data.gazebo_revision : null,
+      nav2Revision: typeof data.nav2_revision === "number" ? data.nav2_revision : null,
+      tagMapRevision: typeof data.tag_map_revision === "number" ? data.tag_map_revision : null,
+      tfStatus: Boolean(data.tf_status),
       status: String(data.status ?? "ERROR"),
       error: data.error ? String(data.error) : null,
+      robots: data.robot_map_sync && typeof data.robot_map_sync === "object"
+        ? Object.fromEntries(Object.entries(data.robot_map_sync as Record<string, Record<string, unknown>>).map(([id, row]) => [id, {
+            rosRevision: typeof row.ros_revision === "number" ? row.ros_revision : null,
+            gazeboRevision: typeof row.gazebo_revision === "number" ? row.gazebo_revision : null,
+            nav2Revision: typeof row.nav2_revision === "number" ? row.nav2_revision : null,
+            tagMapRevision: typeof row.tag_map_revision === "number" ? row.tag_map_revision : null,
+            tfStatus: Boolean(row.tf_status), error: row.error ? String(row.error) : null,
+            status: String(row.status ?? "OUT_OF_SYNC"),
+          }])) : {},
     });
   } catch (error) {
     console.warn("[map-sync] status refresh failed", error);
@@ -267,7 +279,7 @@ function handle(msg: ServerMessage) {
       break;
     }
     case "map.published": {
-      st.setMapSync({ publishedRevision: msg.map_revision, publishedVersion: msg.published_version, status: st.mapSync.rosRevision === msg.map_revision ? "SYNCED" : "OUT_OF_SYNC", error: null });
+      st.setMapSync({ publishedRevision: msg.map_revision, publishedVersion: msg.published_version, status: "PENDING_SYNC", error: `Revision ${msg.map_revision} is waiting for runtime reload and acknowledgement` });
       break;
     }
     case "SCHEDULE_UPDATED": scheduleListeners.forEach((fn) => fn(msg.source)); break;
@@ -284,8 +296,18 @@ function handle(msg: ServerMessage) {
         publishedVersion: msg.published_version ?? st.mapSync.publishedVersion,
         rosRevision: msg.ros_revision ?? st.mapSync.rosRevision,
         gazeboRevision: msg.gazebo_revision ?? st.mapSync.gazeboRevision,
+        nav2Revision: msg.nav2_revision ?? st.mapSync.nav2Revision,
+        tagMapRevision: msg.tag_map_revision ?? st.mapSync.tagMapRevision,
+        tfStatus: msg.tf_status ?? st.mapSync.tfStatus,
         status: msg.map_sync_status ?? st.mapSync.status,
         error: msg.map_sync_error ?? null,
+        robots: msg.robot_map_sync
+          ? Object.fromEntries(Object.entries(msg.robot_map_sync).map(([id, row]) => [id, {
+              rosRevision: row.ros_revision, gazeboRevision: row.gazebo_revision,
+              nav2Revision: row.nav2_revision, tagMapRevision: row.tag_map_revision,
+              tfStatus: row.tf_status, error: row.error, status: row.status,
+            }]))
+          : st.mapSync.robots,
       });
       break;
     case "ROBOT_CONTROL_STATUS":

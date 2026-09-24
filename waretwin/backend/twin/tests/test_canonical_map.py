@@ -14,8 +14,18 @@ class CanonicalMapTests(SimpleTestCase):
     def test_legacy_size_becomes_rectangular_floor(self):
         result = canonicalize_layout({"size": {"width": 20, "depth": 10}, "floors": [{"id": 1}]})
         self.assertEqual(result["schema_version"], 2)
-        self.assertEqual(result["coordinate_system"]["frame"], "warehouse_map")
-        self.assertEqual(result["floors"][0]["boundary"], [[0, 0], [20, 0], [20, 10], [0, 10]])
+        self.assertEqual(result["coordinate_system"]["frame"], "map")
+        self.assertEqual(result["frame_id"], "map")
+        self.assertEqual(result["origin"], {"x": 0.0, "y": 0.0})
+        self.assertEqual((result["width"], result["height"]), (20.0, 10.0))
+
+    def test_negative_nonzero_floor_bounds_are_preserved_as_world_origin(self):
+        result = canonicalize_layout({"size": {"width": 8, "depth": 6}, "floors": [{
+            "id": "F1", "boundary": [[-4, -3], [4, -3], [4, 3], [-4, 3]],
+        }]})
+        self.assertEqual(result["origin"], {"x": -4.0, "y": -3.0})
+        self.assertEqual((result["width"], result["height"]), (8.0, 6.0))
+        self.assertEqual(result["floors"][0]["boundary"], [[-4, -3], [4, -3], [4, 3], [-4, 3]])
 
     def test_concave_floor_and_hole_are_valid(self):
         layout = {

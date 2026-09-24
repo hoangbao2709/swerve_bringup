@@ -512,6 +512,7 @@ table.dt tbody tr:hover td { background: var(--panel-2); }
 }
 .map2d-shell.map2d-light { background: #f8fafc; color: #0f172a; }
 .map2d-canvas { display: block; width: 100%; height: 100%; }
+.map2d-world text { transform: scaleY(-1); transform-box: fill-box; transform-origin: center; }
 .map2d-theme-toggle {
   position: absolute;
   top: 10px;

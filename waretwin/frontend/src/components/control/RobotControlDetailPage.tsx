@@ -5,6 +5,7 @@ import { useSimulationRunner } from "../../simulation/runner";
 import { layout, useStore } from "../../state/store";
 import type { RobotDetailError, RobotDetailGoal, RobotDetailMapSnapshot, RobotDetailPath, RobotDetailScan, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
 import type { WarehouseLayout } from "../../layout/types";
+import { createWorldTransform, floorBoundary, screenToWorld, worldToScreen, type WorldBounds, type WorldTransform } from "../../layout/coordinates";
 
 type WorldGoal = { x: number; y: number; yaw: number };
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
@@ -468,26 +469,24 @@ function DetailMapCanvas({ robotId, robot, mapSnapshot, globalPath, localPath, g
   </div>;
 }
 
-type MapBounds = { minX: number; maxX: number; minY: number; maxY: number };
-type MapTransform = { scale: number; centerX: number; centerY: number; width: number; height: number; toCanvas: (x: number, y: number) => { x: number; y: number }; toWorld: (x: number, y: number) => { x: number; y: number } };
+type MapBounds = WorldBounds;
+type MapTransform = WorldTransform & { toCanvas: (x: number, y: number) => { x: number; y: number }; toWorld: (x: number, y: number) => { x: number; y: number } };
 
 function worldBounds(mapSnapshot: RobotDetailMapSnapshot | null, mapLayout: WarehouseLayout): MapBounds {
-  if (mapSnapshot && mapSnapshot.width > 0 && mapSnapshot.height > 0 && mapSnapshot.resolution > 0) {
+  if (mapSnapshot?.frame_id === "map" && mapSnapshot.width > 0 && mapSnapshot.height > 0 && mapSnapshot.resolution > 0) {
     return { minX: mapSnapshot.origin.x, maxX: mapSnapshot.origin.x + mapSnapshot.width * mapSnapshot.resolution, minY: mapSnapshot.origin.y, maxY: mapSnapshot.origin.y + mapSnapshot.height * mapSnapshot.resolution };
   }
-  return { minX: 0, maxX: Math.max(1, mapLayout.size.width), minY: 0, maxY: Math.max(1, mapLayout.size.depth) };
+  const floor = mapLayout.floors?.[0];
+  const boundary = floor ? floorBoundary(floor, mapLayout.size.width, mapLayout.size.depth) : [];
+  const xs = boundary.map((point) => point.x), ys = boundary.map((point) => point.y);
+  return boundary.length ? { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) }
+    : { minX: 0, maxX: mapLayout.size.width, minY: 0, maxY: mapLayout.size.depth };
 }
 
 function makeTransform(width: number, height: number, bounds: MapBounds, zoom: number, center: { x: number; y: number } | null, follow: boolean, robot?: RobotState): MapTransform {
-  const padding = 28;
-  const baseCenterX = (bounds.minX + bounds.maxX) / 2;
-  const baseCenterY = (bounds.minY + bounds.maxY) / 2;
-  const centerX = follow && robot ? robot.position[0] : center?.x ?? baseCenterX;
-  const centerY = follow && robot ? robot.position[2] : center?.y ?? baseCenterY;
-  const spanX = Math.max(1, bounds.maxX - bounds.minX) / Math.max(0.25, zoom);
-  const spanY = Math.max(1, bounds.maxY - bounds.minY) / Math.max(0.25, zoom);
-  const scale = Math.max(0.001, Math.min((Math.max(1, width - padding * 2)) / spanX, (Math.max(1, height - padding * 2)) / spanY));
-  return { scale, centerX, centerY, width, height, toCanvas: (x, y) => ({ x: width / 2 + (x - centerX) * scale, y: height / 2 - (y - centerY) * scale }), toWorld: (x, y) => ({ x: centerX + (x - width / 2) / scale, y: centerY - (y - height / 2) / scale }) };
+  const viewCenter = follow && robot ? { x: robot.position[0], y: robot.position[2] } : center;
+  const world = createWorldTransform({ width, height }, bounds, zoom, viewCenter, 28);
+  return { ...world, toCanvas: (x, y) => worldToScreen({ x, y }, world), toWorld: (x, y) => screenToWorld({ x, y }, world) };
 }
 
 function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: number, transform: MapTransform, bounds: MapBounds, mapSnapshot: RobotDetailMapSnapshot | null, occupancyRaster: HTMLCanvasElement | null, scan: RobotDetailScan | null, robot: RobotState | undefined, globalPath: RobotDetailPath | null, localPath: RobotDetailPath | null, goal: RobotDetailGoal | null, goalPreview: WorldGoal | null, layers: { showGrid: boolean; showLidar: boolean; showPaths: boolean; showWarehouse: boolean }) {
@@ -505,15 +504,15 @@ function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: num
   };
   drawPolygon([[bounds.minX, bounds.minY], [bounds.maxX, bounds.minY], [bounds.maxX, bounds.maxY], [bounds.minX, bounds.maxY]], "#0b1725", "#29445f", 1);
 
-  if (mapSnapshot && occupancyRaster) drawOccupancy(ctx, mapSnapshot, occupancyRaster, worldToCanvas, transform.scale);
+  if (mapSnapshot?.frame_id === "map" && occupancyRaster) drawOccupancy(ctx, mapSnapshot, occupancyRaster, worldToCanvas, transform.scale);
   if (layers.showGrid) drawWorldGrid(ctx, width, height, transform, bounds);
   if (layers.showWarehouse) drawWarehouseLayer(ctx, mapLayoutForCanvas(), worldToCanvas);
 
   if (layers.showPaths) {
-    drawPath(ctx, globalPath?.points ?? [], worldToCanvas, "#9b87ff", 2.6, false);
-    drawPath(ctx, localPath?.points ?? [], worldToCanvas, "#33c7ff", 1.8, true);
+    drawPath(ctx, globalPath?.frame_id === "map" ? globalPath.points : [], worldToCanvas, "#9b87ff", 2.6, false);
+    drawPath(ctx, localPath?.frame_id === "map" ? localPath.points : [], worldToCanvas, "#33c7ff", 1.8, true);
   }
-  if (layers.showLidar && scan) {
+  if (layers.showLidar && scan?.frame_id === "map") {
     if (robot) {
       const origin = worldToCanvas(robot.position[0], robot.position[2]);
       ctx.save();
@@ -535,7 +534,7 @@ function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: num
       ctx.fillRect(p.x - 1, p.y - 1, 2, 2);
     }
   }
-  const actualGoal = goalPreview ?? goal;
+  const actualGoal = goalPreview ?? (goal?.frame_id === "map" ? goal : null);
   if (actualGoal) drawGoal(ctx, actualGoal, worldToCanvas, goalPreview ? "#facc15" : "#b08cff");
   if (robot) drawRobot(ctx, robot, worldToCanvas);
   ctx.fillStyle = "#8aa4bf";

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import queue
 import threading
 import os
+import re
 import time
 from collections import deque
 from pathlib import Path
@@ -28,11 +30,13 @@ from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped, Twist
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from .qos import gazebo_clock_qos_profile
+from .qos import canonical_map_qos_profile, gazebo_clock_qos_profile
+from .coordinates import (is_small_future_tf_skew, pose_from_transform,
+                          quaternion_yaw, rotate_translate_xy)
 
 
 def yaw_from_quaternion(q) -> float:
-    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+    return quaternion_yaw(q)
 
 
 class SwerveBridge(Node):
@@ -41,6 +45,8 @@ class SwerveBridge(Node):
         self.declare_parameter('robot_id', 'R01')
         self.declare_parameter('namespace', '')
         self.declare_parameter('runtime_state', 'MAPPING')
+        self.declare_parameter('require_nav2_map', False)
+        self.declare_parameter('require_tag_map', False)
         self.declare_parameter('django_ws_url', os.environ.get('ROS_WS_URL', 'ws://127.0.0.1:8000/ws/ros'))
         self.declare_parameter('django_token', '')
         self.declare_parameter('telemetry_rate', 10.0)
@@ -54,6 +60,10 @@ class SwerveBridge(Node):
         self.declare_parameter('local_path_topic', '/local_plan')
         self.declare_parameter('goal_topic', '/goal_pose')
         self.declare_parameter('map_frame', 'map')
+        self.declare_parameter('base_footprint_frame', 'base_footprint')
+        self.declare_parameter('base_link_frame', 'base_link')
+        self.declare_parameter('tf_max_age_s', 2.0)
+        self.declare_parameter('tf_future_tolerance_s', 0.1)
         self.declare_parameter('lidar_ui_hz', 5.0)
         self.declare_parameter('lidar_max_points', 720)
         self.declare_parameter('clock_topic', '/clock')
@@ -67,10 +77,16 @@ class SwerveBridge(Node):
         self.declare_parameter('manual_command_timeout', 0.40)
         self.declare_parameter('artifact_root', 'generated/maps')
         self.declare_parameter('gazebo_world_file', '')
+        self.declare_parameter('nav2_map_file', '')
+        self.declare_parameter('datamatrix_map_file', '')
+        self.declare_parameter('tag_graph_file', '')
+        self.declare_parameter('map_sync_request_file', '.runtime/map-sync-request.json')
         self.declare_parameter('allow_unpublished_fallback', False)
         self.robot_id = str(self.get_parameter('robot_id').value)
         self.namespace = self._normalize_namespace(self.get_parameter('namespace').value)
         self.runtime_state = str(self.get_parameter('runtime_state').value).upper()
+        self.require_nav2_map = bool(self.get_parameter('require_nav2_map').value)
+        self.require_tag_map = bool(self.get_parameter('require_tag_map').value)
         if self.runtime_state not in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'ERROR'):
             self.get_logger().warning(f'Unknown runtime_state={self.runtime_state}; using MAPPING')
             self.runtime_state = 'MAPPING'
@@ -80,6 +96,10 @@ class SwerveBridge(Node):
         self.token = str(self.get_parameter('django_token').value)
         self.artifact_root = Path(str(self.get_parameter('artifact_root').value)).expanduser()
         self.gazebo_world_file = Path(str(self.get_parameter('gazebo_world_file').value)).expanduser()
+        self.nav2_map_file = Path(str(self.get_parameter('nav2_map_file').value)).expanduser()
+        self.datamatrix_map_file = Path(str(self.get_parameter('datamatrix_map_file').value)).expanduser()
+        self.tag_graph_file = Path(str(self.get_parameter('tag_graph_file').value)).expanduser()
+        self.map_sync_request_file = Path(str(self.get_parameter('map_sync_request_file').value)).expanduser()
         self.allow_unpublished_fallback = bool(self.get_parameter('allow_unpublished_fallback').value)
         self.telemetry_period = 1.0 / max(0.1, float(self.get_parameter('telemetry_rate').value))
         self.latest_odom = None
@@ -129,6 +149,13 @@ class SwerveBridge(Node):
         self.ws_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.active_map_revision = None
+        self.ros_map_revision = self._read_running_world_revision()
+        self.nav2_revision = None
+        self.nav2_configured_revision = None
+        self.tag_map_revision = None
+        self.tag_map_configured_revision = None
+        self.tf_status = False
+        self.tf_error = 'waiting for map to base transform'
         self.active_published_version = None
         # This is measured from the world actually selected for this launch,
         # not inferred from a MAP_PUBLISHED command.  A bridge can validate an
@@ -182,7 +209,7 @@ class SwerveBridge(Node):
         goal_topic = self._scoped_topic(self.get_parameter('goal_topic').value)
         self.scan_topic_name = scan_topic
         self.create_subscription(LaserScan, scan_topic, self.scan_cb, qos_profile_sensor_data)
-        self.create_subscription(OccupancyGrid, map_topic, self.map_cb, 1)
+        self.create_subscription(OccupancyGrid, map_topic, self.map_cb, canonical_map_qos_profile())
         self.create_subscription(RosPath, global_path_topic, self.global_path_cb, 1)
         self.create_subscription(RosPath, local_path_topic, self.local_path_cb, 1)
         self.create_subscription(PoseStamped, goal_topic, self.goal_pose_cb, 1)
@@ -284,6 +311,7 @@ class SwerveBridge(Node):
             round(float(origin.position.y), 6),
             round(yaw_from_quaternion(origin.orientation), 6),
             hash(bytes((int(value) + 1) % 256 for value in msg.data)),
+            self.ros_map_revision,
         )
         self.latest_map = msg
         self.latest_map_signature = signature
@@ -388,13 +416,22 @@ class SwerveBridge(Node):
         msg = self.latest_odom
         if msg is None:
             return
-        o, t = msg.pose.pose, msg.twist.twist
-        self.send({'type': 'ROBOT_STATE', 'robot_id': self.robot_id,
-                   'x': o.position.x, 'y': o.position.y, 'z': o.position.z,
-                   'yaw': yaw_from_quaternion(o.orientation), 'vx': t.linear.x,
-                   'vy': t.linear.y, 'wz': t.angular.z, 'navigation_state': self.nav_state,
-                   'control_mode': self.control_mode,
-                   'timestamp': self.now()})
+        t = msg.twist.twist
+        try:
+            pose, base_frame = self._lookup_robot_pose()
+            self.tf_status = True
+            self.tf_error = None
+            self.send({'type': 'ROBOT_STATE', 'robot_id': self.robot_id,
+                       'frame_id': str(self.get_parameter('map_frame').value),
+                       'map_revision': self.ros_map_revision,
+                       'base_frame_id': base_frame, **pose,
+                       'vx': t.linear.x, 'vy': t.linear.y, 'wz': t.angular.z,
+                       'navigation_state': self.nav_state,
+                       'control_mode': self.control_mode, 'timestamp': self.now()})
+        except (TransformException, ValueError, TypeError) as exc:
+            self.tf_status = False
+            self.tf_error = str(exc)[:300]
+        self._refresh_map_sync_status()
 
     def manual_timer(self):
         """Publish the dead-man command while the web operator is holding it."""
@@ -436,32 +473,96 @@ class SwerveBridge(Node):
         average = sum(intervals) / len(intervals)
         return 1.0 / average if average > 0.0 else None
 
-    @staticmethod
-    def _pose_path_payload(msg, robot_id):
+    def _transform_xy(self, x, y, source_frame, stamp):
+        target_frame = str(self.get_parameter('map_frame').value or 'map')
+        if not source_frame:
+            raise TransformException('global pose frame_id is empty')
+        if source_frame == target_frame:
+            return float(x), float(y), 0.0
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                target_frame, source_frame, stamp, timeout=Duration(seconds=0.05))
+        except TransformException as exact_error:
+            # Nav2 may stamp a fresh path slightly ahead of the newest
+            # map->odom sample. Reuse the actual latest transform only for
+            # this bounded future skew; stale/past requests remain errors.
+            try:
+                latest = self.tf_buffer.lookup_transform(
+                    target_frame, source_frame, Time())
+            except TransformException:
+                raise exact_error
+            tolerance = max(0.0, float(self.get_parameter(
+                'tf_future_tolerance_s').value))
+            if not is_small_future_tf_skew(
+                    stamp, latest.header.stamp, tolerance):
+                raise exact_error
+            transform = latest
+        t, q = transform.transform.translation, transform.transform.rotation
+        translated = rotate_translate_xy(
+            float(x), float(y), (float(t.x), float(t.y), float(t.z)),
+            (float(q.x), float(q.y), float(q.z), float(q.w)))
+        return translated[0], translated[1], yaw_from_quaternion(q)
+
+    def _lookup_robot_pose(self):
+        target = str(self.get_parameter('map_frame').value or 'map')
+        candidates = (str(self.get_parameter('base_footprint_frame').value),
+                     str(self.get_parameter('base_link_frame').value))
+        max_age = max(0.0, float(self.get_parameter('tf_max_age_s').value))
+        errors = []
+        for frame in candidates:
+            if not frame:
+                continue
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    target, frame, Time(), timeout=Duration(seconds=0.05))
+                stamp = transform.header.stamp
+                stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+                now_s = self.get_clock().now().nanoseconds * 1e-9
+                age = now_s - stamp_s
+                if stamp_s > 0.0 and age > max_age:
+                    raise TransformException(f'TF {target}->{frame} stale ({age:.2f}s)')
+                return (pose_from_transform(transform), frame)
+            except TransformException as exc:
+                errors.append(f'{frame}: {exc}')
+        raise TransformException(f'no fresh {target}->base transform ({"; ".join(errors)})')
+
+    def _pose_path_payload(self, msg, robot_id):
         if msg is None:
             return None
         points = []
-        for pose in msg.poses:
-            points.append([float(pose.pose.position.x), float(pose.pose.position.y)])
+        source_frame = str(msg.header.frame_id or '')
+        for pose in msg.poses[:2000]:
+            frame = str(pose.header.frame_id or source_frame)
+            stamp = (Time.from_msg(pose.header.stamp)
+                     if pose.header.stamp.sec or pose.header.stamp.nanosec else Time())
+            x, y, _ = self._transform_xy(
+                pose.pose.position.x, pose.pose.position.y, frame, stamp)
+            points.append([x, y])
         stamp = msg.header.stamp
         return {
             'robot_id': robot_id,
-            'frame_id': str(msg.header.frame_id or ''),
+            'frame_id': str(self.get_parameter('map_frame').value or 'map'),
+            'map_revision': self.ros_map_revision,
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'points': points,
             'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
         }
 
-    @staticmethod
-    def _goal_payload(msg, robot_id, status=None):
+    def _goal_payload(self, msg, robot_id, status=None):
         if msg is None:
             return None
         pose = msg.pose
+        frame = str(msg.header.frame_id or '')
+        stamp = (Time.from_msg(msg.header.stamp)
+                 if msg.header.stamp.sec or msg.header.stamp.nanosec else Time())
+        x, y, tf_yaw = self._transform_xy(
+            pose.position.x, pose.position.y, frame, stamp)
+        yaw = yaw_from_quaternion(pose.orientation) + tf_yaw
         return {
             'robot_id': robot_id,
-            'frame_id': str(msg.header.frame_id or 'map'),
-            'x': float(pose.position.x), 'y': float(pose.position.y),
-            'yaw': yaw_from_quaternion(pose.orientation),
+            'frame_id': str(self.get_parameter('map_frame').value or 'map'),
+            'map_revision': self.ros_map_revision,
+            'x': x, 'y': y, 'yaw': math.atan2(math.sin(yaw), math.cos(yaw)),
             'status': status,
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
@@ -539,7 +640,8 @@ class SwerveBridge(Node):
             origin = msg.info.origin
             stamp = msg.header.stamp
             sent = self.send({'type': 'MAP_SNAPSHOT', 'map': {
-                'robot_id': self.robot_id, 'frame_id': str(msg.header.frame_id or 'map'),
+                'robot_id': self.robot_id, 'frame_id': str(msg.header.frame_id or ''),
+                'map_revision': self.ros_map_revision,
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
                 'width': int(msg.info.width), 'height': int(msg.info.height),
@@ -557,11 +659,22 @@ class SwerveBridge(Node):
             signature = (len(msg.poses), tuple((round(float(p.pose.position.x), 3), round(float(p.pose.position.y), 3)) for p in msg.poses))
             marker = 'last_global_path_signature' if kind == 'NAV_GLOBAL_PATH' else 'last_local_path_signature'
             if signature != getattr(self, marker):
-                if self.send({'type': kind, 'path': self._pose_path_payload(msg, self.robot_id)}):
+                try:
+                    payload = self._pose_path_payload(msg, self.robot_id)
+                except (TransformException, ValueError, TypeError) as exc:
+                    self.last_tf_error = str(exc)[:300]
+                    continue
+                self.last_tf_error = None
+                if self.send({'type': kind, 'path': payload}):
                     setattr(self, marker, signature)
 
         if self.latest_goal_pose is not None:
-            payload = self._goal_payload(self.latest_goal_pose, self.robot_id)
+            try:
+                payload = self._goal_payload(self.latest_goal_pose, self.robot_id)
+            except (TransformException, ValueError, TypeError) as exc:
+                self.last_tf_error = str(exc)[:300]
+                return
+            self.last_tf_error = None
             signature = (payload['x'], payload['y'], payload['yaw'], payload['frame_id'])
             if signature != self.last_goal_signature:
                 if self.send({'type': 'NAV_GOAL', 'goal': payload}):
@@ -574,6 +687,8 @@ class SwerveBridge(Node):
             errors.append({'severity': 'WARNING', 'code': 'LIDAR_TIMEOUT', 'message': 'LiDAR timeout', 'timestamp': now})
         if self.last_tf_error:
             errors.append({'severity': 'ERROR', 'code': 'TF_UNAVAILABLE', 'message': f'TF unavailable: {self.last_tf_error}', 'timestamp': now})
+        if self.tf_error:
+            errors.append({'severity': 'ERROR', 'code': 'TF_UNAVAILABLE', 'message': f'TF unavailable: {self.tf_error}', 'timestamp': now})
         if self.controller_states and any(str(item.get('state', '')).lower() != 'active' for item in self.controller_states):
             errors.append({'severity': 'ERROR', 'code': 'CONTROLLER_INACTIVE', 'message': 'controller inactive', 'timestamp': now})
         if self.nav_state == 'FAILED':
@@ -627,7 +742,15 @@ class SwerveBridge(Node):
         nav2_nodes = ('map_server', 'amcl', 'controller_server', 'planner_server',
                       'bt_navigator', 'lifecycle_manager_navigation')
         nav2 = any(any(marker in name for marker in nav2_nodes) for name in node_names)
-        tf = self._scoped_topic('/tf') in topic_names and self._scoped_topic('/tf_static') in topic_names
+        self.nav2_revision = self._loaded_nav2_revision(nav2)
+        tag_nodes_ready = all(any(name.rstrip('/').endswith('/' + suffix)
+                                  or name.rstrip('/') == suffix
+                                  for name in node_names)
+                              for suffix in ('v30e_sim_node', 'tag_route_planner'))
+        self.tag_map_revision = self.tag_map_configured_revision if (
+            self.require_tag_map and tag_nodes_ready) else None
+        self._refresh_map_sync_status()
+        tf = self.tf_status and self._scoped_topic('/tf') in topic_names
         lidar = lidar_age is not None and lidar_age <= 3.0
         return {
             'ros': bool(node_names),
@@ -657,17 +780,195 @@ class SwerveBridge(Node):
         }
 
     def send_map_revision_status(self):
+        self._refresh_map_sync_status()
         self.send({
             'type': 'MAP_REVISION_STATUS',
-            'map_revision': self.active_map_revision,
+            'robot_id': self.robot_id,
+            'map_revision': self.ros_map_revision,
+            'ros_revision': self.ros_map_revision,
             'published_version': self.active_published_version,
             'gazebo_revision': self.gazebo_revision,
+            'nav2_revision': self.nav2_revision,
+            'tag_map_revision': self.tag_map_revision,
+            'nav2_required': self.require_nav2_map,
+            'tag_map_required': self.require_tag_map,
+            'tf_status': bool(self.tf_status),
             'status': self.map_sync_status,
-            'error': self.map_sync_error,
+            'error': self.map_sync_error or self.tf_error,
         })
 
+    def _refresh_map_sync_status(self):
+        if self.active_map_revision is None:
+            return
+        nav2_required = self.require_nav2_map
+        tag_map_required = self.require_tag_map
+        aligned = (self.ros_map_revision == self.active_map_revision
+                   and self.gazebo_revision == self.active_map_revision
+                   and (not tag_map_required or self.tag_map_revision == self.active_map_revision)
+                   and (not nav2_required or self.nav2_revision == self.active_map_revision))
+        if aligned and self.tf_status:
+            self.map_sync_status = 'SYNCED'
+            self.map_sync_error = None
+        elif aligned:
+            self.map_sync_status = 'OUT_OF_SYNC'
+            self.map_sync_error = self.tf_error or 'map to base TF is not available'
+        else:
+            self.map_sync_status = 'OUT_OF_SYNC'
+            expected = self.active_map_revision
+            mismatches = []
+            components = [('ROS', self.ros_map_revision), ('Gazebo', self.gazebo_revision)]
+            if nav2_required:
+                components.append(('Nav2', self.nav2_revision))
+            if tag_map_required:
+                components.append(('tag map', self.tag_map_revision))
+            for name, revision in components:
+                if revision != expected:
+                    mismatches.append(f'{name}={revision if revision is not None else "N/A"}')
+            self.map_sync_error = (
+                f'map revision {expected} mismatch: {", ".join(mismatches)}'
+                if mismatches else self.tf_error or 'map to base TF is not available'
+            )
+
+    @staticmethod
+    def _read_pgm(path):
+        data = path.read_bytes()
+        index, tokens = 0, []
+        while len(tokens) < 4:
+            while index < len(data):
+                if data[index] in b' \t\r\n':
+                    index += 1
+                elif data[index:index + 1] == b'#':
+                    newline = data.find(b'\n', index)
+                    if newline < 0:
+                        raise ValueError('PGM comment is not terminated')
+                    index = newline + 1
+                else:
+                    break
+            start = index
+            while index < len(data) and data[index] not in b' \t\r\n':
+                index += 1
+            if start == index:
+                raise ValueError('invalid PGM header')
+            tokens.append(data[start:index])
+        if tokens[0] != b'P5' or tokens[3] != b'255':
+            raise ValueError('Nav2 image must be an 8-bit binary PGM')
+        if index >= len(data) or data[index] not in b' \t\r\n':
+            raise ValueError('PGM header has no raster delimiter')
+        delimiter = data[index]
+        index += 1
+        if delimiter == 13 and index < len(data) and data[index] == 10:
+            index += 1
+        width, height = int(tokens[1]), int(tokens[2])
+        raster = data[index:]
+        if len(raster) != width * height:
+            raise ValueError('PGM raster length does not match its dimensions')
+        return width, height, raster
+
+    def _loaded_nav2_revision(self, nav2_node_present):
+        """Only report a Nav2 revision after /map exactly matches its image."""
+        if not nav2_node_present or self.latest_map is None:
+            return None
+        revision = self.nav2_configured_revision
+        if revision is None or not self.nav2_map_file.is_file():
+            return None
+        try:
+            text = self.nav2_map_file.read_text(encoding='utf-8')
+            image_match = re.search(r'^image:\s*(.+?)\s*$', text, re.MULTILINE)
+            resolution_match = re.search(r'^resolution:\s*([-+0-9.eE]+)', text, re.MULTILINE)
+            origin_match = re.search(r'^origin:\s*\[\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*\]', text, re.MULTILINE)
+            frame_match = re.search(r'^frame_id:\s*(\S+)', text, re.MULTILINE)
+            if not all((image_match, resolution_match, origin_match, frame_match)) or frame_match.group(1) != 'map':
+                return None
+            image_path = (self.nav2_map_file.parent / image_match.group(1).strip().strip('"\'' )).resolve(strict=True)
+            if not image_path.is_relative_to(self.nav2_map_file.parent.resolve()):
+                return None
+            width, height, pixels = self._read_pgm(image_path)
+            grid = self.latest_map
+            if str(grid.header.frame_id or '') != 'map' or int(grid.info.width) != width or int(grid.info.height) != height:
+                return None
+            if not math.isclose(float(grid.info.resolution), float(resolution_match.group(1)), abs_tol=1e-6):
+                return None
+            expected_origin = tuple(float(origin_match.group(index)) for index in (1, 2, 3))
+            actual = grid.info.origin
+            actual_origin = (float(actual.position.x), float(actual.position.y), yaw_from_quaternion(actual.orientation))
+            if any(not math.isclose(a, b, abs_tol=1e-5) for a, b in zip(actual_origin, expected_origin)):
+                return None
+            occupancy = bytes(int(value) for value in grid.data)
+            if len(occupancy) != width * height:
+                return None
+            # OccupancyGrid row 0 is south/bottom; PGM row 0 is north/top.
+            for row in range(height):
+                image_row = height - row - 1
+                begin = image_row * width
+                expected_row = bytes(100 if pixels[begin + col] <= 89 else 0 for col in range(width))
+                if occupancy[row * width:(row + 1) * width] != expected_row:
+                    return None
+            return revision
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+
+    @staticmethod
+    def _verify_artifact_bundle(root, manifest, revision):
+        manifest_path = root / 'manifest.json'
+        try:
+            disk_manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f'cannot read artifact manifest: {exc}') from exc
+        if int(disk_manifest.get('revision', -1)) != revision:
+            raise ValueError('artifact manifest revision does not match published revision')
+        if disk_manifest.get('frame_id') != 'map' or disk_manifest.get('units') != 'm':
+            raise ValueError('artifact manifest must declare frame_id=map and units=m')
+        if manifest and int(manifest.get('revision', -1)) != revision:
+            raise ValueError('WebSocket manifest revision does not match published revision')
+        base = root.resolve()
+        for relative, expected in (disk_manifest.get('sha256') or {}).items():
+            path = (root / str(relative)).resolve()
+            if not path.is_relative_to(base):
+                raise ValueError(f'artifact path escapes revision directory: {relative}')
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if digest != expected:
+                raise ValueError(f'artifact hash mismatch: {relative}')
+        canonical = json.loads((root / 'canonical_map.json').read_text(encoding='utf-8'))
+        if canonical.get('frame_id') != 'map' or int(canonical.get('revision', -1)) != revision:
+            raise ValueError('canonical map revision/frame does not match manifest')
+        return disk_manifest
+
+    @staticmethod
+    def _path_revision(path):
+        try:
+            path = path.resolve(strict=True)
+            for parent in path.parents:
+                manifest_path = parent / 'manifest.json'
+                if not manifest_path.is_file():
+                    continue
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+                if str(path).startswith(str(parent.resolve()) + os.sep):
+                    return int(manifest['revision'])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return None
+
+    def _request_map_reload(self, root, revision, manifest):
+        self.manual_twist = Twist()
+        self.manual_deadline = 0.0
+        self.cmd_pub.publish(Twist())
+        for active in (self.active_pose_goal, self.active_goal):
+            if active is not None:
+                try:
+                    active.cancel_goal_async()
+                except Exception as exc:
+                    self.get_logger().warning(f'Could not cancel navigation before map reload: {exc}')
+        payload = {'revision': int(revision), 'artifact_dir': str(root.resolve()),
+                   'warehouse_id': manifest.get('warehouse_id'),
+                   'generated_at': datetime.now(timezone.utc).isoformat()}
+        request_path = self.map_sync_request_file
+        request_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = request_path.with_suffix(request_path.suffix + '.tmp')
+        temporary.write_text(json.dumps(payload, sort_keys=True) + '\n', encoding='utf-8')
+        os.replace(temporary, request_path)
+
     def apply_published_map(self, data):
-        """Load the immutable ROS artifacts selected by the backend."""
+        """Validate a published bundle and request an owning-stack reload."""
         raw_revision = data.get('map_revision', data.get('revision'))
         try:
             revision = int(raw_revision)
@@ -682,43 +983,63 @@ class SwerveBridge(Node):
         root = candidate if candidate is not None and candidate.is_dir() else fallback
         manifest = data.get('artifact_manifest') or {}
         names = manifest.get('artifacts') if isinstance(manifest, dict) else {}
-        required = [str(names.get('datamatrix_map', 'datamatrix_map.yaml')), str(names.get('tag_graph', 'tag_graph.yaml')), str(names.get('gazebo_world', 'gazebo/warehouse.world'))]
+        required = [str(names.get('canonical_map', 'canonical_map.json')),
+                    str(names.get('datamatrix_map', 'datamatrix_map.yaml')),
+                    str(names.get('tag_graph', 'tag_graph.yaml')),
+                    str(names.get('gazebo_world', 'gazebo/warehouse.world')),
+                    str(names.get('gazebo_manifest', 'gazebo/manifest.json')),
+                    str(names.get('nav2_map', 'nav2/warehouse.yaml'))]
         missing = [name for name in required if not (root / name).is_file()]
         if missing:
-            if self.allow_unpublished_fallback:
-                self.map_sync_status = 'ERROR'
-                self.map_sync_error = f'artifacts missing (development fallback enabled): {", ".join(missing)}'
-            else:
-                self.map_sync_status = 'ERROR'
-                self.map_sync_error = f'artifacts missing for revision {revision}: {", ".join(missing)}'
+            self.map_sync_status = 'ERROR'
+            self.map_sync_error = f'artifacts missing for revision {revision}: {", ".join(missing)}'
             self.send_map_revision_status()
             return
-        # Reading the files here makes the bridge fail fast before acknowledging
-        # a revision.  The ROS navigation nodes can consume the same paths from
-        # the selected immutable artifact directory.
         try:
-            for name in required:
-                (root / name).read_bytes()
-        except OSError as exc:
+            manifest = self._verify_artifact_bundle(root, manifest, revision)
+        except (OSError, ValueError, TypeError) as exc:
             self.map_sync_status = 'ERROR'
             self.map_sync_error = str(exc)
             self.send_map_revision_status()
             return
-        self.active_map_revision = revision
+
         self.active_published_version = data.get('published_version')
-        # Keep the world revision measured from the launch.  If this process is
-        # attached to a package fallback world, report OUT_OF_SYNC rather than
-        # claiming that Gazebo live-reloaded the newly published geometry.
         self.gazebo_revision = self._read_running_world_revision()
-        self.datamatrix_map_path = str(root / required[0])
-        self.tag_graph_path = str(root / required[1])
-        self.gazebo_world_path = str(root / required[2])
-        self.map_sync_error = None
-        self.map_sync_status = 'SYNCED' if self.gazebo_revision == revision else 'OUT_OF_SYNC'
-        self.send({'type': 'MAP_REVISION_ACK', 'map_revision': revision,
-                   'published_version': self.active_published_version,
-                   'gazebo_revision': self.gazebo_revision,
-                   'status': self.map_sync_status, 'artifact_dir': str(root)})
+        self.ros_map_revision = self.gazebo_revision
+        self.datamatrix_map_path = str(root / required[1])
+        self.tag_graph_path = str(root / required[2])
+        self.gazebo_world_path = str(root / required[3])
+        self.nav2_configured_revision = self._path_revision(self.nav2_map_file)
+        self.nav2_revision = self._loaded_nav2_revision(self.require_nav2_map)
+        self.tag_map_configured_revision = revision if (
+            self._path_revision(self.datamatrix_map_file) == revision
+            and self._path_revision(self.tag_graph_file) == revision) else None
+        self.tag_map_revision = None
+        aligned = (self.ros_map_revision == revision and self.gazebo_revision == revision
+                   and (not self.require_tag_map or self.tag_map_configured_revision == revision)
+                   and (not self.require_nav2_map or self.nav2_configured_revision == revision))
+        if not aligned:
+            try:
+                self._request_map_reload(root, revision, manifest)
+                self.map_sync_status = 'SYNCING'
+                self.map_sync_error = 'runtime consumers are loading a different map revision'
+            except OSError as exc:
+                self.map_sync_status = 'ERROR'
+                self.map_sync_error = f'could not request runtime reload: {exc}'
+        else:
+            self.active_map_revision = revision
+            self._refresh_map_sync_status()
+        if self.map_sync_status not in ('SYNCED', 'SYNCING', 'ERROR'):
+            self.map_sync_status = 'OUT_OF_SYNC'
+        else:
+            self.send({'type': 'MAP_REVISION_ACK', 'map_revision': revision,
+                       'ros_revision': self.ros_map_revision,
+                       'gazebo_revision': self.gazebo_revision,
+                       'nav2_revision': self.nav2_revision,
+                       'tag_map_revision': self.tag_map_revision,
+                       'tf_status': self.tf_status,
+                       'status': self.map_sync_status, 'artifact_dir': str(root)})
+        self.send_map_revision_status()
 
     def process_commands(self):
         while True:

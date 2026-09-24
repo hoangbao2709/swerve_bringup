@@ -92,7 +92,7 @@ function normalizeDraft(value: unknown): Draft {
   } as Draft;
 
   normalized.schema_version = 2;
-  normalized.coordinate_system = source.coordinate_system ?? { unit: "meter", frame: "warehouse_map", yaw_unit: "radian" };
+  normalized.coordinate_system = { unit: "meter", frame: "map", yaw_unit: "radian" };
   normalized.aisles = Array.isArray(source.aisles) ? source.aisles : [];
   normalized.navigation_tags = Array.isArray(source.navigation_tags)
     ? source.navigation_tags.map((tag) => ({ ...tag, id: tag.id ?? tag.uuid }))
@@ -4127,7 +4127,8 @@ export function WarehouseEditorPage() {
             <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-emerald-300/80">
               {status} · draft r{layoutRevision}{publishedVersion !== null ? ` · published v${publishedVersion}` : ""}{activeWarehouseId ? ` · WH#${activeWarehouseId}` : ""}
               {artifactStatus ? ` · ${artifactStatus}` : ""}
-              {` · MAP ${mapSync.status} · ROS r${mapSync.rosRevision ?? "—"} · GZ r${mapSync.gazeboRevision ?? "—"}`}
+              {` · MAP ${mapSync.status} · ROS r${mapSync.rosRevision ?? "—"} · GZ r${mapSync.gazeboRevision ?? "—"} · NAV2 r${mapSync.nav2Revision ?? "—"} · TAG r${mapSync.tagMapRevision ?? "—"} · TF ${mapSync.tfStatus ? "OK" : "WAIT"}`}
+              {Object.entries(mapSync.robots).map(([id, robot]) => ` · ${id} ${robot.status} (GZ r${robot.gazeboRevision ?? "—"})`).join("")}
             </span>
           </div>
 

@@ -10,3 +10,12 @@ def gazebo_clock_qos_profile() -> QoSProfile:
         reliability=ReliabilityPolicy.BEST_EFFORT,
         durability=DurabilityPolicy.VOLATILE,
     )
+
+
+def canonical_map_qos_profile() -> QoSProfile:
+    """Receive the latched canonical map even when the bridge starts late."""
+    return QoSProfile(
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )

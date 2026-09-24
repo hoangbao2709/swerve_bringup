@@ -753,10 +753,17 @@ def layout_publish(request):
 def map_sync_status_view(request):
     active = ensure_active_map(runtime.layout)
     payload = published_map_payload(active)
+    runtime._aggregate_robot_map_sync()
+    require_nav2, require_tag_map = runtime.map_sync_requirements()
     status = map_sync_status(
         published_revision=payload.get('map_revision'),
         ros_revision=runtime.ros_map_revision,
         gazebo_revision=runtime.gazebo_map_revision,
+        nav2_revision=runtime.nav2_map_revision,
+        tag_map_revision=runtime.tag_map_revision,
+        tf_status=runtime.map_tf_status,
+        require_nav2=require_nav2,
+        require_tag_map=require_tag_map,
         ros_connected=runtime.ros_bridge_connected,
         error=runtime.map_sync_error,
         external=runtime.is_external,
@@ -768,6 +775,13 @@ def map_sync_status_view(request):
         'map_revision': payload.get('map_revision'),
         'ros_revision': runtime.ros_map_revision,
         'gazebo_revision': runtime.gazebo_map_revision,
+        'nav2_revision': runtime.nav2_map_revision,
+        'tag_map_revision': runtime.tag_map_revision,
+        'tf_status': runtime.map_tf_status,
+        'robot_map_sync': {
+            rid: {key: value for key, value in row.items() if key != 'received_monotonic'}
+            for rid, row in runtime.robot_map_sync.items()
+        },
         'status': status,
         'artifact_manifest': payload.get('artifact_manifest'),
         'error': runtime.map_sync_error,

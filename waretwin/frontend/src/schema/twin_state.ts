@@ -639,14 +639,14 @@ export type ServerMessage =
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
   | { type: "map.published"; warehouse_id: number | string; revision: number; published_version: number; map_revision: number; artifact_manifest?: unknown }
   | { type: "SCHEDULE_UPDATED"; source: string }
-  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; map_sync_status?: string; map_sync_error?: string | null }
+  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }> }
   | { type: "ROBOT_CONTROL_STATUS"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS"; accepted: boolean; reason?: string | null; timestamp?: string }
   | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
   | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }
   | { type: "LOCALIZATION_STATUS"; robot_id: string; state: string; last_tag_id?: number | null; expected_tag_id?: number | null; tag_visible?: boolean; last_tag_seen_at?: string | null }
   | { type: "TAG_NAV_ROUTE"; robot_id: string; mission_id?: number; route: number[] }
   | { type: "TAG_NAV_EVENT"; robot_id: string; mission_id?: number; event: string; details?: unknown; timestamp?: string }
-  | { type: "ROBOT_STATE"; robot_id: RobotId; x: number; y: number; z?: number; yaw: number; vx: number; vy: number; wz: number; navigation_state?: string; control_mode?: "MANUAL" | "AUTONOMOUS"; timestamp?: string }
+  | { type: "ROBOT_STATE"; robot_id: RobotId; frame_id: "map"; map_revision: number | null; base_frame_id?: string; x: number; y: number; z?: number; yaw: number; vx: number; vy: number; wz: number; navigation_state?: string; control_mode?: "MANUAL" | "AUTONOMOUS"; timestamp?: string }
   | { type: "LIDAR_SCAN"; scan: RobotDetailScan }
   | { type: "MAP_SNAPSHOT"; map: RobotDetailMapSnapshot }
   | { type: "NAV_GLOBAL_PATH"; path: RobotDetailPath }

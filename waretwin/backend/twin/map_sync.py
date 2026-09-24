@@ -41,15 +41,26 @@ def published_map_payload(active: WarehouseMap | None = None) -> dict[str, Any]:
 
 def map_sync_status(*, published_revision: int | None, ros_revision: int | None,
                     gazebo_revision: int | None, ros_connected: bool,
+                    nav2_revision: int | None = None, tag_map_revision: int | None = None,
+                    tf_status: bool = False, require_nav2: bool = True,
+                    require_tag_map: bool = True,
                     error: str | None = None, external: bool = True) -> str:
     if not external:
         return "SYNCED"
     if not ros_connected:
         return "ROS_OFFLINE"
-    if error:
-        return "ERROR"
     if published_revision is None:
         return "NO_PUBLISHED_MAP"
-    if ros_revision != published_revision or gazebo_revision != published_revision:
+    revisions = [ros_revision, gazebo_revision]
+    if require_nav2:
+        revisions.append(nav2_revision)
+    if require_tag_map:
+        revisions.append(tag_map_revision)
+    # A measured revision or TF mismatch is an unsynchronized runtime even
+    # when the bridge also supplies a diagnostic message. Keep the state
+    # machine stable; the separate error field carries the actionable reason.
+    if any(revision != published_revision for revision in revisions) or not tf_status:
         return "OUT_OF_SYNC"
+    if error:
+        return "ERROR"
     return "SYNCED"

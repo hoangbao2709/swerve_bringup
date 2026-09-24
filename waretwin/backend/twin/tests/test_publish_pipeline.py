@@ -9,6 +9,7 @@ from django.test import RequestFactory, TestCase, override_settings
 from twin.models import WarehouseMapVersion
 from twin.warehouse_services import ensure_active_map, publish_layout_to_map, sync_from_layout
 from twin.map_artifacts import render_datamatrix_yaml, render_tag_graph_yaml
+from twin.nav2_export import render_nav2_map
 from twin.views import _layout_revision_conflict
 
 
@@ -46,6 +47,8 @@ class PublishPipelineTests(TestCase):
         layout = layout_fixture()
         self.assertEqual(render_datamatrix_yaml(layout), render_datamatrix_yaml(copy.deepcopy(layout)))
         graph = render_tag_graph_yaml(layout)
+        self.assertIn('frame_id: map', render_datamatrix_yaml(layout))
+        self.assertIn('frame_id: map', graph)
         self.assertIn('"1001"', graph)
         self.assertIn('neighbors: [1002]', graph)
         self.assertIn('direction: "bidirectional"', graph)
@@ -62,6 +65,19 @@ class PublishPipelineTests(TestCase):
             self.assertTrue((first_dir / "datamatrix_map.yaml").is_file())
             self.assertTrue((first_dir / "tag_graph.yaml").is_file())
             self.assertTrue((first_dir / "gazebo" / "warehouse.world").is_file())
+            self.assertTrue((first_dir / "nav2" / "warehouse.yaml").is_file())
+            self.assertTrue((first_dir / "nav2" / "warehouse.pgm").is_file())
+            manifest = json.loads((first_dir / 'manifest.json').read_text())
+            self.assertEqual(manifest['frame_id'], 'map')
+            self.assertEqual(manifest['revision'], first.revision)
+            self.assertTrue(manifest['generated_at'].endswith('+00:00'))
+            self.assertIn('nav2/warehouse.pgm', manifest['sha256'])
+            self.assertIn('gazebo/manifest.json', manifest['artifacts']['gazebo_manifest'])
+            self.assertEqual(manifest['gazebo_bounds'], {
+                'min_x': 0.0, 'min_y': 0.0, 'max_x': 10.0, 'max_y': 10.0,
+            })
+            gazebo_manifest = json.loads((first_dir / manifest['artifacts']['gazebo_manifest']).read_text())
+            self.assertEqual(gazebo_manifest['floors'][0]['boundary'], [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
             world_text = (first_dir / "gazebo" / "warehouse.world").read_text()
             self.assertIn(str(first_dir / "gazebo" / "models"), world_text)
             second = publish_layout_to_map(layout)
@@ -83,3 +99,19 @@ class PublishPipelineTests(TestCase):
             self.assertEqual((active.revision, active.published_version), before)
             self.assertEqual(WarehouseMapVersion.objects.count(), 0)
             self.assertEqual(list(Path(tmp).rglob("*")), [])
+
+    def test_nav2_raster_uses_negative_world_origin_and_north_up_rows(self):
+        layout = {
+            'size': {'width': 4, 'depth': 2},
+            'floors': [{'id': 'F1', 'boundary': [[-2, -1], [2, -1], [2, 1], [-2, 1]]}],
+            'racks': [], 'stations': [], 'obstacles': [], 'columns': [], 'conveyors': [],
+        }
+        image, yaml_text, raster = render_nav2_map(layout, layout['floors'][0], resolution=1)
+        header, pixels = image.split(b'255\n', 1)
+        self.assertIn(b'4 2', header)
+        self.assertEqual(raster['origin'], [-2.0, -1.0, 0.0])
+        self.assertIn('origin: [-2, -1, 0.0]', yaml_text)
+        self.assertEqual(len(pixels), 8)
+        # Top row and bottom row are both inside the polygon; borders are not
+        # spuriously displaced by an image-space Y inversion.
+        self.assertEqual(set(pixels), {254})

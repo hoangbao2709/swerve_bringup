@@ -60,6 +60,7 @@ class GazeboExporterTest(unittest.TestCase):
             world = (root / "one" / "warehouse.world").read_text()
             manifest = json.loads((root / "one" / "manifest.json").read_text())
             self.assertIn('model name="floor_F1"', world)
+            self.assertIn('<plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so"/>', world)
             self.assertIn('model name="floor_F2"', world)
             self.assertEqual(world.count("floor_F1_boundary_wall_"), 6)
             self.assertEqual(world.count("floor_F1_hole_0_wall_"), 4)

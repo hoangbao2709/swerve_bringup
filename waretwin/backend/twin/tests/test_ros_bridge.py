@@ -102,12 +102,18 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
         old_ros_diagnostics = deepcopy(runtime.ros_diagnostics)
         old_last_telemetry_at = runtime.last_telemetry_at
         old_last_telemetry_iso = runtime.last_telemetry_iso
+        old_published_revision = runtime.published_map_revision
+        old_map_sync_error = runtime.map_sync_error
         try:
             runtime.runtime_mode = 'GAZEBO_ROS'
             runtime.client_count = 0
+            runtime.published_map_revision = 12
+            runtime.map_sync_error = None
             await runtime.update_external_robot_state({
                 'type': 'ROBOT_STATE',
                 'robot_id': 'R01',
+                'frame_id': 'map',
+                'map_revision': 12,
                 'x': 1.2,
                 'y': 2.3,
                 'z': 0.1,
@@ -140,3 +146,43 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.ros_diagnostics = old_ros_diagnostics
             runtime.last_telemetry_at = old_last_telemetry_at
             runtime.last_telemetry_iso = old_last_telemetry_iso
+            runtime.published_map_revision = old_published_revision
+            runtime.map_sync_error = old_map_sync_error
+
+    async def test_external_pose_rejects_odometry_frame_and_wrong_revision(self):
+        old_mode = runtime.runtime_mode
+        old_published = runtime.published_map_revision
+        old_error = runtime.map_sync_error
+        robots = runtime.engine.state.setdefault('robots', {})
+        old_robot = deepcopy(robots.get('R01'))
+        try:
+            runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.published_map_revision = 12
+            runtime.map_sync_error = None
+            await runtime.update_external_robot_state({
+                'robot_id': 'R01', 'frame_id': 'odom', 'map_revision': 12,
+                'x': 99, 'y': 99, 'yaw': 0, 'vx': 0, 'vy': 0, 'wz': 0,
+            })
+            if old_robot is None:
+                self.assertNotIn('R01', runtime.engine.state['robots'])
+            else:
+                self.assertNotEqual(runtime.engine.state['robots']['R01']['position'][0], 99)
+            self.assertIn('frame must be map', runtime.map_sync_error)
+            runtime.map_sync_error = None
+            await runtime.update_external_robot_state({
+                'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 11,
+                'x': 99, 'y': 99, 'yaw': 0, 'vx': 0, 'vy': 0, 'wz': 0,
+            })
+            if old_robot is None:
+                self.assertNotIn('R01', runtime.engine.state['robots'])
+            else:
+                self.assertNotEqual(runtime.engine.state['robots']['R01']['position'][0], 99)
+            self.assertIn('does not match published revision', runtime.map_sync_error)
+        finally:
+            runtime.runtime_mode = old_mode
+            runtime.published_map_revision = old_published
+            runtime.map_sync_error = old_error
+            if old_robot is None:
+                runtime.engine.state['robots'].pop('R01', None)
+            else:
+                runtime.engine.state['robots']['R01'] = old_robot

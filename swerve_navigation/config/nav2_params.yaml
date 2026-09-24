@@ -16,9 +16,9 @@ controller_server:
     general_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
       stateful: true
-      # Tighter than the acceptance limit so GT does not stop at the outer
-      # edge of the allowed 5 cm band.
-      xy_goal_tolerance: 0.03
+      # Match the 5 cm acceptance band. Live goals reached 4.35 cm and then
+      # oscillated until timeout with a stricter 3 cm requirement.
+      xy_goal_tolerance: 0.05
       yaw_goal_tolerance: 0.05
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
@@ -44,9 +44,9 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      # Keep DWB inside the 5 cm goal-checker window instead of stopping at
-      # its outer edge; benchmark thresholds remain unchanged.
-      xy_goal_tolerance: 0.03
+      # Match the goal checker's 5 cm acceptance band to avoid oscillating
+      # around an already acceptable goal pose.
+      xy_goal_tolerance: 0.05
       trans_stopped_velocity: 0.025
       short_circuit_trajectory_evaluation: true
       stateful: true

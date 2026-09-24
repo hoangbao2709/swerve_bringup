@@ -8,7 +8,7 @@ from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
 # editable install first.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from swerve_bridge.qos import gazebo_clock_qos_profile
+from swerve_bridge.qos import canonical_map_qos_profile, gazebo_clock_qos_profile
 
 
 def test_gazebo_clock_qos_matches_runtime_contract():
@@ -16,3 +16,10 @@ def test_gazebo_clock_qos_matches_runtime_contract():
     assert profile.reliability == ReliabilityPolicy.BEST_EFFORT
     assert profile.durability == DurabilityPolicy.VOLATILE
     assert profile.depth == 10
+
+
+def test_canonical_map_qos_receives_latched_map_server_snapshot():
+    profile = canonical_map_qos_profile()
+    assert profile.reliability == ReliabilityPolicy.RELIABLE
+    assert profile.durability == DurabilityPolicy.TRANSIENT_LOCAL
+    assert profile.depth == 1

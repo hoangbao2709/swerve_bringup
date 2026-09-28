@@ -116,6 +116,19 @@ class RosBridgeConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json({'type': 'BRIDGE_ERROR', 'code': 'RATE_LIMITED', 'message': 'message rate limit exceeded'})
             return
         message_type = str(content.get('type') or 'UNKNOWN').upper()
+        reported_robot_id = str(content.get('robot_id') or '').strip()
+        if reported_robot_id and reported_robot_id != self.robot_id:
+            log.warning('ROS bridge sent telemetry for another robot', extra={
+                'bridge_robot_id': self.robot_id,
+                'reported_robot_id': reported_robot_id,
+                'message_type': message_type,
+            })
+            await self.send_json({
+                'type': 'BRIDGE_ERROR', 'code': 'ROBOT_ID_MISMATCH',
+                'message': 'bridge messages must use the authenticated robot_id',
+            })
+            return
+        content = {**content, 'robot_id': self.robot_id}
         try:
             await runtime.handle_ros_message(content)
         except Exception as exc:

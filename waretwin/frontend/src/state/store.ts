@@ -103,6 +103,8 @@ interface Store {
   setRuntimeState: (state: RuntimeState) => void;
   bridgeState: string;
   setBridgeState: (state: string) => void;
+  connectedRobotIds: string[];
+  setConnectedRobotIds: (robotIds: string[]) => void;
   websocketState: WebSocketState;
   setWebsocketState: (state: WebSocketState) => void;
   rosDiagnostics: RosDiagnostics | null;
@@ -255,8 +257,13 @@ export const useStore = create<Store>((set) => ({
   setRuntimeState: (runtimeState) => set({ runtimeState }),
   bridgeState: RUNTIME_MODE === "LOCAL_SIM" ? "LOCAL" : "DISCONNECTED",
   setBridgeState: (bridgeState) => set({ bridgeState }),
+  connectedRobotIds: [],
+  setConnectedRobotIds: (connectedRobotIds) => set({ connectedRobotIds: [...new Set(connectedRobotIds)] }),
   websocketState: "DISCONNECTED",
-  setWebsocketState: (websocketState) => set({ websocketState }),
+  setWebsocketState: (websocketState) => set({
+    websocketState,
+    ...(websocketState === "CONNECTED" ? {} : { connectedRobotIds: [] }),
+  }),
   rosDiagnostics: null,
   setRosDiagnostics: (rosDiagnostics) => set({ rosDiagnostics }),
   rosConnected: false,

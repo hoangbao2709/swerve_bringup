@@ -61,6 +61,10 @@ set -a
 # shellcheck disable=SC1091
 source "$ROOT_DIR/waretwin/backend/.env"
 set +a
+# This entrypoint starts the real Gazebo/ROS stack, so neither a stale shell
+# variable nor backend/.env may silently select LOCAL_SIM for Django.
+WARETWIN_RUNTIME_MODE=GAZEBO_ROS
+export WARETWIN_RUNTIME_MODE
 if ((ALLOW_DEV_WORLD_CLI == 0)); then
   ALLOW_DEV_WORLD_SELECTED="${WARETWIN_ALLOW_DEV_WORLD:-${ALLOW_DEV_WORLD:-$ALLOW_DEV_WORLD_SELECTED}}"
 fi
@@ -127,12 +131,14 @@ ROBOT_ID=$ROBOT_ID
 NAMESPACE=$NAMESPACE
 ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
 ROS_DOMAIN_ID_SOURCE=backend/.env
+WARETWIN_RUNTIME_MODE=$WARETWIN_RUNTIME_MODE
 GAZEBO_GUI=$GUI_ARG
 RVIZ=$RVIZ_ARG
 EOF
 
 echo "Starting backend on $BACKEND_URL"
 setsid env BACKEND_HOST="$BACKEND_HOST_SELECTED" BACKEND_PORT="$BACKEND_PORT_SELECTED" \
+  WARETWIN_RUNTIME_MODE=GAZEBO_ROS \
   DJANGO_ALLOWED_HOSTS="$ALLOWED_HOSTS_SELECTED" CORS_ALLOWED_ORIGINS="$CORS_SELECTED" \
   bash -c "cd '$ROOT_DIR/waretwin/backend' && exec ./run.sh" \
   > "$(stack_log_file backend)" 2>&1 < /dev/null &
@@ -284,6 +290,7 @@ ROBOT_ID=$ROBOT_ID
 NAMESPACE=$NAMESPACE
 ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
 ROS_DOMAIN_ID_SOURCE=backend/.env
+WARETWIN_RUNTIME_MODE=$WARETWIN_RUNTIME_MODE
 ALLOW_DEV_WORLD=$ALLOW_DEV_WORLD_ARG
 GAZEBO_GUI=$GUI_ARG
 RVIZ=$RVIZ_ARG
@@ -295,7 +302,7 @@ echo "[ROBOT] id=$ROBOT_ID spawn=($SPAWN_TEXT)"
 echo "[ROS_DOMAIN_ID] $ROS_DOMAIN_ID_SELECTED"
 
 echo "Starting frontend on $FRONTEND_URL"
-setsid bash -c "cd '$ROOT_DIR/waretwin/frontend' && exec env VITE_BACKEND_PORT='$BACKEND_PORT_SELECTED' VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run dev -- --host '$FRONTEND_HOST_SELECTED' --port '$FRONTEND_PORT_SELECTED'" \
+setsid bash -c "cd '$ROOT_DIR/waretwin/frontend' && exec env VITE_RUNTIME_MODE=GAZEBO_ROS VITE_DEMO_MODE=false VITE_BACKEND_MODE=true VITE_BACKEND_PORT='$BACKEND_PORT_SELECTED' VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run dev -- --host '$FRONTEND_HOST_SELECTED' --port '$FRONTEND_PORT_SELECTED'" \
   > "$(stack_log_file frontend)" 2>&1 < /dev/null &
 stack_write_pid frontend "$!"
 if ! stack_wait_http "$FRONTEND_URL" 30; then

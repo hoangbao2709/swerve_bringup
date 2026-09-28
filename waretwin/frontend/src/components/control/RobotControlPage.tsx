@@ -64,6 +64,7 @@ function RobotControlContent() {
   const rawDetection = useStore((state) => state.tagDetection);
   const setGraph = useStore((state) => state.setTagGraph);
   const ros = useStore((state) => state.rosConnected);
+  const connectedRobotIds = useStore((state) => state.connectedRobotIds);
   const runtimeMode = useStore((state) => state.runtimeMode);
   const diagnostics = useStore((state) => state.rosDiagnostics);
   const websocketState = useStore((state) => state.websocketState);
@@ -86,7 +87,7 @@ function RobotControlContent() {
   const previousRobot = useRef<string | null>(null);
   const robotIds = useMemo(() => Object.keys(robots), [robots]);
   const robotId = selected ?? robotIds[0] ?? "";
-  const controlOnline = runtimeMode !== "LOCAL_SIM" && ros && websocketState === "CONNECTED";
+  const controlOnline = runtimeMode !== "LOCAL_SIM" && connectedRobotIds.includes(robotId) && ros && websocketState === "CONNECTED";
   const missionControlAvailable = runtimeMode === "LOCAL_SIM" || controlOnline;
   const odomReady = Boolean(diagnostics?.ros && measuredTopics.some((topic) => topic === "/odom" || topic === "/odometry/filtered" || topic.endsWith("/odom") || topic.endsWith("/odometry/filtered")));
   const imuReady = Boolean(diagnostics?.ros && measuredTopics.some((topic) => topic === "/imu/data" || topic.endsWith("/imu/data")));

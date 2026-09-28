@@ -81,11 +81,28 @@ describe("/control direct render", () => {
     renderControl({
       twin: { ...initialState.twin, robots: { R01: r01() } },
       rosConnected: true,
+      connectedRobotIds: ["R01"],
       websocketState: "CONNECTED",
       tagGraph: { warehouse_id: 1, tags: [], edges: [] },
     });
     expect(container.textContent).toContain("R01");
     expect(container.textContent).toContain("CONNECTED");
+  });
+
+  it("does not enable manual control for a robot without its own bridge", () => {
+    const r02 = { ...r01(), id: "R02" };
+    renderControl({
+      twin: { ...initialState.twin, robots: { R01: r01(), R02: r02 } },
+      selectedRobot: "R02",
+      runtimeMode: "GAZEBO_ROS",
+      rosConnected: true,
+      connectedRobotIds: ["R01"],
+      websocketState: "CONNECTED",
+    });
+    const manualMode = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "MANUAL");
+    expect(manualMode?.hasAttribute("disabled")).toBe(true);
+    expect(container.querySelector(".manual-btn:not(.manual-stop)")?.hasAttribute("disabled")).toBe(true);
+    expect(container.textContent).toContain("ROS BRIDGE: DISCONNECTED");
   });
 
   it("accepts repeated store updates without creating a snapshot render loop", () => {

@@ -208,8 +208,12 @@ stack_port_pid() {
 
 stack_port_busy() {
   local port="$1"
-  if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | awk -v p=":$port" '$4 ~ p"$" { found=1 } END { exit !found }'; then
-    return 0
+  if command -v ss >/dev/null 2>&1; then
+    local listeners
+    if listeners="$(ss -ltnH 2>/dev/null)"; then
+      printf '%s\n' "$listeners" | awk -v p=":$port" '$4 ~ p"$" { found=1 } END { exit !found }'
+      return $?
+    fi
   fi
   [[ -n "$(stack_port_pid "$port")" ]]
 }

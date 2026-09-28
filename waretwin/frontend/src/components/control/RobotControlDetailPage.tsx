@@ -87,6 +87,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const runtimeMode = useStore((state) => state.runtimeMode);
   const runtimeState = useStore((state) => state.runtimeState);
   const rosConnected = useStore((state) => state.rosConnected);
+  const connectedRobotIds = useStore((state) => state.connectedRobotIds);
   const websocketState = useStore((state) => state.websocketState);
   const mapSnapshot = useStore((state) => state.robotDetail[robotId]?.map ?? null);
   const controller = useStore((state) => state.robotDetail[robotId]?.controller ?? null);
@@ -106,8 +107,9 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const manualActive = useRef(false);
   const previousRobot = useRef(robotId);
 
-  const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && (runtimeMode === "LOCAL_SIM" || (rosConnected && websocketState === "CONNECTED")));
-  const controlOnline = Boolean(robotOnline && runtimeMode !== "LOCAL_SIM" && rosConnected && websocketState === "CONNECTED");
+  const robotBridgeOnline = connectedRobotIds.includes(robotId);
+  const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && (runtimeMode === "LOCAL_SIM" || (robotBridgeOnline && rosConnected && websocketState === "CONNECTED")));
+  const controlOnline = Boolean(robotOnline && runtimeMode !== "LOCAL_SIM" && robotBridgeOnline && rosConnected && websocketState === "CONNECTED");
   const localization = diagnostics?.localization ?? rawLocalization?.state ?? null;
 
   useEffect(() => {

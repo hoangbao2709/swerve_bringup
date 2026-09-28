@@ -288,6 +288,7 @@ function handle(msg: ServerMessage) {
       if (msg.runtime_state) st.setRuntimeState(msg.runtime_state);
       if (msg.bridge_state) st.setBridgeState(msg.bridge_state);
       st.setRosConnected(msg.ros_connected);
+      st.setConnectedRobotIds(Array.isArray(msg.connected_robot_ids) ? msg.connected_robot_ids : []);
       st.setNav2State(msg.nav2_state);
       st.setLastTelemetryAt(msg.last_telemetry_at);
       if (msg.diagnostics) st.setRosDiagnostics(msg.diagnostics);

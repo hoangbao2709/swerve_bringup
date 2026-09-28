@@ -135,6 +135,10 @@ def generate_launch_description():
         arguments=[
             '-entity', 'swerve_base',
             '-topic', 'robot_description',
+            # Gazebo Classic can take over a minute to load the published
+            # warehouse world on a VMware guest before gazebo_ros_factory
+            # advertises /spawn_entity. Keep spawn alive through that load.
+            '-timeout', '180',
             '-x', LaunchConfiguration('resolved_spawn_x'),
             '-y', LaunchConfiguration('resolved_spawn_y'),
             '-z', LaunchConfiguration('resolved_spawn_z'),

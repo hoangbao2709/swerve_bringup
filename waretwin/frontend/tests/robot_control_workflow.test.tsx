@@ -92,4 +92,26 @@ describe("robot detail route stability", () => {
     expect(container.textContent).toContain("LiDAR WAITING");
     expect(container.textContent).toContain("N/A");
   });
+
+  it("enables control only for the robot with a live ROS bridge", () => {
+    useStore.setState({
+      runtimeMode: "GAZEBO_ROS",
+      rosConnected: true,
+      websocketState: "CONNECTED",
+      connectedRobotIds: ["R01"],
+    });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(false);
+    act(() => root.unmount());
+
+    const r02 = { ...r01(), id: "R02", status: "ACTIVE" as const };
+    useStore.setState({
+      twin: { ...initialState.twin, robots: { R01: r01(), R02: r02 } },
+      connectedRobotIds: ["R01"],
+    });
+    root = createRoot(container);
+    renderNode(<RobotControlDetailPage robotId="R02" />);
+    expect(container.textContent).toContain("OFFLINE");
+    expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(true);
+  });
 });

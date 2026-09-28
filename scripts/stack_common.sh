@@ -157,10 +157,29 @@ stack_owned_group() {
     case "$name" in
       backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py"* || "$cmd" == *"run.sh"* ]] && return 0 ;;
       frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* ]] && return 0 ;;
-      ros) [[ "$cwd" == "$STACK_ROOT" || "$cmd" == *"$STACK_ROOT/install/"* ]] && [[ "$cmd" == *"ros_stack_supervisor.py"* || "$cmd" == *"gzserver"* || "$cmd" == *"ros2 launch swerve_bringup"* || "$cmd" == *"system.launch.py"* ]] && return 0 ;;
+      ros) [[ "$cwd" == "$STACK_ROOT" || "$cmd" == *"$STACK_ROOT/install/"* ]] && [[ "$cmd" == *"ros_stack_supervisor.py"* || "$cmd" == *"gzserver"* || "$cmd" == *"gzclient"* || "$cmd" == *"rviz2"* || "$cmd" == *"ros2 launch swerve_bringup"* || "$cmd" == *"system.launch.py"* || "$cmd" == *"swerve_bridge"* || "$cmd" == *"slam_toolbox"* || "$cmd" == *"nav2_"* ]] && return 0 ;;
     esac
   done < <(ps -eo pid=,pgid= 2>/dev/null | awk -v group="$pgid" '$2 == group { print $1 }')
   return 1
+}
+
+stack_group_has_process() {
+  local component="$1" wanted="$2" pgid pid comm
+  pgid="$(stack_pgid "$component" 2>/dev/null || true)"
+  [[ "$pgid" =~ ^[0-9]+$ ]] || return 1
+  while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/comm" ]] || continue
+    IFS= read -r comm < "/proc/$pid/comm" || continue
+    [[ "$comm" == "$wanted" ]] && return 0
+  done < <(ps -eo pid=,pgid= 2>/dev/null | awk -v group="$pgid" '$2 == group { print $1 }')
+  return 1
+}
+
+stack_group_has_live_process() {
+  local pgid="$1"
+  [[ "$pgid" =~ ^[0-9]+$ ]] || return 1
+  ps -eo pgid=,stat= 2>/dev/null |
+    awk -v group="$pgid" '$1 == group && $2 !~ /^Z/ { found=1 } END { exit !found }'
 }
 
 stack_runtime_active() {

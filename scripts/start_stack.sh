@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Usage: start_stack.sh {mapping|navigation} [--map PATH] [--gui] [--rviz]
+# GUI and RViz default to off; --headless and the --no-* switches remain aliases.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,9 +15,8 @@ fi
 [[ "$MODE" == mapping || "$MODE" == navigation ]] || { echo "Usage: $0 {mapping|navigation} [options]" >&2; exit 2; }
 shift || true
 
-HEADLESS=0
-NO_RVIZ=0
-NO_GAZEBO_GUI=0
+GUI_ARG=false
+RVIZ_ARG=false
 BACKEND_PORT_ARG=""
 FRONTEND_PORT_ARG=""
 MAP_FILE=""
@@ -29,9 +30,11 @@ NAMESPACE="${WARETWIN_ROS_NAMESPACE:-}"
 
 while (($#)); do
   case "$1" in
-    --headless) HEADLESS=1; NO_RVIZ=1; NO_GAZEBO_GUI=1 ;;
-    --no-rviz) NO_RVIZ=1 ;;
-    --no-gazebo-gui) NO_GAZEBO_GUI=1 ;;
+    --headless) GUI_ARG=false; RVIZ_ARG=false ;;
+    --gui) GUI_ARG=true ;;
+    --rviz) RVIZ_ARG=true ;;
+    --no-rviz) RVIZ_ARG=false ;;
+    --no-gazebo-gui) GUI_ARG=false ;;
     --backend-port) shift; [[ $# -gt 0 ]] || { echo '--backend-port needs a value' >&2; exit 2; }; BACKEND_PORT_ARG="$1" ;;
     --frontend-port) shift; [[ $# -gt 0 ]] || { echo '--frontend-port needs a value' >&2; exit 2; }; FRONTEND_PORT_ARG="$1" ;;
     --map) shift; [[ $# -gt 0 ]] || { echo '--map needs a YAML path' >&2; exit 2; }; MAP_FILE="$(readlink -f -- "$1")"; [[ -f "$MAP_FILE" ]] || { echo "Map YAML does not exist: $MAP_FILE" >&2; exit 2; }; EXPLICIT_MAP=1 ;;
@@ -45,6 +48,9 @@ while (($#)); do
   esac
   shift
 done
+
+# VMware-friendly defaults: keep the simulator server and the ROS stack while
+# omitting both desktop rendering processes unless explicitly requested.
 
 [[ -f "$ROOT_DIR/waretwin/backend/.env" ]] || { echo 'Missing backend/.env; run setup_full_stack.sh first' >&2; exit 1; }
 [[ -f "$ROOT_DIR/waretwin/frontend/.env" ]] || { echo 'Missing frontend/.env; run setup_full_stack.sh first' >&2; exit 1; }
@@ -121,6 +127,8 @@ ROBOT_ID=$ROBOT_ID
 NAMESPACE=$NAMESPACE
 ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
 ROS_DOMAIN_ID_SOURCE=backend/.env
+GAZEBO_GUI=$GUI_ARG
+RVIZ=$RVIZ_ARG
 EOF
 
 echo "Starting backend on $BACKEND_URL"
@@ -148,6 +156,40 @@ ALLOW_DEV_WORLD_ARG=false
 [[ "$ALLOW_DEV_WORLD_SELECTED" == true ]] && ALLOW_DEV_WORLD_ARG=true
 MAP_SYNC_REQUEST_FILE="$STACK_RUNTIME_DIR/map-sync-request.json"
 DEVELOPMENT_WORLD=0
+
+if ((EXPLICIT_MAP == 1 && EXPLICIT_WORLD == 0)) && [[ "$ALLOW_DEV_WORLD_SELECTED" != true ]]; then
+  # A CLI map that is the currently published canonical map remains part of
+  # its verified bundle and can use the paired world without dev-world opt-in.
+  BACKEND_PYTHON="$ROOT_DIR/waretwin/backend/.venv/bin/python"
+  CANONICAL_LINE=""
+  if [[ -x "$BACKEND_PYTHON" ]]; then
+    CANONICAL_LINE="$({
+      cd "$ROOT_DIR/waretwin/backend"
+      "$BACKEND_PYTHON" manage.py shell --verbosity 0 -c \
+        'from twin.map_sync import published_map_payload; p=published_map_payload(); print("WARETWIN_ARTIFACTS|" + str(p.get("artifact_dir") or "") + "|" + str(p.get("map_revision") or ""))'
+    } 2>/dev/null | rg '^WARETWIN_ARTIFACTS[|]' | tail -n1 || true)"
+  fi
+  if [[ "$CANONICAL_LINE" == *'|'* ]]; then
+    CANONICAL_ARTIFACT_DIR="$(cut -d'|' -f2 <<<"$CANONICAL_LINE")"
+    CANONICAL_REVISION="$(cut -d'|' -f3 <<<"$CANONICAL_LINE")"
+    if [[ -n "$CANONICAL_ARTIFACT_DIR" && "$CANONICAL_REVISION" =~ ^[0-9]+$ ]]; then
+      if CANONICAL_MAP="$(python3 - "$ROOT_DIR" "$CANONICAL_ARTIFACT_DIR" "$CANONICAL_REVISION" "$ROBOT_ID" 2>/dev/null <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts'))
+from ros_stack_supervisor import verify_bundle
+_, selected = verify_bundle(Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4])
+print(selected['map'])
+PY
+      )"; then
+        if [[ "$(readlink -f -- "$MAP_FILE")" == "$(readlink -f -- "$CANONICAL_MAP")" ]]; then
+          EXPLICIT_MAP=0
+          echo "[MAP] --map matches the verified published bundle: revision=$CANONICAL_REVISION"
+        fi
+      fi
+    fi
+  fi
+fi
 
 if ((EXPLICIT_MAP == 1 || EXPLICIT_WORLD == 1)); then
   if [[ "$ALLOW_DEV_WORLD_SELECTED" != true ]]; then
@@ -243,6 +285,8 @@ NAMESPACE=$NAMESPACE
 ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
 ROS_DOMAIN_ID_SOURCE=backend/.env
 ALLOW_DEV_WORLD=$ALLOW_DEV_WORLD_ARG
+GAZEBO_GUI=$GUI_ARG
+RVIZ=$RVIZ_ARG
 EOF
 echo "[MAP] revision=$PUBLISHED_REVISION frame=map canonical=${PUBLISHED_ARTIFACT_DIR:-N/A}"
 echo "[GAZEBO] world=${WORLD_FILE:-$ROOT_DIR/worlds/warehouse.world}"
@@ -262,10 +306,6 @@ if ! stack_wait_http "$FRONTEND_URL" 30; then
   exit 1
 fi
 
-GUI_ARG=true
-RVIZ_ARG=true
-[[ "$NO_GAZEBO_GUI" -eq 1 ]] && GUI_ARG=false
-[[ "$NO_RVIZ" -eq 1 ]] && RVIZ_ARG=false
 ROS_ARGS=(use_sim:=true use_sim_time:=true mode:="$MODE" gui:="$GUI_ARG" start_rviz:="$RVIZ_ARG" robot_id:="$ROBOT_ID" bridge_ws_url:="$ROS_WS_URL_SELECTED" allow_dev_world:="$ALLOW_DEV_WORLD_ARG")
 [[ -n "$NAMESPACE" ]] && ROS_ARGS+=(namespace:="$NAMESPACE")
 if [[ -n "$WORLD_FILE" ]]; then ROS_ARGS+=(world:="$WORLD_FILE"); fi
@@ -273,6 +313,7 @@ if [[ -n "$MAP_FILE" ]]; then ROS_ARGS+=(map_file:="$MAP_FILE"); fi
 if [[ -n "$PUBLISHED_TAG_FILE" ]]; then ROS_ARGS+=(datamatrix_map_file:="$PUBLISHED_TAG_FILE"); fi
 if [[ -n "$PUBLISHED_GRAPH_FILE" ]]; then ROS_ARGS+=(tag_graph_file:="$PUBLISHED_GRAPH_FILE"); fi
 echo "Starting ROS/Gazebo in $MODE mode"
+echo "Gazebo GUI=$GUI_ARG RViz=$RVIZ_ARG"
 setsid bash -c '
   set -euo pipefail
   root="$1"; domain="$2"; ws_url="$3"; request_file="$4"; revision="$5"; robot_id="$6"

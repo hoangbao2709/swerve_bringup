@@ -47,6 +47,8 @@ else
     warn 'runtime stack.env is stale; falling back to backend/.env'
   fi
   MODE='unknown'
+  GAZEBO_GUI=false
+  RVIZ=false
   BACKEND_PORT="${BACKEND_PORT:-8000}"
   FRONTEND_PORT="${FRONTEND_PORT:-5173}"
   BACKEND_URL="http://127.0.0.1:$BACKEND_PORT"
@@ -61,6 +63,10 @@ else
   fi
   ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 fi
+
+GAZEBO_GUI="${GAZEBO_GUI:-false}"
+RVIZ="${RVIZ:-false}"
+ROS_BRIDGE_STATUS='UNKNOWN'
 
 RUNTIME_ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 if [[ "$RUNTIME_STACK_ACTIVE" -eq 0 ]]; then
@@ -173,7 +179,15 @@ if command -v ros2 >/dev/null 2>&1 && [[ -f "$ROOT_DIR/install/local_setup.bash"
   }
 
   cli_bridge=0; cli_controller_manager=0; cli_controllers=0; cli_slam=0; cli_lidar=0; cli_tf=0
-  if node_present swerve_bridge; then ok 'ROS bridge node'; cli_bridge=1; else warn 'ROS bridge node not visible'; failures=$((failures + 1)); fi
+  if node_present swerve_bridge; then
+    ok 'ROS bridge node'
+    cli_bridge=1
+    ROS_BRIDGE_STATUS='RUNNING'
+  else
+    warn 'ROS bridge node not visible'
+    ROS_BRIDGE_STATUS='STOPPED'
+    failures=$((failures + 1))
+  fi
   if node_present controller_manager; then ok 'controller_manager'; cli_controller_manager=1; else warn 'controller_manager not visible'; failures=$((failures + 1)); fi
   cli_controllers=1
   for controller in joint_state_broadcaster steering_controller drive_controller; do
@@ -189,13 +203,13 @@ if command -v ros2 >/dev/null 2>&1 && [[ -f "$ROOT_DIR/install/local_setup.bash"
       failures=$((failures + 1))
     fi
   done
-  if stack_ros_tf_resolves odom base_link 6; then ok 'TF odom -> base_link'; cli_tf=1; else warn 'TF odom -> base_link unavailable'; failures=$((failures + 1)); fi
-  if stack_ros_tf_resolves map base_link 6; then ok 'TF map -> base_link'; else warn 'TF map -> base_link unavailable'; failures=$((failures + 1)); fi
+  if stack_ros_tf_resolves odom base_link 20; then ok 'TF odom -> base_link'; cli_tf=1; else warn 'TF odom -> base_link unavailable'; failures=$((failures + 1)); fi
+  if stack_ros_tf_resolves map base_link 20; then ok 'TF map -> base_link'; else warn 'TF map -> base_link unavailable'; failures=$((failures + 1)); fi
 
   if [[ "${MODE:-}" == mapping ]]; then
     if node_present slam_toolbox; then ok 'SLAM Toolbox'; cli_slam=1; else warn 'SLAM Toolbox not visible'; failures=$((failures + 1)); fi
     if topic_data /map; then ok '/map publishing'; else warn '/map exists but no data received'; failures=$((failures + 1)); fi
-    if stack_ros_tf_resolves map odom 6; then ok 'TF map -> odom'; else warn 'TF map -> odom unavailable'; failures=$((failures + 1)); fi
+    if stack_ros_tf_resolves map odom 20; then ok 'TF map -> odom'; else warn 'TF map -> odom unavailable'; failures=$((failures + 1)); fi
   elif [[ "${MODE:-}" == navigation ]]; then
     cli_nav_nodes=1
     nav_nodes=(map_server planner_server controller_server behavior_server bt_navigator waypoint_follower)
@@ -211,10 +225,10 @@ if command -v ros2 >/dev/null 2>&1 && [[ -f "$ROOT_DIR/install/local_setup.bash"
       fi
     done
     if topic_data /map; then ok '/map publishing'; else warn '/map exists but no data received'; failures=$((failures + 1)); fi
-    if stack_ros_tf_resolves map odom 6; then ok 'TF map -> odom'; else warn 'TF map -> odom unavailable'; failures=$((failures + 1)); fi
+    if stack_ros_tf_resolves map odom 20; then ok 'TF map -> odom'; else warn 'TF map -> odom unavailable'; failures=$((failures + 1)); fi
     if [[ -n "${MAP_FILE:-}" ]]; then
       expected_map="$(readlink -f -- "$MAP_FILE")"
-      map_param="$(timeout 6 ros2 param get /map_server yaml_filename 2>/dev/null || true)"
+      map_param="$(timeout 20 ros2 param get /map_server yaml_filename 2>/dev/null || true)"
       if printf '%s\n' "$map_param" | rg -Fq "$expected_map"; then ok "map_server yaml_filename=$expected_map"; else warn "map_server yaml_filename does not match $expected_map"; failures=$((failures + 1)); fi
     fi
   fi
@@ -258,6 +272,35 @@ else
   warn 'ROS environment unavailable'
   failures=$((failures + 1))
 fi
+
+if stack_owned_group ros && stack_group_has_process ros gzserver; then
+  GAZEBO_SERVER_STATUS='RUNNING'
+else
+  GAZEBO_SERVER_STATUS='STOPPED'
+fi
+if stack_owned_group ros && stack_group_has_process ros gzclient; then
+  GAZEBO_GUI_STATUS='RUNNING'
+elif [[ "${GAZEBO_GUI,,}" == true || "$GAZEBO_GUI" == 1 ]]; then
+  GAZEBO_GUI_STATUS='STOPPED'
+else
+  GAZEBO_GUI_STATUS='DISABLED'
+fi
+if stack_owned_group ros && stack_group_has_process ros rviz2; then
+  RVIZ_STATUS='RUNNING'
+elif [[ "${RVIZ,,}" == true || "$RVIZ" == 1 ]]; then
+  RVIZ_STATUS='STOPPED'
+else
+  RVIZ_STATUS='DISABLED'
+fi
+if stack_owned_pid frontend || stack_owned_group frontend; then FRONTEND_STATUS='RUNNING'; else FRONTEND_STATUS='STOPPED'; fi
+if stack_owned_pid backend || stack_owned_group backend; then BACKEND_STATUS='RUNNING'; else BACKEND_STATUS='STOPPED'; fi
+
+printf 'Gazebo server : %s\n' "$GAZEBO_SERVER_STATUS"
+printf 'Gazebo GUI    : %s\n' "$GAZEBO_GUI_STATUS"
+printf 'RViz          : %s\n' "$RVIZ_STATUS"
+printf 'Frontend      : %s\n' "$FRONTEND_STATUS"
+printf 'Backend       : %s\n' "$BACKEND_STATUS"
+printf 'ROS bridge    : %s\n' "$ROS_BRIDGE_STATUS"
 
 printf 'Status summary: %d failed check(s), mode=%s\n' "$failures" "${MODE:-unknown}"
 if (( failures == 0 )); then exit 0; fi

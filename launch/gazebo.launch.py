@@ -246,8 +246,8 @@ def generate_launch_description():
             description='Use the optimized CAD-derived visual meshes; false selects visual-only primitives.',
         ),
         DeclareLaunchArgument(
-            'gui', default_value='true',
-            description='Start the Gazebo client window.',
+            'gui', default_value='false',
+            description='Start the Gazebo client window; false runs gzserver without spawning gzclient.',
         ),
         DeclareLaunchArgument(
             'world',

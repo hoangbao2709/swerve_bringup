@@ -30,6 +30,8 @@ class RosBridgeGateway(RobotGateway):
             # UI mode that produced it.
             message.setdefault('mode', 'MANUAL')
             message['type'] = 'MANUAL_CMD'
+        elif action in ('NAV_CANCEL', 'NAV_PAUSE', 'NAV_RESUME'):
+            message['type'] = action
         elif action in ('GO_TO_TAG', 'PAUSE_TAG_NAVIGATION', 'RESUME_TAG_NAVIGATION', 'CANCEL_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION', 'EMERGENCY_STOP', 'CLEAR_EMERGENCY_STOP'):
             message['type'] = {
                 'GO_TO_TAG': 'TAG_NAV_GOAL', 'PAUSE_TAG_NAVIGATION': 'TAG_NAV_PAUSE',

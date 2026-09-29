@@ -33,7 +33,12 @@ export function AuthPage({ mode }: { mode: "login" | "register" }) {
     try {
       if (mode === "login") {
         await login(username.trim(), password);
-        go("/");
+        let returnPath = "/";
+        try {
+          const candidate = window.sessionStorage.getItem("waretwin.robot-control.return-path");
+          if (candidate && /^\/robots\/[^/]+\/control\/?$/.test(candidate)) returnPath = candidate;
+        } catch { /* storage may be disabled */ }
+        go(returnPath);
       } else {
         await registerUser(
           username.trim(),

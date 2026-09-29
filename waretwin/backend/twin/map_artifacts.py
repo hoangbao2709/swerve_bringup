@@ -16,10 +16,12 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timezone
 
 from django.conf import settings
 
 from .canonical_map import canonicalize_layout
+from .nav2_export import floor_artifact_name, render_nav2_map
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -77,7 +79,7 @@ def _tag_sort_key(tag: dict[str, Any]) -> tuple[int, str]:
 def render_datamatrix_yaml(layout: dict[str, Any]) -> str:
     """Render both the legacy ``markers`` list and the richer ``tags`` list."""
     tags = sorted(layout.get("navigation_tags") or [], key=_tag_sort_key)
-    lines = ["frame_id: warehouse_map", "units: meter", "markers:"]
+    lines = ["frame_id: map", "units: m", "markers:"]
     for tag in tags:
         lines.append(
             "  - {tag_id: %s, x: %s, y: %s, yaw: %s, uuid: %s, floor_id: %s, z: %s}"
@@ -146,7 +148,7 @@ def render_tag_graph_yaml(layout: dict[str, Any]) -> str:
             "enabled": enabled,
         })
     edges.sort(key=lambda edge: (edge["from"], edge["to"], str(edge.get("aisle_id") or ""), edge["direction"]))
-    lines = ["frame_id: warehouse_map", "units: meter", "tags:"]
+    lines = ["frame_id: map", "units: m", "tags:"]
     for tag in tags:
         try:
             tag_id = int(tag["tag_id"])
@@ -185,7 +187,9 @@ def _sha256(path: Path) -> str:
 
 
 def _required_files(root: Path) -> list[Path]:
-    return [root / "canonical_map.json", root / "datamatrix_map.yaml", root / "tag_graph.yaml", root / "gazebo" / "warehouse.world"]
+    return [root / "canonical_map.json", root / "datamatrix_map.yaml", root / "tag_graph.yaml",
+            root / "gazebo" / "warehouse.world", root / "gazebo" / "manifest.json",
+            root / "nav2" / "warehouse.yaml"]
 
 
 def build_revision_artifacts(layout: dict[str, Any], *, warehouse_id: Any, revision: int,
@@ -204,6 +208,8 @@ def build_revision_artifacts(layout: dict[str, Any], *, warehouse_id: Any, revis
         raise ValueError(f"artifact revision already exists: {final}")
     staging = Path(tempfile.mkdtemp(prefix=f".{int(revision)}.", dir=str(warehouse_dir)))
     try:
+        doc['revision'] = int(revision)
+        doc['frame_id'] = 'map'
         (staging / "canonical_map.json").write_text(json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
         (staging / "datamatrix_map.yaml").write_text(render_datamatrix_yaml(doc), encoding="utf-8")
         (staging / "tag_graph.yaml").write_text(render_tag_graph_yaml(doc), encoding="utf-8")
@@ -215,6 +221,27 @@ def build_revision_artifacts(layout: dict[str, Any], *, warehouse_id: Any, revis
         world_text = world_path.read_text(encoding="utf-8")
         world_text = world_text.replace(str((staging / "gazebo").resolve()), str((final / "gazebo").resolve()))
         world_path.write_text(world_text, encoding="utf-8")
+        nav_dir = staging / 'nav2'
+        nav_dir.mkdir(parents=True, exist_ok=True)
+        nav2_maps: dict[str, str] = {}
+        nav2_bounds: dict[str, dict[str, Any]] = {}
+        for index, floor in enumerate(doc.get('floors') or []):
+            name = floor_artifact_name(floor.get('id', index + 1))
+            yaml_rel = f'nav2/warehouse_{name}.yaml'
+            image_rel = f'nav2/warehouse_{name}.pgm'
+            image_bytes, yaml_text, raster = render_nav2_map(doc, floor)
+            (staging / image_rel).write_bytes(image_bytes)
+            (staging / yaml_rel).write_text(yaml_text.format(image=Path(image_rel).name), encoding='utf-8')
+            nav2_maps[str(floor.get('id', index + 1))] = yaml_rel
+            nav2_bounds[str(floor.get('id', index + 1))] = raster
+        if not nav2_maps:
+            raise ValueError('canonical map must contain at least one floor')
+        primary_nav2 = next(iter(nav2_maps.values()))
+        (staging / 'nav2' / 'warehouse.yaml').write_text(
+            (staging / primary_nav2).read_text(encoding='utf-8').replace(
+                Path(primary_nav2).name, 'warehouse.pgm'), encoding='utf-8')
+        primary_image = staging / Path(primary_nav2).with_suffix('.pgm')
+        (staging / 'nav2' / 'warehouse.pgm').write_bytes(primary_image.read_bytes())
         missing = [str(path.relative_to(staging)) for path in _required_files(staging) if not path.is_file()]
         if missing:
             raise RuntimeError("Gazebo/artifact export incomplete: " + ", ".join(missing))
@@ -223,16 +250,43 @@ def build_revision_artifacts(layout: dict[str, Any], *, warehouse_id: Any, revis
             "datamatrix_map": "datamatrix_map.yaml",
             "tag_graph": "tag_graph.yaml",
             "gazebo_world": "gazebo/warehouse.world",
+            "gazebo_manifest": "gazebo/manifest.json",
+            "nav2_map": "nav2/warehouse.yaml",
+            "nav2_image": "nav2/warehouse.pgm",
         }
-        hashes = {name: _sha256(staging / rel) for name, rel in rel_artifacts.items()}
+        # Hash every generated source/consumer artifact (including Gazebo meshes
+        # and the per-floor Nav2 maps), not just a small role-based subset.
+        hashes = {
+            path.relative_to(staging).as_posix(): _sha256(path)
+            for path in sorted(staging.rglob('*')) if path.is_file()
+        }
+        origin = doc.get('origin') or {'x': 0.0, 'y': 0.0}
+        width, height = float(doc.get('width') or 0.0), float(doc.get('height') or 0.0)
+        world_bounds = {
+            'min_x': float(origin.get('x', 0.0)),
+            'min_y': float(origin.get('y', 0.0)),
+            'max_x': float(origin.get('x', 0.0)) + width,
+            'max_y': float(origin.get('y', 0.0)) + height,
+        }
         manifest = {
             "schema_version": 1,
             "warehouse_id": str(warehouse_id),
             "revision": int(revision),
             "published_version": int(published_version),
-            "frame_id": "warehouse_map",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "frame_id": "map",
+            "units": "m",
+            "origin": doc.get('origin'),
+            "width": doc.get('width'),
+            "height": doc.get('height'),
             "artifacts": rel_artifacts,
             "sha256": hashes,
+            "nav2_maps": nav2_maps,
+            "nav2_bounds": nav2_bounds,
+            "nav2_resolution": 0.05,
+            "canonical_bounds": world_bounds,
+            "gazebo_bounds": world_bounds,
+            "tag_map_revision": int(revision),
             # Gazebo spawn resolution reads the same canonical robot records
             # from the immutable manifest; do not discard them when wrapping
             # the exporter output in the backend artifact manifest.

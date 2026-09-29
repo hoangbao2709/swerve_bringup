@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Usage: start_stack.sh {mapping|navigation} [--map PATH] [--gui] [--rviz]
+# GUI and RViz default to off; --headless and the --no-* switches remain aliases.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,25 +15,32 @@ fi
 [[ "$MODE" == mapping || "$MODE" == navigation ]] || { echo "Usage: $0 {mapping|navigation} [options]" >&2; exit 2; }
 shift || true
 
-HEADLESS=0
-NO_RVIZ=0
-NO_GAZEBO_GUI=0
+GUI_ARG=false
+RVIZ_ARG=false
 BACKEND_PORT_ARG=""
 FRONTEND_PORT_ARG=""
 MAP_FILE=""
 WORLD_FILE=""
+EXPLICIT_MAP=0
+EXPLICIT_WORLD=0
+ALLOW_DEV_WORLD_SELECTED="${WARETWIN_ALLOW_DEV_WORLD:-${ALLOW_DEV_WORLD:-false}}"
+ALLOW_DEV_WORLD_CLI=0
 ROBOT_ID="${WARETWIN_ROBOT_ID:-R01}"
 NAMESPACE="${WARETWIN_ROS_NAMESPACE:-}"
 
 while (($#)); do
   case "$1" in
-    --headless) HEADLESS=1; NO_RVIZ=1; NO_GAZEBO_GUI=1 ;;
-    --no-rviz) NO_RVIZ=1 ;;
-    --no-gazebo-gui) NO_GAZEBO_GUI=1 ;;
+    --headless) GUI_ARG=false; RVIZ_ARG=false ;;
+    --gui) GUI_ARG=true ;;
+    --rviz) RVIZ_ARG=true ;;
+    --no-rviz) RVIZ_ARG=false ;;
+    --no-gazebo-gui) GUI_ARG=false ;;
     --backend-port) shift; [[ $# -gt 0 ]] || { echo '--backend-port needs a value' >&2; exit 2; }; BACKEND_PORT_ARG="$1" ;;
     --frontend-port) shift; [[ $# -gt 0 ]] || { echo '--frontend-port needs a value' >&2; exit 2; }; FRONTEND_PORT_ARG="$1" ;;
-    --map) shift; [[ $# -gt 0 ]] || { echo '--map needs a YAML path' >&2; exit 2; }; MAP_FILE="$(readlink -f -- "$1")"; [[ -f "$MAP_FILE" ]] || { echo "Map YAML does not exist: $MAP_FILE" >&2; exit 2; } ;;
-    --world) shift; [[ $# -gt 0 ]] || { echo '--world needs an SDF/world path' >&2; exit 2; }; WORLD_FILE="$(readlink -f -- "$1")"; [[ -f "$WORLD_FILE" ]] || { echo "Gazebo world does not exist: $WORLD_FILE" >&2; exit 2; } ;;
+    --map) shift; [[ $# -gt 0 ]] || { echo '--map needs a YAML path' >&2; exit 2; }; MAP_FILE="$(readlink -f -- "$1")"; [[ -f "$MAP_FILE" ]] || { echo "Map YAML does not exist: $MAP_FILE" >&2; exit 2; }; EXPLICIT_MAP=1 ;;
+    --world) shift; [[ $# -gt 0 ]] || { echo '--world needs an SDF/world path' >&2; exit 2; }; WORLD_FILE="$(readlink -f -- "$1")"; [[ -f "$WORLD_FILE" ]] || { echo "Gazebo world does not exist: $WORLD_FILE" >&2; exit 2; }; EXPLICIT_WORLD=1 ;;
+    --allow-dev-world) ALLOW_DEV_WORLD_SELECTED=true; ALLOW_DEV_WORLD_CLI=1 ;;
+    --allow-dev-world=false) ALLOW_DEV_WORLD_SELECTED=false; ALLOW_DEV_WORLD_CLI=1 ;;
     --robot-id) shift; [[ $# -gt 0 ]] || { echo '--robot-id needs a value' >&2; exit 2; }; ROBOT_ID="$1"; [[ "$ROBOT_ID" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'robot id contains unsupported characters' >&2; exit 2; } ;;
     --namespace) shift; [[ $# -gt 0 ]] || { echo '--namespace needs a value' >&2; exit 2; }; NAMESPACE="${1#/}"; NAMESPACE="${NAMESPACE%/}"; [[ -z "$NAMESPACE" || "$NAMESPACE" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'namespace contains unsupported characters' >&2; exit 2; } ;;
     -h|--help) sed -n '1,100p' "$ROOT_DIR/scripts/start_stack.sh"; exit 0 ;;
@@ -40,21 +49,30 @@ while (($#)); do
   shift
 done
 
+# VMware-friendly defaults: keep the simulator server and the ROS stack while
+# omitting both desktop rendering processes unless explicitly requested.
+
 [[ -f "$ROOT_DIR/waretwin/backend/.env" ]] || { echo 'Missing backend/.env; run setup_full_stack.sh first' >&2; exit 1; }
 [[ -f "$ROOT_DIR/waretwin/frontend/.env" ]] || { echo 'Missing frontend/.env; run setup_full_stack.sh first' >&2; exit 1; }
-# Preserve an explicitly selected domain across the dotenv load.  The value is
-# persisted below so status/smoke never inherit a stale domain from their shell.
-ROS_DOMAIN_ID_EXPLICIT=""
-if [[ ${ROS_DOMAIN_ID+x} ]]; then
-  ROS_DOMAIN_ID_EXPLICIT="$ROS_DOMAIN_ID"
-fi
+# The backend dotenv is the launch source of truth.  In particular, do not let
+# a stale ROS_DOMAIN_ID exported by an IDE terminal silently select a different
+# DDS domain than the backend and the runtime status file.
 set -a
 # shellcheck disable=SC1091
 source "$ROOT_DIR/waretwin/backend/.env"
 set +a
-if [[ -n "$ROS_DOMAIN_ID_EXPLICIT" ]]; then
-  ROS_DOMAIN_ID="$ROS_DOMAIN_ID_EXPLICIT"
+# This entrypoint starts the real Gazebo/ROS stack, so neither a stale shell
+# variable nor backend/.env may silently select LOCAL_SIM for Django.
+WARETWIN_RUNTIME_MODE=GAZEBO_ROS
+export WARETWIN_RUNTIME_MODE
+if ((ALLOW_DEV_WORLD_CLI == 0)); then
+  ALLOW_DEV_WORLD_SELECTED="${WARETWIN_ALLOW_DEV_WORLD:-${ALLOW_DEV_WORLD:-$ALLOW_DEV_WORLD_SELECTED}}"
 fi
+case "${ALLOW_DEV_WORLD_SELECTED,,}" in
+  true|1|yes) ALLOW_DEV_WORLD_SELECTED=true ;;
+  false|0|no) ALLOW_DEV_WORLD_SELECTED=false ;;
+  *) echo "Invalid ALLOW_DEV_WORLD=$ALLOW_DEV_WORLD_SELECTED; use true or false" >&2; exit 2 ;;
+esac
 ROS_DOMAIN_ID_SELECTED="${ROS_DOMAIN_ID:-0}"
 if ! stack_valid_ros_domain "$ROS_DOMAIN_ID_SELECTED"; then
   echo "Invalid ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED; use an integer from 0 to 232" >&2
@@ -94,6 +112,11 @@ fi
 
 FRONTEND_HOST_SELECTED="${FRONTEND_HOST:-0.0.0.0}"
 BACKEND_HOST_SELECTED="${BACKEND_HOST:-0.0.0.0}"
+BACKEND_READY_TIMEOUT_S="${WARETWIN_BACKEND_READY_TIMEOUT_S:-120}"
+if ! [[ "$BACKEND_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( BACKEND_READY_TIMEOUT_S < 1 )); then
+  echo "Invalid WARETWIN_BACKEND_READY_TIMEOUT_S=$BACKEND_READY_TIMEOUT_S; use a positive integer" >&2
+  exit 2
+fi
 BACKEND_URL="http://127.0.0.1:$BACKEND_PORT_SELECTED"
 ROS_WS_URL_SELECTED="ws://127.0.0.1:$BACKEND_PORT_SELECTED/ws/ros"
 FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT_SELECTED"
@@ -112,68 +135,179 @@ MAP_FILE=$MAP_FILE
 ROBOT_ID=$ROBOT_ID
 NAMESPACE=$NAMESPACE
 ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
+ROS_DOMAIN_ID_SOURCE=backend/.env
+WARETWIN_RUNTIME_MODE=$WARETWIN_RUNTIME_MODE
+GAZEBO_GUI=$GUI_ARG
+RVIZ=$RVIZ_ARG
 EOF
 
 echo "Starting backend on $BACKEND_URL"
 setsid env BACKEND_HOST="$BACKEND_HOST_SELECTED" BACKEND_PORT="$BACKEND_PORT_SELECTED" \
+  WARETWIN_RUNTIME_MODE=GAZEBO_ROS \
   DJANGO_ALLOWED_HOSTS="$ALLOWED_HOSTS_SELECTED" CORS_ALLOWED_ORIGINS="$CORS_SELECTED" \
   bash -c "cd '$ROOT_DIR/waretwin/backend' && exec ./run.sh" \
   > "$(stack_log_file backend)" 2>&1 < /dev/null &
 stack_write_pid backend "$!"
 
-if ! stack_wait_http "$BACKEND_URL/api/health/" 45; then
+if ! stack_wait_http "$BACKEND_URL/api/health/" "$BACKEND_READY_TIMEOUT_S"; then
   echo "Backend did not become healthy; see $(stack_log_file backend)" >&2
   stack_kill_owned backend
   rm -f "$STACK_RUNTIME_DIR/stack.env"
   exit 1
 fi
 
-# A published canonical map is the only source for generated Gazebo geometry,
-# tags and robot spawn poses. Resolve it after Django is ready so a clean start
-# launches the same immutable revision that the editor published. An explicit
-# --world always wins for development/test worlds.
+# A published map bundle is mandatory unless development fallback was explicitly
+# enabled. Never combine an explicit world/map with a different published map.
 PUBLISHED_ARTIFACT_DIR=""
 PUBLISHED_TAG_FILE=""
 PUBLISHED_GRAPH_FILE=""
-if [[ -z "$WORLD_FILE" ]]; then
+PUBLISHED_REVISION=0
+SPAWN_TEXT="N/A (development world)"
+ALLOW_DEV_WORLD_ARG=false
+[[ "$ALLOW_DEV_WORLD_SELECTED" == true ]] && ALLOW_DEV_WORLD_ARG=true
+MAP_SYNC_REQUEST_FILE="$STACK_RUNTIME_DIR/map-sync-request.json"
+DEVELOPMENT_WORLD=0
+
+if ((EXPLICIT_MAP == 1 && EXPLICIT_WORLD == 0)) && [[ "$ALLOW_DEV_WORLD_SELECTED" != true ]]; then
+  # A CLI map that is the currently published canonical map remains part of
+  # its verified bundle and can use the paired world without dev-world opt-in.
   BACKEND_PYTHON="$ROOT_DIR/waretwin/backend/.venv/bin/python"
+  CANONICAL_LINE=""
   if [[ -x "$BACKEND_PYTHON" ]]; then
-    PUBLISHED_LINE="$({
+    CANONICAL_LINE="$({
       cd "$ROOT_DIR/waretwin/backend"
       "$BACKEND_PYTHON" manage.py shell --verbosity 0 -c \
-        'from twin.map_sync import published_map_payload; p=published_map_payload(); print("WARETWIN_ARTIFACTS|" + str(p.get("artifact_dir") or ""))'
-    } 2>/dev/null | rg '^WARETWIN_ARTIFACTS\|' | tail -n1 || true)"
-    PUBLISHED_ARTIFACT_DIR="${PUBLISHED_LINE#WARETWIN_ARTIFACTS|}"
-    if [[ -n "$PUBLISHED_ARTIFACT_DIR" && -f "$PUBLISHED_ARTIFACT_DIR/gazebo/warehouse.world" ]]; then
-      if python3 - "$PUBLISHED_ARTIFACT_DIR/manifest.json" "$ROBOT_ID" <<'PY'
-import json
+        'from twin.map_sync import published_map_payload; p=published_map_payload(); print("WARETWIN_ARTIFACTS|" + str(p.get("artifact_dir") or "") + "|" + str(p.get("map_revision") or ""))'
+    } 2>/dev/null | rg '^WARETWIN_ARTIFACTS[|]' | tail -n1 || true)"
+  fi
+  if [[ "$CANONICAL_LINE" == *'|'* ]]; then
+    CANONICAL_ARTIFACT_DIR="$(cut -d'|' -f2 <<<"$CANONICAL_LINE")"
+    CANONICAL_REVISION="$(cut -d'|' -f3 <<<"$CANONICAL_LINE")"
+    if [[ -n "$CANONICAL_ARTIFACT_DIR" && "$CANONICAL_REVISION" =~ ^[0-9]+$ ]]; then
+      if CANONICAL_MAP="$(python3 - "$ROOT_DIR" "$CANONICAL_ARTIFACT_DIR" "$CANONICAL_REVISION" "$ROBOT_ID" 2>/dev/null <<'PY'
 import sys
-
-try:
-    manifest = json.load(open(sys.argv[1], encoding='utf-8'))
-    wanted = sys.argv[2]
-    ok = any(str(robot.get('id')) == wanted for robot in manifest.get('robots', []))
-except (OSError, ValueError, IndexError):
-    ok = False
-raise SystemExit(0 if ok else 1)
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts'))
+from ros_stack_supervisor import verify_bundle
+_, selected = verify_bundle(Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4])
+print(selected['map'])
 PY
-      then
-        WORLD_FILE="$PUBLISHED_ARTIFACT_DIR/gazebo/warehouse.world"
-        PUBLISHED_TAG_FILE="$PUBLISHED_ARTIFACT_DIR/datamatrix_map.yaml"
-        PUBLISHED_GRAPH_FILE="$PUBLISHED_ARTIFACT_DIR/tag_graph.yaml"
-        echo "Using published canonical Gazebo revision: $WORLD_FILE"
-      else
-        echo "[WARN] Published artifact has no spawn record for robot $ROBOT_ID; using package development world. Publish a map with that robot or pass --world explicitly."
+      )"; then
+        if [[ "$(readlink -f -- "$MAP_FILE")" == "$(readlink -f -- "$CANONICAL_MAP")" ]]; then
+          EXPLICIT_MAP=0
+          echo "[MAP] --map matches the verified published bundle: revision=$CANONICAL_REVISION"
+        fi
       fi
-    else
-      WORLD_FILE=""
-      echo 'No published canonical Gazebo revision found; using package development world.'
     fi
   fi
 fi
 
+if ((EXPLICIT_MAP == 1 || EXPLICIT_WORLD == 1)); then
+  if [[ "$ALLOW_DEV_WORLD_SELECTED" != true ]]; then
+    echo 'Explicit --world/--map selects development assets; pass --allow-dev-world to permit them.' >&2
+    stack_kill_owned backend
+    rm -f "$STACK_RUNTIME_DIR/stack.env"
+    exit 2
+  fi
+  DEVELOPMENT_WORLD=1
+  [[ -n "$MAP_FILE" ]] || MAP_FILE="$ROOT_DIR/swerve_navigation/maps/warehouse.yaml"
+elif [[ -n "$WORLD_FILE" ]]; then
+  echo 'Internal error: world selection bypassed the canonical map selector.' >&2
+  stack_kill_owned backend
+  rm -f "$STACK_RUNTIME_DIR/stack.env"
+  exit 2
+else
+  BACKEND_PYTHON="$ROOT_DIR/waretwin/backend/.venv/bin/python"
+  PUBLISHED_LINE=""
+  if [[ -x "$BACKEND_PYTHON" ]]; then
+    PUBLISHED_LINE="$({
+      cd "$ROOT_DIR/waretwin/backend"
+      "$BACKEND_PYTHON" manage.py shell --verbosity 0 -c \
+        'from twin.map_sync import published_map_payload; p=published_map_payload(); print("WARETWIN_ARTIFACTS|" + str(p.get("artifact_dir") or "") + "|" + str(p.get("map_revision") or ""))'
+    } 2>/dev/null | rg '^WARETWIN_ARTIFACTS\|' | tail -n1 || true)"
+  fi
+  if [[ "$PUBLISHED_LINE" == *'|'* ]]; then
+    PUBLISHED_ARTIFACT_DIR="$(cut -d'|' -f2 <<<"$PUBLISHED_LINE")"
+    PUBLISHED_REVISION="$(cut -d'|' -f3 <<<"$PUBLISHED_LINE")"
+  fi
+  BUNDLE_OUTPUT=""
+  BUNDLE_VALIDATION_ERROR=""
+  if [[ -n "$PUBLISHED_ARTIFACT_DIR" && "$PUBLISHED_REVISION" =~ ^[0-9]+$ ]]; then
+    if BUNDLE_OUTPUT="$(python3 - "$ROOT_DIR" "$PUBLISHED_ARTIFACT_DIR" "$PUBLISHED_REVISION" "$ROBOT_ID" 2>&1 <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts'))
+from ros_stack_supervisor import verify_bundle
+root = Path(sys.argv[2])
+revision = int(sys.argv[3])
+manifest, selected = verify_bundle(root, revision, sys.argv[4])
+print(selected['world'])
+print(selected['map'])
+print(selected['datamatrix'])
+print(selected['graph'])
+print(','.join(str(value) for value in selected['spawn']))
+PY
+    )"; then
+      :
+    else
+      BUNDLE_VALIDATION_ERROR="$BUNDLE_OUTPUT"
+      BUNDLE_OUTPUT=""
+    fi
+  fi
+  if [[ -n "$BUNDLE_OUTPUT" ]]; then
+    mapfile -t BUNDLE_FIELDS <<<"$BUNDLE_OUTPUT"
+    WORLD_FILE="${BUNDLE_FIELDS[0]}"
+    MAP_FILE="${BUNDLE_FIELDS[1]}"
+    PUBLISHED_TAG_FILE="${BUNDLE_FIELDS[2]}"
+    PUBLISHED_GRAPH_FILE="${BUNDLE_FIELDS[3]}"
+    SPAWN_TEXT="${BUNDLE_FIELDS[4]}"
+    ALLOW_DEV_WORLD_ARG=false
+    echo "[MAP] Published canonical bundle verified: revision=$PUBLISHED_REVISION"
+  elif [[ "$ALLOW_DEV_WORLD_SELECTED" == true ]]; then
+    DEVELOPMENT_WORLD=1
+    PUBLISHED_REVISION=0
+    WORLD_FILE=""
+    MAP_FILE="$ROOT_DIR/swerve_navigation/maps/warehouse.yaml"
+    echo "[WARN] Published map bundle is unavailable/invalid; explicit development fallback enabled."
+  else
+    echo "[FAIL] No valid published map bundle for robot $ROBOT_ID. Publish a valid map or explicitly pass --allow-dev-world." >&2
+    [[ -n "$BUNDLE_VALIDATION_ERROR" ]] && printf '%s\n' "$BUNDLE_VALIDATION_ERROR" >&2
+    stack_kill_owned backend
+    rm -f "$STACK_RUNTIME_DIR/stack.env"
+    exit 1
+  fi
+fi
+
+# Runtime requests are launch-owned state. A fresh start already resolves the
+# currently published revision, so any prior request is obsolete.
+rm -f "$MAP_SYNC_REQUEST_FILE" "$MAP_SYNC_REQUEST_FILE.tmp"
+cat > "$STACK_RUNTIME_DIR/stack.env" <<EOF
+MODE=$MODE
+BACKEND_PORT=$BACKEND_PORT_SELECTED
+FRONTEND_PORT=$FRONTEND_PORT_SELECTED
+BACKEND_URL=$BACKEND_URL
+FRONTEND_URL=$FRONTEND_URL
+ROS_WS_URL=$ROS_WS_URL_SELECTED
+MAP_FILE=$MAP_FILE
+WORLD_FILE=$WORLD_FILE
+MAP_REVISION=$PUBLISHED_REVISION
+ROBOT_ID=$ROBOT_ID
+NAMESPACE=$NAMESPACE
+ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
+ROS_DOMAIN_ID_SOURCE=backend/.env
+WARETWIN_RUNTIME_MODE=$WARETWIN_RUNTIME_MODE
+ALLOW_DEV_WORLD=$ALLOW_DEV_WORLD_ARG
+GAZEBO_GUI=$GUI_ARG
+RVIZ=$RVIZ_ARG
+EOF
+echo "[MAP] revision=$PUBLISHED_REVISION frame=map canonical=${PUBLISHED_ARTIFACT_DIR:-N/A}"
+echo "[GAZEBO] world=${WORLD_FILE:-$ROOT_DIR/worlds/warehouse.world}"
+echo "[NAV2] map=${MAP_FILE:-package default (development only)}"
+echo "[ROBOT] id=$ROBOT_ID spawn=($SPAWN_TEXT)"
+echo "[ROS_DOMAIN_ID] $ROS_DOMAIN_ID_SELECTED"
+
 echo "Starting frontend on $FRONTEND_URL"
-setsid bash -c "cd '$ROOT_DIR/waretwin/frontend' && exec env VITE_BACKEND_PORT='$BACKEND_PORT_SELECTED' VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run dev -- --host '$FRONTEND_HOST_SELECTED' --port '$FRONTEND_PORT_SELECTED'" \
+setsid bash -c "cd '$ROOT_DIR/waretwin/frontend' && exec env VITE_RUNTIME_MODE=GAZEBO_ROS VITE_DEMO_MODE=false VITE_BACKEND_MODE=true VITE_BACKEND_PORT='$BACKEND_PORT_SELECTED' VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run dev -- --host '$FRONTEND_HOST_SELECTED' --port '$FRONTEND_PORT_SELECTED'" \
   > "$(stack_log_file frontend)" 2>&1 < /dev/null &
 stack_write_pid frontend "$!"
 if ! stack_wait_http "$FRONTEND_URL" 30; then
@@ -184,21 +318,40 @@ if ! stack_wait_http "$FRONTEND_URL" 30; then
   exit 1
 fi
 
-GUI_ARG=true
-RVIZ_ARG=true
-[[ "$NO_GAZEBO_GUI" -eq 1 ]] && GUI_ARG=false
-[[ "$NO_RVIZ" -eq 1 ]] && RVIZ_ARG=false
-ROS_ARGS=(use_sim:=true use_sim_time:=true mode:="$MODE" gui:="$GUI_ARG" start_rviz:="$RVIZ_ARG" robot_id:="$ROBOT_ID" bridge_ws_url:="$ROS_WS_URL_SELECTED")
+ROS_ARGS=(use_sim:=true use_sim_time:=true mode:="$MODE" gui:="$GUI_ARG" start_rviz:="$RVIZ_ARG" robot_id:="$ROBOT_ID" bridge_ws_url:="$ROS_WS_URL_SELECTED" allow_dev_world:="$ALLOW_DEV_WORLD_ARG")
+if [[ "$MODE" == navigation ]]; then
+  # Let the readiness probe start Nav2 only after Gazebo, ros2_control, TF,
+  # and sensor data are live; autostart during a cold VMware world load can
+  # strand controller_server's costmap activation before odom/TF exists.
+  ROS_ARGS+=(defer_nav2_start:=true)
+fi
 [[ -n "$NAMESPACE" ]] && ROS_ARGS+=(namespace:="$NAMESPACE")
 if [[ -n "$WORLD_FILE" ]]; then ROS_ARGS+=(world:="$WORLD_FILE"); fi
 if [[ -n "$MAP_FILE" ]]; then ROS_ARGS+=(map_file:="$MAP_FILE"); fi
 if [[ -n "$PUBLISHED_TAG_FILE" ]]; then ROS_ARGS+=(datamatrix_map_file:="$PUBLISHED_TAG_FILE"); fi
 if [[ -n "$PUBLISHED_GRAPH_FILE" ]]; then ROS_ARGS+=(tag_graph_file:="$PUBLISHED_GRAPH_FILE"); fi
-printf -v ROS_LAUNCH_ARGS '%q ' "${ROS_ARGS[@]}"
-
 echo "Starting ROS/Gazebo in $MODE mode"
-setsid bash -c "cd '$ROOT_DIR' && export ROS_DOMAIN_ID='$ROS_DOMAIN_ID_SELECTED' && source scripts/ros_env.sh && export ROS_DOMAIN_ID='$ROS_DOMAIN_ID_SELECTED' ROS_WS_URL='$ROS_WS_URL_SELECTED' && ros2 launch swerve_bringup system.launch.py ${ROS_LAUNCH_ARGS}" \
-  > >(tee "$(stack_log_file ros)" "$(stack_log_file ros_bridge)" >/dev/null) 2>&1 < /dev/null &
+echo "Gazebo GUI=$GUI_ARG RViz=$RVIZ_ARG"
+setsid bash -c '
+  set -euo pipefail
+  root="$1"; domain="$2"; ws_url="$3"; request_file="$4"; revision="$5"; robot_id="$6"
+  ros_log="$7"; ros_bridge_log="$8"
+  shift 8
+  cd "$root"
+  source scripts/ros_env.sh
+  export ROS_DOMAIN_ID="$domain" ROS_WS_URL="$ws_url"
+  # VMware on this host has Fast DDS shared-memory port-lock failures: new
+  # participants see graph entries but intermittently miss ROS data/services.
+  # Use the supported UDPv4 builtin transport consistently for every ROS node
+  # in this simulation, not just transient controller/readiness clients.
+  export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+  python3 scripts/ros_stack_supervisor.py --request-file "$request_file" \
+    --initial-revision "$revision" --robot-id "$robot_id" -- "$@" 2>&1 \
+    | tee "$ros_log" "$ros_bridge_log" >/dev/null
+' _ "$ROOT_DIR" "$ROS_DOMAIN_ID_SELECTED" "$ROS_WS_URL_SELECTED" "$MAP_SYNC_REQUEST_FILE" \
+  "$PUBLISHED_REVISION" "$ROBOT_ID" "$(stack_log_file ros)" "$(stack_log_file ros_bridge)" \
+  ros2 launch swerve_bringup system.launch.py "${ROS_ARGS[@]}" \
+  > /dev/null 2>&1 < /dev/null &
 stack_write_pid ros "$!"
 
 # ros2 launch can fail while child processes such as Gazebo briefly remain
@@ -232,66 +385,41 @@ echo '[OK] Stack processes started'
 echo 'Waiting for ROS readiness...'
 
 ros_readiness_report() {
+  local probe_timeout="${1:-15}"
   (
     set +e
     export ROS_DOMAIN_ID="$ROS_DOMAIN_ID_SELECTED"
-    source "$ROOT_DIR/scripts/ros_env.sh" >/dev/null 2>&1 || exit 1
-
-    nodes="$(timeout 15 ros2 node list 2>/dev/null || true)"
-    controllers="$(timeout 25 ros2 control list_controllers --controller-manager /controller_manager --spin-time 2 2>/dev/null || true)"
-    topics="$(timeout 15 ros2 topic list 2>/dev/null || true)"
-    robot_info="$(timeout 10 gz model -m swerve_base -i 2>/dev/null || true)"
-    node_present() {
-      printf '%s\n' "$nodes" | rg -q "(^|/)${1}$"
-    }
-    controller_active() {
-      stack_controller_active "$controllers" "$1"
-    }
-    topic_present() {
-      printf '%s\n' "$topics" | rg -q "^${1}$"
-    }
-
-    ready=1
-    node_present gazebo || ready=0
-    node_present controller_manager || ready=0
-    controller_active joint_state_broadcaster || ready=0
-    controller_active steering_controller || ready=0
-    controller_active drive_controller || ready=0
-    topic_present /odom || ready=0
-    topic_present /scan || ready=0
-    [[ "$robot_info" == *'swerve_base'* ]] || ready=0
-    if [[ "$MODE" == mapping ]]; then
-      node_present slam_toolbox || ready=0
-      topic_present /map || ready=0
-    else
-      node_present map_server || ready=0
+    # Avoid ros_env.sh's two `ros2 pkg prefix` graph probes here. On the
+    # VMware guest those CLI startups can consume most of a readiness window
+    # while Gazebo is cold. Preserve the Humble + workspace overlay directly.
+    unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
+    export AMENT_TRACE_SETUP_FILES="${AMENT_TRACE_SETUP_FILES:-}"
+    set +u
+    source /opt/ros/humble/setup.bash || exit 1
+    source "$ROOT_DIR/install/local_setup.bash" || exit 1
+    set -u
+    # Use the same transport as the running stack. The VMware shared-memory
+    # failure otherwise makes this participant miss live odometry samples.
+    export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    readiness_args=(
+      --mode "$MODE"
+      --model swerve_base
+      --timeout "$probe_timeout"
+    )
+    if [[ "$MODE" == navigation && -n "$MAP_FILE" ]]; then
+      readiness_args+=(--map-file "$MAP_FILE")
     fi
-
-    printf '  ROS_DOMAIN_ID=%s\n' "$ROS_DOMAIN_ID_SELECTED"
-    printf '  gazebo=%s controller_manager=%s robot=%s\n' \
-      "$(node_present gazebo && echo ready || echo waiting)" \
-      "$(node_present controller_manager && echo ready || echo waiting)" \
-      "$( [[ "$robot_info" == *'swerve_base'* ]] && echo spawned || echo waiting )"
-    printf '  controllers: joint_state_broadcaster=%s steering_controller=%s drive_controller=%s\n' \
-      "$(controller_active joint_state_broadcaster && echo active || echo waiting)" \
-      "$(controller_active steering_controller && echo active || echo waiting)" \
-      "$(controller_active drive_controller && echo active || echo waiting)"
-    printf '  topics: /odom=%s /scan=%s\n' \
-      "$(topic_present /odom && echo ready || echo waiting)" \
-      "$(topic_present /scan && echo ready || echo waiting)"
-    if [[ "$MODE" == mapping ]]; then
-      printf '  mapping: slam_toolbox=%s /map=%s\n' \
-        "$(node_present slam_toolbox && echo ready || echo waiting)" \
-        "$(topic_present /map && echo ready || echo waiting)"
-    else
-      printf '  navigation: map_server=%s\n' \
-        "$(node_present map_server && echo ready || echo waiting)"
-    fi
-    exit $((ready ? 0 : 1))
+    # The Python probe owns its own deadline.  Wrapping it in GNU timeout sends
+    # SIGTERM while rclpy is inside a wait set and turns a normal retry into a
+    # misleading ExternalShutdownException traceback.
+    python3 "$ROOT_DIR/scripts/navigation_readiness.py" "${readiness_args[@]}"
   )
 }
 
-ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-180}"
+# Nav2 and Gazebo initialize concurrently. On a resource-constrained VM the
+# robot can be spawned after lifecycle servers have already started, so keep a
+# generous finite gate rather than reporting a false startup failure.
+ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-900}"
 if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); then
   echo "Invalid WARETWIN_ROS_READY_TIMEOUT_S=$ROS_READY_TIMEOUT_S; use a positive integer" >&2
   stack_kill_owned ros; stack_kill_owned frontend; stack_kill_owned backend
@@ -300,9 +428,17 @@ if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); 
 fi
 ros_ready=0
 last_ros_report=''
+READINESS_PROBE_TIMEOUT_S="${WARETWIN_READINESS_PROBE_TIMEOUT_S:-120}"
+if ! [[ "$READINESS_PROBE_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( READINESS_PROBE_TIMEOUT_S < 2 )); then
+  echo "Invalid WARETWIN_READINESS_PROBE_TIMEOUT_S=$READINESS_PROBE_TIMEOUT_S; use an integer >= 2" >&2
+  exit 2
+fi
 ready_deadline=$((SECONDS + ROS_READY_TIMEOUT_S))
 while (( SECONDS < ready_deadline )); do
-  if last_ros_report="$(ros_readiness_report)"; then
+  remaining=$((ready_deadline - SECONDS))
+  probe_timeout="$READINESS_PROBE_TIMEOUT_S"
+  (( probe_timeout > remaining )) && probe_timeout="$remaining"
+  if last_ros_report="$(ros_readiness_report "$probe_timeout")"; then
     ros_ready=1
     break
   fi
@@ -312,16 +448,20 @@ while (( SECONDS < ready_deadline )); do
   sleep 2
 done
 if ((ros_ready == 0)); then
-  echo "ROS/Gazebo readiness timed out after ${ROS_READY_TIMEOUT_S}s; no PASS was reported." >&2
-  printf '%s\n' "${last_ros_report:-  readiness probe did not return a snapshot}" >&2
-  echo "See $(stack_log_file ros) and $(stack_log_file ros_bridge)" >&2
-  stack_kill_owned ros
-  stack_kill_owned frontend
-  stack_kill_owned backend
-  rm -f "$STACK_RUNTIME_DIR/stack.env"
+  echo "${last_ros_report:-[FAIL] readiness probe did not return a snapshot}"
+  if ! stack_owned_pid ros && ! stack_owned_group ros; then
+    echo "ROS/Gazebo launch exited during readiness; cleaning its remaining web processes." >&2
+    stack_kill_owned frontend
+    stack_kill_owned backend
+    rm -f "$STACK_RUNTIME_DIR/stack.env"
+  else
+    echo "[FAIL] ${MODE^} stack NOT READY"
+    echo "Stack processes are left running for debugging. See $(stack_log_file ros) and $(stack_log_file ros_bridge)." >&2
+  fi
   exit 1
 fi
 
+printf '%s\n' "$last_ros_report"
 echo
 if [[ "$MODE" == mapping ]]; then
   echo '[OK] Mapping stack READY'

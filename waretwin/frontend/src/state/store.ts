@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import layoutJson from "../layout/warehouse_layout.json";
 import type { WarehouseLayout, LayoutLocation } from "../layout/types";
-import type { TwinState, RobotId, HeatmapLayer, TagNavigationState, RosDiagnostics, RuntimeState } from "../schema/twin_state";
+import type { TwinState, RobotId, HeatmapLayer, TagNavigationState, RosDiagnostics, RuntimeState, RobotDetailState } from "../schema/twin_state";
 import { RUNTIME_MODE, type RuntimeMode } from "../config";
 
 export type ViewTab = "3D" | "MAP" | "TRAFFIC" | "HEATMAP";
@@ -56,6 +56,13 @@ export type AuthStatus = "loading" | "guest" | "authenticated";
 export type WebSocketState = "CONNECTING" | "CONNECTED" | "RECONNECTING" | "DISCONNECTED" | "ERROR";
 export type AuthUser = { id: number; username: string; email: string; role: "admin" | "user"; is_active?: boolean };
 export type ModalKind = "audit" | "tasks" | "robot" | "fleet" | "scheduler" | "flows" | "shelf" | "conveyor";
+export type TagGraph = {
+  warehouse_id: number | null;
+  frame_id?: string;
+  units?: string;
+  tags: Array<{ id: number; tag_id: number; family?: string; size?: number; floor_id?: string; x: number; y: number; z?: number; yaw: number; lane_id?: string; zone_id?: number | null; metadata?: Record<string, unknown>; label?: string }>;
+  edges: Array<{ from_tag_id: number; to_tag_id: number; cost?: number; bidirectional?: boolean }>;
+};
 
 export interface WindowInstance {
   id: string;
@@ -64,13 +71,26 @@ export interface WindowInstance {
   entityId?: string;
 }
 
+export const EMPTY_ROBOT_DETAIL: RobotDetailState = {
+  scan: null,
+  map: null,
+  globalPath: null,
+  localPath: null,
+  goal: null,
+  controller: null,
+  diagnostics: null,
+  errors: [],
+  navigationStatus: null,
+  remainingDistanceM: null,
+};
+
 export let layout = layoutJson as unknown as WarehouseLayout;
 
 interface Store {
   tagNavigation: TagNavigationState | null;
   tagDetection: { visible: boolean; tagId: number | null; offsetX: number | null; offsetY: number | null; yaw: number | null; timestamp: string | null };
   localization: { state: string; lastTagId: number | null; expectedTagId: number | null; tagVisible: boolean; lastTagSeenAt: string | null };
-  tagGraph: { warehouse_id: number | null; tags: Array<{ id: number; tag_id: number; family?: string; size?: number; floor_id?: string; x: number; y: number; z?: number; yaw: number; lane_id?: string; zone_id?: number | null; metadata?: Record<string, unknown>; label?: string }>; edges: Array<{ from_tag_id: number; to_tag_id: number; cost?: number; bidirectional?: boolean }> } | null;
+  tagGraph: TagGraph | null;
   targetTagId: number | null;
   setTagNavigation: (mission: TagNavigationState | null) => void;
   setTargetTagId: (id: number | null) => void;
@@ -83,6 +103,8 @@ interface Store {
   setRuntimeState: (state: RuntimeState) => void;
   bridgeState: string;
   setBridgeState: (state: string) => void;
+  connectedRobotIds: string[];
+  setConnectedRobotIds: (robotIds: string[]) => void;
   websocketState: WebSocketState;
   setWebsocketState: (state: WebSocketState) => void;
   rosDiagnostics: RosDiagnostics | null;
@@ -100,10 +122,15 @@ interface Store {
   layoutRevision: number;
   activeWarehouseId: number | null;
   layoutUpdatedAt: string | null;
-  mapSync: { publishedRevision: number | null; publishedVersion: number; rosRevision: number | null; gazeboRevision: number | null; status: string; error: string | null };
+  mapSync: { publishedRevision: number | null; publishedVersion: number; rosRevision: number | null; gazeboRevision: number | null; nav2Revision: number | null; tagMapRevision: number | null; tfStatus: boolean; status: string; error: string | null; robots: Record<string, { rosRevision: number | null; gazeboRevision: number | null; nav2Revision: number | null; tagMapRevision: number | null; tfStatus: boolean; error: string | null; status: string }> };
   setMapSync: (next: Partial<Store["mapSync"]>) => void;
   setLayout: (next: WarehouseLayout, meta?: { revision?: number; warehouse_id?: number | null; updated_at?: string | null }) => void;
   selectedRobot: RobotId | null;
+  quickDetailRobotId: RobotId | null;
+  openRobotQuickDetail: (id: RobotId) => void;
+  closeRobotQuickDetail: () => void;
+  robotDetail: Record<RobotId, RobotDetailState>;
+  setRobotDetail: (id: RobotId, patch: Partial<RobotDetailState>) => void;
   /** Shelf/rack selected from the live warehouse map. */
   selectedShelf: string | null;
   viewTab: ViewTab;
@@ -189,6 +216,29 @@ const EMPTY: TwinState = {
   subsystems: { WAREHOUSE: "NORMAL", CONVEYORS: "NORMAL", CHARGING: "NORMAL", CCTV: "NORMAL", NETWORK: "NORMAL" },
 };
 
+const layoutCollectionKeys = [
+  "floors", "aisles", "navigation_tags", "navigation_edges", "lifts", "zones",
+  "docks", "racks", "conveyors", "stations", "charging_stations", "parking",
+  "restricted_areas", "walkways", "cameras", "sensors", "locations", "obstacles",
+] as const;
+
+/**
+ * A backend layout refresh can briefly contain null optional collections. Keep
+ * the last valid map until the shape is usable, and canonicalize collections
+ * to empty arrays rather than letting renderers dereference null.
+ */
+function canonicalLayout(next: unknown): WarehouseLayout | null {
+  if (!next || typeof next !== "object") return null;
+  const candidate = next as Partial<WarehouseLayout>;
+  if (!candidate.size || !candidate.grid
+    || !Number.isFinite(candidate.size.width) || !Number.isFinite(candidate.size.depth)
+    || !Number.isFinite(candidate.grid.cell_size) || !Number.isFinite(candidate.grid.cols) || !Number.isFinite(candidate.grid.rows)) return null;
+  const normalized = { ...candidate } as Record<string, unknown>;
+  for (const key of layoutCollectionKeys) normalized[key] = Array.isArray(candidate[key]) ? candidate[key] : [];
+  normalized.spawn = candidate.spawn && Array.isArray(candidate.spawn.robots) ? candidate.spawn : { robots: [] };
+  return normalized as unknown as WarehouseLayout;
+}
+
 export const useStore = create<Store>((set) => ({
   tagNavigation: null,
   tagDetection: { visible: false, tagId: null, offsetX: null, offsetY: null, yaw: null, timestamp: null },
@@ -207,8 +257,13 @@ export const useStore = create<Store>((set) => ({
   setRuntimeState: (runtimeState) => set({ runtimeState }),
   bridgeState: RUNTIME_MODE === "LOCAL_SIM" ? "LOCAL" : "DISCONNECTED",
   setBridgeState: (bridgeState) => set({ bridgeState }),
+  connectedRobotIds: [],
+  setConnectedRobotIds: (connectedRobotIds) => set({ connectedRobotIds: [...new Set(connectedRobotIds)] }),
   websocketState: "DISCONNECTED",
-  setWebsocketState: (websocketState) => set({ websocketState }),
+  setWebsocketState: (websocketState) => set({
+    websocketState,
+    ...(websocketState === "CONNECTED" ? {} : { connectedRobotIds: [] }),
+  }),
   rosDiagnostics: null,
   setRosDiagnostics: (rosDiagnostics) => set({ rosDiagnostics }),
   rosConnected: false,
@@ -326,13 +381,14 @@ export const useStore = create<Store>((set) => ({
   layoutRevision: 0,
   activeWarehouseId: null,
   layoutUpdatedAt: null,
-  mapSync: { publishedRevision: null, publishedVersion: 0, rosRevision: null, gazeboRevision: null, status: "ROS_OFFLINE", error: null },
+  mapSync: { publishedRevision: null, publishedVersion: 0, rosRevision: null, gazeboRevision: null, nav2Revision: null, tagMapRevision: null, tfStatus: false, status: "ROS_OFFLINE", error: null, robots: {} },
   setMapSync: (next) => set((st) => ({ mapSync: { ...st.mapSync, ...next } })),
   setLayout: (next: WarehouseLayout, meta: { revision?: number; warehouse_id?: number | null; updated_at?: string | null } = {}) => {
-    layout = next;
-    ZONE_COLOR = Object.fromEntries(next.zones.map((z) => [z.id, z.color]));
+    const nextLayout = canonicalLayout(next);
+    if (nextLayout) layout = nextLayout;
+    ZONE_COLOR = Object.fromEntries((layout.zones ?? []).map((z) => [z.id, z.color]));
     set((st) => ({
-      locations: Object.fromEntries(next.locations.map((l) => [l.id, l])),
+      locations: Object.fromEntries((layout.locations ?? []).map((l) => [l.id, l])),
       layoutRevision: meta.revision ?? st.layoutRevision + 1,
       activeWarehouseId: meta.warehouse_id === undefined ? st.activeWarehouseId : meta.warehouse_id,
       layoutUpdatedAt: meta.updated_at === undefined ? st.layoutUpdatedAt : meta.updated_at,
@@ -340,6 +396,16 @@ export const useStore = create<Store>((set) => ({
   },
   locations: Object.fromEntries(layout.locations.map((l) => [l.id, l])),
   selectedRobot: null,
+  quickDetailRobotId: null,
+  openRobotQuickDetail: (id) => set({ selectedRobot: id, quickDetailRobotId: id, selectedLift: null, selectedShelf: null }),
+  closeRobotQuickDetail: () => set({ quickDetailRobotId: null }),
+  robotDetail: {},
+  setRobotDetail: (id, patch) => set((st) => ({
+    robotDetail: {
+      ...st.robotDetail,
+      [id]: { ...EMPTY_ROBOT_DETAIL, ...(st.robotDetail[id] ?? {}), ...patch },
+    },
+  })),
   selectedShelf: null,
   viewTab: "3D",
   quality: "medium",

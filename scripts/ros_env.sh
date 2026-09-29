@@ -30,34 +30,72 @@ if [[ ! -f "$ROOT_DIR/install/local_setup.bash" ]]; then
 fi
 source "$ROOT_DIR/install/local_setup.bash"
 
+# Use the same runtime ownership check as status/smoke. A stack.env file can
+# survive a launch crash, so its domain is trusted only while this checkout's
+# stack still owns a live process.
+# shellcheck disable=SC1091
+source "$ROOT_DIR/scripts/stack_common.sh"
+_ros_env_runtime_active=0
+if [[ -f "$STACK_RUNTIME_DIR/stack.env" ]] && stack_runtime_active; then
+  _ros_env_runtime_active=1
+fi
+
 # Reuse the exact backend token and artifact root when the backend has been
 # configured locally. The dotenv file contains shell-compatible KEY=VALUE lines.
+_ros_env_domain_set=0; _ros_env_ws_set=0; _ros_env_artifact_set=0
+_ros_env_token_set=0; _ros_env_mode_set=0
+if [[ ${ROS_DOMAIN_ID+x} ]]; then _ros_env_domain_set=1; _ros_env_domain_saved="$ROS_DOMAIN_ID"; fi
+if [[ ${ROS_WS_URL+x} ]]; then _ros_env_ws_set=1; _ros_env_ws_saved="$ROS_WS_URL"; fi
+if [[ ${WARETWIN_ARTIFACT_ROOT+x} ]]; then _ros_env_artifact_set=1; _ros_env_artifact_saved="$WARETWIN_ARTIFACT_ROOT"; fi
+if [[ ${WARETWIN_ROS_BRIDGE_TOKEN+x} ]]; then _ros_env_token_set=1; _ros_env_token_saved="$WARETWIN_ROS_BRIDGE_TOKEN"; fi
+if [[ ${WARETWIN_RUNTIME_MODE+x} ]]; then _ros_env_mode_set=1; _ros_env_mode_saved="$WARETWIN_RUNTIME_MODE"; fi
+_ros_env_domain_source='default'
 if [[ -f "$ROOT_DIR/waretwin/backend/.env" ]]; then
   # Keep explicit service/launch environment authoritative, just like
-  # backend/run.sh. This matters when start_stack selects fallback ports.
-  _ros_env_domain_set=0; _ros_env_ws_set=0; _ros_env_artifact_set=0
-  _ros_env_token_set=0; _ros_env_mode_set=0
-  if [[ ${ROS_DOMAIN_ID+x} ]]; then _ros_env_domain_set=1; _ros_env_domain_saved="$ROS_DOMAIN_ID"; fi
-  if [[ ${ROS_WS_URL+x} ]]; then _ros_env_ws_set=1; _ros_env_ws_saved="$ROS_WS_URL"; fi
-  if [[ ${WARETWIN_ARTIFACT_ROOT+x} ]]; then _ros_env_artifact_set=1; _ros_env_artifact_saved="$WARETWIN_ARTIFACT_ROOT"; fi
-  if [[ ${WARETWIN_ROS_BRIDGE_TOKEN+x} ]]; then _ros_env_token_set=1; _ros_env_token_saved="$WARETWIN_ROS_BRIDGE_TOKEN"; fi
-  if [[ ${WARETWIN_RUNTIME_MODE+x} ]]; then _ros_env_mode_set=1; _ros_env_mode_saved="$WARETWIN_RUNTIME_MODE"; fi
+  # backend/run.sh. This matters when start_stack selects fallback ports. The
+  # ROS domain is restored below, after the active runtime snapshot is checked.
   set -a
   # shellcheck disable=SC1090
   source "$ROOT_DIR/waretwin/backend/.env"
   set +a
-  if (( _ros_env_domain_set )); then export ROS_DOMAIN_ID="$_ros_env_domain_saved"; fi
+  if (( _ros_env_domain_set )); then
+    export ROS_DOMAIN_ID="$_ros_env_domain_saved"
+    _ros_env_domain_source='shell'
+  elif [[ -n "${ROS_DOMAIN_ID:-}" ]]; then
+    _ros_env_domain_source='backend/.env'
+  fi
   if (( _ros_env_ws_set )); then export ROS_WS_URL="$_ros_env_ws_saved"; fi
   if (( _ros_env_artifact_set )); then export WARETWIN_ARTIFACT_ROOT="$_ros_env_artifact_saved"; fi
   if (( _ros_env_token_set )); then export WARETWIN_ROS_BRIDGE_TOKEN="$_ros_env_token_saved"; fi
   if (( _ros_env_mode_set )); then export WARETWIN_RUNTIME_MODE="$_ros_env_mode_saved"; fi
-  unset _ros_env_domain_set _ros_env_ws_set _ros_env_artifact_set _ros_env_token_set _ros_env_mode_set
-  unset _ros_env_domain_saved _ros_env_ws_saved _ros_env_artifact_saved _ros_env_token_saved _ros_env_mode_saved
 fi
+
+if (( _ros_env_runtime_active )); then
+  # Read only ROS_DOMAIN_ID from the launch snapshot so explicit service
+  # settings for other tools remain unchanged in a manually sourced shell.
+  _ros_env_runtime_domain="$({
+    set -a
+    # shellcheck disable=SC1090
+    source "$STACK_RUNTIME_DIR/stack.env"
+    printf '%s' "${ROS_DOMAIN_ID:-}"
+  } 2>/dev/null)"
+  if stack_valid_ros_domain "$_ros_env_runtime_domain"; then
+    export ROS_DOMAIN_ID="$_ros_env_runtime_domain"
+    _ros_env_domain_source='runtime stack.env'
+  else
+    echo "Warning: active runtime stack.env has invalid ROS_DOMAIN_ID='$_ros_env_runtime_domain'; keeping fallback" >&2
+  fi
+fi
+
 export WARETWIN_ARTIFACT_ROOT="${WARETWIN_ARTIFACT_ROOT:-$ROOT_DIR/generated/maps}"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export ROS_WS_URL="${ROS_WS_URL:-ws://127.0.0.1:${BACKEND_PORT:-8000}/ws/ros}"
 
+unset _ros_env_runtime_active _ros_env_runtime_domain
+unset _ros_env_domain_set _ros_env_ws_set _ros_env_artifact_set _ros_env_token_set _ros_env_mode_set
+unset _ros_env_domain_saved _ros_env_ws_saved _ros_env_artifact_saved _ros_env_token_saved _ros_env_mode_saved
+
 echo "ROS 2 Humble + swerve_bringup loaded"
+echo "  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID} (${_ros_env_domain_source})"
 echo "  swerve_bringup: $(ros2 pkg prefix swerve_bringup 2>/dev/null || echo missing)"
 echo "  swerve_bridge:  $(ros2 pkg prefix swerve_bridge 2>/dev/null || echo missing)"

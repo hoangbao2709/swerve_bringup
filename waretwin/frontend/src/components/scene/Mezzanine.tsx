@@ -13,8 +13,12 @@ import type { LiftState } from "../../schema/twin_state";
 import { canonicalFloorId, sameFloor } from "../../layout/types";
 
 export const FLOOR_ELEV: Record<number, number> = new Proxy({} as Record<number, number>, {
-  get: (_target, prop) => {
+  get: (target, prop, receiver) => {
+    // React Refresh and devtools read well-known Symbol properties from module
+    // exports.  Symbols are not floor IDs and Number(Symbol()) throws.
+    if (typeof prop === "symbol") return Reflect.get(target, prop, receiver);
     const floor = Number(prop);
+    if (!Number.isFinite(floor)) return Reflect.get(target, prop, receiver);
     return layout.floors?.find((f) => sameFloor(f.id, canonicalFloorId(layout, floor)))?.elevation ?? 0;
   },
 });

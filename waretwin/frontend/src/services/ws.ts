@@ -17,15 +17,53 @@ import { useStore } from "../state/store";
 
 export type ConnState = "connecting" | "online" | "reconnecting" | "offline" | "error" | "unauthorized";
 
+type RuntimeLocation = Pick<Location, "protocol" | "hostname">;
+type RuntimeUrls = { apiUrl: string; wsUrl: string };
+
 const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
-const defaultWsProtocol = location.protocol === "https:" ? "wss" : "ws";
-const browserHost = location.hostname || "127.0.0.1";
-const backendPort = env.VITE_BACKEND_PORT || "8000";
-const defaultWsBase = `${defaultWsProtocol}://${browserHost}:${backendPort}`;
-/** Django Channels endpoint. BASE_URL is canonical; old VITE_WS_URL remains supported. */
-export const WS_URL = (env.VITE_WS_BASE_URL || env.VITE_WS_URL || `${defaultWsBase}/ws`).replace(/\/$/, "");
-/** Django REST base. Prefer explicit BASE_URL, then legacy alias, then browser hostname. */
-export const API_URL = (env.VITE_API_BASE_URL || env.VITE_API_URL || WS_URL.replace(/^wss:/, "https:").replace(/^ws:/, "http:").replace(/\/ws$/, "")).replace(/\/$/, "");
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/$/, "");
+}
+
+function websocketUrlFromApi(apiUrl: string): string {
+  return `${trimTrailingSlash(apiUrl).replace(/^https:/, "wss:").replace(/^http:/, "ws:")}/ws`;
+}
+
+function websocketEndpoint(value: string): string {
+  const url = trimTrailingSlash(value);
+  return /\/ws(?:\?|$)/.test(url) ? url : `${url}/ws`;
+}
+
+/**
+ * REST is the canonical backend configuration.  Unless an operator explicitly
+ * overrides the WebSocket endpoint, derive it from that same host and port so
+ * a REST backend on (for example) :8001 never leaves Channels on :8000.
+ */
+export function resolveBackendUrls(
+  runtimeEnv: Record<string, string | undefined>,
+  runtimeLocation: RuntimeLocation,
+): RuntimeUrls {
+  const protocol = runtimeLocation.protocol === "https:" ? "https" : "http";
+  const host = runtimeLocation.hostname || "127.0.0.1";
+  const port = runtimeEnv.VITE_BACKEND_PORT?.trim();
+  const defaultApiUrl = `${protocol}://${host}${port ? `:${port}` : ""}`;
+  const apiUrl = trimTrailingSlash(runtimeEnv.VITE_API_BASE_URL || runtimeEnv.VITE_API_URL || defaultApiUrl);
+  const explicitWsUrl = runtimeEnv.VITE_WS_BASE_URL || runtimeEnv.VITE_WS_URL;
+  return {
+    apiUrl,
+    wsUrl: explicitWsUrl ? websocketEndpoint(explicitWsUrl) : websocketUrlFromApi(apiUrl),
+  };
+}
+
+const runtimeLocation: RuntimeLocation = typeof window === "undefined"
+  ? { protocol: "http:", hostname: "127.0.0.1" }
+  : window.location;
+const runtimeUrls = resolveBackendUrls(env, runtimeLocation);
+/** Django Channels endpoint. Its default always follows the REST backend URL. */
+export const WS_URL = runtimeUrls.wsUrl;
+/** Django REST base. Prefer explicit base URL, then legacy alias, then browser host/port. */
+export const API_URL = runtimeUrls.apiUrl;
 const COLLECTIONS = ["tasks", "lifts", "zones", "conveyors", "cameras", "sensors", "people", "alerts"] as const;
 
 let socket: WebSocket | null = null;
@@ -80,8 +118,20 @@ async function refreshMapSyncStatus() {
       publishedVersion: Number(data.published_version ?? 0),
       rosRevision: typeof data.ros_revision === "number" ? data.ros_revision : null,
       gazeboRevision: typeof data.gazebo_revision === "number" ? data.gazebo_revision : null,
+      nav2Revision: typeof data.nav2_revision === "number" ? data.nav2_revision : null,
+      tagMapRevision: typeof data.tag_map_revision === "number" ? data.tag_map_revision : null,
+      tfStatus: Boolean(data.tf_status),
       status: String(data.status ?? "ERROR"),
       error: data.error ? String(data.error) : null,
+      robots: data.robot_map_sync && typeof data.robot_map_sync === "object"
+        ? Object.fromEntries(Object.entries(data.robot_map_sync as Record<string, Record<string, unknown>>).map(([id, row]) => [id, {
+            rosRevision: typeof row.ros_revision === "number" ? row.ros_revision : null,
+            gazeboRevision: typeof row.gazebo_revision === "number" ? row.gazebo_revision : null,
+            nav2Revision: typeof row.nav2_revision === "number" ? row.nav2_revision : null,
+            tagMapRevision: typeof row.tag_map_revision === "number" ? row.tag_map_revision : null,
+            tfStatus: Boolean(row.tf_status), error: row.error ? String(row.error) : null,
+            status: String(row.status ?? "OUT_OF_SYNC"),
+          }])) : {},
     });
   } catch (error) {
     console.warn("[map-sync] status refresh failed", error);
@@ -229,7 +279,7 @@ function handle(msg: ServerMessage) {
       break;
     }
     case "map.published": {
-      st.setMapSync({ publishedRevision: msg.map_revision, publishedVersion: msg.published_version, status: st.mapSync.rosRevision === msg.map_revision ? "SYNCED" : "OUT_OF_SYNC", error: null });
+      st.setMapSync({ publishedRevision: msg.map_revision, publishedVersion: msg.published_version, status: "PENDING_SYNC", error: `Revision ${msg.map_revision} is waiting for runtime reload and acknowledgement` });
       break;
     }
     case "SCHEDULE_UPDATED": scheduleListeners.forEach((fn) => fn(msg.source)); break;
@@ -238,6 +288,7 @@ function handle(msg: ServerMessage) {
       if (msg.runtime_state) st.setRuntimeState(msg.runtime_state);
       if (msg.bridge_state) st.setBridgeState(msg.bridge_state);
       st.setRosConnected(msg.ros_connected);
+      st.setConnectedRobotIds(Array.isArray(msg.connected_robot_ids) ? msg.connected_robot_ids : []);
       st.setNav2State(msg.nav2_state);
       st.setLastTelemetryAt(msg.last_telemetry_at);
       if (msg.diagnostics) st.setRosDiagnostics(msg.diagnostics);
@@ -246,12 +297,83 @@ function handle(msg: ServerMessage) {
         publishedVersion: msg.published_version ?? st.mapSync.publishedVersion,
         rosRevision: msg.ros_revision ?? st.mapSync.rosRevision,
         gazeboRevision: msg.gazebo_revision ?? st.mapSync.gazeboRevision,
+        nav2Revision: msg.nav2_revision ?? st.mapSync.nav2Revision,
+        tagMapRevision: msg.tag_map_revision ?? st.mapSync.tagMapRevision,
+        tfStatus: msg.tf_status ?? st.mapSync.tfStatus,
         status: msg.map_sync_status ?? st.mapSync.status,
         error: msg.map_sync_error ?? null,
+        robots: msg.robot_map_sync
+          ? Object.fromEntries(Object.entries(msg.robot_map_sync).map(([id, row]) => [id, {
+              rosRevision: row.ros_revision, gazeboRevision: row.gazebo_revision,
+              nav2Revision: row.nav2_revision, tagMapRevision: row.tag_map_revision,
+              tfStatus: row.tf_status, error: row.error, status: row.status,
+            }]))
+          : st.mapSync.robots,
       });
       break;
     case "ROBOT_CONTROL_STATUS":
       if (!msg.accepted) st.setNotice(`Robot control rejected: ${msg.reason || "command was rejected"}`);
+      break;
+    case "ROBOT_STATE":
+      // External bridges normally arrive as PATCH/ROBOT_STATE on the same
+      // socket. Keep a detail heartbeat as well for bridge versions that
+      // publish the richer state packet directly.
+      st.setRobotDetail(msg.robot_id, {
+        navigationStatus: msg.navigation_state ?? null,
+      });
+      break;
+    case "LIDAR_SCAN":
+      st.setRobotDetail(msg.scan.robot_id, { scan: msg.scan });
+      break;
+    case "MAP_SNAPSHOT":
+      st.setRobotDetail(msg.map.robot_id, { map: msg.map });
+      break;
+    case "NAV_GLOBAL_PATH":
+      st.setRobotDetail(msg.path.robot_id, { globalPath: msg.path });
+      break;
+    case "NAV_LOCAL_PATH":
+      st.setRobotDetail(msg.path.robot_id, { localPath: msg.path });
+      break;
+    case "NAV_GOAL":
+      st.setRobotDetail(msg.goal.robot_id, { goal: msg.goal });
+      break;
+    case "CONTROLLER_STATE":
+      st.setRobotDetail(msg.controller.robot_id, { controller: msg.controller });
+      break;
+    case "SYSTEM_DIAGNOSTICS":
+      st.setRosDiagnostics(msg.diagnostics);
+      st.setRobotDetail(msg.robot_id, {
+        diagnostics: msg.diagnostics,
+        errors: msg.diagnostics.errors ?? [],
+      });
+      break;
+    case "NAV_STATUS":
+      {
+        const existingErrors = st.robotDetail[msg.robot_id]?.errors ?? [];
+        const errors = msg.status === "FAILED"
+          ? [...existingErrors.filter((item) => item.code !== "NAV_GOAL_FAILED"), {
+            severity: "ERROR" as const,
+            code: "NAV_GOAL_FAILED",
+            message: msg.reason ?? "Nav2 goal failed",
+            timestamp: msg.timestamp ?? null,
+          }]
+          : existingErrors;
+      st.setRobotDetail(msg.robot_id, {
+        navigationStatus: msg.status,
+        errors,
+        goal: msg.x == null || msg.y == null || msg.yaw == null
+          ? st.robotDetail[msg.robot_id]?.goal ?? null
+          : {
+            robot_id: msg.robot_id,
+            frame_id: "map",
+            x: msg.x,
+            y: msg.y,
+            yaw: msg.yaw,
+            status: msg.status,
+            timestamp: msg.timestamp ?? null,
+          },
+      });
+      }
       break;
     case "TAG_NAV_STATUS":
       if (msg.mission) st.setTagNavigation(msg.mission);

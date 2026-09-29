@@ -8,6 +8,7 @@ It never publishes the robot pose as a Gazebo ground-truth pose directly.
 """
 import math
 import os
+import time
 
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, Vector3Stamped
@@ -71,6 +72,7 @@ class V30ESim(Node):
         with open(path, encoding='utf-8') as f:
             self.markers = yaml.safe_load(f)['markers']
         self.last_ground_truth = None
+        self.next_state_request_monotonic = 0.0
         self.state_client = self.create_client(
             GetEntityState, self.get_parameter('get_entity_state_service').value)
         self.state_request_pending = False
@@ -87,7 +89,7 @@ class V30ESim(Node):
         for i, marker in enumerate(self.markers):
             m = Marker(); m.header.frame_id = self.get_parameter('map_frame').value
             m.ns = 'v30e_datamatrix'; m.id = i; m.type = Marker.CUBE; m.action = Marker.ADD
-            m.pose.position.x, m.pose.position.y = marker['x'], marker['y']
+            m.pose.position.x, m.pose.position.y = float(marker['x']), float(marker['y'])
             m.pose.position.z = 0.012; m.pose.orientation.w = 1.0
             m.scale.x = m.scale.y = float(self.get_parameter('marker_size').value); m.scale.z = 0.008
             m.color.r, m.color.g, m.color.b, m.color.a = 0.02, 0.02, 0.02, 0.95
@@ -137,8 +139,16 @@ class V30ESim(Node):
         return abs(camera_x) <= half_x + half_marker and abs(camera_y) <= half_y + half_marker
 
     def tick(self):
-        if self.state_request_pending or not self.state_client.service_is_ready():
+        now = time.monotonic()
+        if (self.state_request_pending or not self.state_client.service_is_ready()
+                or now < self.next_state_request_monotonic):
             return
+        # The world plugin reports a failed request while the robot is still
+        # being inserted. Avoid hammering Gazebo's world lock during startup;
+        # once spawned, poll at the configured sensor rate.
+        request_period = (1.0 / float(self.get_parameter('publish_rate').value)
+                         if self.last_ground_truth is not None else 1.0)
+        self.next_state_request_monotonic = now + request_period
         request = GetEntityState.Request()
         request.name = self.get_parameter('model_name').value
         request.reference_frame = 'world'

@@ -13,6 +13,15 @@ swerve_bridge:
     odom_topic: /odometry/filtered
     joint_states_topic: /joint_states
     lidar_topic: /lidar/points
+    scan_topic: /scan
+    map_topic: /map
+    global_path_topic: /plan
+    local_path_topic: /local_plan
+    goal_topic: /goal_pose
+    navigate_pose_action: /navigate_to_pose
+    map_frame: map
+    lidar_ui_hz: 5.0
+    lidar_max_points: 720
     clock_topic: /clock
     cmd_vel_topic: /cmd_vel
     emergency_stop_topic: /emergency_stop

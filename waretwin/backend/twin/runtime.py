@@ -102,6 +102,7 @@ class TwinRuntime:
         self.channel_layer = None
         self.ros_bridge_connected = False
         self.connected_robot_ids: set[str] = set()
+        self.robot_bridge_heartbeats: dict[str, float] = {}
         self.bridge_status = 'DISCONNECTED' if self.is_external else 'LOCAL'
         self.last_telemetry_at: float | None = None
         self.last_telemetry_iso: str | None = None
@@ -118,7 +119,11 @@ class TwinRuntime:
         self.published_map_version: int = 0
         self.ros_map_revision: int | None = None
         self.gazebo_map_revision: int | None = None
+        self.nav2_map_revision: int | None = None
+        self.tag_map_revision: int | None = None
+        self.map_tf_status = False
         self.map_sync_error: str | None = None
+        self.robot_map_sync: dict[str, dict[str, Any]] = {}
         self._snapshot_prev()
 
     @property
@@ -142,6 +147,18 @@ class TwinRuntime:
             from .gateways.ros_bridge import RosBridgeGateway
             self.robot_gateway = RosBridgeGateway()
         return self.robot_gateway
+
+    def online_robot_ids(self) -> list[str]:
+        """Return robot IDs with a live authenticated bridge and recent heartbeat."""
+        timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        now = time.monotonic()
+        return sorted(
+            robot_id for robot_id in self.connected_robot_ids
+            if now - self.robot_bridge_heartbeats.get(robot_id, 0.0) <= timeout
+        )
+
+    def robot_bridge_online(self, robot_id: str) -> bool:
+        return str(robot_id).strip() in self.online_robot_ids()
 
     async def ensure_started(self) -> None:
         if self.channel_layer is None:
@@ -273,21 +290,37 @@ class TwinRuntime:
 
     def runtime_status_message(self) -> dict[str, Any]:
         from .map_sync import map_sync_status
+        if self.robot_map_sync:
+            self._aggregate_robot_map_sync()
+        require_nav2, require_tag_map = self.map_sync_requirements()
         return {
             'type': 'RUNTIME_STATUS', 'runtime_mode': self.runtime_mode,
             'runtime_state': self.operation_mode,
             'bridge_state': self.bridge_status,
-            'ros_connected': self.ros_bridge_connected,
+            'ros_connected': bool(self.online_robot_ids()),
+            'connected_robot_ids': self.online_robot_ids(),
             'nav2_state': self.nav2_state,
             'last_telemetry_at': self.last_telemetry_iso,
             'published_revision': self.published_map_revision,
             'published_version': self.published_map_version,
             'ros_revision': self.ros_map_revision,
             'gazebo_revision': self.gazebo_map_revision,
+            'nav2_revision': self.nav2_map_revision,
+            'tag_map_revision': self.tag_map_revision,
+            'tf_status': self.map_tf_status,
+            'robot_map_sync': {
+                rid: {key: value for key, value in row.items() if key != 'received_monotonic'}
+                for rid, row in self.robot_map_sync.items()
+            },
             'map_sync_status': map_sync_status(
                 published_revision=self.published_map_revision,
                 ros_revision=self.ros_map_revision,
                 gazebo_revision=self.gazebo_map_revision,
+                nav2_revision=self.nav2_map_revision,
+                tag_map_revision=self.tag_map_revision,
+                tf_status=self.map_tf_status,
+                require_nav2=require_nav2,
+                require_tag_map=require_tag_map,
                 ros_connected=self.ros_bridge_connected,
                 error=self.map_sync_error,
                 external=self.is_external,
@@ -298,8 +331,12 @@ class TwinRuntime:
 
     async def bridge_connected(self, robot_id: str | None = None) -> None:
         if robot_id:
-            self.connected_robot_ids.add(str(robot_id))
-        self.ros_bridge_connected = True
+            rid = str(robot_id)
+            self.connected_robot_ids.add(rid)
+            self.robot_bridge_heartbeats[rid] = time.monotonic()
+            self.robot_map_sync.pop(rid, None)
+            self._aggregate_robot_map_sync()
+        self.ros_bridge_connected = bool(self.connected_robot_ids)
         self.bridge_status = 'CONNECTED'
         self.ros_diagnostics['ros'] = True
         self.nav2_state = 'CONNECTED'
@@ -309,9 +346,15 @@ class TwinRuntime:
 
     async def bridge_disconnected(self, robot_id: str | None = None) -> None:
         if robot_id:
-            self.connected_robot_ids.discard(str(robot_id))
+            rid = str(robot_id)
+            self.connected_robot_ids.discard(rid)
+            self.robot_bridge_heartbeats.pop(rid, None)
+            self.robot_map_sync.pop(rid, None)
+            self._aggregate_robot_map_sync()
         else:
             self.connected_robot_ids.clear()
+            self.robot_bridge_heartbeats.clear()
+            self.robot_map_sync.clear()
         self.ros_bridge_connected = bool(self.connected_robot_ids) if robot_id else False
         if self.ros_bridge_connected:
             # One namespaced bridge went away; keep the other robots and the
@@ -329,6 +372,8 @@ class TwinRuntime:
         }
         self.ros_map_revision = None
         self.gazebo_map_revision = None
+        self.nav2_map_revision = None
+        self.tag_map_revision = None
         self.map_sync_error = None
         if self.is_external:
             await self._mark_external_offline()
@@ -368,29 +413,87 @@ class TwinRuntime:
         await self.broadcast_runtime_status()
 
     async def handle_map_revision_status(self, data: dict[str, Any]) -> None:
-        raw = data.get('map_revision', data.get('revision'))
-        try:
-            self.ros_map_revision = int(raw) if raw is not None else None
-        except (TypeError, ValueError):
-            self.ros_map_revision = None
-        raw_gazebo = data.get('gazebo_revision', raw)
-        try:
-            self.gazebo_map_revision = int(raw_gazebo) if raw_gazebo is not None else None
-        except (TypeError, ValueError):
-            self.gazebo_map_revision = None
-        self.map_sync_error = str(data.get('error') or '') or None
+        rid = str(data.get('robot_id') or '').strip()
+        if rid and rid not in self.connected_robot_ids:
+            return
+        if rid:
+
+            def revision(*keys):
+                raw_value = next((data.get(key) for key in keys if data.get(key) is not None), None)
+                try:
+                    return int(raw_value) if raw_value is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            self.robot_map_sync[rid] = {
+                'ros_revision': revision('ros_revision', 'map_revision', 'revision'),
+                'gazebo_revision': revision('gazebo_revision', 'map_revision', 'revision'),
+                'nav2_revision': revision('nav2_revision'),
+                'tag_map_revision': revision('tag_map_revision'),
+                'tf_status': bool(data.get('tf_status', False)),
+                'nav2_required': bool(data.get('nav2_required', self.operation_mode == 'NAVIGATION')),
+                'tag_map_required': bool(data.get('tag_map_required', self.operation_mode == 'NAVIGATION')),
+                'error': str(data.get('error') or '') or None,
+                'received_monotonic': time.monotonic(),
+                'status': str(data.get('status') or 'OUT_OF_SYNC'),
+            }
+            self._aggregate_robot_map_sync()
+        else:
+            # Compatibility for older single-robot bridge clients.
+            raw = data.get('ros_revision', data.get('map_revision', data.get('revision')))
+            try: self.ros_map_revision = int(raw) if raw is not None else None
+            except (TypeError, ValueError): self.ros_map_revision = None
+            raw_gazebo = data.get('gazebo_revision', raw)
+            try: self.gazebo_map_revision = int(raw_gazebo) if raw_gazebo is not None else None
+            except (TypeError, ValueError): self.gazebo_map_revision = None
+            try: self.nav2_map_revision = int(data.get('nav2_revision')) if data.get('nav2_revision') is not None else None
+            except (TypeError, ValueError): self.nav2_map_revision = None
+            try: self.tag_map_revision = int(data.get('tag_map_revision')) if data.get('tag_map_revision') is not None else None
+            except (TypeError, ValueError): self.tag_map_revision = None
+            self.map_tf_status = bool(data.get('tf_status', False))
+            self.map_sync_error = str(data.get('error') or '') or None
         await self.broadcast_runtime_status()
-        from .map_sync import map_sync_status
-        status = map_sync_status(
-            published_revision=self.published_map_revision,
-            ros_revision=self.ros_map_revision,
-            gazebo_revision=self.gazebo_map_revision,
-            ros_connected=self.ros_bridge_connected,
-            error=self.map_sync_error,
-            external=self.is_external,
-        )
-        if status == 'OUT_OF_SYNC' and self.ros_bridge_connected:
-            await self.send_published_map_to_bridge()
+        # The bridge owns revision reload requests and its supervisor restarts
+        # consumers. Re-sending on every heartbeat creates a retry storm while
+        # TF or Nav2 is still initializing.
+
+    def _aggregate_robot_map_sync(self) -> None:
+        """Require every connected robot bridge to report the same map state."""
+        robot_ids = sorted(self.connected_robot_ids)
+        rows = {rid: self.robot_map_sync[rid] for rid in robot_ids if rid in self.robot_map_sync}
+        if not rows:
+            self.ros_map_revision = self.gazebo_map_revision = None
+            self.nav2_map_revision = self.tag_map_revision = None
+            self.map_tf_status = False
+            self.map_sync_error = 'waiting for robot map revision status' if robot_ids else None
+            return
+        stale_after = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        fresh_rows = {
+            rid: row for rid, row in rows.items()
+            if time.monotonic() - row['received_monotonic'] <= stale_after
+        }
+
+        def common_revision(key):
+            values = [fresh_rows[rid].get(key) for rid in robot_ids if rid in fresh_rows]
+            if len(values) != len(robot_ids) or not values or any(value != values[0] for value in values):
+                return None
+            return values[0]
+
+        self.ros_map_revision = common_revision('ros_revision')
+        self.gazebo_map_revision = common_revision('gazebo_revision')
+        self.nav2_map_revision = common_revision('nav2_revision')
+        self.tag_map_revision = common_revision('tag_map_revision')
+        self.map_tf_status = len(fresh_rows) == len(robot_ids) and all(
+            row.get('tf_status', False) for row in fresh_rows.values())
+        errors = [f'{rid}: {row["error"]}' for rid, row in rows.items() if row.get('error')]
+        missing = sorted(set(robot_ids) - set(fresh_rows))
+        if missing:
+            errors.append('stale/missing map status from ' + ', '.join(missing))
+        keys = ('ros_revision', 'gazebo_revision', 'nav2_revision', 'tag_map_revision')
+        mismatched = [key for key in keys if len({row.get(key) for row in fresh_rows.values()}) > 1]
+        if mismatched:
+            errors.append('robot bridges disagree on ' + ', '.join(mismatched))
+        self.map_sync_error = '; '.join(errors) or None
 
     async def _mark_external_offline(self) -> None:
         changed = False
@@ -408,9 +511,22 @@ class TwinRuntime:
 
     async def update_external_robot_state(self, data: dict[str, Any]) -> None:
         rid = str(data.get('robot_id') or '').strip()
-        if not rid:
+        if not rid or rid not in self.connected_robot_ids:
             return
-        self.connected_robot_ids.add(rid)
+        frame_id = str(data.get('frame_id') or '')
+        if frame_id != 'map':
+            self.map_tf_status = False
+            self.map_sync_error = f'robot {rid} pose frame must be map, received {frame_id or "empty"}'
+            return
+        try:
+            pose_revision = int(data.get('map_revision'))
+        except (TypeError, ValueError):
+            self.map_sync_error = f'robot {rid} pose is missing its map revision'
+            return
+        if self.published_map_revision is None or pose_revision != self.published_map_revision:
+            self.map_sync_error = (f'robot {rid} pose revision {pose_revision} does not match '
+                                   f'published revision {self.published_map_revision}')
+            return
         robots = self.engine.state.setdefault('robots', {})
         robot = robots.get(rid)
         if robot is None:
@@ -440,7 +556,7 @@ class TwinRuntime:
                       'fsm': self._fsm_from_nav(nav)})
         self.last_telemetry_at = time.monotonic()
         self.last_ros_heartbeat = self.last_telemetry_at
-        self.ros_bridge_connected = True
+        self.robot_bridge_heartbeats[rid] = self.last_telemetry_at
         self.bridge_status = 'CONNECTED'
         self.ros_diagnostics['ros'] = True
         self.last_telemetry_iso = now_iso
@@ -468,12 +584,29 @@ class TwinRuntime:
             await self.update_external_robot_state(data)
         elif kind == 'NAV_STATUS':
             await self.handle_nav_status(data)
+            # Keep the control console independent from scheduler persistence;
+            # the browser needs the measured Nav2 state even when no schedule
+            # row is associated with a manually selected map goal.
+            await self.broadcast(data)
         elif kind == 'HEARTBEAT':
             robot_id = str(data.get('robot_id') or '').strip()
-            if robot_id:
+            if not robot_id:
+                return
+            if robot_id not in self.connected_robot_ids:
+                # The authenticated bridge socket can outlive an in-memory
+                # runtime reset/reload. Its consumer identity is established
+                # by RosBridgeConsumer.connect(), which validates the bridge
+                # token and overwrites any reported robot_id before dispatch.
+                # Let only that still-registered socket restore its own ID;
+                # arbitrary heartbeat packets must never create fleet entries.
+                from .ros_bridge_consumer import registry
+                bridge = registry.consumers.get(robot_id)
+                if bridge is None or str(getattr(bridge, 'robot_id', robot_id)) != robot_id:
+                    return
                 self.connected_robot_ids.add(robot_id)
             self.last_ros_heartbeat = time.monotonic()
-            self.ros_bridge_connected = True
+            self.robot_bridge_heartbeats[robot_id] = self.last_ros_heartbeat
+            self.ros_bridge_connected = bool(self.connected_robot_ids)
             self.bridge_status = str(data.get('bridge_state') or 'CONNECTED').upper()
             self.nav2_state = str(data.get('nav2_state') or 'CONNECTED')
             self.operation_mode = str(data.get('runtime_state') or self.operation_mode).upper()
@@ -484,19 +617,22 @@ class TwinRuntime:
             await self.broadcast_runtime_status()
         elif kind in ('ROS_DIAGNOSTICS', 'DIAGNOSTICS'):
             await self.handle_ros_diagnostics(data)
+        elif kind == 'SYSTEM_DIAGNOSTICS':
+            # Some bridge versions emit the richer packet without a separate
+            # ROS_DIAGNOSTICS frame.  Ingest it as measured runtime health as
+            # well as forwarding the robot-scoped console payload.
+            await self.handle_ros_diagnostics(data)
+            await self.broadcast(data)
+        elif kind in ('LIDAR_SCAN', 'MAP_SNAPSHOT', 'NAV_GLOBAL_PATH', 'NAV_LOCAL_PATH', 'NAV_GOAL', 'CONTROLLER_STATE'):
+            await self.broadcast(data)
         elif kind == 'BRIDGE_STATUS':
             robot_id = str(data.get('robot_id') or '').strip()
-            if robot_id and str(data.get('state') or '').upper() in ('CONNECTED', 'CONNECTING', 'RECONNECTING'):
-                self.connected_robot_ids.add(robot_id)
+            if not robot_id or robot_id not in self.connected_robot_ids:
+                return
             self.bridge_status = str(data.get('state') or 'ERROR').upper()
             runtime_state = str(data.get('runtime_state') or '').upper()
             if runtime_state in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'ERROR'):
                 self.operation_mode = runtime_state
-            if self.bridge_status in ('CONNECTED', 'CONNECTING', 'RECONNECTING'):
-                self.ros_bridge_connected = True
-            elif robot_id:
-                self.connected_robot_ids.discard(robot_id)
-                self.ros_bridge_connected = bool(self.connected_robot_ids)
             await self.broadcast_runtime_status()
         elif kind in ('MAP_REVISION_STATUS', 'MAP_REVISION_ACK'):
             await self.handle_map_revision_status(data)
@@ -516,19 +652,17 @@ class TwinRuntime:
                 self.ros_diagnostics[key] = values[key][:200]
         if isinstance(values.get('metrics'), dict):
             self.ros_diagnostics['metrics'] = dict(values['metrics'])
+        if isinstance(values.get('errors'), list):
+            self.ros_diagnostics['errors'] = values['errors'][:100]
         if values.get('simulation_time') is not None:
             self.ros_diagnostics['simulation_time'] = values.get('simulation_time')
         self.ros_diagnostics['last_update_at'] = data.get('timestamp') or datetime.now(timezone.utc).isoformat()
-        self.ros_bridge_connected = True
-        self.bridge_status = 'CONNECTED'
         if self.operation_mode == 'ERROR' and self.ros_diagnostics.get('ros'):
             self.operation_mode = 'SIMULATION' if self.is_external else self.operation_mode
         await self.broadcast_runtime_status()
 
     def health_snapshot(self) -> dict[str, Any]:
-        timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
-        heartbeat_alive = self.last_ros_heartbeat is not None and (time.monotonic() - self.last_ros_heartbeat) <= timeout
-        ros_connected = bool(self.ros_bridge_connected and heartbeat_alive) if self.is_external else False
+        ros_connected = bool(self.online_robot_ids()) if self.is_external else False
         diagnostics = dict(self.ros_diagnostics)
         diagnostics['ros'] = bool(diagnostics.get('ros') and ros_connected)
         gazebo = bool(diagnostics.get('gazebo') and ros_connected)
@@ -540,7 +674,7 @@ class TwinRuntime:
         return {
             # A socket that stopped sending heartbeats is not healthy even if
             # Channels has not delivered its disconnect callback yet.
-            'ros_bridge': bool(self.ros_bridge_connected and heartbeat_alive) if self.is_external else False,
+            'ros_bridge': ros_connected,
             'websocket': websocket_ready,
             'ros': diagnostics['ros'],
             'gazebo': gazebo,
@@ -549,6 +683,15 @@ class TwinRuntime:
             'ros_connected': ros_connected,
             'diagnostics': diagnostics,
         }
+
+    def map_sync_requirements(self) -> tuple[bool, bool]:
+        """Use each bridge's declared runtime contract, with safe nav defaults."""
+        rows = list(self.robot_map_sync.values())
+        if rows:
+            return (any(row.get('nav2_required', False) for row in rows),
+                    any(row.get('tag_map_required', False) for row in rows))
+        navigation = self.operation_mode == 'NAVIGATION'
+        return navigation, navigation
 
     async def handle_tag_navigation_message(self, kind: str, data: dict[str, Any]) -> None:
         from .tag_navigation import apply_ros_tag_status, apply_ros_tag_event, log_ros_tag_detection, apply_ros_localization, mission_snapshot
@@ -668,6 +811,7 @@ class TwinRuntime:
         self.last_telemetry_iso = None
         self.ros_bridge_connected = False
         self.connected_robot_ids.clear()
+        self.robot_bridge_heartbeats.clear()
         self.bridge_status = 'DISCONNECTED' if self.is_external else 'LOCAL'
         self.nav2_state = 'OFFLINE' if self.is_external else 'LOCAL'
         self.operation_mode = 'IDLE' if self.is_external else 'SIMULATION'
@@ -824,6 +968,13 @@ class TwinRuntime:
                     'message': 'Manual robot control requires an active ROS/Gazebo bridge',
                 })
                 return
+            if not self.robot_bridge_online(msg.robot_id):
+                await consumer.send_json({
+                    'type': 'ROBOT_CONTROL_STATUS', 'robot_id': msg.robot_id,
+                    'mode': msg.mode, 'accepted': False,
+                    'reason': 'ROS bridge for this robot is offline',
+                })
+                return
             result = await self.gateway().send_command(
                 msg.robot_id, 'CONTROL_MODE', {'mode': msg.mode})
             await consumer.send_json({
@@ -838,12 +989,60 @@ class TwinRuntime:
                     'message': 'Manual robot control requires an active ROS/Gazebo bridge',
                 })
                 return
+            if not self.robot_bridge_online(msg.robot_id):
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': f'ROS bridge for {msg.robot_id} is offline; manual command was not sent',
+                })
+                return
             result = await self.gateway().send_command(
                 msg.robot_id, 'MANUAL_CMD', {'action': msg.action})
             if not result.get('ok'):
                 await consumer.send_json({
                     'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
                     'message': 'ROS bridge is offline; manual command was not sent',
+                })
+        elif t in ('NAV_GOAL', 'NAV_CANCEL', 'NAV_PAUSE', 'NAV_RESUME'):
+            if not self.is_external:
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'Autonomous robot control requires an active ROS/Gazebo bridge',
+                })
+                return
+            if not self.robot_bridge_online(msg.robot_id):
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': f'ROS bridge for {msg.robot_id} is offline; navigation command was not sent',
+                })
+                return
+            if t in ('NAV_GOAL', 'NAV_RESUME') and self.runtime_status_message().get('map_sync_status') != 'SYNCED':
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'MAP_OUT_OF_SYNC',
+                    'message': f'Navigation blocked because map components are not synchronized ({self.runtime_status_message().get("map_sync_status")})',
+                })
+                return
+            if t == 'NAV_GOAL':
+                if msg.frame_id != 'map':
+                    await consumer.send_json({
+                        'type': 'ERROR', 'code': 'INVALID_GOAL_FRAME',
+                        'message': 'Navigation goals must use frame_id=map',
+                    })
+                    return
+                result = await self.gateway().send_command(msg.robot_id, 'NAVIGATE', {
+                    'x': msg.x, 'y': msg.y, 'yaw': msg.yaw, 'frame_id': msg.frame_id,
+                })
+                if result.get('ok'):
+                    await self.broadcast({'type': 'NAV_GOAL', 'goal': {
+                        'robot_id': msg.robot_id, 'frame_id': msg.frame_id,
+                        'x': msg.x, 'y': msg.y, 'yaw': msg.yaw,
+                        'status': 'SENT', 'timestamp': datetime.now(timezone.utc).isoformat(),
+                    }})
+            else:
+                result = await self.gateway().send_command(msg.robot_id, t, {})
+            if not result.get('ok'):
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'ROS bridge is offline; navigation command was not sent',
                 })
         elif t == 'COPILOT_ASK':
             snapshot = json.loads(json.dumps(eng.state))

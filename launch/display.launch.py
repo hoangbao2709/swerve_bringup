@@ -3,11 +3,12 @@
 Launch: hien thi swerve AGV trong RViz.
 - robot_state_publisher: publish TF tu URDF
 - joint_state_publisher_gui: cho phep keo thanh truot de test tung khop
-    (steer_front_joint, steer_rear_joint, wheel_*_drive_joint, wheel_*_swivel_joint, wheel_*_roll_joint)
+    (steer_front_joint, steer_rear_joint, wheel_*_drive_joint). Caster
+    swivel/roll sliders exist only with proper_caster_test:=true.
 - rviz2: hien thi mesh + TF
 
 Chay:
-    ros2 launch swerve_bringup display.launch.py
+    ros2 launch swerve_bringup display.launch.py rviz:=true
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -35,6 +36,10 @@ def generate_launch_description():
     sim_time_arg = DeclareLaunchArgument(
         'use_sim_time', default_value='false',
         description='Use a simulation clock when displaying a live Gazebo robot',
+    )
+    rviz_arg = DeclareLaunchArgument(
+        'rviz', default_value='false',
+        description='Start RViz; enable with rviz:=true when visual debugging is needed',
     )
     use_sim_time = LaunchConfiguration('use_sim_time')
 
@@ -65,12 +70,14 @@ def generate_launch_description():
         output='screen',
         arguments=['-d', default_rviz],
         parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
     return LaunchDescription([
         urdf_arg,
         gui_arg,
         sim_time_arg,
+        rviz_arg,
         robot_state_publisher,
         joint_state_publisher_gui,
         rviz_node,

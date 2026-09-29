@@ -47,7 +47,10 @@ class TagRoutePlanner(Node):
             graph_path = os.path.join(get_package_share_directory('swerve_bringup'), 'config', graph_path)
         with open(graph_path, encoding='utf-8') as stream:
             self.graph = TagGraph(yaml.safe_load(stream)['tags'])
-        self.executor = RouteExecutor(self.graph)
+        # rclpy.Node owns the `executor` property; keep route state under a
+        # distinct name so assigning the planner cannot attempt to register
+        # the node as an Executor.
+        self.route_executor = RouteExecutor(self.graph)
         self.lock = threading.RLock(); self.active = None
         self.last_tag = None; self.last_tag_monotonic = 0.0
         self.last_offset = None; self.last_offset_monotonic = 0.0
@@ -94,15 +97,19 @@ class TagRoutePlanner(Node):
 
     def anchor_if_valid(self):
         """Boot remains UNANCHORED until one tag and its in-tolerance offset agree."""
-        if self.executor.current_tag is None and self.last_tag in self.graph.tags and self.offset_ok():
-            self.executor.anchor(self.last_tag)
+        if self.route_executor.current_tag is None and self.last_tag in self.graph.tags and self.offset_ok():
+            self.route_executor.anchor(self.last_tag)
 
     def publish_global_measurement_if_possible(self):
-        if self.last_tag not in self.graph.tags or self.last_offset is None: return
+        now = self.now()
+        if (self.last_tag not in self.graph.tags or self.last_offset is None
+                or now - self.last_tag_monotonic > float(self.p('detection_max_age'))
+                or now - self.last_offset_monotonic > float(self.p('offset_max_age'))):
+            return
         marker = self.graph.tags[self.last_tag]; c, s = math.cos(marker['yaw']), math.sin(marker['yaw'])
         msg = PoseWithCovarianceStamped(); msg.header.stamp = self.get_clock().now().to_msg(); msg.header.frame_id = self.p('map_frame')
-        msg.pose.pose.position.x = marker['x'] + c * self.last_offset.x - s * self.last_offset.y
-        msg.pose.pose.position.y = marker['y'] + s * self.last_offset.x + c * self.last_offset.y
+        msg.pose.pose.position.x = float(marker['x'] + c * self.last_offset.x - s * self.last_offset.y)
+        msg.pose.pose.position.y = float(marker['y'] + s * self.last_offset.x + c * self.last_offset.y)
         yaw = marker['yaw'] + self.last_offset.z
         msg.pose.pose.orientation.z, msg.pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         msg.pose.covariance[0] = msg.pose.covariance[7] = .0025; msg.pose.covariance[35] = math.radians(1) ** 2
@@ -117,15 +124,15 @@ class TagRoutePlanner(Node):
 
     def execute(self, goal_handle):
         with self.lock:
-            if self.executor.current_tag is None:
+            if self.route_executor.current_tag is None:
                 goal_handle.abort(); result = GoToTag.Result(); result.success = False; result.reason = 'UNANCHORED: wait for a valid V30E tag'
                 return result
-            try: self.executor.start(goal_handle.request.target_tag_id)
+            try: self.route_executor.start(goal_handle.request.target_tag_id)
             except (ValueError, RuntimeError) as error:
                 goal_handle.abort(); result = GoToTag.Result(); result.success = False; result.reason = str(error); return result
             self.active = {'handle': goal_handle, 'done': threading.Event(), 'success': False, 'reason': ''}
             self.publish_route(); self.publish_status()
-            if self.executor.state == RouteState.ARRIVED:
+            if self.route_executor.state == RouteState.ARRIVED:
                 self.finish(True, 'target tag is already anchored and confirmed')
             else:
                 self.start_segment()
@@ -141,40 +148,40 @@ class TagRoutePlanner(Node):
     def tick(self):
         with self.lock:
             if self.active is None: self.publish_status(); return
-            expected = self.executor.next_tag
+            expected = self.route_executor.next_tag
             fresh_detection = self.last_tag_monotonic >= (self.segment_start or float('inf')) and self.now() - self.last_tag_monotonic <= float(self.p('detection_max_age'))
             if expected is not None and self.last_tag == expected and fresh_detection:
-                outcome = self.executor.expected_seen(expected, self.offset_ok())
+                outcome = self.route_executor.expected_seen(expected, self.offset_ok())
                 if outcome == 'advanced':
                     self.cancel_segment(); self.publish_route(); self.publish_status()
-                    if self.executor.state == RouteState.ARRIVED: self.finish(True, 'target tag detected and offset is within tolerance')
+                    if self.route_executor.state == RouteState.ARRIVED: self.finish(True, 'target tag detected and offset is within tolerance')
                     else: self.start_segment()
                     return
             elif expected is not None and self.last_tag in self.graph.tags and self.last_tag != expected and fresh_detection:
                 detected = self.last_tag; self.get_logger().warning(f'EXPECTED_TAG={expected} DETECTED_TAG={detected}')
-                self.executor.state = RouteState.WRONG_TAG; self.publish_status()
+                self.route_executor.state = RouteState.WRONG_TAG; self.publish_status()
                 if bool(self.p('replan_on_wrong_tag')):
                     try:
-                        self.cancel_segment(); self.executor.replan_from(detected); self.get_logger().warning('Explicit replan from wrong detected tag')
+                        self.cancel_segment(); self.route_executor.replan_from(detected); self.get_logger().warning('Explicit replan from wrong detected tag')
                         self.publish_route(); self.start_segment()
                     except ValueError as error: self.finish(False, f'WRONG_TAG and no replan: {error}')
                 else: self.finish(False, f'EXPECTED_TAG={expected} DETECTED_TAG={detected}')
                 return
-            if self.executor.state == RouteState.APPROACH_TAG:
+            if self.route_executor.state == RouteState.APPROACH_TAG:
                 elapsed = self.now() - self.segment_start
                 if elapsed > float(self.p('tag_acquire_timeout')) or self.approach_distance() > float(self.p('max_approach_distance')):
-                    self.stop(); self.executor.state = RouteState.TAG_ACQUIRE_FAILED; self.publish_status(); self.finish(False, 'TAG_ACQUIRE_FAILED: expected tag was not detected')
+                    self.stop(); self.route_executor.state = RouteState.TAG_ACQUIRE_FAILED; self.publish_status(); self.finish(False, 'TAG_ACQUIRE_FAILED: expected tag was not detected')
                 else: self.approach_along_segment()
             elif self.distance_to_expected() is not None and self.distance_to_expected() <= float(self.p('approach_radius')):
-                self.executor.state = RouteState.APPROACH_TAG; self.segment_start = self.now(); self.cancel_segment(); self.publish_status()
+                self.route_executor.state = RouteState.APPROACH_TAG; self.segment_start = self.now(); self.cancel_segment(); self.publish_status()
 
     def start_segment(self):
-        expected = self.executor.next_tag
+        expected = self.route_executor.next_tag
         if expected is None: return
-        self.executor.state = RouteState.NAVIGATING_SEGMENT; self.segment_start = self.now(); self.last_nav_distance = None
+        self.route_executor.state = RouteState.NAVIGATING_SEGMENT; self.segment_start = self.now(); self.last_nav_distance = None
         if not self.nav.wait_for_server(timeout_sec=2.0): self.finish(False, 'NavigateToPose server unavailable'); return
         tag = self.graph.tags[expected]; goal = NavigateToPose.Goal(); goal.pose.header.frame_id = self.p('map_frame'); goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x, goal.pose.pose.position.y = tag['x'], tag['y']
+        goal.pose.pose.position.x, goal.pose.pose.position.y = float(tag['x']), float(tag['y'])
         goal.pose.pose.orientation.z, goal.pose.pose.orientation.w = math.sin(tag['yaw']/2), math.cos(tag['yaw']/2)
         future = self.nav.send_goal_async(goal, feedback_callback=lambda f: setattr(self, 'last_nav_distance', float(f.feedback.distance_remaining)))
         future.add_done_callback(self.nav_response)
@@ -189,10 +196,10 @@ class TagRoutePlanner(Node):
     def nav_result(self, future):
         try: status = future.result().status
         except Exception as error: self.finish(False, f'Nav2 segment error: {error}'); return
-        if self.active is None or self.executor.state == RouteState.APPROACH_TAG: return
+        if self.active is None or self.route_executor.state == RouteState.APPROACH_TAG: return
         # Nav2 success only means acquisition zone reached; detector remains the gate.
         if status == GoalStatus.STATUS_SUCCEEDED:
-            self.executor.state = RouteState.APPROACH_TAG; self.segment_start = self.now(); self.publish_status()
+            self.route_executor.state = RouteState.APPROACH_TAG; self.segment_start = self.now(); self.publish_status()
         elif status != GoalStatus.STATUS_CANCELED: self.finish(False, f'Nav2 segment status {status}')
 
     def cancel_segment(self):
@@ -206,7 +213,7 @@ class TagRoutePlanner(Node):
         except TransformException: return None
 
     def distance_to_expected(self):
-        pose = self.pose(); expected = self.executor.next_tag
+        pose = self.pose(); expected = self.route_executor.next_tag
         if pose is None or expected is None: return self.last_nav_distance
         tag = self.graph.tags[expected]; return math.hypot(tag['x'] - pose[0], tag['y'] - pose[1])
 
@@ -214,7 +221,7 @@ class TagRoutePlanner(Node):
         return abs(self.p('approach_radius') - (self.distance_to_expected() or 0.0))
 
     def approach_along_segment(self):
-        pose = self.pose(); expected = self.executor.next_tag
+        pose = self.pose(); expected = self.route_executor.next_tag
         if pose is None or expected is None: return
         tag = self.graph.tags[expected]; dx, dy = tag['x'] - pose[0], tag['y'] - pose[1]; length = math.hypot(dx, dy)
         if length < .001: return
@@ -231,17 +238,17 @@ class TagRoutePlanner(Node):
     def publish_route(self):
         from nav_msgs.msg import Path
         path = Path(); path.header.frame_id = self.p('map_frame'); path.header.stamp = self.get_clock().now().to_msg()
-        for tag_id in self.executor.route:
-            tag = self.graph.tags[tag_id]; pose = PoseStamped(); pose.header = path.header; pose.pose.position.x, pose.pose.position.y = tag['x'], tag['y']; pose.pose.orientation.w = 1.0; path.poses.append(pose)
+        for tag_id in self.route_executor.route:
+            tag = self.graph.tags[tag_id]; pose = PoseStamped(); pose.header = path.header; pose.pose.position.x, pose.pose.position.y = float(tag['x']), float(tag['y']); pose.pose.orientation.w = 1.0; path.poses.append(pose)
         self.route_pub.publish(path)
 
     def publish_status(self):
         def emit(pub, value): msg = Int32(); msg.data = int(value or 0); pub.publish(msg)
-        emit(self.current_pub, self.executor.current_tag); emit(self.next_pub, self.executor.next_tag); emit(self.target_pub, self.executor.target_tag)
-        state = String(); state.data = self.executor.state; self.state_pub.publish(state)
+        emit(self.current_pub, self.route_executor.current_tag); emit(self.next_pub, self.route_executor.next_tag); emit(self.target_pub, self.route_executor.target_tag)
+        state = String(); state.data = self.route_executor.state; self.state_pub.publish(state)
         if self.active:
-            feedback = GoToTag.Feedback(); feedback.current_tag_id = self.executor.current_tag or 0; feedback.next_tag_id = self.executor.next_tag or 0; feedback.target_tag_id = self.executor.target_tag or 0; feedback.state = self.executor.state
-            feedback.progress = (self.executor.index / max(1, len(self.executor.route) - 1)); self.active['handle'].publish_feedback(feedback)
+            feedback = GoToTag.Feedback(); feedback.current_tag_id = self.route_executor.current_tag or 0; feedback.next_tag_id = self.route_executor.next_tag or 0; feedback.target_tag_id = self.route_executor.target_tag or 0; feedback.state = self.route_executor.state
+            feedback.progress = (self.route_executor.index / max(1, len(self.route_executor.route) - 1)); self.active['handle'].publish_feedback(feedback)
 
 
 def main(args=None):

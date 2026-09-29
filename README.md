@@ -6,7 +6,8 @@ lồng `swerve_bridge` và môi trường ROS overlay của máy.
 
 Package ROS 2 (ament_cmake) chứa mô tả URDF + launch hiển thị cho AGV đa hướng:
 - 2 cụm swerve (steer_front, steer_rear): mỗi cụm có khớp xoay đứng (steer) + khớp lăn bánh chủ động (drive)
-- 4 bánh caster bị động ở 4 góc (swivel + roll, mỗi bánh 2 bậc tự do)
+- 4 caster bị động ở 4 góc: physics mặc định là collision cylinder đơn giản, ít ma sát
+- Visual caster mặc định chỉ là xấp xỉ mount + fork + wheel; `proper_caster_test:=true` mới thêm DOF swivel + roll thực nghiệm
 - Bộ gá đỡ (board điều khiển + bracket) gắn cố định vào base_link
 
 Toàn bộ hình học & vị trí khớp được trích xuất trực tiếp từ CAD gốc:
@@ -21,7 +22,8 @@ swerve_bringup/
 ├── package.xml
 ├── CMakeLists.txt
 ├── urdf/swerve_base.urdf
-├── meshes/*.stl              (13 file, đơn vị mm -> URDF dùng scale 0.001)
+├── meshes/*.stl              (CAD gốc, đơn vị mm, không bị overwrite)
+├── meshes/visual/*.obj       (visual đã optimize, đơn vị m, có normals)
 ├── config/controllers.yaml
 ├── config/ekf.yaml
 ├── config/lidar_preprocessing.yaml
@@ -167,6 +169,20 @@ Remaining estimates: warehouse dimensions/layout, shelf and pallet dimensions,
 conveyor/workstation dimensions, pillar positions, obstacle positions, and the
 robot sensor mounting values already identified in `config/lidar.yaml`.
 
+### Visual assets and fallback mode
+
+`use_cad_visuals:=true` loads the decimated CAD-derived OBJ files in
+`meshes/visual/`. `use_cad_visuals:=false` selects lightweight URDF primitives
+for visual debugging. Both choices leave collision geometry, inertial values,
+joint axes and controller physics unchanged. The fallback drive-wheel cylinder
+is rotated onto the existing +Y axle inside its `<visual><origin>`.
+
+`tools/optimize_visual_mesh.py` reads the original binary STL, removes
+degenerate/duplicate geometry, repairs orientable winding, writes explicit OBJ
+vertex normals, and validates finite vertices and source bounding-box extent.
+It writes only under `meshes/visual/`; the CAD STL files remain unchanged and
+are not used as collision geometry.
+
 ## Phase 8: 3D LiDAR preprocessing and SLAM
 
 The native `/lidar/points` `sensor_msgs/msg/PointCloud2` remains the raw sensor
@@ -210,10 +226,10 @@ ros2 run nav2_map_server map_saver_cli -f warehouse_map \
 ```
 
 Required runtime packages are `pointcloud_to_laserscan` and `slam_toolbox`.
-The current ROS installation contains `slam_toolbox`, but does not contain
-`pointcloud_to_laserscan`; install that ROS distribution package before
-running `slam.launch.py`. The filter node and all configuration files are
-already included in this package.
+The filter node and all configuration files are included in this package; if
+`ros2 pkg prefix pointcloud_to_laserscan` or `ros2 pkg prefix slam_toolbox`
+fails on another machine, install the matching ROS distribution packages
+before running `slam.launch.py`.
 
 ## Phase 9: holonomic Nav2 with 3D LiDAR
 
@@ -234,14 +250,13 @@ The local costmap uses a VoxelLayer with `/lidar/points_filtered` as
 `PointCloud2` (`marking: true`, `clearing: true`) and `/scan` as an additional
 observation. Its obstacle height is limited to `0.05..1.30 m`, so rack points
 above the robot clearance do not automatically block the 2D planner. The
-global costmap uses the SLAM `/map` plus `/scan` updates.
+global costmap uses the selected static Nav2 `/map` plus `/scan` updates.
 
 Start in this order:
 
 ```bash
-ros2 launch swerve_bringup gazebo.launch.py
-ros2 launch swerve_bringup slam.launch.py
-ros2 launch swerve_bringup navigation.launch.py
+./scripts/start_stack.sh mapping
+./scripts/start_stack.sh navigation --map /absolute/path/to/saved_map.yaml
 ```
 
 The navigation launch starts the static `map_server`, controller, planner,
@@ -249,7 +264,10 @@ behavior, BT navigator, waypoint follower and lifecycle manager. The
 controller's `/cmd_vel` goes directly to the existing swerve controller, which
 converts `vx`, `vy`, `wz` to steering and drive commands. SLAM Toolbox is not
 started in navigation mode; the selected saved map plus the V30E/tag
-localization filter own the `map -> odom` correction.
+localization filter own the `map -> odom` correction. Navigation still starts
+the LiDAR preprocessing and point-cloud-to-scan stages so
+`/lidar/points_filtered` and `/scan` remain live; only SLAM Toolbox is
+disabled in this mode.
 
 Navigation checks:
 
@@ -264,9 +282,9 @@ Test forward, left/right goals, pure strafe, in-place rotation, diagonal
 goals, narrow aisles, static obstacles, and an obstacle inserted while moving.
 Acceptance requires a real `/cmd_vel` path through the swerve controller,
 costmap marking/clearing from PointCloud2, replanning or stopping when blocked,
-and no teleport or animation-based motion. These motion tests remain pending
-until `pointcloud_to_laserscan` is installed and the existing Gazebo
-`gazebo_ros2_control` startup issue is resolved.
+and no teleport or animation-based motion. The runtime acceptance below covers
+startup, live data, TF, bridge health and Nav2 lifecycle; goal-motion and
+obstacle-behaviour tests remain a separate deliberate test session.
 
 Steering controller nhận `std_msgs/msg/Float64MultiArray` theo thứ tự
 `[steer_front_joint, steer_rear_joint]`; drive controller theo thứ tự
@@ -289,8 +307,10 @@ ros2 topic pub --once /drive_controller/commands std_msgs/msg/Float64MultiArray 
 
 Không dùng `diff_drive_controller`, `/cmd_vel`, odometry, cảm biến hoặc Nav2
 trong Phase 2. Publisher joint-state Gazebo cũ đã được bỏ để tránh conflict
-với `joint_state_broadcaster`. Caster vẫn là các sphere cố định của Phase 1;
-chưa thay đổi cơ cấu caster vì không cần cho kiểm thử bốn joint chủ động.
+với `joint_state_broadcaster`. Physics caster mặc định vẫn là collision model
+đơn giản thụ động; phần visual mount + fork + wheel chỉ là approximation. Nhánh
+`proper_caster_test:=true` là test thực nghiệm riêng, thêm swivel + roll DOFs
+và không phải physics mặc định.
 
 ## Phase 3: swerve kinematics + `/cmd_vel`
 
@@ -416,11 +436,15 @@ base_footprint (ao, khong hinh hoc - z=0, mat dat)
       │     └── wheel_front_drive_joint (Y)      -> wheel_front_drive_link   [banh chu dong, mesh that]
       ├── steer_rear_joint  (continuous, Z)      -> steer_rear_link
       │     └── wheel_rear_drive_joint  (Y)      -> wheel_rear_drive_link    [banh chu dong, mesh that]
-      ├── wheel_front_left_joint  (fixed) -> wheel_front_left_link   [khoi cau, banh bi dong]
-      ├── wheel_front_right_joint (fixed) -> wheel_front_right_link  [khoi cau, banh bi dong]
-      ├── wheel_rear_left_joint   (fixed) -> wheel_rear_left_link    [khoi cau, banh bi dong]
-      └── wheel_rear_right_joint  (fixed) -> wheel_rear_right_link   [khoi cau, banh bi dong]
+      ├── wheel_front_left_joint  (fixed) -> wheel_front_left_link   [collision thụ động + visual mount/fork/wheel]
+      ├── wheel_front_right_joint (fixed) -> wheel_front_right_link  [collision thụ động + visual mount/fork/wheel]
+      ├── wheel_rear_left_joint   (fixed) -> wheel_rear_left_link    [collision thụ động + visual mount/fork/wheel]
+      └── wheel_rear_right_joint  (fixed) -> wheel_rear_right_link   [collision thụ động + visual mount/fork/wheel]
 ```
+
+Đây là cây physics mặc định. `proper_caster_test:=true` thay nhánh caster
+bằng fork + wheel có thêm swivel và roll joints để thử nghiệm; visual
+approximation không phải bằng chứng rằng physics mặc định có các DOF đó.
 
 `base_footprint` la link ao (khong mesh/inertial) theo chuan REP-105/REP-120, dat tai
 hinh chieu cua robot xuong mat dat (z=0) - can cho Nav2 (costmap, AMCL, controller...).
@@ -438,8 +462,9 @@ source install/setup.bash
 ros2 launch swerve_bringup display.launch.py
 ```
 
-Mặc định bật `joint_state_publisher_gui` để bạn kéo thanh trượt test từng khớp
-(steer, drive, swivel, roll). Tắt bằng:
+Mặc định bật `joint_state_publisher_gui` để bạn kéo thanh trượt test các khớp
+steer và drive. Với caster, chỉ dùng `proper_caster_test:=true` khi cần test
+swivel/roll thực nghiệm. Tắt GUI bằng:
 
 ```bash
 ros2 launch swerve_bringup display.launch.py use_joint_state_gui:=false
@@ -457,9 +482,10 @@ ros2 launch swerve_bringup display.launch.py use_joint_state_gui:=false
 3. **`steer_front_link` / `steer_rear_link`**: mesh vẫn là toàn bộ khối
    HZ-CS95 (housing + phần quay dính liền) vì file CAD xuất dạng 1 solid
    duy nhất — không tách được vỏ đứng yên (nếu có) khỏi phần quay bên trong.
-4. **4 bánh caster**: giả định là bánh tự lựa hướng 2 bậc tự do (theo xác
-   nhận của người dùng). Tâm trục swivel đặt tạm trùng tâm bbox bánh — bánh
-   caster thực tế thường có độ lệch trail giữa trục xoay đứng và tâm bánh,
-   chưa được mô hình hoá.
-5. Đơn vị mesh STL là **mm**; đã có `scale="0.001 0.001 0.001"` trong URDF —
-   nếu import mesh vào công cụ khác, nhớ giữ đúng scale này.
+4. **4 bánh caster**: physics mặc định là collision cylinder thụ động đơn
+   giản và không có swivel/roll DOF; visual mount + fork + wheel chỉ là
+   approximation. Nhánh `proper_caster_test:=true` là mô hình thực nghiệm có
+   swivel + roll và zero-trail mặc định, chưa phải calibration cơ khí.
+5. CAD STL gốc là **mm** và không bị ghi đè. OBJ trong `meshes/visual/` đã
+   được chuyển sang **m** (có normals và scale hình học giữ nguyên), nên URDF
+   dùng `scale="1 1 1"`. Không dùng visual OBJ cho collision.

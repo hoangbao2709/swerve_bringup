@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import struct
+from collections import defaultdict, deque
 from pathlib import Path
 
 import numpy as np
@@ -101,19 +102,415 @@ def cluster_mesh(triangles: np.ndarray, target_faces: int) -> tuple[np.ndarray, 
     return clustered_vertices, faces, cell
 
 
+def remove_degenerate_faces(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Drop repeated-index and zero-area triangles after vertex clustering."""
+    if not len(faces):
+        return np.empty((0, 3), dtype=np.int64)
+    if not np.isfinite(vertices).all():
+        raise ValueError("mesh vertices contain non-finite values")
+    indexed = vertices[faces]
+    cross = np.cross(indexed[:, 1] - indexed[:, 0], indexed[:, 2] - indexed[:, 0])
+    # The coordinates are millimetres at this point.  This threshold only
+    # removes triangles that collapsed numerically; it does not simplify real
+    # CAD detail.
+    area2 = np.einsum("ij,ij->i", cross, cross)
+    distinct = (
+        (faces[:, 0] != faces[:, 1])
+        & (faces[:, 0] != faces[:, 2])
+        & (faces[:, 1] != faces[:, 2])
+    )
+    return faces[distinct & (area2 > 1.0e-18)]
+
+
+def remove_duplicate_faces(faces: np.ndarray) -> np.ndarray:
+    """Keep one copy of each triangle, regardless of winding direction."""
+    if not len(faces):
+        return np.empty((0, 3), dtype=np.int64)
+    canonical = np.sort(faces, axis=1)
+    _, first = np.unique(canonical, axis=0, return_index=True)
+    return faces[np.sort(first)]
+
+
+def remove_duplicate_vertices(vertices: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Merge exact duplicate coordinates and remap the face indices."""
+    if not len(vertices):
+        return vertices.reshape((0, 3)), faces.reshape((0, 3))
+    unique, inverse = np.unique(vertices, axis=0, return_inverse=True)
+    return unique, inverse[faces]
+
+
+def remove_unreferenced_vertices(vertices: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Discard vertices no longer referenced after face cleanup."""
+    if not len(faces):
+        return np.empty((0, 3), dtype=np.float64), np.empty((0, 3), dtype=np.int64)
+    used = np.unique(faces.reshape(-1))
+    remap = np.full(len(vertices), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used), dtype=np.int64)
+    return vertices[used], remap[faces]
+
+
+def preserve_bounds(vertices: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
+    """Keep the source CAD bounding box after clustering/cleanup.
+
+    Clustering normally retains the extrema already.  Explicitly restoring
+    them on the nearest surviving vertex also prevents a later unreferenced
+    vertex cleanup from silently changing a visual's calibrated frame.
+    """
+    if not len(vertices):
+        return vertices
+    result = vertices.copy()
+    for axis in range(3):
+        result[np.argmin(result[:, axis]), axis] = lower[axis]
+        result[np.argmax(result[:, axis]), axis] = upper[axis]
+    return result
+
+
+def repair_winding(vertices: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, int, int]:
+    """Orient adjacent triangles consistently and report non-manifold edges.
+
+    A clustered CAD mesh can contain open patches and non-manifold seams.  A
+    graph traversal still fixes every orientable two-face edge without
+    changing the topology.  Closed components are then oriented outward by
+    signed volume so the generated vertex normals point away from the solid.
+    """
+    if not len(faces):
+        return faces, 0, 0
+
+    edge_faces: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+    for face_index, (a, b, c) in enumerate(faces):
+        for start, end in ((a, b), (b, c), (c, a)):
+            key = (min(start, end), max(start, end))
+            direction = 1 if (start, end) == key else -1
+            edge_faces[key].append((face_index, direction))
+
+    adjacency: list[list[tuple[int, int, int]]] = [[] for _ in range(len(faces))]
+    non_manifold_edges = 0
+    for values in edge_faces.values():
+        if len(values) > 2:
+            non_manifold_edges += 1
+        # A non-manifold edge has no single valid two-sided orientation.  Do
+        # not let it force otherwise orientable manifold neighbours into a
+        # conflict; report it separately instead.
+        if len(values) != 2:
+            continue
+        anchor_index, anchor_direction = values[0]
+        other_index, other_direction = values[1]
+        adjacency[anchor_index].append((other_index, anchor_direction, other_direction))
+        adjacency[other_index].append((anchor_index, other_direction, anchor_direction))
+
+    assigned = np.zeros(len(faces), dtype=bool)
+    flipped = np.zeros(len(faces), dtype=bool)
+    components: list[list[int]] = []
+    conflicts = 0
+    for seed in range(len(faces)):
+        if assigned[seed]:
+            continue
+        assigned[seed] = True
+        component: list[int] = []
+        pending = deque([seed])
+        while pending:
+            current = pending.popleft()
+            component.append(current)
+            for neighbour, current_direction, neighbour_direction in adjacency[current]:
+                # Shared edges must run in opposite directions.  Equal source
+                # directions therefore require exactly one of the faces to be
+                # flipped; opposite source directions require the same choice.
+                wanted_flip = bool(flipped[current] ^ (current_direction == neighbour_direction))
+                if not assigned[neighbour]:
+                    assigned[neighbour] = True
+                    flipped[neighbour] = wanted_flip
+                    pending.append(neighbour)
+                elif flipped[neighbour] != wanted_flip:
+                    conflicts += 1
+        components.append(component)
+
+    repaired = faces.copy()
+    repaired[flipped] = repaired[flipped][:, [0, 2, 1]]
+
+    # For closed components, signed volume gives a stable outward direction.
+    # Open components have no reliable inside/outside; their adjacency winding
+    # remains the best possible repair.
+    bbox_volume = max(float(np.prod(np.ptp(vertices, axis=0))), 1.0)
+    volume_epsilon = bbox_volume * 1.0e-12
+    for component in components:
+        indices = np.asarray(component, dtype=np.int64)
+        component_faces = repaired[indices]
+        signed_volume = float(
+            np.einsum(
+                "ij,ij->i",
+                vertices[component_faces[:, 0]],
+                np.cross(vertices[component_faces[:, 1]], vertices[component_faces[:, 2]]),
+            ).sum()
+            / 6.0
+        )
+        if signed_volume < -volume_epsilon:
+            repaired[indices] = repaired[indices][:, [0, 2, 1]]
+
+    # A small number of source patches can be locally non-orientable after
+    # clustering.  Greedily resolve any remaining two-face edge when doing so
+    # reduces the total manifold winding errors.  This never touches
+    # non-manifold seams and stops at a local optimum rather than changing
+    # topology to force an impossible result.
+    for _ in range(24):
+        current_edges: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+        for face_index, (a, b, c) in enumerate(repaired):
+            for start, end in ((a, b), (b, c), (c, a)):
+                key = (min(start, end), max(start, end))
+                direction = 1 if (start, end) == key else -1
+                current_edges[key].append((face_index, direction))
+        manifold = {
+            key: values for key, values in current_edges.items() if len(values) == 2
+        }
+        bad_edges = {
+            key for key, values in manifold.items() if values[0][1] == values[1][1]
+        }
+        if not bad_edges:
+            break
+        incident: dict[int, list[bool]] = defaultdict(list)
+        for values in manifold.values():
+            same = values[0][1] == values[1][1]
+            for face_index, _ in values:
+                incident[face_index].append(same)
+        best_face = None
+        best_delta = 0
+        for key in bad_edges:
+            for face_index, _ in manifold[key]:
+                # Flipping a face turns every same-direction edge into a good
+                # edge (-1), while turning every currently good edge into a
+                # conflict (+1). Choose only a net improvement so this repair
+                # cannot oscillate across a finely tessellated patch.
+                delta = sum(-1 if same else 1 for same in incident[face_index])
+                if delta < best_delta:
+                    best_delta = delta
+                    best_face = face_index
+        if best_face is None:
+            break
+        repaired[best_face] = repaired[best_face][[0, 2, 1]]
+
+    return repaired, conflicts, non_manifold_edges
+
+
+def _edge_face_map(faces: np.ndarray) -> dict[tuple[int, int], list[tuple[int, int]]]:
+    """Map each undirected edge to its incident faces and local direction."""
+    edge_faces: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+    for face_index, (a, b, c) in enumerate(faces):
+        for start, end in ((a, b), (b, c), (c, a)):
+            key = (min(start, end), max(start, end))
+            direction = 1 if (start, end) == key else -1
+            edge_faces[key].append((face_index, direction))
+    return edge_faces
+
+
+def _split_selected_edges(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    selector,
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """Split only selected visual seams while preserving every coordinate.
+
+    CAD exports can contain coincident shell patches.  Such patches make an
+    edge appear three or more times even though the rendered surface is still
+    useful.  Duplicating the two endpoint vertices for the extra incident
+    faces separates that seam without moving, deleting or triangulating any
+    geometry.  The same operation is also used for the small residual set of
+    contradictory two-face edges after winding repair.
+    """
+    selected = {
+        edge: values
+        for edge, values in _edge_face_map(faces).items()
+        if selector(values)
+    }
+    if not selected:
+        return vertices, faces, 0, 0
+
+    result_faces = faces.copy()
+    result_vertices = vertices.tolist()
+    replacements: dict[tuple[int, int], int] = {}
+    for (first_vertex, second_vertex), incident in selected.items():
+        # Keep the first shell attached to its neighbours and give every
+        # additional shell its own exact-coordinate edge copy.
+        for face_index, _ in incident[1:]:
+            for vertex_index in (first_vertex, second_vertex):
+                key = (face_index, vertex_index)
+                if key not in replacements:
+                    replacements[key] = len(result_vertices)
+                    result_vertices.append(vertices[vertex_index].tolist())
+                result_faces[face_index][
+                    result_faces[face_index] == vertex_index
+                ] = replacements[key]
+
+    return (
+        np.asarray(result_vertices, dtype=np.float64),
+        result_faces,
+        len(selected),
+        len(replacements),
+    )
+
+
+def repair_visual_topology(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int, int, int]:
+    """Separate non-manifold visual seams and re-run winding repair.
+
+    This is intentionally a visual-only operation.  It preserves the face
+    list, all coordinates and the source bounding box; it is never applied to
+    collision geometry.  Coincident duplicated vertices are preferable to
+    deleting CAD faces or changing the calibrated silhouette.
+    """
+    vertices, faces, non_manifold_edges, non_manifold_vertices = _split_selected_edges(
+        vertices, faces, lambda values: len(values) > 2
+    )
+    faces, _, _ = repair_winding(vertices, faces)
+    vertices, faces, winding_edges, winding_vertices = _split_selected_edges(
+        vertices,
+        faces,
+        lambda values: len(values) == 2 and values[0][1] == values[1][1],
+    )
+    faces, _, _ = repair_winding(vertices, faces)
+    return (
+        vertices,
+        faces,
+        non_manifold_edges,
+        winding_edges,
+        non_manifold_vertices + winding_vertices,
+    )
+
+
+def vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Compute finite, area-weighted per-vertex normals for explicit OBJ vn."""
+    normals = np.zeros_like(vertices, dtype=np.float64)
+    if len(faces):
+        cross = np.cross(
+            vertices[faces[:, 1]] - vertices[faces[:, 0]],
+            vertices[faces[:, 2]] - vertices[faces[:, 0]],
+        )
+        np.add.at(normals, faces[:, 0], cross)
+        np.add.at(normals, faces[:, 1], cross)
+        np.add.at(normals, faces[:, 2], cross)
+    lengths = np.linalg.norm(normals, axis=1)
+    valid = lengths > 1.0e-12
+    normals[valid] /= lengths[valid, None]
+    normals[~valid] = np.array([0.0, 0.0, 1.0])
+    if not np.isfinite(normals).all():
+        raise ValueError("mesh normals contain non-finite values")
+    return normals
+
+
+def clean_mesh(
+    triangles: np.ndarray,
+    target_faces: int,
+    repair_topology: bool = False,
+) -> tuple[np.ndarray, np.ndarray, float, int, int]:
+    """Cluster, clean, orient and normalise one source STL surface."""
+    vertices, faces, cell = cluster_mesh(triangles, target_faces)
+    source_lower = triangles.reshape(-1, 3).min(axis=0)
+    source_upper = triangles.reshape(-1, 3).max(axis=0)
+    faces = remove_degenerate_faces(vertices, faces)
+    faces = remove_duplicate_faces(faces)
+    vertices, faces = remove_duplicate_vertices(vertices, faces)
+    faces = remove_degenerate_faces(vertices, faces)
+    vertices, faces = remove_unreferenced_vertices(vertices, faces)
+    if not len(faces):
+        raise ValueError("mesh cleanup removed every face")
+    vertices = preserve_bounds(vertices, source_lower, source_upper)
+    faces, winding_conflicts, non_manifold_edges = repair_winding(vertices, faces)
+    if repair_topology:
+        vertices, faces, _, _, _ = repair_visual_topology(vertices, faces)
+        # Coordinates are duplicated exactly, but retain the explicit source
+        # extrema contract after all topology edits.
+        vertices = preserve_bounds(vertices, source_lower, source_upper)
+    return vertices, faces, cell, winding_conflicts, non_manifold_edges
+
+
+def read_obj(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read the generated triangle OBJ for post-write validation."""
+    vertices: list[list[float]] = []
+    normals: list[list[float]] = []
+    faces: list[list[int]] = []
+    with path.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            fields = line.split()
+            if not fields:
+                continue
+            if fields[0] == "v" and len(fields) >= 4:
+                vertices.append([float(value) for value in fields[1:4]])
+            elif fields[0] == "vn" and len(fields) >= 4:
+                normals.append([float(value) for value in fields[1:4]])
+            elif fields[0] == "f" and len(fields) == 4:
+                face: list[int] = []
+                for token in fields[1:]:
+                    vertex_index = token.split("/", 1)[0]
+                    face.append(int(vertex_index) - 1 if not vertex_index.startswith("-") else len(vertices) + int(vertex_index))
+                faces.append(face)
+            elif fields[0] in {"f", "v", "vn"}:
+                raise ValueError(f"unsupported or incomplete OBJ record at {path}:{line_number}")
+    return np.asarray(vertices, dtype=np.float64), np.asarray(faces, dtype=np.int64), np.asarray(normals, dtype=np.float64)
+
+
+def validate_obj(path: Path, source_bounds: tuple[np.ndarray, np.ndarray] | None = None) -> dict[str, object]:
+    """Validate a generated visual and optionally compare its source bbox."""
+    vertices, faces, normals = read_obj(path)
+    if len(vertices) == 0 or len(faces) == 0:
+        raise ValueError(f"{path} has no visual geometry")
+    if not np.isfinite(vertices).all() or not np.isfinite(normals).all():
+        raise ValueError(f"{path} contains non-finite vertices or normals")
+    if np.any(faces < 0) or np.any(faces >= len(vertices)):
+        raise ValueError(f"{path} contains an out-of-range face index")
+    if len(normals) == 0:
+        raise ValueError(f"{path} has no explicit vertex normals")
+    same_direction, non_manifold = winding_report(vertices, faces)
+    bbox_min = vertices.min(axis=0)
+    bbox_max = vertices.max(axis=0)
+    extent_error = np.zeros(3, dtype=np.float64)
+    if source_bounds is not None:
+        source_min, source_max = source_bounds
+        source_extent = source_max - source_min
+        extent_error = np.abs((bbox_max - bbox_min) / source_extent - 1.0)
+        if np.any(extent_error > 0.01):
+            raise ValueError(f"{path} changes source extent by more than 1%: {extent_error}")
+    return {
+        "vertices": len(vertices),
+        "faces": len(faces),
+        "normals": len(normals),
+        "winding_same_direction_edges": same_direction,
+        "non_manifold_edges": non_manifold,
+        "winding_consistent": same_direction == 0,
+        "bounds_min": bbox_min.tolist(),
+        "bounds_max": bbox_max.tolist(),
+        "extent_error": extent_error.tolist(),
+    }
+
+
+def winding_report(vertices: np.ndarray, faces: np.ndarray) -> tuple[int, int]:
+    """Return (same-direction manifold edges, non-manifold edges)."""
+    edges: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for a, b, c in faces:
+        for start, end in ((a, b), (b, c), (c, a)):
+            key = (min(start, end), max(start, end))
+            edges[key].append(1 if (start, end) == key else -1)
+    same = sum(len(values) == 2 and values[0] == values[1] for values in edges.values())
+    non_manifold = sum(len(values) > 2 for values in edges.values())
+    return same, non_manifold
+
+
 def write_obj(path: Path, vertices_mm: np.ndarray, faces: np.ndarray, source: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # OBJ is written in metres.  This avoids another unit conversion in every
     # visual declaration and makes the generated asset self-describing.
     vertices_m = vertices_mm / 1000.0
+    normals = vertex_normals(vertices_m, faces)
     with path.open("w", encoding="utf-8") as stream:
         stream.write(f"# Optimized visual mesh generated from {source.as_posix()}\n")
         stream.write("# Coordinates are metres; source CAD STL is retained unchanged.\n")
+        stream.write("# Faces are repaired and explicit vertex normals are included.\n")
         stream.write("o agv_visual\n")
         for x, y, z in vertices_m:
             stream.write(f"v {x:.9g} {y:.9g} {z:.9g}\n")
+        for x, y, z in normals:
+            stream.write(f"vn {x:.9g} {y:.9g} {z:.9g}\n")
         for a, b, c in faces:
-            stream.write(f"f {a + 1} {b + 1} {c + 1}\n")
+            stream.write(f"f {a + 1}//{a + 1} {b + 1}//{b + 1} {c + 1}//{c + 1}\n")
 
 
 def main() -> int:
@@ -121,14 +518,32 @@ def main() -> int:
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--target-faces", type=int, default=60000)
+    parser.add_argument(
+        "--repair-topology",
+        action="store_true",
+        help="split coincident non-manifold visual seams without changing coordinates",
+    )
+    parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
+    if args.validate_only:
+        print(validate_obj(args.output))
+        return 0
     triangles = read_binary_stl(args.source)
-    vertices, faces, cell = cluster_mesh(triangles, args.target_faces)
+    vertices, faces, cell, conflicts, non_manifold = clean_mesh(
+        triangles, args.target_faces, args.repair_topology
+    )
     write_obj(args.output, vertices, faces, args.source)
+    source_vertices_m = triangles.reshape(-1, 3) / 1000.0
+    report = validate_obj(args.output, (source_vertices_m.min(axis=0), source_vertices_m.max(axis=0)))
+    same_direction, _ = winding_report(vertices, faces)
     print(
         f"{args.source}: {len(triangles):,} STL triangles -> "
         f"{len(faces):,} OBJ triangles, {len(vertices):,} vertices, "
-        f"cell={cell:.3f} mm, output={args.output}"
+        f"cell={cell:.3f} mm, winding_same={same_direction}, "
+        f"winding_conflicts={conflicts}, non_manifold_edges={non_manifold}, "
+        f"normals={report['normals']:,}, "
+        f"topology_repair={'on' if args.repair_topology else 'off'}, "
+        f"output={args.output}"
     )
     return 0
 

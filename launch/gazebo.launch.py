@@ -17,7 +17,7 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
-def resolve_robot_spawn(world_path, robot_id, fallback):
+def resolve_robot_spawn(world_path, robot_id, fallback, allow_dev_world=False):
     """Return ``(x, y, z, yaw, source)`` for a world and selected robot.
 
     Published worlds carry a sibling ``manifest.json``.  Legacy development
@@ -25,6 +25,10 @@ def resolve_robot_spawn(world_path, robot_id, fallback):
     """
     manifest_path = Path(world_path).expanduser().resolve().parent / 'manifest.json'
     if not manifest_path.exists():
+        if not allow_dev_world:
+            raise RuntimeError(
+                f'Gazebo world has no generated map manifest: {manifest_path}; '
+                'publish a canonical map or explicitly set allow_dev_world:=true')
         return tuple(float(value) for value in fallback) + ('fallback',)
     try:
         manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
@@ -131,6 +135,10 @@ def generate_launch_description():
         arguments=[
             '-entity', 'swerve_base',
             '-topic', 'robot_description',
+            # Gazebo Classic can take over a minute to load the published
+            # warehouse world on a VMware guest before gazebo_ros_factory
+            # advertises /spawn_entity. Keep spawn alive through that load.
+            '-timeout', '180',
             '-x', LaunchConfiguration('resolved_spawn_x'),
             '-y', LaunchConfiguration('resolved_spawn_y'),
             '-z', LaunchConfiguration('resolved_spawn_z'),
@@ -141,13 +149,14 @@ def generate_launch_description():
     def configure_spawn(context):
         world = LaunchConfiguration('world').perform(context)
         robot_id = LaunchConfiguration('robot_id').perform(context).strip() or 'R01'
+        allow_dev_world = LaunchConfiguration('allow_dev_world').perform(context).lower() == 'true'
         fallback = (
             LaunchConfiguration('spawn_x').perform(context),
             LaunchConfiguration('spawn_y').perform(context),
             LaunchConfiguration('spawn_z').perform(context),
             LaunchConfiguration('spawn_yaw').perform(context),
         )
-        x, y, z, yaw, source = resolve_robot_spawn(world, robot_id, fallback)
+        x, y, z, yaw, source = resolve_robot_spawn(world, robot_id, fallback, allow_dev_world)
         # Set substitutions before the concrete Node executes.  Keeping Node
         # concrete preserves the existing controller OnProcessExit chain.
         resolved = [
@@ -165,12 +174,19 @@ def generate_launch_description():
     # Gazebo creates /controller_manager from the gazebo_ros2_control plugin
     # while the entity is being inserted. Start controllers only after spawn
     # has completed so controller_manager is available.
+    # On the VMware guest, Fast DDS shared-memory port locking left the
+    # controller_manager node absent from some participants' graph even while
+    # its services responded. These small management clients use UDPv4 for
+    # discovery/services; the Gazebo, sensor and control nodes retain their
+    # normal transport profile.
+    controller_spawner_env = {'FASTDDS_BUILTIN_TRANSPORTS': 'UDPv4'}
     controller_spawners = [
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_joint_state_broadcaster',
             output='screen',
+            additional_env=controller_spawner_env,
             # Keep to the controller_manager Humble CLI contract.  The
             # service/switch timeout flags were added in newer releases and
             # make the spawner exit immediately on the supported Ubuntu 22.04
@@ -182,6 +198,7 @@ def generate_launch_description():
             executable='spawner',
             name='spawn_steering_controller',
             output='screen',
+            additional_env=controller_spawner_env,
             arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
         Node(
@@ -189,6 +206,7 @@ def generate_launch_description():
             executable='spawner',
             name='spawn_drive_controller',
             output='screen',
+            additional_env=controller_spawner_env,
             arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
     ]
@@ -241,8 +259,8 @@ def generate_launch_description():
             description='Use the optimized CAD-derived visual meshes; false selects visual-only primitives.',
         ),
         DeclareLaunchArgument(
-            'gui', default_value='true',
-            description='Start the Gazebo client window.',
+            'gui', default_value='false',
+            description='Start the Gazebo client window; false runs gzserver without spawning gzclient.',
         ),
         DeclareLaunchArgument(
             'world',
@@ -253,6 +271,8 @@ def generate_launch_description():
             'robot_id', default_value='R01',
             description='Robot ID selected from the published Gazebo manifest.',
         ),
+        DeclareLaunchArgument('allow_dev_world', default_value='false',
+                              description='Explicitly permit a development world and fallback spawn pose.'),
         DeclareLaunchArgument('spawn_x', default_value='0.0', description='Development-only fallback spawn X.'),
         DeclareLaunchArgument('spawn_y', default_value='0.0', description='Development-only fallback spawn Y.'),
         DeclareLaunchArgument('spawn_z', default_value='0.002', description='Development-only fallback spawn Z.'),

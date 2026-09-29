@@ -180,8 +180,7 @@ function RobotPath({ r, selected }: { r: RobotState; selected: boolean }) {
 export function Robots({ lite = false }: { lite?: boolean }) {
   const robots = useStore((s) => s.twin.robots);
   const selected = useStore((s) => s.selectedRobot);
-  const select = useStore((s) => s.select);
-  const openWindow = useStore((s) => s.openWindow);
+  const openRobotQuickDetail = useStore((s) => s.openRobotQuickDetail);
   const showLabels = useStore((s) => s.showLabels);
   const robotLabels = useStore((s) => s.labelLayers.robots);
   const showPaths = useStore((s) => s.showPaths);
@@ -193,7 +192,7 @@ export function Robots({ lite = false }: { lite?: boolean }) {
     <group>
       {Object.values(robots).filter(visible).map((r) => (
         <group key={r.id}>
-          <RobotMesh r={r} selected={r.id === selected} onSelect={() => { select(r.id); if (!lite) openWindow({ id: `robot:${r.id}`, kind: "robot", entityId: r.id, title: `Robot ${r.id}` }); }} showLabel={showLabels && robotLabels.visible && !lite} labelZIndex={robotLabels.zIndex} lite={lite} />
+          <RobotMesh r={r} selected={r.id === selected} onSelect={() => { if (!lite) openRobotQuickDetail(r.id); }} showLabel={showLabels && robotLabels.visible && !lite} labelZIndex={robotLabels.zIndex} lite={lite} />
           {showPaths && runtimeMode === "LOCAL_SIM" && !lite && <RobotPath r={r} selected={r.id === selected} />}
         </group>
       ))}

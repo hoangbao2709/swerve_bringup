@@ -8,6 +8,8 @@ export interface NavGridBuildOptions {
   robot_radius?: number;
   /** Additional clearance around geometry in metres. */
   safety_margin?: number;
+  /** Optional world-coordinate origin for render-only grids. */
+  origin?: { x: number; y: number };
 }
 
 // Existing maps historically used a centre-point occupancy mask. Keep the
@@ -91,7 +93,8 @@ export function buildNavGrid(
   const firstFloor = (layout.floors ?? [])[0]?.id ?? 1;
   const isFirstFloor = sameFloor(floor, firstFloor);
 
-  const center = (column: number, row: number): Point => ({ x: (column + 0.5) * cellSize, y: (row + 0.5) * cellSize });
+  const origin = options.origin ?? { x: 0, y: 0 };
+  const center = (column: number, row: number): Point => ({ x: origin.x + (column + 0.5) * cellSize, y: origin.y + (row + 0.5) * cellSize });
   const insideFloor = (p: Point): boolean => pointInPolygon(p, geometry.boundary) && !geometry.holes.some((hole) => pointInPolygon(p, hole));
   const nearFloorBoundary = (p: Point): boolean => distanceToPolygon(p, geometry.boundary) < inflation - EPSILON || geometry.holes.some((hole) => distanceToPolygon(p, hole) < inflation - EPSILON);
 

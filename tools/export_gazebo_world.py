@@ -448,7 +448,7 @@ def export_gazebo_world(layout: dict[str, Any], output: Path) -> dict[str, Any]:
         robot_manifest = _spawn_robot_records(doc, floors)
         canonical_json = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         revision = str(doc.get("map_revision") or doc.get("revision") or hashlib.sha256(canonical_json).hexdigest()[:16])
-        world = "<?xml version=\"1.0\"?>\n<sdf version=\"1.6\">\n  <world name=\"warehouse_generated\">\n    <gravity>0 0 -9.81</gravity>\n    <include><uri>model://sun</uri></include>\n" + "\n".join(world_models) + "\n  </world>\n</sdf>\n"
+        world = "<?xml version=\"1.0\"?>\n<sdf version=\"1.6\">\n  <world name=\"warehouse_generated\">\n    <plugin name=\"gazebo_ros_state\" filename=\"libgazebo_ros_state.so\"/>\n    <gravity>0 0 -9.81</gravity>\n    <include><uri>model://sun</uri></include>\n" + "\n".join(world_models) + "\n  </world>\n</sdf>\n"
         (staging / "warehouse.world").write_text(world, encoding="utf-8")
         manifest = {"schema_version": 1, "map_revision": revision, "world": "warehouse.world", "floors": floor_info, "tags": tag_manifest, "objects": object_manifest, "robots": robot_manifest}
         (staging / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -114,7 +114,7 @@ if WARETWIN_RUNTIME_MODE not in WARETWIN_RUNTIME_MODES:
         f'expected one of: {", ".join(WARETWIN_RUNTIME_MODES)}'
     )
 WARETWIN_ROS_BRIDGE_TOKEN = os.getenv('WARETWIN_ROS_BRIDGE_TOKEN', '')
-WARETWIN_ROS_HEARTBEAT_TIMEOUT_S = float(os.getenv('WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', '3.0'))
+WARETWIN_ROS_HEARTBEAT_TIMEOUT_S = float(os.getenv('WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', '10.0'))
 WARETWIN_VERSION = os.getenv('WARETWIN_VERSION', '0.1.0')
 # Immutable publish artifacts live outside the source/config tree. Tests and
 # deployments may override this with a warehouse-specific volume. Treat an

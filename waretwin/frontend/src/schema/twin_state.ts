@@ -543,6 +543,87 @@ export type RosDiagnostics = {
   metrics?: Record<string, number | string | null>;
 };
 
+export type DetailSeverity = "INFO" | "WARNING" | "ERROR" | "CRITICAL";
+export type RobotWorldPoint = [number, number];
+export type RobotDetailError = {
+  severity: DetailSeverity;
+  message: string;
+  code?: string;
+  timestamp?: string | null;
+};
+export type RobotDetailScan = {
+  robot_id: RobotId;
+  topic?: string;
+  source_frame_id?: string;
+  frame_id: string;
+  timestamp?: string | null;
+  stamp?: number | null;
+  angle_min: number;
+  angle_max: number;
+  angle_increment: number;
+  range_min: number;
+  range_max: number;
+  point_count: number;
+  minimum_range?: number | null;
+  maximum_range?: number | null;
+  scan_hz_sim?: number | null;
+  scan_hz_wall?: number | null;
+  points: RobotWorldPoint[];
+};
+export type RobotDetailMapSnapshot = {
+  robot_id: RobotId;
+  frame_id: string;
+  timestamp?: string | null;
+  stamp?: number | null;
+  width: number;
+  height: number;
+  resolution: number;
+  origin: { x: number; y: number; yaw: number };
+  data: number[];
+};
+export type RobotDetailPath = {
+  robot_id: RobotId;
+  frame_id: string;
+  timestamp?: string | null;
+  points: RobotWorldPoint[];
+};
+export type RobotDetailGoal = {
+  robot_id: RobotId;
+  frame_id: string;
+  x: number;
+  y: number;
+  yaw: number;
+  status?: string | null;
+  timestamp?: string | null;
+};
+export type RobotControllerState = {
+  robot_id: RobotId;
+  controllers: Array<{ name: string; state: string }>;
+  timestamp?: string | null;
+};
+export type RobotSystemDiagnostics = RosDiagnostics & {
+  robot_id?: RobotId;
+  ros_bridge?: boolean;
+  localization?: string | null;
+  gazebo_rtf?: number | null;
+  cpu_percent?: number | null;
+  ram_percent?: number | null;
+  websocket_latency_ms?: number | null;
+  errors?: RobotDetailError[];
+};
+export type RobotDetailState = {
+  scan: RobotDetailScan | null;
+  map: RobotDetailMapSnapshot | null;
+  globalPath: RobotDetailPath | null;
+  localPath: RobotDetailPath | null;
+  goal: RobotDetailGoal | null;
+  controller: RobotControllerState | null;
+  diagnostics: RobotSystemDiagnostics | null;
+  errors: RobotDetailError[];
+  navigationStatus: string | null;
+  remainingDistanceM: number | null;
+};
+
 /**
  * 策略：連線時送一次 FULL，之後每 tick 送 PATCH (只含變動欄位)。
  * 前端若發現 patch.base_tick !== 本地 tick，送 RESYNC 請求 FULL。
@@ -558,13 +639,22 @@ export type ServerMessage =
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
   | { type: "map.published"; warehouse_id: number | string; revision: number; published_version: number; map_revision: number; artifact_manifest?: unknown }
   | { type: "SCHEDULE_UPDATED"; source: string }
-  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; map_sync_status?: string; map_sync_error?: string | null }
+  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }> }
   | { type: "ROBOT_CONTROL_STATUS"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS"; accepted: boolean; reason?: string | null; timestamp?: string }
   | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
   | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }
   | { type: "LOCALIZATION_STATUS"; robot_id: string; state: string; last_tag_id?: number | null; expected_tag_id?: number | null; tag_visible?: boolean; last_tag_seen_at?: string | null }
   | { type: "TAG_NAV_ROUTE"; robot_id: string; mission_id?: number; route: number[] }
   | { type: "TAG_NAV_EVENT"; robot_id: string; mission_id?: number; event: string; details?: unknown; timestamp?: string }
+  | { type: "ROBOT_STATE"; robot_id: RobotId; frame_id: "map"; map_revision: number | null; base_frame_id?: string; x: number; y: number; z?: number; yaw: number; vx: number; vy: number; wz: number; navigation_state?: string; control_mode?: "MANUAL" | "AUTONOMOUS"; timestamp?: string }
+  | { type: "LIDAR_SCAN"; scan: RobotDetailScan }
+  | { type: "MAP_SNAPSHOT"; map: RobotDetailMapSnapshot }
+  | { type: "NAV_GLOBAL_PATH"; path: RobotDetailPath }
+  | { type: "NAV_LOCAL_PATH"; path: RobotDetailPath }
+  | { type: "NAV_GOAL"; goal: RobotDetailGoal }
+  | { type: "CONTROLLER_STATE"; controller: RobotControllerState }
+  | { type: "SYSTEM_DIAGNOSTICS"; robot_id: RobotId; diagnostics: RobotSystemDiagnostics; timestamp?: string }
+  | { type: "NAV_STATUS"; robot_id: RobotId; status: string; reason?: string | null; target_tag_id?: number | null; x?: number | null; y?: number | null; yaw?: number | null; timestamp?: string }
   | { type: "ERROR"; code: string; message: string; request_id?: string | null };
 
 export type ClientMessage =
@@ -578,6 +668,10 @@ export type ClientMessage =
   | { type: "SELECT_ROBOT"; robot_id: RobotId | null }           // 讓後端提高該機器人更新頻率 (可選)
   | { type: "ROBOT_MODE"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS" }
   | { type: "ROBOT_MANUAL"; robot_id: RobotId; action: "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT" | "STOP" }
+  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string }
+  | { type: "NAV_CANCEL"; robot_id: RobotId }
+  | { type: "NAV_PAUSE"; robot_id: RobotId }
+  | { type: "NAV_RESUME"; robot_id: RobotId }
   | { type: "WHATIF_RUN"; request: WhatIfRequest; request_id?: string }
   | { type: "COPILOT_ASK"; request_id: string; question: string };
 

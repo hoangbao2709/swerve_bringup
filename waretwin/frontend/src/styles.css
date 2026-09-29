@@ -512,6 +512,7 @@ table.dt tbody tr:hover td { background: var(--panel-2); }
 }
 .map2d-shell.map2d-light { background: #f8fafc; color: #0f172a; }
 .map2d-canvas { display: block; width: 100%; height: 100%; }
+.map2d-world text { transform: scaleY(-1); transform-box: fill-box; transform-origin: center; }
 .map2d-theme-toggle {
   position: absolute;
   top: 10px;
@@ -1780,3 +1781,72 @@ table.dt.full td { white-space: normal; }
 .diagnostics-footer { max-width: 1600px; margin: 14px auto 0; color: #64748b; font: 9px var(--mono); }
 @media (max-width: 1050px) { .diagnostics-grid { grid-template-columns: 1fr 1fr; }.diagnostics-wide { grid-column: span 2; } .diagnostics-component-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .diagnostics-main { padding: 18px 14px; }.diagnostics-header { align-items: flex-start; flex-direction: column; }.diagnostics-grid { grid-template-columns: 1fr; }.diagnostics-wide { grid-column: span 1; }.diagnostics-columns { grid-template-columns: 1fr; } }
+
+/* Industrial robot control console. This view intentionally uses small radii,
+ * thin graphite rules and monospace measurements; the map is the focal area. */
+.robot-detail-shell { min-height: 100vh; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #050a12; color: #dce9f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+.robot-detail-header { flex: 0 0 auto; min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 14px; border-bottom: 1px solid #21364b; background: #09121e; }
+.robot-detail-identity, .robot-detail-header-actions { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.robot-detail-identity { flex: 1 1 auto; overflow: hidden; }
+.robot-detail-identity h1 { margin: 1px 0 0; color: #f7fbff; font: 700 23px/1 var(--mono); letter-spacing: .06em; }
+.robot-console-kicker { display: block; color: #55d6e7; font: 700 9px/1.2 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+.robot-detail-back, .robot-detail-header button, .robot-detail-goal-toolbar button, .robot-detail-nav-bar button, .robot-detail-manual button, .robot-detail-map-toolbar button, .robot-quick-actions button, .robot-quick-close, .robot-detail-error-boundary button { border: 1px solid #2b4760; border-radius: 2px; color: #c7d8e8; background: #0c1a29; font: 700 9px/1 var(--mono); letter-spacing: .05em; }
+.robot-detail-back { padding: 10px 9px; white-space: nowrap; }
+.robot-detail-header button { min-height: 31px; padding: 0 10px; white-space: nowrap; }
+.robot-detail-header button:hover, .robot-detail-goal-toolbar button:hover, .robot-detail-nav-bar button:hover, .robot-detail-manual button:hover, .robot-detail-map-toolbar button:hover, .robot-quick-actions button:hover { border-color: #43c9dc; color: #f4fbff; background: #10283a; }
+.robot-detail-header button:disabled, .robot-detail-goal-toolbar button:disabled, .robot-detail-nav-bar button:disabled, .robot-detail-manual button:disabled, .robot-detail-map-toolbar button:disabled, .robot-quick-actions button:disabled { cursor: not-allowed; opacity: .42; }
+.robot-detail-header button.is-active, .robot-detail-manual button.is-active, .robot-detail-map-toolbar button.is-active { border-color: #24bccd; color: #75f0ef; background: #0c3540; }
+.robot-detail-header-actions { flex: 0 0 auto; }
+.robot-detail-robot-select { display: flex; align-items: center; gap: 6px; color: #7591a8; font: 8px var(--mono); letter-spacing: .12em; }
+.robot-detail-robot-select select { min-height: 31px; border: 1px solid #2b4760; border-radius: 2px; padding: 0 8px; color: #e6f2fc; background: #0b1724; font: 10px var(--mono); }
+.robot-detail-mode, .robot-detail-runtime, .robot-detail-mission, .robot-detail-latency { min-width: 0; padding: 6px 8px; border-left: 1px solid #28455b; color: #83a0b7; font: 9px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.robot-detail-mode { color: #e2c467; }
+.robot-detail-mission { color: #b5a5ff; max-width: 180px; }
+.robot-detail-latency { color: #7390a8; max-width: 145px; }
+.robot-console-danger, .robot-console-danger-outline { border-color: #883b42 !important; color: #ff8f8f !important; background: #2c1118 !important; }
+.robot-console-primary { border-color: #25788e !important; color: #74e7f2 !important; background: #0b3440 !important; }
+.robot-detail-status { display: inline-flex; align-items: center; gap: 5px; color: #91a7b8; font: 700 9px var(--mono); letter-spacing: .04em; white-space: nowrap; }
+.robot-detail-status::before { content: ""; width: 6px; height: 6px; display: inline-block; background: #647b8f; }
+.robot-detail-status.ok { color: #5fe0a0; }.robot-detail-status.ok::before { background: #35d184; box-shadow: 0 0 7px #35d18488; }
+.robot-detail-status.warning { color: #f4d168; }.robot-detail-status.warning::before { background: #f1c64b; }
+.robot-detail-status.error { color: #ff8b8b; }.robot-detail-status.error::before { background: #ef6262; box-shadow: 0 0 7px #ef626288; }
+.robot-detail-main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(220px, 16%) minmax(0, 1fr) minmax(230px, 17%); gap: 6px; padding: 6px; overflow: hidden; }
+.robot-detail-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.robot-detail-left .robot-detail-panel:first-child { flex: 1.12 1 0; }.robot-detail-left .robot-detail-panel:last-child { flex: .88 1 0; }
+.robot-detail-right .robot-detail-panel:first-child { flex: 1.08 1 0; }.robot-detail-right .robot-detail-panel:nth-child(2) { flex: .86 1 0; }.robot-detail-right .robot-detail-panel:last-child { flex: .76 1 0; }
+.robot-detail-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid #20384e; background: #091420; overflow: hidden; }
+.robot-detail-panel > header { flex: 0 0 auto; padding: 8px 9px 7px; border-bottom: 1px solid #1c3246; color: #86e1eb; font: 700 10px var(--mono); letter-spacing: .14em; }
+.robot-detail-panel-body { min-height: 0; padding: 5px 9px 8px; overflow: auto; scrollbar-width: thin; }
+.robot-detail-metric { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-height: 24px; padding: 4px 0; border-bottom: 1px solid #142637; }
+.robot-detail-metric:last-child { border-bottom: 0; }.robot-detail-metric > span:first-child { color: #7893a9; font-size: 9px; }.robot-detail-metric > b { min-width: 0; color: #dce9f5; font-size: 10px; font-weight: 600; text-align: right; overflow-wrap: anywhere; }.robot-detail-metric .mono, .robot-detail-metric > b.mono { color: #c7eff0; font-family: var(--mono); font-size: 10px; }
+.robot-detail-subtitle { margin: 9px 0 1px; padding-top: 4px; border-top: 1px solid #29445a; color: #54758e; font: 700 8px var(--mono); letter-spacing: .12em; }
+.robot-detail-map-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid #29445a; background: #07101b; }
+.robot-detail-map-host { position: relative; flex: 1 1 auto; min-height: 220px; overflow: hidden; }
+.robot-detail-map-canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+.robot-detail-map-toolbar { position: absolute; top: 9px; left: 9px; display: flex; flex-wrap: wrap; gap: 3px; max-width: calc(100% - 18px); }
+.robot-detail-map-toolbar button { min-width: 30px; min-height: 25px; padding: 0 6px; font-size: 8px; }
+.robot-detail-map-readout { position: absolute; right: 9px; bottom: 8px; display: flex; gap: 9px; padding: 5px 7px; border: 1px solid #27445b; background: rgba(5, 13, 23, .9); color: #80a0b9; font: 8px var(--mono); letter-spacing: .04em; }
+.robot-detail-goal-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-height: 38px; padding: 5px 7px; border-top: 1px solid #263f54; background: #091623; }
+.robot-detail-goal-toolbar > span { flex: 1 1 auto; min-width: 0; color: #87a1b6; font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.robot-detail-goal-toolbar button, .robot-detail-nav-bar button { min-height: 27px; padding: 0 8px; }
+.robot-detail-bottom { position: relative; flex: 0 0 auto; display: grid; grid-template-columns: minmax(330px, 1fr) minmax(390px, 1.15fr); gap: 6px; min-height: 135px; padding: 0 6px 6px; background: #050a12; }
+.robot-detail-manual, .robot-detail-nav-bar { min-width: 0; border: 1px solid #20384e; background: #091420; }
+.robot-detail-manual { display: flex; flex-direction: column; }
+.robot-detail-manual-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px 5px; border-bottom: 1px solid #1c3246; }.robot-detail-manual-head b { display: inline-block; margin: 0 8px; color: #d6e5f2; font: 700 10px var(--mono); }.robot-detail-manual-head small { color: #6f8da4; font: 9px var(--mono); }
+.robot-detail-manual-mode { display: flex; gap: 3px; }.robot-detail-manual-mode button { min-height: 25px; padding: 0 8px; }
+.robot-detail-manual-pad { flex: 1 1 auto; display: grid; grid-template-columns: repeat(7, minmax(39px, 1fr)); align-items: center; gap: 4px; padding: 7px; }
+.manual-key { min-height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 18px !important; }.manual-key small { color: #7090a7; font: 8px var(--mono); }.manual-key-stop { border-color: #9c4247 !important; color: #ff9191 !important; background: #2a1117 !important; }
+.robot-detail-nav-bar { display: flex; align-items: center; align-content: center; flex-wrap: wrap; gap: 5px; padding: 8px; }.robot-detail-nav-bar > div { min-width: 100px; flex: 1 1 100px; padding: 6px 7px; border-left: 2px solid #31536e; background: #0c1a28; }.robot-detail-nav-bar > div span { display: block; color: #6f8da4; font: 8px var(--mono); letter-spacing: .1em; }.robot-detail-nav-bar > div b { display: block; margin-top: 4px; color: #cce9f0; font: 10px var(--mono); }.robot-detail-nav-bar button { flex: 0 0 auto; }
+.robot-detail-command-error { position: absolute; right: 8px; bottom: 5px; max-width: 45%; padding: 5px 8px; border: 1px solid #873d45; background: #2a1118; color: #ff9a9a; font: 9px var(--mono); }
+.robot-detail-error-row { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid #26313d; }.robot-detail-error-row > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }.robot-detail-error-row b { font: 700 8px var(--mono); }.robot-detail-error-row span { color: #cbd9e5; font-size: 9px; overflow-wrap: anywhere; }.robot-detail-error-row small { flex: 0 0 auto; color: #718da3; font: 8px var(--mono); }.robot-detail-error-row.warning b { color: #f5d168; }.robot-detail-error-row.error b { color: #ff8484; }.robot-detail-error-row.ok b { color: #62e1a0; }.robot-detail-no-errors { padding: 14px 0; color: #61dca0; font: 10px var(--mono); }
+.robot-detail-error-boundary { min-height: 100vh; display: grid; place-content: center; gap: 12px; padding: 36px; background: #050a12; color: #dce9f5; }.robot-detail-error-boundary h1 { margin: 0; font-size: 24px; }.robot-detail-error-boundary pre { max-width: 760px; padding: 12px; border: 1px solid #853e46; background: #261018; color: #ffaaa8; white-space: pre-wrap; }.robot-detail-error-boundary button { width: fit-content; padding: 10px 13px; }
+
+/* Reusable quick detail modal shared by Overview, Fleet and Map clicks. */
+.robot-quick-modal-root { position: fixed; inset: 0; z-index: 2147483000; display: grid; place-items: center; padding: 18px; background: rgba(1, 7, 13, .72); }
+.robot-quick-modal { width: min(760px, 100%); max-height: min(760px, calc(100vh - 36px)); overflow: auto; border: 1px solid #2b516c; border-radius: 3px; background: #091522; color: #e0edf7; box-shadow: 0 20px 60px rgba(0, 0, 0, .55); }
+.robot-quick-head { display: flex; justify-content: space-between; gap: 12px; padding: 17px 18px 12px; border-bottom: 1px solid #203c53; }.robot-quick-head h2 { margin: 4px 0 2px; color: #f4fbff; font: 700 25px var(--mono); letter-spacing: .08em; }.robot-quick-head p { margin: 0; color: #7895ab; font: 10px var(--mono); }.robot-quick-close { width: 30px; height: 30px; font-size: 18px; }
+.robot-quick-statusline { display: flex; align-items: center; gap: 12px; padding: 9px 18px; border-bottom: 1px solid #172f44; background: #0b1b2a; }.robot-console-status { display: inline-flex; align-items: center; gap: 6px; font: 700 10px var(--mono); }.robot-console-status i { width: 7px; height: 7px; display: inline-block; background: #657d91; }.robot-console-status.ok { color: #64dfa0; }.robot-console-status.ok i { background: #36d284; }.robot-console-status.offline { color: #ff9292; }.robot-console-status.offline i { background: #e85d68; }.robot-console-mode { color: #f1d16a; font: 700 10px var(--mono); }.robot-quick-muted { color: #809ab0; font: 10px var(--mono); }
+.robot-quick-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; padding: 8px 18px 12px; }.robot-quick-field { display: flex; justify-content: space-between; gap: 10px; min-height: 31px; padding: 7px 0; border-bottom: 1px solid #172c3f; }.robot-quick-field span { color: #7995aa; font-size: 10px; }.robot-quick-field b { color: #dcebf7; font-size: 10px; text-align: right; overflow-wrap: anywhere; }.robot-quick-field .mono { color: #bce9eb; font-family: var(--mono); }.robot-quick-error { margin: 0 18px 10px; padding: 8px; border: 1px solid #843d46; background: #281119; color: #ffaaa8; font: 10px var(--mono); }.robot-quick-actions { display: flex; align-items: center; gap: 7px; padding: 12px 18px 16px; border-top: 1px solid #203c53; }.robot-quick-actions button { min-height: 32px; padding: 0 10px; }.robot-quick-action-spacer { flex: 1; }
+
+@media (max-width: 1180px) { .robot-detail-header { align-items: flex-start; flex-direction: column; }.robot-detail-header-actions { width: 100%; overflow-x: auto; }.robot-detail-main { grid-template-columns: 205px minmax(0, 1fr) 215px; }.robot-detail-mission, .robot-detail-latency { display: none; } }
+@media (max-width: 900px) { .robot-detail-shell { height: auto; min-height: 100vh; overflow: auto; }.robot-detail-main { grid-template-columns: 1fr; overflow: visible; }.robot-detail-column { overflow: visible; }.robot-detail-panel { max-height: none; }.robot-detail-map-panel { min-height: 520px; }.robot-detail-bottom { grid-template-columns: 1fr; min-height: 0; }.robot-detail-command-error { position: static; grid-column: 1 / -1; max-width: none; }.robot-quick-grid { grid-template-columns: 1fr; } }

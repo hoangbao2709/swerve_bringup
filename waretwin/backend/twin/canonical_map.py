@@ -174,9 +174,15 @@ def polygon_contained_in_usable_floor(polygon, boundary, holes=()) -> bool:
 def canonicalize_layout(value: dict[str, Any], fallback: dict[str, Any] | None = None) -> dict[str, Any]:
     source = copy.deepcopy(value if isinstance(value, dict) else (fallback or {}))
     size = source.get('size') or {}
-    width, depth = float(size.get('width') or 1), float(size.get('depth') or 1)
+    def dimension(name):
+        raw = size.get(name, 1)
+        try:
+            return float(1 if raw is None else raw)
+        except (TypeError, ValueError):
+            return float('nan')
+    width, depth = dimension('width'), dimension('depth')
     source['schema_version'] = 2
-    source['coordinate_system'] = {'unit': 'meter', 'frame': 'warehouse_map', 'yaw_unit': 'radian'}
+    source['coordinate_system'] = {'unit': 'meter', 'frame': 'map', 'yaw_unit': 'radian'}
     floors = source.get('floors') if isinstance(source.get('floors'), list) else []
     if not floors: floors = [{'id': 1, 'name': 'Floor 1', 'elevation': 0.0}]
     normalized_floors = []
@@ -190,6 +196,25 @@ def canonicalize_layout(value: dict[str, Any], fallback: dict[str, Any] | None =
         item.setdefault('holes', [])
         normalized_floors.append(item)
     source['floors'] = normalized_floors
+    all_points = []
+    for floor in normalized_floors:
+        try:
+            all_points.extend(points(floor.get('boundary')))
+        except (TypeError, ValueError):
+            continue
+    if all_points:
+        min_x = min(point[0] for point in all_points)
+        min_y = min(point[1] for point in all_points)
+        max_x = max(point[0] for point in all_points)
+        max_y = max(point[1] for point in all_points)
+    else:
+        min_x = min_y = 0.0
+        max_x, max_y = width, depth
+    source['frame_id'] = 'map'
+    source['units'] = 'm'
+    source['origin'] = {'x': min_x, 'y': min_y}
+    source['width'] = max_x - min_x
+    source['height'] = max_y - min_y
     for key in ('aisles', 'navigation_tags', 'navigation_edges', 'stations', 'holes'):
         if not isinstance(source.get(key), list): source[key] = []
     for tag in source['navigation_tags']:
@@ -205,12 +230,39 @@ def canonicalize_layout(value: dict[str, Any], fallback: dict[str, Any] | None =
 def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
     doc = canonicalize_layout(value)
     errors: list[str] = []
+    def check_finite(item: Any, path: str) -> None:
+        if isinstance(item, bool) or item is None:
+            return
+        if isinstance(item, (int, float)):
+            if not math.isfinite(float(item)):
+                errors.append(f'{path}: numeric values must be finite')
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                check_finite(child, f'{path}.{key}')
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                check_finite(child, f'{path}[{index}]')
+    check_finite(doc, 'layout')
+    source_size = value.get('size') if isinstance(value, dict) else None
+    for key in ('width', 'depth'):
+        raw = source_size.get(key, 1) if isinstance(source_size, dict) else 1
+        try:
+            dimension = float(1 if raw is None else raw)
+        except (TypeError, ValueError):
+            dimension = float('nan')
+        if not math.isfinite(dimension) or dimension <= 0:
+            errors.append(f'size.{key}: must be finite and positive')
     floors = doc.get('floors', [])
     floor_ids = [str(f.get('id')) for f in floors]
     if len(set(floor_ids)) != len(floor_ids): errors.append('floors: duplicate id')
     floor_polys: dict[str, list[tuple[float, float]]] = {}
     for floor in floors:
         fid = str(floor.get('id'))
+        try:
+            elevation = float(floor.get('elevation', 0))
+        except (TypeError, ValueError):
+            elevation = float('nan')
+        if not math.isfinite(elevation): errors.append(f'floor {fid}: elevation must be finite')
         errors += validate_floor_polygon(floor.get('boundary'), f'floor {fid} boundary')
         try: boundary = points(floor.get('boundary'))
         except (TypeError, ValueError): boundary = []
@@ -228,7 +280,7 @@ def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
                 except (TypeError, ValueError): continue
                 if any(segments_intersect(hp[i], hp[(i+1) % len(hp)], op[j], op[(j+1) % len(op)]) for i in range(len(hp)) for j in range(len(op))) or point_in_polygon(hp[0], op, False): errors.append(f'floor {fid}: holes intersect'); break
     ids: set[str] = set()
-    for key in ('aisles', 'navigation_tags', 'navigation_edges', 'racks', 'zones', 'conveyors', 'stations'):
+    for key in ('aisles', 'navigation_tags', 'navigation_edges', 'racks', 'zones', 'conveyors', 'stations', 'obstacles'):
         for obj in doc.get(key, []):
             oid = str(obj.get('uuid') or obj.get('id') or '')
             if oid and oid in ids: errors.append(f'duplicate object id: {oid}')
@@ -294,6 +346,63 @@ def validate_canonical_layout(value: dict[str, Any]) -> list[str]:
                 except (TypeError, ValueError): pass
             footprint = aisle_footprint(centerline_points, numeric_width)
             if boundary and not polygon_contained_in_usable_floor(footprint, boundary, hole_points): errors.append(f'aisle {aid}: width footprint is outside usable floor or intersects a hole')
+    for rack in doc.get('racks', []):
+        ident = str(rack.get('id') or '?')
+        position, dimensions = rack.get('position'), rack.get('size')
+        if not isinstance(position, (list, tuple)) or len(position) < 3:
+            errors.append(f'rack {ident}: position requires [x, vertical, floor_y]')
+            continue
+        if not isinstance(dimensions, (list, tuple)) or len(dimensions) < 3:
+            errors.append(f'rack {ident}: size requires [width, height, depth]')
+            continue
+        try:
+            values = [float(value) for value in (*position[:3], *dimensions[:3])]
+            rotation = float(rack.get('rotation', 0))
+        except (TypeError, ValueError):
+            errors.append(f'rack {ident}: invalid position, size, or rotation')
+            continue
+        if not all(math.isfinite(value) for value in (*values, rotation)):
+            errors.append(f'rack {ident}: position, size, and rotation must be finite')
+        if any(value <= 0 for value in values[3:]):
+            errors.append(f'rack {ident}: dimensions must be positive')
+    for key in ('stations', 'obstacles'):
+        for item in doc.get(key, []):
+            ident, rect = str(item.get('id') or '?'), item.get('rect')
+            try:
+                if not isinstance(rect, (list, tuple)) or len(rect) != 4:
+                    raise ValueError
+                x0, y0, x1, y1 = map(float, rect)
+            except (TypeError, ValueError):
+                errors.append(f'{key} {ident}: rect requires four numeric values')
+                continue
+            if not all(math.isfinite(value) for value in (x0, y0, x1, y1)):
+                errors.append(f'{key} {ident}: rectangle coordinates must be finite')
+            elif x1 <= x0 or y1 <= y0:
+                errors.append(f'{key} {ident}: rectangle dimensions must be positive')
+    for conveyor in doc.get('conveyors', []):
+        ident = str(conveyor.get('id') or '?')
+        try: width = float(conveyor.get('width', 1))
+        except (TypeError, ValueError): width = float('nan')
+        if not math.isfinite(width) or width <= 0:
+            errors.append(f'conveyor {ident}: width must be finite and positive')
+        try: path = points(conveyor.get('path') or [])
+        except (TypeError, ValueError) as exc:
+            errors.append(f'conveyor {ident}: {exc}')
+            continue
+        if len(path) < 2:
+            errors.append(f'conveyor {ident}: path requires at least two points')
+        if any(math.hypot(b[0] - a[0], b[1] - a[1]) <= 1e-9 for a, b in zip(path, path[1:])):
+            errors.append(f'conveyor {ident}: consecutive path points must not duplicate')
+    for index, column in enumerate(doc.get('columns') or []):
+        try:
+            if not isinstance(column, (list, tuple)) or len(column) < 2:
+                raise ValueError
+            x, y = float(column[0]), float(column[1])
+        except (TypeError, ValueError):
+            errors.append(f'column {index}: requires numeric x/y coordinates')
+            continue
+        if not math.isfinite(x) or not math.isfinite(y):
+            errors.append(f'column {index}: coordinates must be finite')
     # Graph edges are validated against the canonical tag identity and floor
     # contract here, before save/publish.  The relational model intentionally
     # stores endpoint tag_id values; UUIDs remain the immutable layout identity.

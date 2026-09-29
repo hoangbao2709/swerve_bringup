@@ -65,6 +65,11 @@ set +a
 # variable nor backend/.env may silently select LOCAL_SIM for Django.
 WARETWIN_RUNTIME_MODE=GAZEBO_ROS
 export WARETWIN_RUNTIME_MODE
+# Load the canonical ROS underlay, workspace overlay, and DDS settings before
+# snapshotting the environment that every stack process and CLI probe will use.
+# shellcheck disable=SC1091
+source "$ROOT_DIR/scripts/ros_env.sh"
+set -u
 if ((ALLOW_DEV_WORLD_CLI == 0)); then
   ALLOW_DEV_WORLD_SELECTED="${WARETWIN_ALLOW_DEV_WORLD:-${ALLOW_DEV_WORLD:-$ALLOW_DEV_WORLD_SELECTED}}"
 fi
@@ -136,6 +141,9 @@ ROBOT_ID=$ROBOT_ID
 NAMESPACE=$NAMESPACE
 ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
 ROS_DOMAIN_ID_SOURCE=backend/.env
+RMW_IMPLEMENTATION=$RMW_IMPLEMENTATION
+ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY
+FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS:-}
 WARETWIN_RUNTIME_MODE=$WARETWIN_RUNTIME_MODE
 GAZEBO_GUI=$GUI_ARG
 RVIZ=$RVIZ_ARG
@@ -295,6 +303,9 @@ ROBOT_ID=$ROBOT_ID
 NAMESPACE=$NAMESPACE
 ROS_DOMAIN_ID=$ROS_DOMAIN_ID_SELECTED
 ROS_DOMAIN_ID_SOURCE=backend/.env
+RMW_IMPLEMENTATION=$RMW_IMPLEMENTATION
+ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY
+FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS:-}
 WARETWIN_RUNTIME_MODE=$WARETWIN_RUNTIME_MODE
 ALLOW_DEV_WORLD=$ALLOW_DEV_WORLD_ARG
 GAZEBO_GUI=$GUI_ARG
@@ -340,11 +351,6 @@ setsid bash -c '
   cd "$root"
   source scripts/ros_env.sh
   export ROS_DOMAIN_ID="$domain" ROS_WS_URL="$ws_url"
-  # VMware on this host has Fast DDS shared-memory port-lock failures: new
-  # participants see graph entries but intermittently miss ROS data/services.
-  # Use the supported UDPv4 builtin transport consistently for every ROS node
-  # in this simulation, not just transient controller/readiness clients.
-  export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
   python3 scripts/ros_stack_supervisor.py --request-file "$request_file" \
     --initial-revision "$revision" --robot-id "$robot_id" -- "$@" 2>&1 \
     | tee "$ros_log" "$ros_bridge_log" >/dev/null
@@ -389,22 +395,16 @@ ros_readiness_report() {
   (
     set +e
     export ROS_DOMAIN_ID="$ROS_DOMAIN_ID_SELECTED"
-    # Avoid ros_env.sh's two `ros2 pkg prefix` graph probes here. On the
-    # VMware guest those CLI startups can consume most of a readiness window
-    # while Gazebo is cold. Preserve the Humble + workspace overlay directly.
-    unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
-    export AMENT_TRACE_SETUP_FILES="${AMENT_TRACE_SETUP_FILES:-}"
     set +u
-    source /opt/ros/humble/setup.bash || exit 1
-    source "$ROOT_DIR/install/local_setup.bash" || exit 1
+    source "$ROOT_DIR/scripts/ros_env.sh" || exit 1
     set -u
-    # Use the same transport as the running stack. The VMware shared-memory
-    # failure otherwise makes this participant miss live odometry samples.
-    export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
     readiness_args=(
       --mode "$MODE"
       --model swerve_base
+      --robot-id "$ROBOT_ID"
       --timeout "$probe_timeout"
+      --backend-url "$BACKEND_URL"
+      --log-path "$(stack_log_file ros)"
     )
     if [[ "$MODE" == navigation && -n "$MAP_FILE" ]]; then
       readiness_args+=(--map-file "$MAP_FILE")
@@ -412,14 +412,19 @@ ros_readiness_report() {
     # The Python probe owns its own deadline.  Wrapping it in GNU timeout sends
     # SIGTERM while rclpy is inside a wait set and turns a normal retry into a
     # misleading ExternalShutdownException traceback.
-    python3 "$ROOT_DIR/scripts/navigation_readiness.py" "${readiness_args[@]}"
+    python3 "$ROOT_DIR/scripts/navigation_readiness.py" "${readiness_args[@]}" 2>&1 \
+      | tee -a "$(stack_log_file readiness)"
   )
 }
 
 # Nav2 and Gazebo initialize concurrently. On a resource-constrained VM the
 # robot can be spawned after lifecycle servers have already started, so keep a
 # generous finite gate rather than reporting a false startup failure.
-ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-900}"
+# The published warehouse world includes a canonical floor mesh. On this
+# VMware guest the live Gazebo SpawnEntity request took about 17 minutes to
+# return after a cold start. Keep an explicit bounded readiness gate long
+# enough for that observed load; every stage still advances only on live data.
+ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-1800}"
 if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); then
   echo "Invalid WARETWIN_ROS_READY_TIMEOUT_S=$ROS_READY_TIMEOUT_S; use a positive integer" >&2
   stack_kill_owned ros; stack_kill_owned frontend; stack_kill_owned backend
@@ -428,6 +433,7 @@ if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); 
 fi
 ros_ready=0
 last_ros_report=''
+: > "$(stack_log_file readiness)"
 READINESS_PROBE_TIMEOUT_S="${WARETWIN_READINESS_PROBE_TIMEOUT_S:-120}"
 if ! [[ "$READINESS_PROBE_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( READINESS_PROBE_TIMEOUT_S < 2 )); then
   echo "Invalid WARETWIN_READINESS_PROBE_TIMEOUT_S=$READINESS_PROBE_TIMEOUT_S; use an integer >= 2" >&2

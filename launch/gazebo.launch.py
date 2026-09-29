@@ -174,19 +174,12 @@ def generate_launch_description():
     # Gazebo creates /controller_manager from the gazebo_ros2_control plugin
     # while the entity is being inserted. Start controllers only after spawn
     # has completed so controller_manager is available.
-    # On the VMware guest, Fast DDS shared-memory port locking left the
-    # controller_manager node absent from some participants' graph even while
-    # its services responded. These small management clients use UDPv4 for
-    # discovery/services; the Gazebo, sensor and control nodes retain their
-    # normal transport profile.
-    controller_spawner_env = {'FASTDDS_BUILTIN_TRANSPORTS': 'UDPv4'}
     controller_spawners = [
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_joint_state_broadcaster',
             output='screen',
-            additional_env=controller_spawner_env,
             # Keep to the controller_manager Humble CLI contract.  The
             # service/switch timeout flags were added in newer releases and
             # make the spawner exit immediately on the supported Ubuntu 22.04
@@ -198,7 +191,6 @@ def generate_launch_description():
             executable='spawner',
             name='spawn_steering_controller',
             output='screen',
-            additional_env=controller_spawner_env,
             arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
         Node(
@@ -206,7 +198,6 @@ def generate_launch_description():
             executable='spawner',
             name='spawn_drive_controller',
             output='screen',
-            additional_env=controller_spawner_env,
             arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
         ),
     ]

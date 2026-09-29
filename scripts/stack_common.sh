@@ -262,6 +262,8 @@ stack_wait_http() {
   return 1
 }
 
+# ROS callers source scripts/ros_env.sh before using these CLI helpers so each
+# process uses the same Humble overlay and DDS settings as the stack.
 # A finite data probe is deliberately shared by status/smoke/readiness callers.
 # `ros2 topic list` only proves graph discovery; the sensor_data-compatible
 # subscriber below proves that at least one sample can actually be received.

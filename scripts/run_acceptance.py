@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Deterministic fresh-session runner for bringup and acceptance evaluators.
+"""Run acceptance against the production ``start_stack.sh`` architecture.
 
-Every launch gets its own process group and ROS domain.  Only that process
-group is signalled during teardown; unrelated ROS/Gazebo processes are never
-selected by name and killed.
+This runner deliberately does not launch ``system.launch.py`` itself.  The
+production stack owns map selection, the ROS environment, deferred Nav2
+lifecycle activation, backend/WebSocket startup, and shutdown.
 """
+from __future__ import annotations
+
 import argparse
 import csv
 import json
@@ -19,8 +21,8 @@ from datetime import datetime
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def read_simple_env(path, key):
-    """Read one shell-compatible KEY=value without sourcing arbitrary code."""
+def read_simple_env(path: str, key: str) -> str | None:
+    """Read a single KEY=value from the non-secret runtime snapshot."""
     try:
         with open(path, encoding='utf-8') as stream:
             for raw in stream:
@@ -35,252 +37,363 @@ def read_simple_env(path, key):
     return None
 
 
-def runtime_stack_active():
-    """Return true only when a recorded project process is still alive."""
+def stack_is_active() -> bool:
+    """Refuse to take ownership of a stack that was already running."""
     runtime_dir = os.path.join(ROOT, '.runtime')
-    checks = {
-        'backend': lambda cwd, cmd: cwd.endswith('/waretwin/backend') and (
-            'manage.py runserver' in cmd or 'backend/run.sh' in cmd),
-        'frontend': lambda cwd, cmd: cwd.endswith('/waretwin/frontend') and (
-            'vite' in cmd or 'npm' in cmd),
-        'ros': lambda cwd, cmd: (cwd == ROOT or f'{ROOT}/install/' in cmd) and (
-            'ros2 launch swerve_bringup' in cmd or 'system.launch.py' in cmd or
-            'gzserver' in cmd),
-    }
-    for name, matches in checks.items():
+    for component in ('backend', 'frontend', 'ros'):
         try:
-            with open(os.path.join(runtime_dir, f'{name}.pid'), encoding='utf-8') as stream:
+            with open(os.path.join(runtime_dir, f'{component}.pid'), encoding='utf-8') as stream:
                 pid = int(stream.readline().strip())
             os.kill(pid, 0)
             cmd = open(f'/proc/{pid}/cmdline', 'rb').read().replace(b'\0', b' ').decode(errors='replace')
             cwd = os.path.realpath(os.readlink(f'/proc/{pid}/cwd'))
         except (OSError, ValueError):
             continue
-        if matches(cwd, cmd):
-            return True
+        if component == 'backend' and cwd == os.path.join(ROOT, 'waretwin/backend'):
+            if 'manage.py runserver' in cmd or 'backend/run.sh' in cmd:
+                return True
+        if component == 'frontend' and cwd == os.path.join(ROOT, 'waretwin/frontend'):
+            if 'vite' in cmd or 'npm' in cmd:
+                return True
+        if component == 'ros' and (cwd == ROOT or f'{ROOT}/install/' in cmd):
+            if any(marker in cmd for marker in (
+                'ros_stack_supervisor.py', 'system.launch.py', 'gzserver',
+            )):
+                return True
     return False
 
 
-def resolve_ros_domain(requested=None):
-    """Use the running stack domain before any shell/CLI fallback.
-
-    The acceptance runner launches an isolated case when no stack is running,
-    so an explicit ``--domain`` remains useful there.  A live .runtime state is
-    authoritative and cannot be overridden by a stale shell environment.
-    """
-    runtime = os.path.join(ROOT, '.runtime', 'stack.env')
-    value = read_simple_env(runtime, 'ROS_DOMAIN_ID')
-    if value is not None and runtime_stack_active():
-        return int(value), 'runtime stack.env'
-    if requested is not None:
-        return int(requested), 'command line'
-    backend = read_simple_env(os.path.join(ROOT, 'waretwin', 'backend', '.env'), 'ROS_DOMAIN_ID')
-    if backend is not None:
-        return int(backend), 'backend/.env'
-    return int(os.environ.get('ROS_DOMAIN_ID', '0')), 'shell/default'
-
-
-def descendants_dead(pgid):
-    try:
-        output = subprocess.check_output(['ps', '-eo', 'pgid='], text=True)
-    except (OSError, subprocess.CalledProcessError):
-        return False
-    return str(pgid) not in {line.strip() for line in output.splitlines()}
+def load_ros_environment() -> dict[str, str]:
+    """Load the canonical source file without duplicating ROS env rules here."""
+    shell = (
+        'set -a; '
+        'source "$1/waretwin/backend/.env"; '
+        'source "$1/scripts/ros_env.sh" >/dev/null; '
+        'env -0'
+    )
+    loaded = subprocess.run(
+        ['bash', '-c', shell, '_', ROOT],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if loaded.returncode != 0:
+        reason = loaded.stderr.decode(errors='replace').strip()
+        raise RuntimeError(f'scripts/ros_env.sh failed: {reason or loaded.returncode}')
+    values = {}
+    for item in loaded.stdout.decode(errors='surrogateescape').split('\0'):
+        if '=' in item:
+            key, value = item.split('=', 1)
+            values[key] = value
+    return values
 
 
-def stop_group(proc, grace):
-    if proc.poll() is not None:
-        return descendants_dead(proc.pid)
-    try:
-        os.killpg(proc.pid, signal.SIGINT)
-    except ProcessLookupError:
-        return True
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline and proc.poll() is None:
-        time.sleep(0.2)
-    if proc.poll() is None:
-        os.killpg(proc.pid, signal.SIGTERM)
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and proc.poll() is None:
-            time.sleep(0.2)
-    if proc.poll() is None:
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=5)
-    return descendants_dead(proc.pid)
+def process_exists(executable: str) -> bool:
+    result = subprocess.run(['pgrep', '-x', executable],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
 
 
-def graph_quiet(env, timeout=8.0):
-    """Wait for this isolated DDS domain to stop advertising project nodes."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            nodes = subprocess.check_output(
-                ['ros2', 'node', 'list'], env=env, text=True,
-                stderr=subprocess.DEVNULL, timeout=3).splitlines()
-        except (OSError, subprocess.SubprocessError):
-            nodes = []
-        owned = ('swerve', 'gazebo', 'map_server', 'controller_server',
-                 'planner_server', 'behavior_server', 'bt_navigator',
-                 'waypoint_follower', 'ekf_', 'v30e', 'lifecycle_manager')
-        if not any(any(token in node for token in owned) for node in nodes):
-            return True
-        time.sleep(0.4)
-    return False
+def print_stage(name: str, passed: bool, reason: str | None = None) -> None:
+    if passed:
+        print(f'{name}=PASS', flush=True)
+    else:
+        print(f'{name}=FAIL reason={reason or "not_observed"}', flush=True)
 
 
-def run_case(args, case_name, domain, outdir):
-    env = os.environ.copy()
-    env['ROS_DOMAIN_ID'] = str(domain)
-    env['ACCEPTANCE_CASE'] = case_name
-    env['ACCEPTANCE_CASE_INDEX'] = case_name
-    env['ACCEPTANCE_CASE_DIR'] = outdir
-    # Make the runner self-contained when called from an unsourced shell.
-    prefixes = [os.path.join(ROOT, 'install', 'swerve_bringup'),
-                os.path.join(ROOT, 'install', 'swerve_bridge')]
-    existing = env.get('AMENT_PREFIX_PATH', '').split(':')
-    env['AMENT_PREFIX_PATH'] = ':'.join(prefixes + [p for p in existing if p])
-    env['CMAKE_PREFIX_PATH'] = ':'.join(prefixes + [p for p in env.get('CMAKE_PREFIX_PATH', '').split(':') if p])
-    launch_log = open(os.path.join(outdir, 'launch.log'), 'w', encoding='utf-8')
-    launch_command = ['ros2', 'launch', 'swerve_bringup', 'system.launch.py',
-                      'use_sim:=true', f'mode:={args.mode}', 'gui:=false', 'start_rviz:=false']
-    if args.map_file:
-        launch_command.append(f'map_file:={os.path.realpath(args.map_file)}')
-    if env.get('ACCEPTANCE_CONTACT_DIAGNOSTICS', '').lower() in ('1', 'true', 'yes'):
-        launch_command.append('contact_diagnostics:=true')
-    if env.get('ACCEPTANCE_CASTER_FRICTIONLESS', '').lower() in ('1', 'true', 'yes'):
-        launch_command.append('caster_frictionless:=true')
-    if env.get('ACCEPTANCE_PROPER_CASTER_TEST', '').lower() in ('1', 'true', 'yes'):
-        launch_command.append('proper_caster_test:=true')
-    # Test-only engineering assumptions are deliberately explicit.  The
-    # production launch defaults remain zero/unknown in the URDF/config.
-    for name in ('X', 'Y'):
-        value = env.get(f'ACCEPTANCE_CASTER_AXLE_OFFSET_{name}_M')
-        if value is not None:
-            launch_command.append(f'caster_axle_offset_{name.lower()}_m:={value}')
-    for parameter in ('proper_caster_mu1', 'proper_caster_mu2', 'caster_swivel_friction',
-                      'caster_swivel_damping', 'caster_roll_friction', 'caster_roll_damping'):
-        value = env.get('ACCEPTANCE_' + parameter.upper())
-        if value is not None:
-            launch_command.append(f'{parameter}:={value}')
-    proc = subprocess.Popen(
-        launch_command,
-        cwd=ROOT, env=env, stdout=launch_log, stderr=subprocess.STDOUT,
-        start_new_session=True)
-    readiness_json = os.path.join(outdir, 'readiness.json')
-    readiness_command = [sys.executable, os.path.join(ROOT, 'scripts', 'navigation_readiness.py'),
-                         '--mode', args.mode,
-                         '--timeout', str(args.readiness_timeout), '--json', readiness_json]
-    if args.map_file:
-        readiness_command.extend(['--map-file', os.path.realpath(args.map_file)])
-    readiness = subprocess.run(
-        readiness_command,
-        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, timeout=args.readiness_timeout + 15)
-    with open(os.path.join(outdir, 'readiness.log'), 'w', encoding='utf-8') as stream:
-        stream.write(readiness.stdout)
-    nav_ready = readiness.returncode == 0
-    evaluator_rc = None
-    evaluator_log = ''
-    evaluator_passed = True
-    direction_correct = None
-    physics_acceptance_pass = None
-    if nav_ready and args.evaluator:
-        evaluator_command = [value.replace('{case_dir}', outdir) for value in args.evaluator]
-        evaluator = subprocess.run(evaluator_command, cwd=ROOT, env=env,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, timeout=args.evaluator_timeout)
-        evaluator_rc, evaluator_log = evaluator.returncode, evaluator.stdout
-        with open(os.path.join(outdir, 'evaluator.log'), 'w', encoding='utf-8') as stream:
-            stream.write(evaluator_log)
-        summary_path = os.path.join(outdir, 'accuracy_summary.json')
-        if os.path.exists(summary_path):
-            with open(summary_path, encoding='utf-8') as stream:
-                evaluator_passed = bool(json.load(stream).get('passed', False))
-        result_path = os.path.join(outdir, 'raw_motion_result.csv')
-        if os.path.exists(result_path):
-            with open(result_path, encoding='utf-8') as stream:
-                raw_result = next(csv.DictReader(stream), {})
-            direction_correct = raw_result.get('direction_correct') == 'True'
-            # Raw yaw diagnostics deliberately distinguish command direction
-            # from physical acceptance; never collapse them into one PASS.
-            if 'physics_acceptance_pass' in raw_result:
-                physics_acceptance_pass = raw_result.get('physics_acceptance_pass') == 'True'
-                evaluator_passed = evaluator_passed and physics_acceptance_pass
-            else:
-                evaluator_passed = evaluator_passed and direction_correct
-    shutdown_clean = stop_group(proc, args.shutdown_grace)
-    quiet = graph_quiet(env)
-    launch_log.close()
-    return {
-        'run': case_name, 'startup_wall_time': json.load(open(readiness_json)).get('startup_wall_time') if os.path.exists(readiness_json) else None,
-        'startup_sim_time': json.load(open(readiness_json)).get('startup_sim_time') if os.path.exists(readiness_json) else None,
-        'controller_ready': bool(json.load(open(readiness_json)).get('stages', {}).get('CONTROLLERS_READY')) if os.path.exists(readiness_json) else False,
-        'local_tf_ready': bool(json.load(open(readiness_json)).get('stages', {}).get('LOCAL_TF_READY')) if os.path.exists(readiness_json) else False,
-        'global_tf_ready': bool(json.load(open(readiness_json)).get('stages', {}).get('GLOBAL_TF_READY')) if os.path.exists(readiness_json) else False,
-        'nav2_ready': bool(json.load(open(readiness_json)).get('stages', {}).get('NAV2_LIFECYCLE_READY')) if os.path.exists(readiness_json) else False,
-        'action_ready': bool(json.load(open(readiness_json)).get('stages', {}).get('ACTION_SERVER_READY')) if os.path.exists(readiness_json) else False,
-        'shutdown_clean': bool(shutdown_clean and quiet),
-        'no_old_gzserver': bool(shutdown_clean),
-        'no_old_test_launch': bool(shutdown_clean),
-        'no_old_evaluator': evaluator_rc is not None or not args.evaluator,
-        'evaluator_rc': evaluator_rc,
-        'direction_correct': direction_correct,
-        'physics_acceptance_pass': physics_acceptance_pass,
-        'direction_status': 'PASS' if direction_correct is True else 'FAIL' if direction_correct is False else 'N/A',
-        'physics_status': 'PASS' if physics_acceptance_pass is True else 'FAIL' if physics_acceptance_pass is False else 'N/A',
-        'status': 'PASS' if nav_ready and shutdown_clean and quiet and evaluator_rc in (None, 0) and evaluator_passed else 'FAIL',
+def run_case(args, case_name: str, case_dir: str) -> dict:
+    os.makedirs(case_dir, exist_ok=False)
+    result = {
+        'run': case_name,
+        'mode': args.mode,
+        'startup_status': 'UNVERIFIED',
+        'ros_graph_cli_status': 'UNVERIFIED',
+        'readiness_status': 'UNVERIFIED',
+        'headless_status': 'UNVERIFIED',
+        'direct_ros_status': 'UNVERIFIED',
+        'direct_nav_status': 'UNVERIFIED',
+        'web_manual_status': 'UNVERIFIED',
+        'web_navigation_status': 'UNVERIFIED',
+        'shutdown_status': 'UNVERIFIED',
     }
+    if stack_is_active():
+        reason = 'a stack process is already owned by this worktree; stop it before acceptance'
+        print_stage('ACCEPTANCE_STARTUP', False, reason)
+        result.update(status='FAIL', reason=reason)
+        return result
+
+    env = os.environ.copy()
+    env['WARETWIN_ROS_READY_TIMEOUT_S'] = str(int(args.readiness_timeout))
+    env['WARETWIN_READINESS_PROBE_TIMEOUT_S'] = str(
+        max(10, min(120, int(args.readiness_timeout)))
+    )
+    env['WARETWIN_ROBOT_ID'] = 'R01'
+    start_log_path = os.path.join(case_dir, 'start_stack.log')
+    start_ok = False
+    stack_attempted = False
+    ros_env = None
+    backend_url = None
+    try:
+        stack_attempted = True
+        command = [os.path.join(ROOT, 'scripts', 'start_stack.sh'), args.mode,
+                   '--headless', '--robot-id', 'R01']
+        with open(start_log_path, 'w', encoding='utf-8') as log:
+            try:
+                startup = subprocess.run(
+                    command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
+                    text=True, timeout=args.readiness_timeout + 180,
+                )
+                start_ok = startup.returncode == 0
+            except subprocess.TimeoutExpired:
+                start_ok = False
+                with open(start_log_path, 'a', encoding='utf-8') as log:
+                    log.write('\nACCEPTANCE_STARTUP=FAIL reason=start_stack_timeout\n')
+        print_stage('ACCEPTANCE_STARTUP', start_ok,
+                    None if start_ok else f'see:{start_log_path}')
+        result['startup_status'] = 'PASS' if start_ok else 'FAIL'
+        result['startup_log'] = start_log_path
+        if not start_ok:
+            result['reason'] = 'production start_stack.sh did not report ready'
+            result['status'] = 'FAIL'
+            return result
+
+        ros_env = load_ros_environment()
+        runtime_path = os.path.join(ROOT, '.runtime', 'stack.env')
+        backend_url = (read_simple_env(runtime_path, 'BACKEND_URL')
+                       or f"http://127.0.0.1:{read_simple_env(runtime_path, 'BACKEND_PORT') or '8000'}")
+        result['backend_url'] = backend_url
+        result['ros_environment'] = {
+            key: (ros_env.get(key) or '<unset>') for key in (
+                'ROS_DOMAIN_ID', 'RMW_IMPLEMENTATION',
+                'ROS_LOCALHOST_ONLY', 'FASTDDS_BUILTIN_TRANSPORTS',
+            )
+        }
+
+        graph_log_path = os.path.join(case_dir, 'ros_graph.log')
+        try:
+            node_list = subprocess.run(
+                ['ros2', 'node', 'list', '--no-daemon', '--spin-time', '2'],
+                cwd=ROOT, env=ros_env, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, timeout=30, check=False,
+            )
+            topic_list = subprocess.run(
+                ['ros2', 'topic', 'list', '--no-daemon', '--spin-time', '2'],
+                cwd=ROOT, env=ros_env, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, timeout=30, check=False,
+            )
+            graph_text = (
+                '=== ros2 node list ===\n' + node_list.stdout
+                + '\n=== ros2 topic list ===\n' + topic_list.stdout
+            )
+            graph_ok = (
+                node_list.returncode == 0 and topic_list.returncode == 0
+                and 'swerve_bridge' in node_list.stdout
+                and '/clock' in topic_list.stdout and '/lidar/points' in topic_list.stdout
+                and '/lidar/points_filtered' in topic_list.stdout and '/scan' in topic_list.stdout
+            )
+            graph_reason = None if graph_ok else 'node_or_topic_graph_incomplete'
+        except (OSError, subprocess.SubprocessError) as exc:
+            graph_text = f'{type(exc).__name__}: {exc}\n'
+            graph_ok = False
+            graph_reason = f'{type(exc).__name__}:{exc}'
+        with open(graph_log_path, 'w', encoding='utf-8') as stream:
+            stream.write(graph_text)
+        result['ros_graph_cli_status'] = 'PASS' if graph_ok else 'FAIL'
+        result['ros_graph_cli_log'] = graph_log_path
+        print_stage('ROS2_NODE_AND_TOPIC_LIST', graph_ok,
+                    None if graph_ok else f'{graph_reason}:see:{graph_log_path}')
+
+        readiness_path = os.path.join(case_dir, 'readiness.json')
+        readiness_log_path = os.path.join(case_dir, 'readiness.log')
+        readiness_cmd = [
+            'python3', os.path.join(ROOT, 'scripts', 'navigation_readiness.py'),
+            '--mode', args.mode, '--model', 'swerve_base', '--robot-id', 'R01',
+            '--backend-url', backend_url, '--log-path', os.path.join(ROOT, 'logs', 'ros.log'),
+            '--timeout', str(args.readiness_timeout), '--json', readiness_path,
+        ]
+        map_file = read_simple_env(runtime_path, 'MAP_FILE')
+        if args.mode == 'navigation' and map_file:
+            readiness_cmd.extend(['--map-file', map_file])
+        readiness = subprocess.run(
+            readiness_cmd, cwd=ROOT, env=ros_env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True,
+            timeout=args.readiness_timeout + 15, check=False,
+        )
+        with open(readiness_log_path, 'w', encoding='utf-8') as stream:
+            stream.write(readiness.stdout)
+        ready_ok = readiness.returncode == 0
+        print_stage('POST_START_READINESS', ready_ok,
+                    None if ready_ok else f'see:{readiness_log_path}')
+        result['readiness_status'] = 'PASS' if ready_ok else 'FAIL'
+        result['readiness_log'] = readiness_log_path
+        if os.path.exists(readiness_path):
+            with open(readiness_path, encoding='utf-8') as stream:
+                result['readiness'] = json.load(stream)
+
+        gzserver = process_exists('gzserver')
+        no_gzclient = not process_exists('gzclient')
+        no_rviz = not process_exists('rviz2')
+        headless_ok = gzserver and no_gzclient and no_rviz
+        result['headless'] = {
+            'gzserver': gzserver, 'gzclient_absent': no_gzclient,
+            'rviz2_absent': no_rviz,
+        }
+        result['headless_status'] = 'PASS' if headless_ok else 'FAIL'
+        print_stage('HEADLESS_GZSERVER', gzserver, 'gzserver_not_running')
+        print_stage('HEADLESS_GZCLIENT', no_gzclient, 'gzclient_running')
+        print_stage('HEADLESS_RVIZ', no_rviz, 'rviz2_running')
+
+        e2e_ok = False
+        if ready_ok and args.mode == 'navigation':
+            e2e_json = os.path.join(case_dir, 'end_to_end.json')
+            e2e_log_path = os.path.join(case_dir, 'end_to_end.log')
+            e2e_cmd = [
+                'python3', os.path.join(ROOT, 'scripts', 'end_to_end_acceptance.py'),
+                '--backend-url', backend_url, '--robot-id', 'R01',
+                '--motion-timeout', str(args.motion_timeout),
+                '--navigation-timeout', str(args.navigation_timeout),
+                '--json', e2e_json,
+            ]
+            e2e = subprocess.run(
+                e2e_cmd, cwd=ROOT, env=ros_env, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True,
+                timeout=args.navigation_timeout * 2 + args.motion_timeout * 5 + 90,
+                check=False,
+            )
+            with open(e2e_log_path, 'w', encoding='utf-8') as stream:
+                stream.write(e2e.stdout)
+            e2e_ok = e2e.returncode == 0
+            if os.path.exists(e2e_json):
+                with open(e2e_json, encoding='utf-8') as stream:
+                    result['end_to_end'] = json.load(stream)
+            if result.get('end_to_end'):
+                stages = result['end_to_end'].get('stages', {})
+                result['direct_ros_status'] = (
+                    'PASS' if all(stages.get(f'DIRECT_ROS_{item}') is True
+                                  for item in ('FORWARD', 'STRAFE', 'ROTATE')) else 'FAIL'
+                )
+                result['direct_nav_status'] = (
+                    'PASS' if all(stages.get(f'DIRECT_NAV_{item}') is True for item in (
+                        'SERVER_READY', 'GOAL_ACCEPTED', 'CMD_VEL',
+                        'CONTROLLER_COMMAND', 'MOTION', 'SUCCEEDED',
+                    )) else 'FAIL'
+                )
+                result['web_manual_status'] = (
+                    'PASS' if all(stages.get(item) is True for item in (
+                        'WEB_MANUAL_CMD_VEL', 'WEB_MANUAL_CONTROLLER_COMMAND',
+                        'WEB_MANUAL_COMMAND_ACCEPTED', 'WEB_MANUAL_MOTION',
+                        'WEB_MANUAL_STOP_ZERO',
+                    )) else 'FAIL'
+                )
+                result['web_navigation_status'] = (
+                    'PASS' if all(stages.get(item) is True for item in (
+                        'WEB_NAV_GOAL_ACCEPTED', 'WEB_NAV_CMD_VEL',
+                        'WEB_NAV_CONTROLLER_COMMAND', 'WEB_NAV_MOTION',
+                        'WEB_NAV_SUCCEEDED',
+                    )) else 'FAIL'
+                )
+            print_stage('END_TO_END_ACCEPTANCE', e2e_ok,
+                        None if e2e_ok else f'see:{e2e_log_path}')
+            result['end_to_end_log'] = e2e_log_path
+        elif args.mode == 'navigation':
+            print('END_TO_END_ACCEPTANCE=UNVERIFIED reason=startup_or_readiness_failed', flush=True)
+
+        evaluator_ok = True
+        if args.evaluator and ready_ok:
+            evaluator_env = dict(ros_env)
+            evaluator_env['ACCEPTANCE_CASE'] = case_name
+            evaluator_env['ACCEPTANCE_CASE_INDEX'] = case_name
+            evaluator_env['ACCEPTANCE_CASE_DIR'] = case_dir
+            evaluator_command = [value.replace('{case_dir}', case_dir) for value in args.evaluator]
+            try:
+                evaluator = subprocess.run(
+                    evaluator_command, cwd=ROOT, env=evaluator_env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, timeout=args.evaluator_timeout, check=False,
+                )
+                evaluator_ok = evaluator.returncode == 0
+                with open(os.path.join(case_dir, 'evaluator.log'), 'w', encoding='utf-8') as stream:
+                    stream.write(evaluator.stdout)
+            except subprocess.TimeoutExpired:
+                evaluator_ok = False
+            result['evaluator_status'] = 'PASS' if evaluator_ok else 'FAIL'
+            print_stage('EXTERNAL_EVALUATOR', evaluator_ok,
+                        None if evaluator_ok else f'evaluator_timeout_or_failure:{args.evaluator_timeout}')
+
+        result['status'] = (
+            'PASS' if start_ok and graph_ok and ready_ok and headless_ok
+            and (args.mode != 'navigation' or e2e_ok) and evaluator_ok else 'FAIL'
+        )
+        return result
+    except (OSError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        result['status'] = 'FAIL'
+        result['reason'] = f'{type(exc).__name__}:{exc}'
+        print_stage('ACCEPTANCE_RUNNER', False, result['reason'])
+        return result
+    finally:
+        if stack_attempted:
+            stop_log_path = os.path.join(case_dir, 'stop_stack.log')
+            try:
+                stop = subprocess.run(
+                    [os.path.join(ROOT, 'scripts', 'stop_stack.sh')], cwd=ROOT,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    timeout=45, check=False,
+                )
+                stop_output = stop.stdout
+                stopped = stop.returncode == 0
+            except (OSError, subprocess.SubprocessError) as exc:
+                stop_output = f'{type(exc).__name__}: {exc}\n'
+                stopped = False
+            result['shutdown_status'] = 'PASS' if stopped else 'FAIL'
+            with open(stop_log_path, 'w', encoding='utf-8') as stream:
+                stream.write(stop_output)
+            print_stage('ACCEPTANCE_STACK_SHUTDOWN', stopped,
+                        None if stopped else f'see:{stop_log_path}')
+            if result.get('status') == 'PASS' and not stopped:
+                result['status'] = 'FAIL'
+                result['reason'] = 'production stack did not shut down cleanly'
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--runs', type=int, default=1)
-    parser.add_argument('--domain', type=int)
     parser.add_argument('--mode', choices=('mapping', 'navigation'), default='navigation')
-    parser.add_argument('--map-file', help='absolute or relative Nav2 map YAML for navigation readiness')
-    parser.add_argument('--readiness-timeout', type=float, default=300.0,
-                        help='finite startup/data readiness deadline (seconds)')
-    parser.add_argument('--shutdown-grace', type=float, default=15.0)
+    parser.add_argument('--readiness-timeout', type=float, default=1800.0)
+    parser.add_argument('--motion-timeout', type=float, default=45.0)
+    parser.add_argument('--navigation-timeout', type=float, default=180.0)
     parser.add_argument('--evaluator-timeout', type=float, default=900.0)
-    parser.add_argument('--evaluator', nargs='+', help='command run only after NAV_READY')
-    parser.add_argument('--cases', nargs='+', help='case names exported as ACCEPTANCE_CASE')
-    parser.add_argument('--outdir', help='timestamped output root')
-    parser.add_argument('--continue-on-failure', action='store_true',
-                        help='diagnostic sweeps collect later cases even when an earlier physics gate fails')
+    parser.add_argument('--evaluator', nargs='+', help='optional independent evaluator; receives {case_dir}')
+    parser.add_argument('--cases', nargs='+', help='acceptance case names')
+    parser.add_argument('--outdir', help='artifact output root')
+    parser.add_argument('--continue-on-failure', action='store_true')
     args = parser.parse_args()
-    domain, domain_source = resolve_ros_domain(args.domain)
-    if not 0 <= domain <= 232:
-        parser.error(f'ROS domain must be in [0, 232], got {domain}')
-    print(f'ROS domain: {domain} ({domain_source})', flush=True)
+    if args.runs < 1:
+        parser.error('--runs must be positive')
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     root = args.outdir or os.path.join(ROOT, 'artifacts', f'acceptance_{stamp}')
     os.makedirs(os.path.join(root, 'cases'), exist_ok=True)
+    names = args.cases or [f'production_{index + 1:02d}' for index in range(args.runs)]
     rows = []
-    case_names = args.cases or [f'bringup_{index + 1:02d}' for index in range(args.runs)]
-    for index, case in enumerate(case_names[:args.runs]):
-        case_dir = os.path.join(root, 'cases', case)
-        os.makedirs(case_dir, exist_ok=False)
-        # A live stack.env is the active DDS source of truth. Do not create a
-        # mixed-domain acceptance case by adding the old per-run offset while
-        # that stack is still running. Isolated runs may keep their historical
-        # domain offset when no runtime stack is active.
-        case_domain = domain if domain_source == 'runtime stack.env' else domain + index
-        row = run_case(args, case, case_domain, case_dir)
+    for index, name in enumerate(names[:args.runs]):
+        case_dir = os.path.join(root, 'cases', name)
+        row = run_case(args, name, case_dir)
         rows.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
-        if row['status'] != 'PASS' and not args.continue_on_failure:
-            print('STOP: case failed; no next case is launched', flush=True)
+        if row.get('status') != 'PASS' and not args.continue_on_failure:
+            print('STOP: acceptance case failed; production stack was stopped', flush=True)
             break
-    with open(os.path.join(root, 'summary.csv'), 'w', newline='', encoding='utf-8') as stream:
-        writer = csv.DictWriter(stream, fieldnames=rows[0].keys() if rows else ['status'])
-        writer.writeheader(); writer.writerows(rows)
+    passed = len(rows) == args.runs and all(row.get('status') == 'PASS' for row in rows)
+    summary = {'runs': rows, 'passed': passed}
     with open(os.path.join(root, 'summary.json'), 'w', encoding='utf-8') as stream:
-        json.dump({'runs': rows, 'passed': len(rows) == args.runs and all(r['status'] == 'PASS' for r in rows)}, stream, indent=2)
-    if not args.evaluator and args.runs >= 1:
-        with open(os.path.join(ROOT, 'artifacts', 'bringup_stability.json'), 'w', encoding='utf-8') as stream:
-            json.dump({'runs': rows, 'passed': len(rows) == args.runs and all(r['status'] == 'PASS' for r in rows)}, stream, indent=2)
-    return 0 if len(rows) == args.runs and all(r['status'] == 'PASS' for r in rows) else 1
+        json.dump(summary, stream, indent=2)
+    with open(os.path.join(root, 'summary.csv'), 'w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=sorted({key for row in rows for key in row}))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: json.dumps(value, sort_keys=True)
+                             if isinstance(value, (dict, list)) else value
+                             for key, value in row.items()})
+    print(f'ACCEPTANCE_SUMMARY={"PASS" if passed else "FAIL"} path={root}', flush=True)
+    return 0 if passed else 1
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    raise SystemExit(main())

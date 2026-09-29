@@ -148,11 +148,17 @@ if command -v ros2 >/dev/null 2>&1 && [[ -f "$ROOT_DIR/install/local_setup.bash"
   fi
   export ROS_DOMAIN_ID
   set +u
-  source "$ROOT_DIR/scripts/ros_env.sh" >/dev/null 2>&1 || true
+  if ! source "$ROOT_DIR/scripts/ros_env.sh" >/dev/null 2>&1; then
+    warn 'canonical ROS runtime environment failed to load'
+    exit 1
+  fi
   set -u
   # ros_env.sh may read backend/.env for manual use; the explicit export above
   # keeps this status probe on the runtime domain selected by start_stack.
   export ROS_DOMAIN_ID="$RUNTIME_ROS_DOMAIN_ID"
+  printf 'RMW implementation: %s\n' "${RMW_IMPLEMENTATION:-<unset>}"
+  printf 'ROS_LOCALHOST_ONLY: %s\n' "${ROS_LOCALHOST_ONLY:-<unset>}"
+  printf 'Fast DDS transports: %s\n' "${FASTDDS_BUILTIN_TRANSPORTS:-<unset>}"
   ROS_NODES="$(timeout 15 ros2 node list --no-daemon --spin-time 5 2>/dev/null || true)"
   ROS_CONTROLLERS="$(timeout 20 ros2 control list_controllers --controller-manager /controller_manager --spin-time 2 2>/dev/null || true)"
   ROS_TOPICS="$(timeout 15 ros2 topic list --no-daemon --spin-time 2 2>/dev/null || true)"

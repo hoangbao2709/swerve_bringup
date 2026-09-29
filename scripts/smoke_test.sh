@@ -185,9 +185,24 @@ fi
 
 if [[ -f "$ROOT_DIR/install/local_setup.bash" ]]; then
   set +u
-  source "$ROOT_DIR/scripts/ros_env.sh" >/dev/null 2>&1 || true
+  if source "$ROOT_DIR/scripts/ros_env.sh" >/dev/null 2>&1; then
+    ROS_ENV_READY=1
+  else
+    ROS_ENV_READY=0
+    printf 'FAIL: canonical ROS runtime environment\n'
+    failed=$((failed + 1))
+  fi
   set -u
   export ROS_DOMAIN_ID
+  if (( ROS_ENV_READY )); then
+    printf 'RMW implementation: %s\n' "${RMW_IMPLEMENTATION:-<unset>}"
+    printf 'ROS_LOCALHOST_ONLY: %s\n' "${ROS_LOCALHOST_ONLY:-<unset>}"
+    printf 'Fast DDS transports: %s\n' "${FASTDDS_BUILTIN_TRANSPORTS:-<unset>}"
+  fi
+  if (( ROS_ENV_READY == 0 )); then
+    printf 'FAIL: ROS workspace environment\n'
+    failed=$((failed + 1))
+  else
   check 'ROS bridge node' timeout 12 bash -c "ros2 node list --no-daemon --spin-time 5 | rg -q '/swerve_bridge$|^/swerve_bridge$'"
   check 'controller_manager' timeout 12 bash -c 'ros2 node list --no-daemon --spin-time 5 | rg -q "/controller_manager$|^/controller_manager$"'
   check 'controllers active' check_controllers
@@ -247,6 +262,7 @@ if [[ -f "$ROOT_DIR/install/local_setup.bash" ]]; then
       expected_map="$(readlink -f -- "$MAP_FILE")"
       check "map_server yaml_filename=$expected_map" bash -c "timeout 6 ros2 param get /map_server yaml_filename | rg -Fq '$expected_map'"
     fi
+  fi
   fi
 else
   printf 'FAIL: ROS workspace\n'

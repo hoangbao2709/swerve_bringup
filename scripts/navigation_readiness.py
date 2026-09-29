@@ -777,11 +777,10 @@ class Readiness(Node):
         # instead; this same stream verifies the robot after SpawnEntity.
         if not self._stage(
             result, 'GAZEBO_WORLD_READY', lambda: self.model_states_seen,
-            'live_topic=/model_states', 'no_live_sample:/model_states',
+            f'live_topic=/model_states models={len(self.gazebo_model_names)}',
+            'no_live_sample:/model_states',
         ):
             return self._finish(result, 'Gazebo /model_states is not publishing')
-        self._report_stage(result, 'GAZEBO_WORLD_READY', True,
-                           success_detail=f' models={len(self.gazebo_model_names)} topic=/model_states')
         print(f'GAZEBO_WORLD={sorted(self.gazebo_model_names)}', flush=True)
 
         if not self._stage(

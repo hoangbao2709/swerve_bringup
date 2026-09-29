@@ -13,7 +13,8 @@ import xml.etree.ElementTree as ET
 
 import rclpy
 from controller_manager_msgs.srv import ListControllers, ListHardwareInterfaces
-from gazebo_msgs.srv import GetEntityState, GetWorldProperties, SpawnEntity
+from gazebo_msgs.msg import ModelStates
+from gazebo_msgs.srv import SpawnEntity
 from lifecycle_msgs.srv import GetState
 from nav_msgs.msg import OccupancyGrid, Odometry
 from nav2_msgs.srv import ManageLifecycleNodes
@@ -49,6 +50,60 @@ CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S = 10.0
 # samples must still fit inside the tighter sample window.
 CLOCK_READY_WAIT_TIMEOUT_S = 120.0
 CLOCK_SAMPLE_SPAN_TIMEOUT_S = 5.0
+STARTUP_TIMELINE_ORDER = (
+    'T0_START_STACK',
+    'T1_GAZEBO_PROCESS_START',
+    'T2_CLOCK_READY',
+    'T3_SPAWN_SERVICE_READY',
+    'T4_SPAWN_REQUEST_BEGIN',
+    'T5_SPAWN_REQUEST_RETURN',
+    'T6_ROBOT_ENTITY_CONFIRMED',
+    'T7_CONTROLLER_MANAGER_READY',
+    'T8_JOINT_STATE_BROADCASTER_ACTIVE',
+    'T9_STEERING_CONTROLLER_ACTIVE',
+    'T10_DRIVE_CONTROLLER_ACTIVE',
+    'JOINT_STATES_READY',
+    'T11_ODOM_READY',
+    'FILTERED_ODOM_READY',
+    'T12_LIDAR_RAW_READY',
+    'T13_LIDAR_FILTERED_READY',
+    'T14_SCAN_READY',
+    'T15_NAV2_LIFECYCLE_STARTUP_BEGIN',
+    'T16_NAV2_ACTION_SERVER_READY',
+)
+TIMELINE_STAGE_NAMES = {
+    'GAZEBO_PROCESS_READY': 'T1_GAZEBO_PROCESS_START',
+    'CLOCK_READY': 'T2_CLOCK_READY',
+    'GAZEBO_FACTORY_READY': 'T3_SPAWN_SERVICE_READY',
+    'ROBOT_SPAWNED': 'T6_ROBOT_ENTITY_CONFIRMED',
+    'JOINT_STATES_READY': 'JOINT_STATES_READY',
+    'ODOM_READY': 'T11_ODOM_READY',
+    'FILTERED_ODOM_READY': 'FILTERED_ODOM_READY',
+    'LIDAR_RAW_READY': 'T12_LIDAR_RAW_READY',
+    'LIDAR_FILTERED_READY': 'T13_LIDAR_FILTERED_READY',
+    'SCAN_READY': 'T14_SCAN_READY',
+    'ACTION_SERVER_READY': 'T16_NAV2_ACTION_SERVER_READY',
+}
+SPAWN_REQUEST_RE = re.compile(
+    r'\[(\d+\.\d+)\]\s+\[spawn_swerve\]: Calling service /spawn_entity')
+SPAWN_RESPONSE_RE = re.compile(
+    r'\[(\d+\.\d+)\]\s+\[spawn_swerve\]: Spawn status: (.*)')
+CONTROLLER_ACTIVE_RE = re.compile(
+    r'\[(\d+\.\d+)\].*\[spawn_(joint_state_broadcaster|steering_controller|drive_controller)\]:'
+    r'.*Configured and activated (joint_state_broadcaster|steering_controller|drive_controller)')
+CONTROLLER_TIMELINE_NAMES = {
+    'joint_state_broadcaster': 'T8_JOINT_STATE_BROADCASTER_ACTIVE',
+    'steering_controller': 'T9_STEERING_CONTROLLER_ACTIVE',
+    'drive_controller': 'T10_DRIVE_CONTROLLER_ACTIVE',
+}
+SWERVE_REQUIRED_LINKS = {
+    'base_footprint', 'base_link', 'steer_front_link', 'steer_rear_link',
+    'wheel_front_drive_link', 'wheel_rear_drive_link',
+}
+SWERVE_REQUIRED_JOINTS = {
+    'steer_front_joint', 'steer_rear_joint',
+    'wheel_front_drive_joint', 'wheel_rear_drive_joint',
+}
 
 # Both map_server and SLAM Toolbox publish the canonical map with the ROS map
 # QoS (reliable + transient-local). A volatile sensor-data subscriber can miss
@@ -73,9 +128,27 @@ class Readiness(Node):
         self.robot_id = str(robot_id)
         self.backend_url = backend_url
         self.log_path = log_path
+        self.timeline_events = {}
+        self.timeline_reported = False
+        self.stack_start_monotonic = self._monotonic_env(
+            'WARETWIN_STACK_START_MONOTONIC_S')
+        self.wall_to_monotonic_offset = time.monotonic() - time.time()
+        gazebo_start = self._monotonic_env('WARETWIN_GAZEBO_STARTED_MONOTONIC_S')
+        if self.stack_start_monotonic is not None:
+            self._record_timeline(
+                'T0_START_STACK', self.stack_start_monotonic,
+                detail='start_stack began',
+            )
+        if gazebo_start is not None:
+            self._record_timeline(
+                'T1_GAZEBO_PROCESS_START', gazebo_start,
+                detail=f"gzserver pid={os.environ.get('WARETWIN_GAZEBO_PID', 'unknown')}",
+            )
         self.last_service_error = None
         self.clock_samples = []
         self.readiness_subscriptions = {}
+        self.model_states_seen = False
+        self.gazebo_model_names = set()
         self.joints_seen = False
         self.odom_seen = False
         self.filtered_odom_seen = False
@@ -92,6 +165,8 @@ class Readiness(Node):
         # probe only needs one real sample, not a rate measurement.
         sensor_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
                                 durability=DurabilityPolicy.VOLATILE)
+        self.readiness_subscriptions['model_states'] = self.create_subscription(
+            ModelStates, '/model_states', self._model_states_cb, sensor_qos)
         self.readiness_subscriptions['joint_states'] = self.create_subscription(
             JointState, '/joint_states', self._joint_cb, sensor_qos)
         self.readiness_subscriptions['odom'] = self.create_subscription(
@@ -110,8 +185,6 @@ class Readiness(Node):
         self.readiness_subscriptions['filtered_points'] = self.create_subscription(
             PointCloud2, '/lidar/points_filtered',
             lambda msg: self._cloud_cb('filtered_points_seen', msg), sensor_qos)
-        self.entity = self.create_client(GetEntityState, '/get_entity_state')
-        self.world = self.create_client(GetWorldProperties, '/get_world_properties')
         self.factory = self.create_client(SpawnEntity, '/spawn_entity')
         self.robot_description = self.create_client(GetParameters, '/robot_state_publisher/get_parameters')
         self.controllers = self.create_client(ListControllers, '/controller_manager/list_controllers')
@@ -128,6 +201,118 @@ class Readiness(Node):
         self.tf = Buffer()
         self.listener = TransformListener(self.tf, self)
 
+    @staticmethod
+    def _monotonic_env(name):
+        try:
+            value = float(os.environ[name])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    def _record_timeline(self, name, at=None, status='PASS', detail=None):
+        at = time.monotonic() if at is None else float(at)
+        if not math.isfinite(at):
+            return
+        event = {'stage': name, 'status': status, 'at_monotonic': at}
+        if detail:
+            event['detail'] = str(detail)
+        previous = self.timeline_events.get(name)
+        # A log timestamp is more precise than a later readiness poll. Keep a
+        # previously recorded event unless a successful observation upgrades a
+        # failed/missing observation.
+        if previous is None or (previous['status'] != 'PASS' and status == 'PASS'):
+            self.timeline_events[name] = event
+
+    def _log_timestamp_to_monotonic(self, timestamp):
+        value = float(timestamp) + self.wall_to_monotonic_offset
+        if self.stack_start_monotonic is not None and value < self.stack_start_monotonic - 5.0:
+            return None
+        if value > time.monotonic() + 5.0:
+            return None
+        return value
+
+    def _capture_log_timeline(self):
+        if not self.log_path or self.stack_start_monotonic is None:
+            return
+        try:
+            with open(self.log_path, encoding='utf-8', errors='replace') as stream:
+                lines = stream.readlines()
+        except OSError:
+            return
+        for line in lines:
+            request = SPAWN_REQUEST_RE.search(line)
+            if request:
+                at = self._log_timestamp_to_monotonic(request.group(1))
+                if at is not None:
+                    self._record_timeline(
+                        'T4_SPAWN_REQUEST_BEGIN', at,
+                        detail='Calling service /spawn_entity; source=ros.log',
+                    )
+            response = SPAWN_RESPONSE_RE.search(line)
+            if response:
+                at = self._log_timestamp_to_monotonic(response.group(1))
+                if at is not None:
+                    detail = response.group(2).strip()
+                    status = 'PASS' if 'Successfully spawned entity' in detail else 'FAIL'
+                    self._record_timeline(
+                        'T5_SPAWN_REQUEST_RETURN', at, status=status,
+                        detail=f'{detail}; source=ros.log',
+                    )
+            controller = CONTROLLER_ACTIVE_RE.search(line)
+            if controller:
+                at = self._log_timestamp_to_monotonic(controller.group(1))
+                controller_name = controller.group(3)
+                if at is not None and controller_name in CONTROLLER_TIMELINE_NAMES:
+                    self._record_timeline(
+                        CONTROLLER_TIMELINE_NAMES[controller_name], at,
+                        detail=f'{controller_name}=active; source=ros.log',
+                    )
+
+    def _print_startup_timeline(self, result):
+        if self.timeline_reported:
+            return
+        self._capture_log_timeline()
+        rows = []
+        previous_at = None
+        for name in STARTUP_TIMELINE_ORDER:
+            event = self.timeline_events.get(name)
+            if event is None:
+                row = {'stage': name, 'status': 'UNVERIFIED', 'reason': 'not_observed'}
+                print(f'{name}=UNVERIFIED reason=not_observed', flush=True)
+                rows.append(row)
+                continue
+            at = event['at_monotonic']
+            row = {'stage': name, 'status': event['status']}
+            if self.stack_start_monotonic is not None:
+                elapsed = at - self.stack_start_monotonic
+                row['elapsed_s'] = round(elapsed, 3)
+                line = f'{name}={event["status"]} elapsed={elapsed:.3f}s'
+            else:
+                line = f'{name}={event["status"]} elapsed=UNVERIFIED'
+            if previous_at is not None and at >= previous_at:
+                delta = at - previous_at
+                row['since_previous_s'] = round(delta, 3)
+                line += f' since_previous={delta:.3f}s'
+            elif previous_at is not None:
+                row['since_previous_s'] = None
+                line += ' since_previous=UNVERIFIED reason=timestamp_order'
+            if event.get('detail'):
+                row['detail'] = event['detail']
+                line += f' detail={event["detail"]}'
+            print(line, flush=True)
+            rows.append(row)
+            if previous_at is None or at >= previous_at:
+                previous_at = at
+
+        request = self.timeline_events.get('T4_SPAWN_REQUEST_BEGIN')
+        response = self.timeline_events.get('T5_SPAWN_REQUEST_RETURN')
+        if request and response and response['at_monotonic'] >= request['at_monotonic']:
+            duration = response['at_monotonic'] - request['at_monotonic']
+            result['spawn_entity_duration_s'] = round(duration, 3)
+            print(f'SPAWN_ENTITY_DURATION={duration:.3f}s source=ros.log', flush=True)
+        result['startup_timeline'] = rows
+        self.timeline_reported = True
+
     def _stop_monitoring(self, key):
         subscription = self.readiness_subscriptions.pop(key, None)
         if subscription is not None:
@@ -135,8 +320,16 @@ class Readiness(Node):
 
     def _clock_cb(self, msg):
         stamp_ns = msg.clock.sec * 1_000_000_000 + msg.clock.nanosec
-        self.clock_samples.append((stamp_ns, time.monotonic()))
+        received_at = time.monotonic()
+        self.clock_samples.append((stamp_ns, received_at))
         self.clock_samples = self.clock_samples[-3:]
+        if self._clock_ready():
+            self._record_timeline('T2_CLOCK_READY', received_at,
+                                  detail='three advancing /clock samples')
+
+    def _model_states_cb(self, msg):
+        self.model_states_seen = True
+        self.gazebo_model_names = set(msg.name)
 
     def _joint_cb(self, msg):
         required = {
@@ -151,6 +344,7 @@ class Readiness(Node):
             and all(map(math.isfinite, msg.velocity))
         )
         if self.joints_seen:
+            self._record_timeline('JOINT_STATES_READY', detail='valid required joints')
             self._stop_monitoring('joint_states')
 
     def _odom_cb(self, name, msg):
@@ -158,11 +352,16 @@ class Readiness(Node):
         valid = all(map(math.isfinite, (pose.x, pose.y, pose.z)))
         if valid:
             setattr(self, name, True)
+            timeline_name = 'T11_ODOM_READY' if name == 'odom_seen' else 'FILTERED_ODOM_READY'
+            self._record_timeline(timeline_name, detail='valid odometry sample')
             self._stop_monitoring('odom' if name == 'odom_seen' else 'filtered_odom')
 
     def _cloud_cb(self, name, msg):
         if msg.width > 0 and msg.height > 0 and msg.data:
             setattr(self, name, True)
+            timeline_name = ('T12_LIDAR_RAW_READY' if name == 'points_seen'
+                             else 'T13_LIDAR_FILTERED_READY')
+            self._record_timeline(timeline_name, detail='valid PointCloud2 sample')
             self._stop_monitoring('points' if name == 'points_seen' else 'filtered_points')
 
     def _scan_cb(self, msg):
@@ -170,6 +369,7 @@ class Readiness(Node):
             math.isfinite(value) and msg.range_min <= value <= msg.range_max
             for value in msg.ranges)
         if self.scan_seen:
+            self._record_timeline('T14_SCAN_READY', detail='valid LaserScan sample')
             self._stop_monitoring('scan')
 
     def _map_cb(self, msg):
@@ -215,6 +415,13 @@ class Readiness(Node):
     def _report_stage(self, result, name, ok, failure_reason=None,
                       success_detail=None):
         result['stages'][name] = bool(ok)
+        timeline_name = TIMELINE_STAGE_NAMES.get(name)
+        if timeline_name:
+            self._record_timeline(
+                timeline_name,
+                status='PASS' if ok else 'FAIL',
+                detail=success_detail.strip() if ok and success_detail else failure_reason,
+            )
         if ok:
             print(f'{name}=PASS{success_detail or ""}', flush=True)
         else:
@@ -322,48 +529,40 @@ class Readiness(Node):
         except ET.ParseError as exc:
             self.last_service_error = f'invalid robot_description XML: {exc}'
             return None
-        valid = (root.tag == 'robot' and root.attrib.get('name') == self.model
-                 and root.find('link') is not None and root.find('joint') is not None)
+        valid = self._is_swerve_description(root)
         if not valid:
-            self.last_service_error = f'robot_description XML does not describe {self.model}'
+            self.last_service_error = (
+                f'robot_description lacks required swerve links/joints for Gazebo entity {self.model}')
             return None
         return description
 
+    @staticmethod
+    def _is_swerve_description(root):
+        if root.tag != 'robot' or not root.attrib.get('name'):
+            return False
+        links = {item.attrib.get('name') for item in root.findall('link')}
+        joints = {item.attrib.get('name') for item in root.findall('joint')}
+        return SWERVE_REQUIRED_LINKS.issubset(links) and SWERVE_REQUIRED_JOINTS.issubset(joints)
+
     def _wait_entity(self, deadline):
-        self.last_spawn_error = f'Gazebo world does not contain entity {self.model}'
+        self.last_spawn_error = f'Gazebo /model_states has not confirmed entity {self.model}'
         while time.monotonic() < deadline:
-            world = self._service_call(self.world, min(deadline, time.monotonic() + 2.0))
-            if world is None:
-                self.last_spawn_error = self.last_service_error or 'GetWorldProperties failed'
-                rclpy.spin_once(self, timeout_sec=0.2)
-                continue
-            if not world.success:
-                self.last_spawn_error = f'GetWorldProperties failed: {world.status_message}'
-                rclpy.spin_once(self, timeout_sec=0.2)
-                continue
-            if self.model not in world.model_names:
+            if not self.model_states_seen:
+                self.last_spawn_error = 'no live Gazebo sample on /model_states'
+            elif self.model not in self.gazebo_model_names:
                 self.last_spawn_error = (
-                    f'entity {self.model} absent from Gazebo model list; '
-                    f'entities={world.model_names}'
+                    f'entity {self.model} absent from /model_states; '
+                    f'entities={sorted(self.gazebo_model_names)}'
                 )
-                rclpy.spin_once(self, timeout_sec=0.2)
-                continue
-            response = self._service_call(self.entity, min(deadline, time.monotonic() + 2.0),
-                                          lambda request: (setattr(request, 'name', self.model),
-                                                           setattr(request, 'reference_frame', 'world')))
-            if response is not None and response.success:
-                self.last_spawn_error = None
-                return response
-            if response is not None:
-                detail = getattr(response, 'status_message', '')
-                self.last_spawn_error = f'GetEntityState returned success=false for {self.model}'
-                if detail:
-                    self.last_spawn_error += f': {detail}'
             else:
-                self.last_spawn_error = (
-                    self.last_service_error or f'GetEntityState failed for {self.model}')
+                self.last_spawn_error = None
+                self._record_timeline(
+                    'T6_ROBOT_ENTITY_CONFIRMED',
+                    detail=f'entity={self.model}; source=/model_states',
+                )
+                return True
             rclpy.spin_once(self, timeout_sec=0.2)
-        return None
+        return False
 
     def _spawn_log_errors(self):
         if not self.log_path:
@@ -397,12 +596,30 @@ class Readiness(Node):
         self.hardware_interfaces = set()
         self.controller_topic_names = set()
         self.controller_failure = 'controller manager did not respond'
+        active_timeline_names = {
+            'joint_state_broadcaster': 'T8_JOINT_STATE_BROADCASTER_ACTIVE',
+            'steering_controller': 'T9_STEERING_CONTROLLER_ACTIVE',
+            'drive_controller': 'T10_DRIVE_CONTROLLER_ACTIVE',
+        }
         while time.monotonic() < deadline:
+            if self.controllers.service_is_ready():
+                self._record_timeline(
+                    'T7_CONTROLLER_MANAGER_READY',
+                    detail='service=/controller_manager/list_controllers',
+                )
             response = self._service_call(
                 self.controllers,
                 min(deadline, time.monotonic() + CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S),
             )
             self.controller_states = {c.name: c.state for c in response.controller} if response else {}
+            if response:
+                self._capture_log_timeline()
+                for controller_name, timeline_name in active_timeline_names.items():
+                    if self.controller_states.get(controller_name) == 'active':
+                        self._record_timeline(
+                            timeline_name,
+                            detail=f'{controller_name}=active; source=list_controllers',
+                        )
             inactive = {name: self.controller_states.get(name, 'missing')
                         for name in names if self.controller_states.get(name) != 'active'}
             if inactive:
@@ -525,7 +742,8 @@ class Readiness(Node):
     def check(self, timeout):
         started, deadline = time.monotonic(), time.monotonic() + timeout
         self.deadline = deadline
-        result = {'stages': {}, 'startup_wall_time': None, 'nav_ready': False, 'reason': None}
+        result = {'stages': {}, 'startup_wall_time': None, 'startup_timeline': [],
+                  'spawn_entity_duration_s': None, 'nav_ready': False, 'reason': None}
 
         if not self._stage(
             result, 'GAZEBO_PROCESS_READY', self._gazebo_process_present,
@@ -554,19 +772,17 @@ class Readiness(Node):
             actual_types = dict(self.get_service_names_and_types()).get('/spawn_entity', [])
             return self._finish(result, f'/spawn_entity unavailable or wrong type: {actual_types}')
 
-        # Query the Gazebo world only after its clock and factory service have
-        # become discoverable.  On a cold VMware guest the factory can appear
-        # before the world-properties client is ready to answer requests.
-        world = self._service_call(self.world, min(deadline, time.monotonic() + 5.0))
-        if world is None or not world.success:
-            error = self.last_service_error or getattr(
-                world, 'status_message', 'unknown Gazebo service error')
-            self._report_stage(result, 'GAZEBO_WORLD_READY', False,
-                               f'get_world_properties_failed:{error}')
-            return self._finish(result, f'Gazebo world query failed: {error}')
+        # Humble's standard Gazebo launch does not load the legacy world
+        # properties service plugin. Confirm a live Gazebo world-state sample
+        # instead; this same stream verifies the robot after SpawnEntity.
+        if not self._stage(
+            result, 'GAZEBO_WORLD_READY', lambda: self.model_states_seen,
+            'live_topic=/model_states', 'no_live_sample:/model_states',
+        ):
+            return self._finish(result, 'Gazebo /model_states is not publishing')
         self._report_stage(result, 'GAZEBO_WORLD_READY', True,
-                           success_detail=' service=/get_world_properties')
-        print(f'GAZEBO_WORLD={world.model_names}', flush=True)
+                           success_detail=f' models={len(self.gazebo_model_names)} topic=/model_states')
+        print(f'GAZEBO_WORLD={sorted(self.gazebo_model_names)}', flush=True)
 
         if not self._stage(
             result, 'ROBOT_DESCRIPTION_SERVICE_READY',
@@ -579,16 +795,13 @@ class Readiness(Node):
         try:
             description_root = ET.fromstring(description) if description else None
             description_valid = bool(
-                description_root is not None and description_root.tag == 'robot'
-                and description_root.attrib.get('name') == self.model
-                and description_root.find('link') is not None
-                and description_root.find('joint') is not None
-            )
+                description_root is not None and self._is_swerve_description(description_root))
         except ET.ParseError as exc:
             description_valid = False
             self.last_service_error = f'invalid robot_description XML: {exc}'
         if not description_valid:
-            error = self.last_service_error or f'robot_description missing or invalid for {self.model}'
+            error = self.last_service_error or (
+                f'robot_description missing or lacks required swerve links/joints for {self.model}')
             self._report_stage(result, 'ROBOT_DESCRIPTION_READY', False, error)
             return self._finish(result, f'robot_description validation failed: {error}')
         self._report_stage(
@@ -597,10 +810,11 @@ class Readiness(Node):
                            f'joints={len(description_root.findall("joint"))}',
         )
 
-        entity_response = self._wait_entity(deadline)
-        result['stages']['ROBOT_SPAWNED'] = bool(entity_response is not None and entity_response.success)
+        entity_confirmed = self._wait_entity(deadline)
+        result['stages']['ROBOT_SPAWNED'] = entity_confirmed
         if result['stages']['ROBOT_SPAWNED']:
-            print(f'ROBOT_SPAWNED=PASS entity={self.model}', flush=True)
+            self._report_stage(result, 'ROBOT_SPAWNED', True,
+                               success_detail=f' entity={self.model}')
         else:
             reason = self.last_spawn_error or f'entity_not_created:{self.model}'
             spawn_log_errors = self._spawn_log_errors()
@@ -710,6 +924,10 @@ class Readiness(Node):
                 # The production launcher leaves lifecycle nodes unconfigured
                 # until this gate has verified Gazebo, controls, TF, and sensors.
                 if all(state == 1 for state in lifecycle_states.values()):
+                    self._record_timeline(
+                        'T15_NAV2_LIFECYCLE_STARTUP_BEGIN',
+                        detail='calling lifecycle_manager_navigation STARTUP',
+                    )
                     response = self._service_call(
                         self.nav_lifecycle_manager,
                         deadline,
@@ -775,10 +993,12 @@ class Readiness(Node):
         ready_label = 'Mapping stack READY' if self.mode == 'mapping' else 'Navigation stack READY'
         print(ready_label, flush=True)
         print('NAV_READY PASS', flush=True)
+        self._print_startup_timeline(result)
         return result
 
     def _finish(self, result, reason):
         result['reason'] = reason
+        self._print_startup_timeline(result)
         print(f'NAV_READY FAIL: {reason}', flush=True)
         if self.log_path:
             print(f'RELEVANT_LOG={self.log_path}', flush=True)

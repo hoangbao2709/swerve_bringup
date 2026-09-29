@@ -3,6 +3,12 @@
 # GUI and RViz default to off; --headless and the --no-* switches remain aliases.
 set -euo pipefail
 
+# Share one monotonic startup origin with the readiness probe.  /proc/uptime
+# uses the kernel monotonic clock and avoids wall-clock/NTP adjustments.
+read -r STACK_START_MONOTONIC_S _ < /proc/uptime
+export WARETWIN_STACK_START_MONOTONIC_S="$STACK_START_MONOTONIC_S"
+echo "T0_START_STACK=PASS monotonic_s=$STACK_START_MONOTONIC_S"
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/scripts/stack_common.sh"
@@ -369,9 +375,22 @@ for _ in $(seq 1 45); do
   if rg -q '\[ERROR\].*(Caught exception|package .+ not found|Unable to find package|failed)' "$(stack_log_file ros)"; then
     break
   fi
-  if rg -q 'process started with pid' "$(stack_log_file ros)"; then
-    ros_ready=1
-    break
+  gazebo_marker="$(rg -o '\[gzserver-[^]]+\]: process started with pid \[[0-9]+\]' \
+    "$(stack_log_file ros)" | head -n1 || true)"
+  if [[ -n "$gazebo_marker" ]]; then
+    gazebo_pid="$(sed -nE 's/.*pid \[([0-9]+)\].*/\1/p' <<<"$gazebo_marker")"
+    gazebo_comm=""
+    if [[ -r "/proc/$gazebo_pid/comm" ]]; then
+      IFS= read -r gazebo_comm < "/proc/$gazebo_pid/comm" || true
+    fi
+    if [[ "$gazebo_comm" == gzserver ]]; then
+      read -r GAZEBO_STARTED_MONOTONIC_S _ < /proc/uptime
+      export WARETWIN_GAZEBO_STARTED_MONOTONIC_S="$GAZEBO_STARTED_MONOTONIC_S"
+      export WARETWIN_GAZEBO_PID="$gazebo_pid"
+      echo "T1_GAZEBO_PROCESS_STARTED=PASS pid=$gazebo_pid monotonic_s=$GAZEBO_STARTED_MONOTONIC_S"
+      ros_ready=1
+      break
+    fi
   fi
   if ! stack_owned_pid ros && ! stack_owned_group ros; then
     break
@@ -417,14 +436,13 @@ ros_readiness_report() {
   )
 }
 
-# Nav2 and Gazebo initialize concurrently. On a resource-constrained VM the
-# robot can be spawned after lifecycle servers have already started, so keep a
-# generous finite gate rather than reporting a false startup failure.
-# The published warehouse world includes a canonical floor mesh. On this
-# VMware guest the live Gazebo SpawnEntity request took about 17 minutes to
-# return after a cold start. Keep an explicit bounded readiness gate long
-# enough for that observed load; every stage still advances only on live data.
-ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-1800}"
+# Nav2 and Gazebo initialize concurrently, but readiness still requires live
+# samples at every critical stage. The previous 986 s SpawnEntity request
+# coincided with kernel-reported VMware virtual-disk timeouts and ext4 journal
+# I/O errors. A clean production-profile probe now inserts the robot in 28 s;
+# cap retries at ten minutes so storage stalls fail safely instead of holding
+# startup open for the old 30-minute allowance.
+ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-600}"
 if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); then
   echo "Invalid WARETWIN_ROS_READY_TIMEOUT_S=$ROS_READY_TIMEOUT_S; use a positive integer" >&2
   stack_kill_owned ros; stack_kill_owned frontend; stack_kill_owned backend
@@ -437,6 +455,10 @@ last_ros_report=''
 READINESS_PROBE_TIMEOUT_S="${WARETWIN_READINESS_PROBE_TIMEOUT_S:-120}"
 if ! [[ "$READINESS_PROBE_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( READINESS_PROBE_TIMEOUT_S < 2 )); then
   echo "Invalid WARETWIN_READINESS_PROBE_TIMEOUT_S=$READINESS_PROBE_TIMEOUT_S; use an integer >= 2" >&2
+  stack_kill_owned ros || true
+  stack_kill_owned frontend || true
+  stack_kill_owned backend || true
+  rm -f "$STACK_RUNTIME_DIR/stack.env"
   exit 2
 fi
 ready_deadline=$((SECONDS + ROS_READY_TIMEOUT_S))
@@ -455,14 +477,21 @@ while (( SECONDS < ready_deadline )); do
 done
 if ((ros_ready == 0)); then
   echo "${last_ros_report:-[FAIL] readiness probe did not return a snapshot}"
-  if ! stack_owned_pid ros && ! stack_owned_group ros; then
-    echo "ROS/Gazebo launch exited during readiness; cleaning its remaining web processes." >&2
-    stack_kill_owned frontend
-    stack_kill_owned backend
-    rm -f "$STACK_RUNTIME_DIR/stack.env"
+  echo "[FAIL] ${MODE^} stack NOT READY; stopping only this stack's process groups and preserving logs." >&2
+  cleanup_failed=0
+  for component in ros frontend backend; do
+    component_pgid="$(stack_pgid "$component" 2>/dev/null || true)"
+    stack_kill_owned "$component" || cleanup_failed=1
+    if stack_group_has_live_process "$component_pgid"; then
+      echo "[FAIL] $component process group $component_pgid still has live processes" >&2
+      cleanup_failed=1
+    fi
+  done
+  rm -f "$STACK_RUNTIME_DIR/stack.env"
+  if ((cleanup_failed)); then
+    echo "[FAIL] startup cleanup was incomplete; inspect $(stack_log_file ros) and $(stack_log_file ros_bridge)." >&2
   else
-    echo "[FAIL] ${MODE^} stack NOT READY"
-    echo "Stack processes are left running for debugging. See $(stack_log_file ros) and $(stack_log_file ros_bridge)." >&2
+    echo "[OK] startup child processes stopped; logs preserved in $STACK_LOG_DIR." >&2
   fi
   exit 1
 fi

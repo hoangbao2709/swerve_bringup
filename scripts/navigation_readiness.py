@@ -12,6 +12,7 @@ from gazebo_msgs.srv import GetEntityState
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from lifecycle_msgs.srv import GetState
 from nav_msgs.msg import OccupancyGrid, Odometry
+from nav2_msgs.srv import ManageLifecycleNodes
 from rcl_interfaces.srv import GetParameters
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
@@ -37,6 +38,7 @@ NAV2_LIFECYCLE_NODES = (
     'bt_navigator',
     'waypoint_follower',
 )
+CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S = 10.0
 
 # Both map_server and SLAM Toolbox publish the canonical map with the ROS map
 # QoS (reliable + transient-local). A volatile sensor-data subscriber can miss
@@ -89,6 +91,9 @@ class Readiness(Node):
         self.controllers = self.create_client(ListControllers, '/controller_manager/list_controllers')
         names = NAV2_LIFECYCLE_NODES if self.mode == 'navigation' else ()
         self.lifecycle = {name: self.create_client(GetState, f'/{name}/get_state') for name in names}
+        self.nav_lifecycle_manager = (
+            self.create_client(ManageLifecycleNodes, '/lifecycle_manager_navigation/manage_nodes')
+            if self.mode == 'navigation' else None)
         self.map_parameters = self.create_client(GetParameters, '/map_server/get_parameters')
         self.action = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.tf = Buffer()
@@ -178,7 +183,10 @@ class Readiness(Node):
     def _wait_controllers(self, deadline):
         names = ('joint_state_broadcaster', 'steering_controller', 'drive_controller')
         while time.monotonic() < deadline:
-            response = self._service_call(self.controllers, min(deadline, time.monotonic() + 2.0))
+            response = self._service_call(
+                self.controllers,
+                min(deadline, time.monotonic() + CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S),
+            )
             states = {c.name: c.state for c in response.controller} if response else {}
             if all(states.get(name) == 'active' for name in names):
                 return True
@@ -194,6 +202,13 @@ class Readiness(Node):
             if all(state == 3 for state in states.values()):
                 return states
             rclpy.spin_once(self, timeout_sec=0.2)
+        return states
+
+    def _lifecycle_snapshot(self, deadline):
+        states = {}
+        for name, client in self.lifecycle.items():
+            response = self._service_call(client, min(deadline, time.monotonic() + 2.0))
+            states[name] = response.current_state.id if response else None
         return states
 
     def _wait_map_file(self, deadline):
@@ -259,21 +274,28 @@ class Readiness(Node):
                            lambda: tf_exists('odom', 'base_link'),
                            'TF odom -> base_link', 'TF odom -> base_link did not resolve before timeout'):
             return self._finish(result, 'TF odom -> base_link unavailable')
-        if not self._topic_stage(result, 'MAP_READY', '/map', 'map_seen'):
-            return self._finish(result, '/map exists but no message received')
-
-        if not self._stage(result, 'GLOBAL_TF_READY',
-                           lambda: tf_exists('map', 'odom') and tf_exists('map', 'base_link'),
-                           'TF map -> odom -> base_link',
-                           'TF map -> odom -> base_link did not resolve before timeout'):
-            return self._finish(result, 'global TF chain map->odom->base_link unavailable')
-
         if self.mode == 'mapping':
+            if not self._topic_stage(result, 'MAP_READY', '/map', 'map_seen'):
+                return self._finish(result, '/map exists but no message received')
+            if not self._stage(result, 'GLOBAL_TF_READY',
+                               lambda: tf_exists('map', 'odom') and tf_exists('map', 'base_link'),
+                               'TF map -> odom -> base_link',
+                               'TF map -> odom -> base_link did not resolve before timeout'):
+                return self._finish(result, 'global TF chain map->odom->base_link unavailable')
             slam_ok = self._stage(result, 'SLAM_READY', lambda: self._node_present('slam_toolbox'),
                                   'SLAM Toolbox', 'SLAM Toolbox node is not running')
             if not slam_ok:
                 return self._finish(result, 'SLAM Toolbox is not running')
         else:
+            # The V30E simulation owns map->odom in navigation mode. Wait for
+            # that live transform and the local odom chain before activating
+            # Nav2, so its costmaps never enter their lifecycle transition
+            # without the robot's required TF being available.
+            if not self._stage(result, 'GLOBAL_TF_READY',
+                               lambda: tf_exists('map', 'odom') and tf_exists('map', 'base_link'),
+                               'TF map -> odom -> base_link',
+                               'TF map -> odom -> base_link did not resolve before timeout'):
+                return self._finish(result, 'global TF chain map->odom->base_link unavailable')
             nav_nodes_ok = True
             for name in NAV2_LIFECYCLE_NODES:
                 node_ok = self._stage(
@@ -283,7 +305,23 @@ class Readiness(Node):
                 nav_nodes_ok = nav_nodes_ok and node_ok
             if not nav_nodes_ok:
                 return self._finish(result, 'one or more required Nav2 nodes are not running')
-            lifecycle_states = self._wait_lifecycle(deadline)
+            lifecycle_states = self._lifecycle_snapshot(deadline)
+            if not all(state == 3 for state in lifecycle_states.values()):
+                # start_stack sets autostart=false while Gazebo is cold, then
+                # this single readiness participant requests normal Nav2
+                # lifecycle startup once all lower-layer prerequisites pass.
+                # Direct launches keep the navigation.launch.py default.
+                if all(state == 1 for state in lifecycle_states.values()):
+                    response = self._service_call(
+                        self.nav_lifecycle_manager,
+                        deadline,
+                        lambda request: setattr(request, 'command', ManageLifecycleNodes.Request.STARTUP),
+                    )
+                    if response is None or not response.success:
+                        return self._finish(result, 'Nav2 lifecycle manager startup request failed')
+                    result['stages']['NAV2_STARTUP_REQUESTED'] = True
+                    print('NAV2_STARTUP_REQUESTED=PASS', flush=True)
+                lifecycle_states = self._wait_lifecycle(deadline)
             lifecycle_ok = bool(lifecycle_states) and all(
                 lifecycle_states.get(name) == 3 for name in NAV2_LIFECYCLE_NODES
             )

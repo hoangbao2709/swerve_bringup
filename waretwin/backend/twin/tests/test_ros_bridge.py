@@ -206,6 +206,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
         old_connected = set(runtime.connected_robot_ids)
         old_heartbeats = dict(runtime.robot_bridge_heartbeats)
         old_bridge_connected = runtime.ros_bridge_connected
+        old_r02_bridge = registry.consumers.pop('R02', None)
         try:
             runtime.runtime_mode = 'GAZEBO_ROS'
             runtime.connected_robot_ids = {'R01'}
@@ -219,6 +220,51 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.connected_robot_ids = old_connected
             runtime.robot_bridge_heartbeats = old_heartbeats
             runtime.ros_bridge_connected = old_bridge_connected
+            if old_r02_bridge is not None:
+                registry.consumers['R02'] = old_r02_bridge
+
+    async def test_live_authenticated_bridge_heartbeat_restores_its_robot_id(self):
+        old_mode = runtime.runtime_mode
+        old_connected = set(runtime.connected_robot_ids)
+        old_heartbeats = dict(runtime.robot_bridge_heartbeats)
+        old_bridge_connected = runtime.ros_bridge_connected
+        old_bridge_status = runtime.bridge_status
+        old_nav2_state = runtime.nav2_state
+        old_diagnostics = deepcopy(runtime.ros_diagnostics)
+        old_r01_bridge = registry.consumers.get('R01')
+
+        class LiveBridge:
+            robot_id = 'R01'
+
+        try:
+            runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.connected_robot_ids.clear()
+            runtime.robot_bridge_heartbeats.clear()
+            runtime.ros_bridge_connected = False
+            runtime.bridge_status = 'DISCONNECTED'
+            registry.consumers['R01'] = LiveBridge()
+
+            await runtime.handle_ros_message({
+                'type': 'HEARTBEAT', 'robot_id': 'R01',
+                'bridge_state': 'CONNECTED', 'nav2_state': 'ACTIVE',
+            })
+
+            self.assertEqual(runtime.online_robot_ids(), ['R01'])
+            self.assertTrue(runtime.ros_bridge_connected)
+            self.assertEqual(runtime.bridge_status, 'CONNECTED')
+            self.assertNotIn('R02', runtime.connected_robot_ids)
+        finally:
+            runtime.runtime_mode = old_mode
+            runtime.connected_robot_ids = old_connected
+            runtime.robot_bridge_heartbeats = old_heartbeats
+            runtime.ros_bridge_connected = old_bridge_connected
+            runtime.bridge_status = old_bridge_status
+            runtime.nav2_state = old_nav2_state
+            runtime.ros_diagnostics = old_diagnostics
+            if old_r01_bridge is None:
+                registry.consumers.pop('R01', None)
+            else:
+                registry.consumers['R01'] = old_r01_bridge
 
 
 class RosBridgeIdentityTests(IsolatedAsyncioTestCase):

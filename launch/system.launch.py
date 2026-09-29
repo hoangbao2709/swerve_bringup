@@ -48,6 +48,9 @@ def generate_launch_description():
         'proper_caster_mu1', 'proper_caster_mu2', 'caster_swivel_friction',
         'caster_swivel_damping', 'caster_roll_friction', 'caster_roll_damping')}
     mode = LaunchConfiguration('mode')
+    defer_nav2_start = LaunchConfiguration('defer_nav2_start')
+    nav2_autostart = PythonExpression([
+        "'false' if '", defer_nav2_start, "' == 'true' else 'true'"])
     mapping_mode = IfCondition(PythonExpression(["'", mode, "' == 'mapping'"]))
     navigation_mode = IfCondition(PythonExpression(["'", mode, "' == 'navigation'"]))
     simulated_mapping_mode = IfCondition(PythonExpression([
@@ -255,6 +258,7 @@ def generate_launch_description():
         condition=navigation_mode)
     nav = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'navigation.launch.py')),
                                   launch_arguments={'use_sim_time': use_sim_time,
+                                                    'autostart': nav2_autostart,
                                                     'map_file': map_file,
                                                     'allow_dev_map': allow_dev_world}.items(),
                                   condition=navigation_mode)
@@ -304,6 +308,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim', default_value='true', description='true=Gazebo, false=physical robot drivers'),
+        DeclareLaunchArgument('defer_nav2_start', default_value='false',
+                              description='Wait for the ROS readiness gate before starting Nav2 lifecycle nodes.'),
         DeclareLaunchArgument('allow_dev_world', default_value='false',
                               description='Explicitly permit development world/map fallback.'),
         DeclareLaunchArgument('map_sync_request_file', default_value='.runtime/map-sync-request.json'),

@@ -17,6 +17,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from controller_manager_msgs.srv import ListControllers
 from rclpy.action import ActionClient
+from rclpy.clock import Clock as RclpyClock, ClockType
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
@@ -42,6 +43,10 @@ def yaw_from_quaternion(q) -> float:
 class SwerveBridge(Node):
     def __init__(self):
         super().__init__('swerve_bridge')
+        # WebSocket leases and manual dead-man expiry are measured with
+        # time.monotonic(), so their servicing must not slow down with Gazebo's
+        # simulation clock (which can run far below real time in VMware).
+        self._wall_clock = RclpyClock(clock_type=ClockType.STEADY_TIME)
         self.declare_parameter('robot_id', 'R01')
         self.declare_parameter('namespace', '')
         self.declare_parameter('runtime_state', 'MAPPING')
@@ -217,9 +222,11 @@ class SwerveBridge(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_timer(1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)), self.detail_timer)
         self.create_timer(self.telemetry_period, self.telemetry_timer)
-        self.create_timer(1.0 / max(0.1, float(self.get_parameter('heartbeat_rate').value)), self.heartbeat_timer)
-        self.create_timer(0.05, self.manual_timer)
-        self.create_timer(0.05, self.process_commands)
+        self.create_timer(
+            1.0 / max(0.1, float(self.get_parameter('heartbeat_rate').value)),
+            self.heartbeat_timer, clock=self._wall_clock)
+        self.create_timer(0.05, self.manual_timer, clock=self._wall_clock)
+        self.create_timer(0.05, self.process_commands, clock=self._wall_clock)
         self.thread = threading.Thread(target=self.websocket_loop, daemon=True)
         self.thread.start()
 

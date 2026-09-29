@@ -590,8 +590,20 @@ class TwinRuntime:
             await self.broadcast(data)
         elif kind == 'HEARTBEAT':
             robot_id = str(data.get('robot_id') or '').strip()
-            if not robot_id or robot_id not in self.connected_robot_ids:
+            if not robot_id:
                 return
+            if robot_id not in self.connected_robot_ids:
+                # The authenticated bridge socket can outlive an in-memory
+                # runtime reset/reload. Its consumer identity is established
+                # by RosBridgeConsumer.connect(), which validates the bridge
+                # token and overwrites any reported robot_id before dispatch.
+                # Let only that still-registered socket restore its own ID;
+                # arbitrary heartbeat packets must never create fleet entries.
+                from .ros_bridge_consumer import registry
+                bridge = registry.consumers.get(robot_id)
+                if bridge is None or str(getattr(bridge, 'robot_id', robot_id)) != robot_id:
+                    return
+                self.connected_robot_ids.add(robot_id)
             self.last_ros_heartbeat = time.monotonic()
             self.robot_bridge_heartbeats[robot_id] = self.last_ros_heartbeat
             self.ros_bridge_connected = bool(self.connected_robot_ids)

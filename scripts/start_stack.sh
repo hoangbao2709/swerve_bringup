@@ -112,6 +112,11 @@ fi
 
 FRONTEND_HOST_SELECTED="${FRONTEND_HOST:-0.0.0.0}"
 BACKEND_HOST_SELECTED="${BACKEND_HOST:-0.0.0.0}"
+BACKEND_READY_TIMEOUT_S="${WARETWIN_BACKEND_READY_TIMEOUT_S:-120}"
+if ! [[ "$BACKEND_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( BACKEND_READY_TIMEOUT_S < 1 )); then
+  echo "Invalid WARETWIN_BACKEND_READY_TIMEOUT_S=$BACKEND_READY_TIMEOUT_S; use a positive integer" >&2
+  exit 2
+fi
 BACKEND_URL="http://127.0.0.1:$BACKEND_PORT_SELECTED"
 ROS_WS_URL_SELECTED="ws://127.0.0.1:$BACKEND_PORT_SELECTED/ws/ros"
 FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT_SELECTED"
@@ -144,7 +149,7 @@ setsid env BACKEND_HOST="$BACKEND_HOST_SELECTED" BACKEND_PORT="$BACKEND_PORT_SEL
   > "$(stack_log_file backend)" 2>&1 < /dev/null &
 stack_write_pid backend "$!"
 
-if ! stack_wait_http "$BACKEND_URL/api/health/" 45; then
+if ! stack_wait_http "$BACKEND_URL/api/health/" "$BACKEND_READY_TIMEOUT_S"; then
   echo "Backend did not become healthy; see $(stack_log_file backend)" >&2
   stack_kill_owned backend
   rm -f "$STACK_RUNTIME_DIR/stack.env"
@@ -314,6 +319,12 @@ if ! stack_wait_http "$FRONTEND_URL" 30; then
 fi
 
 ROS_ARGS=(use_sim:=true use_sim_time:=true mode:="$MODE" gui:="$GUI_ARG" start_rviz:="$RVIZ_ARG" robot_id:="$ROBOT_ID" bridge_ws_url:="$ROS_WS_URL_SELECTED" allow_dev_world:="$ALLOW_DEV_WORLD_ARG")
+if [[ "$MODE" == navigation ]]; then
+  # Let the readiness probe start Nav2 only after Gazebo, ros2_control, TF,
+  # and sensor data are live; autostart during a cold VMware world load can
+  # strand controller_server's costmap activation before odom/TF exists.
+  ROS_ARGS+=(defer_nav2_start:=true)
+fi
 [[ -n "$NAMESPACE" ]] && ROS_ARGS+=(namespace:="$NAMESPACE")
 if [[ -n "$WORLD_FILE" ]]; then ROS_ARGS+=(world:="$WORLD_FILE"); fi
 if [[ -n "$MAP_FILE" ]]; then ROS_ARGS+=(map_file:="$MAP_FILE"); fi
@@ -324,15 +335,23 @@ echo "Gazebo GUI=$GUI_ARG RViz=$RVIZ_ARG"
 setsid bash -c '
   set -euo pipefail
   root="$1"; domain="$2"; ws_url="$3"; request_file="$4"; revision="$5"; robot_id="$6"
-  shift 6
+  ros_log="$7"; ros_bridge_log="$8"
+  shift 8
   cd "$root"
   source scripts/ros_env.sh
   export ROS_DOMAIN_ID="$domain" ROS_WS_URL="$ws_url"
-  exec python3 scripts/ros_stack_supervisor.py --request-file "$request_file" \
-    --initial-revision "$revision" --robot-id "$robot_id" -- "$@"
+  # VMware on this host has Fast DDS shared-memory port-lock failures: new
+  # participants see graph entries but intermittently miss ROS data/services.
+  # Use the supported UDPv4 builtin transport consistently for every ROS node
+  # in this simulation, not just transient controller/readiness clients.
+  export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+  python3 scripts/ros_stack_supervisor.py --request-file "$request_file" \
+    --initial-revision "$revision" --robot-id "$robot_id" -- "$@" 2>&1 \
+    | tee "$ros_log" "$ros_bridge_log" >/dev/null
 ' _ "$ROOT_DIR" "$ROS_DOMAIN_ID_SELECTED" "$ROS_WS_URL_SELECTED" "$MAP_SYNC_REQUEST_FILE" \
-  "$PUBLISHED_REVISION" "$ROBOT_ID" ros2 launch swerve_bringup system.launch.py "${ROS_ARGS[@]}" \
-  > >(tee "$(stack_log_file ros)" "$(stack_log_file ros_bridge)" >/dev/null) 2>&1 < /dev/null &
+  "$PUBLISHED_REVISION" "$ROBOT_ID" "$(stack_log_file ros)" "$(stack_log_file ros_bridge)" \
+  ros2 launch swerve_bringup system.launch.py "${ROS_ARGS[@]}" \
+  > /dev/null 2>&1 < /dev/null &
 stack_write_pid ros "$!"
 
 # ros2 launch can fail while child processes such as Gazebo briefly remain
@@ -370,7 +389,18 @@ ros_readiness_report() {
   (
     set +e
     export ROS_DOMAIN_ID="$ROS_DOMAIN_ID_SELECTED"
-    source "$ROOT_DIR/scripts/ros_env.sh" >/dev/null 2>&1 || exit 1
+    # Avoid ros_env.sh's two `ros2 pkg prefix` graph probes here. On the
+    # VMware guest those CLI startups can consume most of a readiness window
+    # while Gazebo is cold. Preserve the Humble + workspace overlay directly.
+    unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH
+    export AMENT_TRACE_SETUP_FILES="${AMENT_TRACE_SETUP_FILES:-}"
+    set +u
+    source /opt/ros/humble/setup.bash || exit 1
+    source "$ROOT_DIR/install/local_setup.bash" || exit 1
+    set -u
+    # Use the same transport as the running stack. The VMware shared-memory
+    # failure otherwise makes this participant miss live odometry samples.
+    export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
     readiness_args=(
       --mode "$MODE"
       --model swerve_base
@@ -389,7 +419,7 @@ ros_readiness_report() {
 # Nav2 and Gazebo initialize concurrently. On a resource-constrained VM the
 # robot can be spawned after lifecycle servers have already started, so keep a
 # generous finite gate rather than reporting a false startup failure.
-ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-300}"
+ROS_READY_TIMEOUT_S="${WARETWIN_ROS_READY_TIMEOUT_S:-900}"
 if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); then
   echo "Invalid WARETWIN_ROS_READY_TIMEOUT_S=$ROS_READY_TIMEOUT_S; use a positive integer" >&2
   stack_kill_owned ros; stack_kill_owned frontend; stack_kill_owned backend
@@ -398,7 +428,7 @@ if ! [[ "$ROS_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( ROS_READY_TIMEOUT_S < 1 )); 
 fi
 ros_ready=0
 last_ros_report=''
-READINESS_PROBE_TIMEOUT_S="${WARETWIN_READINESS_PROBE_TIMEOUT_S:-15}"
+READINESS_PROBE_TIMEOUT_S="${WARETWIN_READINESS_PROBE_TIMEOUT_S:-120}"
 if ! [[ "$READINESS_PROBE_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( READINESS_PROBE_TIMEOUT_S < 2 )); then
   echo "Invalid WARETWIN_READINESS_PROBE_TIMEOUT_S=$READINESS_PROBE_TIMEOUT_S; use an integer >= 2" >&2
   exit 2

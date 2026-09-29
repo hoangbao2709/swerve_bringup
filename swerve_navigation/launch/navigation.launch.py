@@ -101,6 +101,7 @@ def _nav_nodes(context, *, params_default: str, default_map: Path):
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
+    bond_timeout = LaunchConfiguration('bond_timeout')
 
     def nav2_executable(package, executable):
         # Prefer the executable Humble binary when another sourced overlay has
@@ -132,6 +133,11 @@ def _nav_nodes(context, *, params_default: str, default_map: Path):
              parameters=[{
                  'use_sim_time': use_sim_time,
                  'autostart': autostart,
+                 # VMware guests can be descheduled for several seconds while
+                 # Gazebo loads a large canonical world and controllers start.
+                 # Keep Nav2's startup bond from aborting during that transient;
+                 # this changes no planning/control behavior.
+                 'bond_timeout': bond_timeout,
                  'node_names': [
                      'map_server', 'controller_server', 'planner_server', 'behavior_server',
                      'bt_navigator', 'waypoint_follower',
@@ -148,6 +154,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('bond_timeout', default_value='30.0',
+                              description='Lifecycle startup heartbeat grace period in seconds.'),
         DeclareLaunchArgument('map_file', default_value=str(default_map), description='Static Nav2 map YAML'),
         DeclareLaunchArgument('allow_dev_map', default_value='false',
                               description='Explicitly permit the package development Nav2 map.'),

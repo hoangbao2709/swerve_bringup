@@ -243,3 +243,121 @@ These results describe source-level behavior only:
   localization TF, and MQTT broker response in the live system.
 - A deployment-specific physical runtime adapter is not included/configured;
   real-robot mode transitions therefore remain unavailable in this checkout.
+
+## Phase 1C / Phase 2 — current gated acceptance
+
+This section supersedes the previous remaining-startup checklist for this
+attempt. Historical Phase 1B results above remain historical evidence; they
+are not counted as a fresh PASS for the changed controller startup path.
+
+RESTART_ROOT_CAUSE=The retained Phase 1B START_2 log shows JSB and steering
+activation and clean spawner exits. The drive spawner starts next, but no
+`Loading controller 'drive_controller'` appears. Instead, controller_manager
+logs `failed to send response to /controller_manager/list_controllers
+(timeout): client will not receive response`. Installed controller-manager
+2.40.0's `service_caller` creates a new client and calls
+`rclpy.spin_until_future_complete(node, future)` without a response deadline.
+Its `service_timeout` covers endpoint availability only. The failed read-only
+response therefore strands the drive spawner before loading, blocks its exit,
+and prevents every dependent layer from starting. This proves the immediate
+stall mechanism, not a drive-controller configuration or resource claim error.
+Fast DDS's [Humble response implementation](https://github.com/ros2/rmw_fastrtps/blob/humble/rmw_fastrtps_shared_cpp/src/rmw_response.cpp)
+returns this timeout when the service's response writer cannot confirm the
+requester's response reader during discovery. Why that specific endpoint match
+missed its deadline is not established by the retained logs.
+
+RESTART_FIX=Project controller spawner now creates and retains all four service
+clients before its first request, bounds each response wait, removes timed-out
+pending futures, and retries only read-only `list_controllers` requests (at most
+three, serially, on the same client). Load/configure/switch mutations are sent
+once; a missing acknowledgement is reconciled against the resulting controller
+state rather than replayed. Each spawner checks its predecessor is ACTIVE and
+confirms its own ACTIVE state and exact non-overlapping command claims before
+exiting zero. The existing success-only launch event chain is preserved.
+Request/response timing, initial/resulting state, lost replies, and confirmed
+claims are logged. Controller parameters, sensor fidelity, arbitration, and
+deferred Nav2 ownership are unchanged. This fix is source-tested, but has not
+yet passed a production run.
+
+Audit: before this attempt, `stop_stack.sh` found no owned stack processes and
+process inspection found no surviving ROS/Gazebo stack. Controller startup is
+serial; readiness sends no controller-manager queries until arbiter and swerve
+nodes appear. Each Gazebo process constructs a fresh plugin/resource manager;
+the previous log contains no already-loaded or duplicate-interface error.
+Service callers in the spawners use rclpy directly, not the ROS CLI daemon.
+No stack/DDS process cleanup fault was demonstrated, so no cleanup or daemon
+reset was introduced as a speculative fix.
+
+START_1=FAIL
+STOP_CLEAN=PASS (after failed START_1; all managed processes stopped, no stack ROS/Gazebo survivors)
+START_2=UNVERIFIED (not run after the Stage A failure)
+GAZEBO_READY=PASS
+ROBOT_SPAWNED=PASS
+CONTROLLER_MANAGER_READY=UNVERIFIED (plugin manager created, service gate not reached)
+JOINT_STATE_BROADCASTER_ACTIVE=FAIL (new spawner exited before loading)
+STEERING_CONTROLLER_ACTIVE=UNVERIFIED
+DRIVE_CONTROLLER_ACTIVE=UNVERIFIED
+COMMAND_ARBITER_READY=UNVERIFIED
+SWERVE_CONTROLLER_READY=UNVERIFIED
+ODOM_READY=UNVERIFIED
+LIDAR_READY=UNVERIFIED (raw/filtered/scan samples appeared, full gate did not finish)
+TF_READY=UNVERIFIED
+NAV2_READY=UNVERIFIED (no STARTUP request sent)
+BRIDGE_READY=UNVERIFIED
+TEST_ROS_DOMAIN_ID=0 (explicit before start; readiness sourced active stack.env and printed domain 0)
+CONTROLLER_INTERFACES=UNVERIFIED
+IDLE_SELECTED_CMD_ZERO=UNVERIFIED
+STAGE_A_GATE=FAIL
+
+Exact fresh runtime failure: the new JSB spawner attempted to assign its client
+dictionary to `rclpy.Node.clients`, a read-only property, raising
+`AttributeError: can't set attribute 'clients'`. The spawner exited 1 and the
+launch success gate correctly aborted dependent startup. The implementation
+was corrected to `service_clients`, and a real Humble-node constructor test
+now confirms all four persistent clients can be created. This correction was
+compiled and rebuilt but was not production-retested: the requested Stage A
+stop-on-failure gate was honored. This is a new implementation defect exposed
+by the test, separate from the previous drive-spawner DDS response loss.
+
+VM health before/after the attempt: current-boot journal had no matching
+SCSI/DID_TIME_OUT/I/O/ext4/blocked-task/OOM errors. RAM available was about
+5.2–5.3 GiB, swap use 17 MiB, and root filesystem free space 6.0 GiB.
+Storage did not block this attempt. The production path was
+`stop_stack.sh`, `source scripts/ros_env.sh`, `start_stack.sh navigation`,
+headless with canonical revision 21 and robot R01. Gazebo clock advanced;
+`swerve_base` appeared among 56 models; spawn completed in 43.822 seconds.
+The final readiness result was `controller_activation_sequence_not_complete`.
+The failed stack was stopped and no robot motion command was sent.
+
+COMMAND_ARBITER_MANUAL=UNVERIFIED
+WEB_MANUAL_FORWARD=UNVERIFIED
+WEB_MANUAL_BACKWARD=UNVERIFIED
+WEB_MANUAL_LEFT=UNVERIFIED
+WEB_MANUAL_RIGHT=UNVERIFIED
+WEB_MANUAL_ROTATE_LEFT=UNVERIFIED
+WEB_MANUAL_ROTATE_RIGHT=UNVERIFIED
+WEB_MANUAL_STOP=UNVERIFIED
+WEB_MANUAL_TIMEOUT_STOP=UNVERIFIED
+WEB_DISCONNECT_STOP=UNVERIFIED
+MODE_CHANGE_STOP=UNVERIFIED
+COMMAND_ARBITER_ESTOP=UNVERIFIED
+ESTOP_CLEAR_NO_RESUME=UNVERIFIED
+WEB_MANUAL_R01=UNVERIFIED
+FORWARD_GAZEBO_DISPLACEMENT=UNVERIFIED
+FORWARD_ODOM_DISPLACEMENT=UNVERIFIED
+MANUAL_COMMAND_LATENCY_MS=UNVERIFIED
+STAGE_B_GATE=NOT_RUN (Stage A failed)
+
+TESTS=PASS: 19 targeted controller-spawner, launch-chain and readiness pytest
+tests; changed Python compile; bash syntax for startup/stop/common scripts;
+`colcon build --symlink-install` (swerve_bringup); `git diff --check`.
+Regression tests cover lost read responses, reuse of the same client, removal
+of pending futures, bounded exhaustion, mutation acknowledgement loss without
+replay, predecessor ACTIVE requirements, exact/unique claims, and actual Humble
+node construction. Backend/frontend command source did not change, so their
+unrelated suites were not rerun.
+
+REMAINING_ISSUES=The corrected spawner still needs a fresh production START_1,
+STOP_CLEAN and START_2 with all readiness, interface and idle samples PASS.
+Stage B remains unexecuted until that complete gate passes. No phase-2 Web
+manual acceptance or navigation goal was attempted.

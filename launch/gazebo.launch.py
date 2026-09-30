@@ -190,29 +190,27 @@ def generate_launch_description():
     # has completed so controller_manager is available.
     controller_spawners = [
         Node(
-            package='controller_manager',
-            executable='spawner',
+            package='swerve_bringup',
+            executable='controller_spawner',
             name='spawn_joint_state_broadcaster',
             output='screen',
-            # Keep to the controller_manager Humble CLI contract.  The
-            # service/switch timeout flags were added in newer releases and
-            # make the spawner exit immediately on the supported Ubuntu 22.04
-            # + ROS 2 Humble package set.
-            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '180'],
+            # Persistent clients and bounded read-only retries avoid Humble's
+            # infinite service-response wait during Fast DDS discovery.
+            arguments=['joint_state_broadcaster', '--controller-manager-timeout', '180'],
         ),
         Node(
-            package='controller_manager',
-            executable='spawner',
+            package='swerve_bringup',
+            executable='controller_spawner',
             name='spawn_steering_controller',
             output='screen',
-            arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '180'],
+            arguments=['steering_controller', '--controller-manager-timeout', '180'],
         ),
         Node(
-            package='controller_manager',
-            executable='spawner',
+            package='swerve_bringup',
+            executable='controller_spawner',
             name='spawn_drive_controller',
             output='screen',
-            arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '180'],
+            arguments=['drive_controller', '--controller-manager-timeout', '180'],
         ),
     ]
 

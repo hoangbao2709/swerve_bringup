@@ -98,6 +98,12 @@ install(
 )
 
 install(
+  PROGRAMS scripts/controller_spawner.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME controller_spawner
+)
+
+install(
   PROGRAMS scripts/run_acceptance.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME run_acceptance.py

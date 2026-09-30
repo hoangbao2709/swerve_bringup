@@ -361,3 +361,87 @@ REMAINING_ISSUES=The corrected spawner still needs a fresh production START_1,
 STOP_CLEAN and START_2 with all readiness, interface and idle samples PASS.
 Stage B remains unexecuted until that complete gate passes. No phase-2 Web
 manual acceptance or navigation goal was attempted.
+
+## Corrected-spawner production retest — latest attempt
+
+Latest attempt began from clean `web-simulation` commit `d310527`. Source uses
+`service_clients`, contains no assignment to `Node.clients`, and byte comparison
+confirmed the installed spawner matches the corrected source. No rebuild was
+needed before this production retest. Both pre-start and post-failure managed
+stops/process inspections found no stack-owned ROS/Gazebo survivors.
+
+FIRST_FAILING_LAYER=Production startup log guard, before new ROS/Gazebo launch.
+The 20:31 production `start_stack.sh navigation` invocation selected R01,
+canonical revision 21, headless mode, backend port 8001, and ROS domain 0.
+It immediately reported `ROS/Gazebo launch failed`. `logs/ros.log` was still
+dated 20:14:34 and contained the previous run's JSB constructor failure and
+its `[ERROR] ... failed with exit code 1` marker. No current supervisor/launch
+marker was written. Backend/frontend logs had current 20:31 timestamps.
+The parent checks ROS logs immediately after starting an asynchronous shell,
+but the shell sources `ros_env.sh` before opening its `tee` outputs. Thus the
+parent interpreted the old error before tee could reset the log and stopped
+the new process group. The corrected controller spawner never ran in this
+attempt; this was not a newly observed controller or Nav2 failure.
+
+FIX=Initialize current ROS and bridge logs synchronously in the parent before
+spawning the asynchronous managed ROS shell. Preserve each nonempty old log
+under a timestamped `.previous` name, then create an empty current log. Startup
+probes can no longer read old errors or old Gazebo PIDs while the child loads
+its environment. Controller startup and readiness safety gates are unchanged.
+
+START_1=FAIL (stale previous-run log interpreted as current startup failure)
+STOP_CLEAN=PASS (managed failure cleanup plus explicit stop and process inspection)
+START_2=UNVERIFIED (not run after Stage A failure)
+GAZEBO_READY=UNVERIFIED
+ROBOT_SPAWNED=UNVERIFIED
+CONTROLLER_MANAGER_READY=UNVERIFIED
+JSB_ACTIVE=UNVERIFIED
+STEERING_ACTIVE=UNVERIFIED
+DRIVE_ACTIVE=UNVERIFIED
+DRIVE_CONTROLLER_ACTIVE=UNVERIFIED
+COMMAND_ARBITER_READY=UNVERIFIED
+SWERVE_CONTROLLER_READY=UNVERIFIED
+ODOM_READY=UNVERIFIED
+LIDAR_READY=UNVERIFIED
+TF_READY=UNVERIFIED
+NAV2_READY=UNVERIFIED
+BRIDGE_READY=UNVERIFIED
+TEST_ROS_DOMAIN_ID=0 (explicit before start, confirmed in production launch output)
+CONTROLLER_INTERFACES=UNVERIFIED
+IDLE_SELECTED_CMD_ZERO=UNVERIFIED
+STAGE_A_GATE=FAIL
+
+WEB_MANUAL_FORWARD=UNVERIFIED
+WEB_MANUAL_BACKWARD=UNVERIFIED
+WEB_MANUAL_LEFT=UNVERIFIED
+WEB_MANUAL_RIGHT=UNVERIFIED
+WEB_MANUAL_ROTATE_LEFT=UNVERIFIED
+WEB_MANUAL_ROTATE_RIGHT=UNVERIFIED
+WEB_MANUAL_STOP=UNVERIFIED
+WEB_MANUAL_TIMEOUT_STOP=UNVERIFIED
+WEB_DISCONNECT_STOP=UNVERIFIED
+MODE_CHANGE_STOP=UNVERIFIED
+COMMAND_ARBITER_ESTOP=UNVERIFIED
+ESTOP_CLEAR_NO_RESUME=UNVERIFIED
+WEB_MANUAL_R01=UNVERIFIED
+FORWARD_GAZEBO_DISPLACEMENT=UNVERIFIED
+FORWARD_ODOM_DISPLACEMENT=UNVERIFIED
+STAGE_B_GATE=NOT_RUN (Stage A failed; no motion command sent)
+
+STORAGE_HEALTH=PASS: current-boot journal before/after startup had no matching
+SCSI/DID_TIME_OUT/I/O/ext4/blocked-task/OOM errors. Pre-start RAM available
+5.3 GiB, swap use 17 MiB, root filesystem free space 6.0 GiB.
+
+TESTS=PASS: 21 targeted log-initialization, controller-spawner, launch-chain and
+readiness pytest tests; changed Python test compile; `bash -n` for changed
+startup/common shell scripts; `git diff --check`. New regression coverage
+proves previous error/PID text is archived and absent before the next writer
+starts, and ensures log initialization precedes asynchronous ROS startup and
+the error probe. No ROS/backend/frontend source changed in this correction,
+so no unrelated builds or suites were rerun.
+
+REMAINING_ISSUES=The corrected spawner and startup-log fix still need two clean
+production READY runs with controller claims, fresh R01 heartbeat and at least
+30 idle zero samples. The requested diagnose/fix/STOP rule was honored after
+the first failing layer; no additional production run or Stage B motion test
+was performed in this attempt.

@@ -358,6 +358,8 @@ if [[ -n "$PUBLISHED_TAG_FILE" ]]; then ROS_ARGS+=(datamatrix_map_file:="$PUBLIS
 if [[ -n "$PUBLISHED_GRAPH_FILE" ]]; then ROS_ARGS+=(tag_graph_file:="$PUBLISHED_GRAPH_FILE"); fi
 echo "Starting ROS/Gazebo in $MODE mode"
 echo "Gazebo GUI=$GUI_ARG RViz=$RVIZ_ARG"
+stack_prepare_log ros
+stack_prepare_log ros_bridge
 setsid bash -c '
   set -euo pipefail
   root="$1"; domain="$2"; ws_url="$3"; request_file="$4"; revision="$5"; robot_id="$6"

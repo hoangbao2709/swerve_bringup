@@ -8,6 +8,18 @@ mkdir -p "$STACK_RUNTIME_DIR" "$STACK_LOG_DIR"
 stack_pid_file() { printf '%s/%s.pid' "$STACK_RUNTIME_DIR" "$1"; }
 stack_log_file() { printf '%s/%s.log' "$STACK_LOG_DIR" "$1"; }
 
+stack_prepare_log() {
+  local path
+  path="$(stack_log_file "$1")"
+  # Startup probes run in the parent before an asynchronous tee may open the
+  # file. Preserve the old run, then create this run's empty log synchronously
+  # so no historical error or PID can be interpreted as current evidence.
+  if [[ -s "$path" ]]; then
+    mv -- "$path" "$path.previous.$(date +%s%N)"
+  fi
+  : > "$path"
+}
+
 stack_valid_ros_domain() {
   local domain="${1:-}"
   [[ "$domain" =~ ^[0-9]+$ ]] || return 1

@@ -46,6 +46,9 @@ NAV2_LIFECYCLE_NODES = (
 )
 NAV2_REQUIRED_NODES = NAV2_LIFECYCLE_NODES + ('lifecycle_manager_navigation',)
 CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S = 10.0
+# Controller state queries are deliberately much slower than the control loop:
+# the spawners own activation, and readiness only verifies the settled result.
+CONTROLLER_QUERY_INTERVAL_S = 2.0
 # Give Gazebo time to finish loading the published warehouse before requiring
 # the first /clock messages.  Once messages arrive, the three increasing
 # samples must still fit inside the tighter sample window.
@@ -77,6 +80,10 @@ TIMELINE_STAGE_NAMES = {
     'CLOCK_READY': 'T2_CLOCK_READY',
     'GAZEBO_FACTORY_READY': 'T3_SPAWN_SERVICE_READY',
     'ROBOT_SPAWNED': 'T6_ROBOT_ENTITY_CONFIRMED',
+    'CONTROLLER_MANAGER_READY': 'T7_CONTROLLER_MANAGER_READY',
+    'JOINT_STATE_BROADCASTER_ACTIVE': 'T8_JOINT_STATE_BROADCASTER_ACTIVE',
+    'STEERING_CONTROLLER_ACTIVE': 'T9_STEERING_CONTROLLER_ACTIVE',
+    'DRIVE_CONTROLLER_ACTIVE': 'T10_DRIVE_CONTROLLER_ACTIVE',
     'JOINT_STATES_READY': 'JOINT_STATES_READY',
     'ODOM_READY': 'T11_ODOM_READY',
     'FILTERED_ODOM_READY': 'FILTERED_ODOM_READY',
@@ -395,26 +402,41 @@ class Readiness(Node):
             return False
 
     def _command_arbiter_graph_ready(self):
+        return self._command_arbiter_node_ready() and self._swerve_controller_node_ready()
+
+    def _command_arbiter_node_ready(self):
         publishers = self.get_publishers_info_by_topic('/cmd_vel_selected')
-        subscribers = self.get_subscriptions_info_by_topic('/cmd_vel_selected')
         arbiter_publishes_selected = any(
             row.node_name == 'command_arbiter' for row in publishers)
-        controller_subscribes_selected = any(
-            row.node_name == 'swerve_controller' for row in subscribers)
         return bool(self._node_present('command_arbiter')
                     and self.command_owner_seen
-                    and arbiter_publishes_selected
+                    and arbiter_publishes_selected)
+
+    def _swerve_controller_node_ready(self):
+        subscribers = self.get_subscriptions_info_by_topic('/cmd_vel_selected')
+        controller_subscribes_selected = any(
+            row.node_name == 'swerve_controller' for row in subscribers)
+        return bool(self._node_present('swerve_controller')
                     and controller_subscribes_selected)
 
     def _command_arbiter_stage(self, result, deadline):
-        ready = self._spin_until(self._command_arbiter_graph_ready, deadline)
+        ready = self._spin_until(self._command_arbiter_node_ready, deadline)
         return self._report_stage(
             result,
             'COMMAND_ARBITER_READY',
             ready,
-            'command_arbiter_or_cmd_vel_selected_path_unavailable',
-            success_detail=' node=/command_arbiter publisher=/cmd_vel_selected '
-                           'subscriber=/swerve_controller command_owner_observed',
+            'command_arbiter_or_selected_output_unavailable',
+            success_detail=' node=/command_arbiter publisher=/cmd_vel_selected command_owner_observed',
+        )
+
+    def _swerve_controller_stage(self, result, deadline):
+        ready = self._spin_until(self._swerve_controller_node_ready, deadline)
+        return self._report_stage(
+            result,
+            'SWERVE_CONTROLLER_READY',
+            ready,
+            'swerve_controller_or_selected_command_subscription_unavailable',
+            success_detail=' node=/swerve_controller subscriber=/cmd_vel_selected',
         )
 
     @staticmethod
@@ -445,6 +467,10 @@ class Readiness(Node):
 
     def _report_stage(self, result, name, ok, failure_reason=None,
                       success_detail=None):
+        if ok is None:
+            result['stages'][name] = None
+            print(f'{name}=UNVERIFIED reason={failure_reason or "not_checked"}', flush=True)
+            return None
         result['stages'][name] = bool(ok)
         timeline_name = TIMELINE_STAGE_NAMES.get(name)
         if timeline_name:
@@ -614,7 +640,7 @@ class Readiness(Node):
                 matches.append(line.strip()[:500])
         return matches[-3:]
 
-    def _wait_controllers(self, deadline):
+    def _wait_controllers(self, result, deadline):
         names = ('joint_state_broadcaster', 'steering_controller', 'drive_controller')
         required_interfaces = {
             'steer_front_joint/position', 'steer_rear_joint/position',
@@ -626,24 +652,40 @@ class Readiness(Node):
         self.controller_states = {}
         self.hardware_interfaces = set()
         self.controller_topic_names = set()
-        self.controller_failure = 'controller manager did not respond'
+        self.controller_failure = 'controller activation sequence did not complete'
+        self.controller_manager_callable = False
         active_timeline_names = {
             'joint_state_broadcaster': 'T8_JOINT_STATE_BROADCASTER_ACTIVE',
             'steering_controller': 'T9_STEERING_CONTROLLER_ACTIVE',
             'drive_controller': 'T10_DRIVE_CONTROLLER_ACTIVE',
         }
-        while time.monotonic() < deadline:
-            if self.controllers.service_is_ready():
-                self._record_timeline(
-                    'T7_CONTROLLER_MANAGER_READY',
-                    detail='service=/controller_manager/list_controllers',
-                )
+        # The launch event chain starts these nodes only after the drive
+        # controller spawner has exited successfully. Waiting for both graph
+        # endpoints avoids sending list_controllers requests while a spawner is
+        # still configuring/activating a controller.
+        sequence_ready = self._spin_until(
+            lambda: self._node_present('command_arbiter')
+            and self._node_present('swerve_controller'), deadline)
+        last_query_error = None
+        if not sequence_ready:
+            self.controller_failure = 'controller_activation_sequence_not_complete'
+
+        next_query_at = time.monotonic()
+        while sequence_ready and time.monotonic() < deadline:
+            if time.monotonic() < next_query_at:
+                rclpy.spin_once(self, timeout_sec=min(
+                    0.1, max(0.0, next_query_at - time.monotonic())))
+                continue
             response = self._service_call(
                 self.controllers,
                 min(deadline, time.monotonic() + CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S),
             )
-            self.controller_states = {c.name: c.state for c in response.controller} if response else {}
             if response:
+                self.controller_manager_callable = True
+                last_query_error = None
+                self.controller_states = {
+                    c.name: c.state for c in response.controller
+                }
                 self._capture_log_timeline()
                 for controller_name, timeline_name in active_timeline_names.items():
                     if self.controller_states.get(controller_name) == 'active':
@@ -651,18 +693,23 @@ class Readiness(Node):
                             timeline_name,
                             detail=f'{controller_name}=active; source=list_controllers',
                         )
+            else:
+                last_query_error = self.last_service_error or 'list_controllers_response_unavailable'
             inactive = {name: self.controller_states.get(name, 'missing')
                         for name in names if self.controller_states.get(name) != 'active'}
             if inactive:
-                self.controller_failure = 'controllers_not_active:' + ','.join(
-                    f'{name}={state}' for name, state in inactive.items())
-                rclpy.spin_once(self, timeout_sec=0.2)
+                if response:
+                    self.controller_failure = 'controllers_not_active:' + ','.join(
+                        f'{name}={state}' for name, state in inactive.items())
+                elif last_query_error:
+                    self.controller_failure = f'list_controllers_unavailable:{last_query_error}'
+                next_query_at = time.monotonic() + CONTROLLER_QUERY_INTERVAL_S
                 continue
             hardware = self._service_call(
                 self.hardware, min(deadline, time.monotonic() + CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S))
             if hardware is None:
                 self.controller_failure = self.last_service_error or 'hardware interface query failed'
-                rclpy.spin_once(self, timeout_sec=0.2)
+                next_query_at = time.monotonic() + CONTROLLER_QUERY_INTERVAL_S
                 continue
             interface_rows = list(hardware.command_interfaces)
             self.hardware_interfaces = {row.name.lstrip('/') for row in interface_rows}
@@ -676,7 +723,7 @@ class Readiness(Node):
                 if unclaimed:
                     details.append('unclaimed_interfaces=' + ','.join(sorted(unclaimed)))
                 self.controller_failure = ';'.join(details)
-                rclpy.spin_once(self, timeout_sec=0.2)
+                next_query_at = time.monotonic() + CONTROLLER_QUERY_INTERVAL_S
                 continue
             try:
                 self.controller_topic_names = {
@@ -687,12 +734,74 @@ class Readiness(Node):
             missing_topics = required_topics - self.controller_topic_names
             if missing_topics:
                 self.controller_failure = 'missing_command_topics:' + ','.join(sorted(missing_topics))
-                rclpy.spin_once(self, timeout_sec=0.2)
+                next_query_at = time.monotonic() + CONTROLLER_QUERY_INTERVAL_S
                 continue
             self.controller_failure = None
-            return True
-            rclpy.spin_once(self, timeout_sec=0.2)
-        return False
+            break
+
+        manager_failure = None
+        if not self.controller_manager_callable:
+            manager_failure = (
+                'not_queried_until_activation_chain_complete' if not sequence_ready
+                else last_query_error or 'list_controllers_never_responded'
+            )
+        self._report_stage(
+            result, 'CONTROLLER_MANAGER_READY',
+            self.controller_manager_callable if sequence_ready else None,
+            manager_failure,
+            ' service=/controller_manager/list_controllers responded' if self.controller_manager_callable else None,
+        )
+        controller_stages = {
+            'joint_state_broadcaster': 'JOINT_STATE_BROADCASTER_ACTIVE',
+            'steering_controller': 'STEERING_CONTROLLER_ACTIVE',
+            'drive_controller': 'DRIVE_CONTROLLER_ACTIVE',
+        }
+        for name, stage in controller_stages.items():
+            state = self.controller_states.get(name)
+            controller_status = (
+                state == 'active' if state is not None or self.controller_manager_callable
+                else None
+            )
+            self._report_stage(
+                result, stage, controller_status,
+                f'{name}_state={state or "not_observed"}',
+                f' {name}=active' if state == 'active' else None,
+            )
+        return self.controller_failure is None
+
+    def _print_required_status_summary(self, result):
+        """Emit one concise, independently reported startup result per layer."""
+        groups = (
+            ('GAZEBO_READY', ('GAZEBO_PROCESS_READY', 'CLOCK_READY',
+                              'GAZEBO_FACTORY_READY', 'GAZEBO_WORLD_READY')),
+            ('ROBOT_SPAWNED', ('ROBOT_SPAWNED',)),
+            ('CONTROLLER_MANAGER_READY', ('CONTROLLER_MANAGER_READY',)),
+            ('JOINT_STATE_BROADCASTER_ACTIVE', ('JOINT_STATE_BROADCASTER_ACTIVE',)),
+            ('STEERING_CONTROLLER_ACTIVE', ('STEERING_CONTROLLER_ACTIVE',)),
+            ('DRIVE_CONTROLLER_ACTIVE', ('DRIVE_CONTROLLER_ACTIVE',)),
+            ('COMMAND_ARBITER_READY', ('COMMAND_ARBITER_READY',)),
+            ('SWERVE_CONTROLLER_READY', ('SWERVE_CONTROLLER_READY',)),
+            ('ODOM_READY', ('ODOM_READY',)),
+            ('LIDAR_READY', ('LIDAR_RAW_READY', 'LIDAR_FILTERED_READY', 'SCAN_READY')),
+            ('TF_READY', ('TF_READY',)),
+            ('NAV2_READY', tuple(f'NODE_{name.upper()}_READY' for name in NAV2_REQUIRED_NODES)
+             + ('NAV2_LIFECYCLE_READY', 'MAP_FILE_READY', 'ACTION_SERVER_READY')),
+            ('BRIDGE_READY', ('ROS_BRIDGE_R01_READY',)),
+        )
+        for summary_name, stages in groups:
+            observed = [result['stages'].get(name) for name in stages]
+            if all(value is True for value in observed):
+                status = 'PASS'
+                detail = ''
+            elif any(value is False for value in observed):
+                status = 'FAIL'
+                failed = [name for name, value in zip(stages, observed) if value is False]
+                detail = ' failed=' + ','.join(failed)
+            else:
+                status = 'UNVERIFIED'
+                pending = [name for name, value in zip(stages, observed) if value is None]
+                detail = ' not_checked=' + ','.join(pending)
+            print(f'{summary_name}={status}{detail}', flush=True)
 
     def _wait_lifecycle(self, deadline):
         states = {}
@@ -856,7 +965,7 @@ class Readiness(Node):
         if not result['stages']['ROBOT_SPAWNED']:
             return self._finish(result, f'robot spawn failed: {self.last_spawn_error}')
 
-        controllers_ok = self._wait_controllers(deadline)
+        controllers_ok = self._wait_controllers(result, deadline)
         states_text = ','.join(f'{name}={state}' for name, state in self.controller_states.items())
         if controllers_ok:
             self._report_stage(result, 'CONTROLLERS_READY', True,
@@ -882,7 +991,11 @@ class Readiness(Node):
             return self._finish(result, f'required ros2_control controllers not ready: {self.controller_failure}')
 
         if not self._command_arbiter_stage(result, deadline):
+            self._report_stage(result, 'SWERVE_CONTROLLER_READY', None,
+                               'not_checked_after_command_arbiter_failure')
             return self._finish(result, 'command arbiter or selected velocity path is unavailable')
+        if not self._swerve_controller_stage(result, deadline):
+            return self._finish(result, 'swerve controller selected-command path is unavailable')
 
         if not self._topic_stage(result, 'JOINT_STATES_READY', '/joint_states', 'joints_seen'):
             return self._finish(result, 'no valid /joint_states message with required steering/drive joints')
@@ -1026,11 +1139,13 @@ class Readiness(Node):
         ready_label = 'Mapping stack READY' if self.mode == 'mapping' else 'Navigation stack READY'
         print(ready_label, flush=True)
         print('NAV_READY PASS', flush=True)
+        self._print_required_status_summary(result)
         self._print_startup_timeline(result)
         return result
 
     def _finish(self, result, reason):
         result['reason'] = reason
+        self._print_required_status_summary(result)
         self._print_startup_timeline(result)
         print(f'NAV_READY FAIL: {reason}', flush=True)
         if self.log_path:

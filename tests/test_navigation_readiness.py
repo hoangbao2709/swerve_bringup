@@ -61,7 +61,7 @@ def test_command_arbiter_readiness_requires_selected_topic_endpoints_and_owner_s
 
     probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
     probe.command_owner_seen = True
-    probe._node_present = lambda name: name == 'command_arbiter'
+    probe._node_present = lambda name: name in {'command_arbiter', 'swerve_controller'}
     probe.get_publishers_info_by_topic = lambda topic: [
         SimpleNamespace(node_name='command_arbiter')
     ]
@@ -76,6 +76,100 @@ def test_command_arbiter_readiness_requires_selected_topic_endpoints_and_owner_s
     probe.command_owner_seen = True
     probe.get_subscriptions_info_by_topic = lambda topic: []
     assert not probe._command_arbiter_graph_ready()
+
+
+def test_controller_readiness_queries_only_after_launch_chain_and_at_low_rate(
+    readiness_module, monkeypatch, capsys,
+):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe._node_present = lambda _name: True
+    probe._spin_until = lambda predicate, _deadline: predicate()
+    probe.controllers = SimpleNamespace(
+        service_name='/controller_manager/list_controllers',
+        service_is_ready=lambda: True,
+    )
+    probe.hardware = SimpleNamespace(
+        service_name='/controller_manager/list_hardware_interfaces',
+        service_is_ready=lambda: True,
+    )
+    probe.log_path = None
+    probe.stack_start_monotonic = None
+    probe.timeline_events = {}
+    probe.hardware_interfaces = set()
+    probe.controller_topic_names = set()
+    probe.last_service_error = None
+    probe.get_topic_names_and_types = lambda: [
+        ('/steering_controller/commands', []),
+        ('/drive_controller/commands', []),
+    ]
+
+    clock = {'now': 100.0}
+    query_times = []
+    monkeypatch.setattr(readiness_module.time, 'monotonic', lambda: clock['now'])
+    monkeypatch.setattr(
+        readiness_module.rclpy,
+        'spin_once',
+        lambda _node, timeout_sec=0.0: clock.__setitem__('now', clock['now'] + timeout_sec),
+    )
+
+    all_active = {
+        name: 'active' for name in (
+            'joint_state_broadcaster', 'steering_controller', 'drive_controller')
+    }
+    first_states = dict(all_active, steering_controller='inactive')
+
+    def service_call(client, _deadline, prepare=None):
+        if client is probe.controllers:
+            query_times.append(clock['now'])
+            states = first_states if len(query_times) == 1 else all_active
+            return SimpleNamespace(controller=[
+                SimpleNamespace(name=name, state=state) for name, state in states.items()
+            ])
+        return SimpleNamespace(command_interfaces=[
+            SimpleNamespace(name=name, is_claimed=True) for name in (
+                'steer_front_joint/position', 'steer_rear_joint/position',
+                'wheel_front_drive_joint/velocity', 'wheel_rear_drive_joint/velocity')
+        ])
+
+    probe._service_call = service_call
+    result = {'stages': {}}
+
+    assert probe._wait_controllers(result, deadline=clock['now'] + 5.0)
+    assert len(query_times) == 2
+    assert query_times[1] - query_times[0] >= readiness_module.CONTROLLER_QUERY_INTERVAL_S
+    assert result['stages']['CONTROLLER_MANAGER_READY'] is True
+    assert result['stages']['JOINT_STATE_BROADCASTER_ACTIVE'] is True
+    assert result['stages']['STEERING_CONTROLLER_ACTIVE'] is True
+    assert result['stages']['DRIVE_CONTROLLER_ACTIVE'] is True
+    capsys.readouterr()
+
+
+def test_required_readiness_summary_reports_independent_unverified_stages(
+    readiness_module, capsys,
+):
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe._print_required_status_summary({'stages': {
+        'GAZEBO_PROCESS_READY': True,
+        'CLOCK_READY': True,
+        'GAZEBO_FACTORY_READY': True,
+        'GAZEBO_WORLD_READY': True,
+        'ROBOT_SPAWNED': True,
+        'CONTROLLER_MANAGER_READY': True,
+        'JOINT_STATE_BROADCASTER_ACTIVE': True,
+        'STEERING_CONTROLLER_ACTIVE': False,
+        'DRIVE_CONTROLLER_ACTIVE': None,
+    }})
+
+    output = capsys.readouterr().out
+    assert 'GAZEBO_READY=PASS' in output
+    assert 'ROBOT_SPAWNED=PASS' in output
+    assert 'CONTROLLER_MANAGER_READY=PASS' in output
+    assert 'JOINT_STATE_BROADCASTER_ACTIVE=PASS' in output
+    assert 'STEERING_CONTROLLER_ACTIVE=FAIL' in output
+    assert 'DRIVE_CONTROLLER_ACTIVE=UNVERIFIED' in output
+    assert 'BRIDGE_READY=UNVERIFIED' in output
 
 
 def test_spawn_duration_uses_request_and_response_log_timestamps(

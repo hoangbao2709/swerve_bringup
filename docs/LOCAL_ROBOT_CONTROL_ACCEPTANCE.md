@@ -41,14 +41,71 @@ state was later observed as `SYNCED`, so this is an unresolved runtime-state
 transition, not a successful goal. Preview enforcement has not had a live
 negative test.
 
-After rebuilding the final ROS source, a fresh managed restart failed its
-production readiness gate: `NAV_READY FAIL: required ros2_control controllers
-not ready`. The joint-state broadcaster activated, but steering/drive
-controllers did not; controller-manager service calls timed out under heavy
-CPU load. The motion probe was not run against this state. The current-boot
-kernel scan showed no `DID_TIME_OUT`, block-device I/O, ext4, or OOM signature;
-memory available was 3.2 GiB and root storage available was 6.0 GiB. Project
-stack processes were then stopped; unrelated port-8000 service was untouched.
+The earlier post-build restart failed its controller readiness gate: the
+broadcaster activated, steering/drive were not confirmed, and
+`/controller_manager/list_controllers` timed out. No controller YAML defect
+was established. In the Phase 1 production run below, controller activation
+was successful and every expected interface was claimed; the full navigation
+stack still failed later at Nav2 lifecycle startup. No motion command was sent.
+
+### Phase 1: controller startup reliability
+
+ROOT_CAUSE=The launch chain advanced on any spawner process exit, even a
+non-zero exit. Separately, readiness queried `list_controllers` every 0.2 s
+while spawners were activating and replaced a prior valid controller snapshot
+with an empty state after a transient service timeout. The previous run showed
+the manager timeout during steering activation; this run found no controller
+configuration defect.
+
+FIX=Controller spawners now advance only on exit code 0, in dependency order;
+failed activation aborts dependent startup. The command arbiter starts after
+drive activation, then the selected-velocity consumer starts after the arbiter
+process. Controller-manager verification waits for that settled chain, keeps
+one request in flight, and spaces retries by at least 2 s. Readiness reports
+manager/controller/node outcomes separately. Spawner manager-availability
+timeout is 180 s; controller configuration was unchanged.
+
+START_1=FAIL (controller readiness passed; Nav2 lifecycle readiness failed)
+START_2=UNVERIFIED (not run because START_1 did not reach production READY)
+GAZEBO_READY=PASS
+ROBOT_SPAWNED=PASS
+CONTROLLER_MANAGER_READY=PASS
+JOINT_STATE_BROADCASTER_ACTIVE=PASS
+STEERING_CONTROLLER_ACTIVE=PASS
+DRIVE_CONTROLLER_ACTIVE=PASS
+COMMAND_ARBITER_READY=PASS
+SWERVE_CONTROLLER_READY=PASS
+ODOM_READY=PASS
+LIDAR_READY=PASS
+TF_READY=PASS
+NAV2_READY=FAIL
+BRIDGE_READY=UNVERIFIED
+CONTROLLER_INTERFACES=PASS: steer_front_joint/position, steer_rear_joint/position,
+wheel_front_drive_joint/velocity, wheel_rear_drive_joint/velocity were all
+reported claimed by the domain-0 readiness service. Duplicate ownership was
+not separately enumerated after the matching-domain CLI check was omitted.
+IDLE_SELECTED_CMD_ZERO=UNVERIFIED (follow-up CLI was initially bound to ROS
+domain 12 rather than the managed run's domain 0; no matching-domain sample
+was taken).
+
+TESTS=PASS: `./scripts/build_ros.sh` built `swerve_bringup` and `swerve_bridge`;
+10 targeted launch/readiness tests passed; changed Python files compiled;
+`bash -n scripts/start_stack.sh` and `git diff --check` passed.
+
+REMAINING_ISSUES=Nav2 lifecycle manager returned `success=false` after
+`map_server` activation logged `transition invoked while in transition`,
+leaving planner/controller/behavior/BT/waypoint lifecycle nodes inactive. The
+readiness gate stopped before it could verify the R01 bridge heartbeat. The
+bridge WebSocket connected in the same run, but that alone is not heartbeat
+evidence. No second start was attempted and no motion test was run.
+
+The Phase 1 test used the production command `source scripts/ros_env.sh &&
+./scripts/start_stack.sh navigation`, after `stop_stack.sh` and process
+verification. Kernel checks before and during the run found no new storage,
+blocked-task, or OOM signatures; 5.3 GiB memory was available and root storage
+had 6.0 GiB free. The launch reported canonical map revision 21. Stack-owned
+processes were stopped after the failed Nav2 gate; unrelated port-8000 service
+was not touched.
 
 | Item | Result | Evidence / reason |
 |---|---|---|
@@ -95,8 +152,11 @@ These results describe source-level behavior only:
 
 ## Remaining runtime gates
 
-- Diagnose controller-manager/steering/drive spawner response timeouts, then
-  pass `scripts/start_stack.sh navigation --headless` readiness before motion.
+- Diagnose the Nav2 `transition invoked while in transition` startup failure,
+  then pass the complete production readiness gate and perform one clean
+  reproducibility restart.
+- Confirm `/swerve_bridge` plus the backend-observed R01 heartbeat and capture a
+  matching-domain idle `/cmd_vel_selected` zero sample.
 - Retest Web manual forward/STOP after immediate bridge publication; establish
   MANUAL, NAV, and E-STOP ownership before testing further directions/goals.
 - Record start pose, selected goal, planner path, action result, final pose,

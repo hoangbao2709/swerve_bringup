@@ -8,13 +8,25 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler, LogInfo, OpaqueFunction, SetLaunchConfiguration
+from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, RegisterEventHandler, SetLaunchConfiguration, Shutdown
 from launch.conditions import IfCondition
-from launch.event_handlers import OnProcessExit
+from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _advance_after_success(label, actions):
+    """Advance a startup dependency chain only after a clean process exit."""
+    def on_exit(event, _context):
+        returncode = getattr(event, 'returncode', None)
+        if returncode == 0:
+            return actions
+        reason = f'{label} failed with exit code {returncode}; dependent startup is aborted'
+        return [LogInfo(msg=f'[ERROR] {reason}'), Shutdown(reason=reason)]
+
+    return on_exit
 
 
 def resolve_robot_spawn(world_path, robot_id, fallback, allow_dev_world=False):
@@ -186,21 +198,21 @@ def generate_launch_description():
             # service/switch timeout flags were added in newer releases and
             # make the spawner exit immediately on the supported Ubuntu 22.04
             # + ROS 2 Humble package set.
-            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
+            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '180'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_steering_controller',
             output='screen',
-            arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
+            arguments=['steering_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '180'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
             name='spawn_drive_controller',
             output='screen',
-            arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '60'],
+            arguments=['drive_controller', '--controller-manager', '/controller_manager', '--controller-manager-timeout', '180'],
         ),
     ]
 
@@ -237,18 +249,27 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('start_ekf')),
     )
 
-    # Load controllers serially.  gazebo_ros2_control only creates the
-    # controller manager while the spawned entity is being inserted, so a
-    # parallel spawner race leaves /joint_states and /odom silent.
+    # Load controllers serially, and do not advance after a failed spawner.
+    # gazebo_ros2_control creates controller_manager during entity insertion;
+    # each spawner returns success only after its controller is active.
     start_joint_state = RegisterEventHandler(
-        OnProcessExit(target_action=spawn, on_exit=[controller_spawners[0]]))
+        OnProcessExit(target_action=spawn,
+                      on_exit=_advance_after_success('robot entity spawn', [controller_spawners[0]])))
     start_steering = RegisterEventHandler(
-        OnProcessExit(target_action=controller_spawners[0], on_exit=[controller_spawners[1]]))
+        OnProcessExit(target_action=controller_spawners[0],
+                      on_exit=_advance_after_success('joint_state_broadcaster activation',
+                                                     [controller_spawners[1]])))
     start_drive = RegisterEventHandler(
-        OnProcessExit(target_action=controller_spawners[1], on_exit=[controller_spawners[2]]))
-    start_nodes = RegisterEventHandler(
+        OnProcessExit(target_action=controller_spawners[1],
+                      on_exit=_advance_after_success('steering_controller activation',
+                                                     [controller_spawners[2]])))
+    start_command_arbiter = RegisterEventHandler(
         OnProcessExit(target_action=controller_spawners[2],
-                      on_exit=[command_arbiter, swerve_controller, swerve_odometry, ekf]))
+                      on_exit=_advance_after_success('drive_controller activation',
+                                                     [command_arbiter])))
+    start_selected_velocity_consumer = RegisterEventHandler(
+        OnProcessStart(target_action=command_arbiter,
+                       on_start=[swerve_controller, swerve_odometry, ekf]))
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -324,5 +345,6 @@ def generate_launch_description():
         start_joint_state,
         start_steering,
         start_drive,
-        start_nodes,
+        start_command_arbiter,
+        start_selected_velocity_consumer,
     ])

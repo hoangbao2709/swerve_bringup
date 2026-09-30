@@ -564,7 +564,7 @@ bond wait synchronization repair before any Stage B Web motion test. Current
 second-run heartbeat and idle-zero acceptance remain unverified. No Nav Goal,
 Mapping, map persistence, initial pose, or VDA5050 test was performed.
 
-## Bond-patch production verification — latest outcome (2026-09-30)
+## Bond-patch production verification — historical outcome before corrected retest (2026-09-30)
 
 This section supersedes earlier runtime summaries. Initial worktree was clean
 at `c55c21f`; the compatibility library was built. Shell `ldd` resolved the
@@ -651,3 +651,202 @@ REMAINING_ISSUES=Retest two complete production starts with the corrected Nav2
 library environment, verify the live patched process mappings on both, then
 perform Stage B only if all gates pass. Web Teleop remains unverified. No Nav
 Goal, Mapping, Save/Load Map, Init Pose or VDA5050 was tested.
+
+## Corrected bond environment: two production starts and Web manual acceptance (2026-09-30)
+
+Latest evidence supersedes the historical sections above. Source/build began
+clean at `a828cbc`. No controller, bond or Nav2 source was modified during
+this retest. Both starts used `source scripts/ros_env.sh` and
+`./scripts/start_stack.sh navigation`, managed domain 0, production LiDAR,
+headless Gazebo, R01 and canonical revision 21.
+
+```text
+START_1=PASS
+STOP_CLEAN=PASS
+START_2=PASS
+BOND_PATCH_LOADED_START_1=PASS
+BOND_PATCH_LOADED_START_2=PASS
+NAV2_READY_START_1=PASS
+NAV2_READY_START_2=PASS
+BRIDGE_READY_START_1=PASS
+BRIDGE_READY_START_2=PASS
+IDLE_ZERO_START_1=PASS
+IDLE_ZERO_START_2=PASS
+STAGE_A_GATE=PASS
+```
+
+Both starts passed Gazebo/world/spawn, controller_manager, JSB ACTIVE,
+steering ACTIVE, drive ACTIVE, command arbiter, swerve controller, joint
+states, odom/filtered odom, raw/filtered LiDAR, scan, local/global TF and fresh
+R01 backend heartbeat. All six lifecycle nodes were ACTIVE (state 3):
+map_server, controller_server, planner_server, behavior_server, bt_navigator,
+waypoint_follower. `/navigate_to_pose` existed. Exactly one deferred STARTUP
+was issued per start; each response was true and all six bonds formed.
+Startup action gates completed in 108.232 seconds and 120.229 seconds.
+
+Actual `/proc/<pid>/maps` evidence, not shell ldd:
+
+| Process | START_1 PID | START_2 PID | Exact mapped library on both starts |
+| --- | --- | --- | --- |
+| lifecycle_manager_navigation | 101703 | 103957 | `/home/yahboom/swerve_bringup-web-simulation/build/swerve_bringup/libbondcpp.so` |
+| map_server | 101683 | 103942 | `/home/yahboom/swerve_bringup-web-simulation/build/swerve_bringup/libbondcpp.so` |
+| controller_server | 101685 | 103944 | `/home/yahboom/swerve_bringup-web-simulation/build/swerve_bringup/libbondcpp.so` |
+
+The installed library path
+`/home/yahboom/swerve_bringup-web-simulation/install/swerve_bringup/lib/libbondcpp.so`
+is a symlink to that exact build artifact because this is a symlink-install.
+Kernel process mappings report its resolved build path. None of these six
+process mappings contained `/opt/ros/humble/lib/libbondcpp.so`.
+
+On both starts, sequential `ros2 control list_controllers --claimed-interfaces`
+and `list_hardware_interfaces` confirmed ACTIVE controllers and unique claims:
+steering owns `steer_front_joint/position`, `steer_rear_joint/position`; drive
+owns `wheel_front_drive_joint/velocity`, `wheel_rear_drive_joint/velocity`.
+JSB has no command claim. No duplicate command-interface ownership.
+
+START_1: 100 selected-command samples in 2.015748 seconds, zero non-zero.
+START_2: 110 samples in 2.004045 seconds, zero non-zero. Both diagnostics:
+source NONE, mode AUTONOMOUS, E-STOP false, last-command-age null, manual/nav/tag
+inactive. Sole `/cmd_vel_selected` publisher was `command_arbiter`.
+Django health snapshots at 14:40:44Z and 14:45:59Z showed fresh
+`online_robot_ids=["R01"]`, `ros_bridge=true`, `ros=true`.
+
+Fresh ROS/bridge logs on both runs contained none of: transition invoked while
+in transition, StateUndefinedException, bond timeout, undefined symbol,
+symbol lookup error, segfault, segmentation fault. START_1 post-shutdown logs
+were checked too. Clean intervening shutdown removed all managed process
+groups; standalone process check found no stack ROS/Gazebo survivors.
+Storage checks before and between starts found no current-boot SCSI/I/O/OOM
+errors. Available RAM was 5.3 GiB, root free 6.0 GiB; swap was 63 MiB initially
+and 72.7 MiB between starts. No unrelated service was killed (occupied backend
+port 8000 was preserved; production used 8001).
+
+Stage B began only after every Stage A check passed. Its final measured
+results are recorded below.
+
+### Stage B: real Web-compatible commands, mixed physical results
+
+```text
+COMMAND_ARBITER_MANUAL=PASS
+WEB_MANUAL_FORWARD=FAIL (latest repeat below existing displacement threshold)
+WEB_MANUAL_BACKWARD=PASS
+WEB_MANUAL_LEFT=FAIL
+WEB_MANUAL_RIGHT=PASS
+WEB_MANUAL_ROTATE_LEFT=FAIL
+WEB_MANUAL_ROTATE_RIGHT=PASS
+WEB_MANUAL_STOP=PASS
+KEY_RELEASE_STOP=PASS
+BUTTON_RELEASE_STOP=UNVERIFIED (no non-zero output established before release)
+WEB_MANUAL_TIMEOUT_STOP=PASS (eventual stable zero; latency warning below)
+WEB_DISCONNECT_STOP=PASS
+MODE_CHANGE_STOP=FAIL (requested mode not confirmed during latest observation window)
+COMMAND_ARBITER_ESTOP=PASS
+ESTOP_CLEAR_NO_RESUME=PASS
+WEB_MANUAL_R01=FAIL
+STAGE_B_GATE=FAIL
+```
+
+Motion was sent only through authenticated Django WebSocket `ROBOT_MODE` /
+`ROBOT_MANUAL` messages, identical to the frontend protocol. E-STOP used the
+frontend's authenticated Django REST endpoints. ROS probes did not publish
+motion or send action goals. Existing direct-publishers/action client in the
+general probe were destroyed before testing. No direct ROS motion acceptance,
+Nav Goal, Mapping, Save/Load Map, Init Pose or VDA5050 was run.
+
+Each of the six sequential 1.5-simulated-second commands had R01 connected,
+accepted control status, correct `/cmd_vel_manual`, correct selected velocity,
+WEB_MANUAL ownership, changing steering/drive outputs and changing wheel joint
+states. STOP was sent between directions. Feedback used actual `/model_states`
+and `/odom`, converted independently into each start pose's body frame.
+The existing acceptance thresholds were unchanged: Gazebo directional
+displacement >0.05 m/rad and odom >0.025 m/rad. Topic/ACK evidence did not
+override a failed physical threshold.
+
+| Latest motion check | Gazebo expected-direction delta | Odom expected-direction delta | Result |
+| --- | ---: | ---: | --- |
+| Forward | 0.031668 m | 0.022724 m | FAIL |
+| Backward | 0.124142 m | 0.123398 m | PASS |
+| Strafe left | 0.000233 m | 0.002073 m | FAIL |
+| Strafe right | 0.226797 m | 0.218378 m | PASS |
+| Rotate left | 0.031304 rad | 0.125795 rad | FAIL |
+| Rotate right | 0.191683 rad | 0.258534 rad | PASS |
+
+Initial pre-motion actual Gazebo pose was
+`(14.99998856, 5.49994488, 1.57171948)`; odom was
+`(-0.00325680, -0.00000003, 0.00000002)`. The first forward observation produced
+0.090939 m Gazebo and 0.102273 m odom movement, correct owner/output, controller
+ACK and wheel activity (peak 2.295 rad/s). Its auxiliary selected-zero window
+did not collect 30 samples fast enough with the general probe. Motion was
+halted; an independent lightweight subscriber then confirmed 111 zero samples
+over 2.016 seconds, source NONE, all sources inactive. Only the temporary
+probe subscriptions/sample collection were adjusted; no production safety
+setting or threshold was changed. The subsequent full sequence's failed
+forward repeat remains visible above, not replaced by the earlier success.
+
+Left ended with steering joints approximately +1.190/-1.190 rad and peak
+wheel velocity 0.236 rad/s, with only 0.045569 rad wheel position change.
+Rotate-left showed real positive yaw, but Gazebo's 0.031304 rad remained
+below acceptance while odom reported 0.125795 rad. These observations locate
+the failed acceptance at physical response/repeatability downstream of correct
+commands; they do not prove a controller configuration defect or justify
+changing production physics/architecture.
+
+A bounded attempt to recheck the three failed directions with a longer hold
+was aborted before sending any of those motion commands: stationary wheel
+feedback could not be confirmed within 35 seconds. Final wheel velocities
+were approximately -0.050397/+0.048278 rad/s with selected output zero. No
+threshold was relaxed. This baseline/physical settling issue remains open.
+
+Safety observations used a separate lightweight read-only ROS subscriber
+thread so WebSocket processing did not starve selected-command sampling.
+Tests established a live manual source before interruption and required a
+bounded stable zero window with at least 30 samples. The final observations:
+
+- Explicit STOP: 40 stable zero samples; measured Web-send-to-settled-zero
+  0.4514 seconds.
+- No further Web manual heartbeat: 40 stable zero samples; measured settled
+  zero after 1.5082 seconds from the last Web command. This demonstrates
+  eventual STOP, not a 0.40-second end-to-end guarantee. Delayed command
+  processing/source delivery remains a responsiveness concern.
+- WebSocket close during manual control: 40 stable zero samples; 0.5681
+  seconds to settled zero.
+- MANUAL -> AUTONOMOUS request: zero output observed (40 samples, 0.5163
+  seconds), but diagnostics still reported MANUAL during that window, so
+  the latest mode-change check failed. ROS logs later recorded AUTONOMOUS;
+  this does not establish timely ownership transition for the failed probe.
+- E-STOP: selected zero 0.03284 seconds after receipt of the actual ROS
+  E-STOP message; 40 stable zero samples; source ESTOP and E-STOP true.
+  This timing is the arbiter's ROS boundary, not browser-to-robot latency.
+- Clear E-STOP without new motion: 91 zero samples across a 1.801-second
+  stable window, no non-zero sample after clearing, source NONE, E-STOP false,
+  all source-active flags false. No stale motion resumed.
+
+Actual Chromium `RobotControlDetailPage` testing sent pointer and keyboard
+events, not frontend animation. Both releases emitted real `ROBOT_MANUAL STOP`
+frames (about 35 ms and 28 ms after release). Keyboard W had real selected
+non-zero output before keyup and 25 zero samples afterwards: PASS. Pointer
+release emitted STOP and had 25 zero samples afterwards, but even the bounded
+2-second pointer hold did not establish pre-release non-zero output, so that
+case remains UNVERIFIED. No browser page exceptions were recorded on the
+corrected locator run. An initial probe's ambiguous MANUAL-button locator
+failed before the release test and was corrected only in the temporary
+browser harness, not in application source.
+
+After tests, STOP and AUTONOMOUS were requested through Web; the entire managed
+stack was stopped cleanly. No stack-owned ROS/Gazebo process survived.
+Fresh logs through shutdown had none of the specified bond/lifecycle/symbol/
+segfault errors; current-boot storage checks stayed clean. No third production
+startup occurred and no controller/Nav2/bond source changes were made.
+
+TESTS=Runtime Stage A PASS; runtime Stage B FAIL. Static regression PASS:
+25 targeted library-environment/controller-launch/readiness/spawner/log pytest
+tests in 3.03 seconds; temporary probe Python compile and browser JavaScript
+syntax check; git diff check. Frontend/backend/ROS source remained unchanged,
+so no unrelated suites or rebuild were required. Only this acceptance report
+was committed; temporary probe scripts were removed, runtime evidence/logs
+remain ignored and were not staged. Final stack process check was empty.
+
+REMAINING_ISSUES=Physical repeatability/settling for Forward, Left, Rotate Left;
+timely confirmed MANUAL -> AUTONOMOUS ownership transition; pointer hold/
+release with confirmed live output; delayed Web-command-to-zero timing.
+Do not declare Web manual R01 fully accepted from the partial movement passes.

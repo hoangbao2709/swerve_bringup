@@ -1,15 +1,22 @@
 # Local Robot Control Acceptance
 
-Date: 2026-09-30 (Asia/Ho_Chi_Minh)
+Updated: 2026-10-01 (Asia/Ho_Chi_Minh)
 Branch: `web-simulation`
 
 This report separates source/test evidence from live runtime acceptance. A
 passing test or source inspection is not evidence of a rendered map, robot
 motion, a completed Nav2 goal, or successful localization on a running robot.
 
-## Runtime acceptance
+## Evidence ordering
 
-The currently running project stack is stopped. On the earlier healthy
+Sections below retain dated historical failures for traceability; they are not
+the current status. Phase 1 startup is CLOSED/PASS (two production starts,
+patched bondcpp loaded by actual processes, clean stop, bridge and idle zero).
+The latest overnight evidence is recorded at the end of this report.
+
+## Historical runtime acceptance (2026-09-30; superseded)
+
+At the end of that historical session the project stack was stopped. On the earlier healthy
 production `navigation --headless` run (canonical revision 21), the browser
 opened `/robots/R01/control` with no page errors, rendered the 600x1200 `map`
 grid and measured robot pose, received real `/scan` and filtered point-cloud
@@ -1196,3 +1203,66 @@ REMAINING_ISSUES=Trace requested Web frame timestamps through Django forwarding,
 bridge ingress/processing and manual publishing to locate the refresh gaps;
 then repeat all directions and dedicated safety/browser tests. Stage B remains
 FAIL. No Nav Goal test is authorized by this partial result.
+
+## Overnight completion: manual timing (2026-10-01)
+
+Startup remains closed; normal managed restarts to load bridge changes reached
+full READY on ROS domain 0. No controller, lifecycle or bond architecture was
+changed. Current-window kernel checks contained no new storage/SCSI/OOM event.
+
+### Measured first timing divergence
+
+Guarded `WARETWIN_MANUAL_TIMING=1` correlation carries a client sequence and
+T0 sender / T1 consumer / T2 runtime / T3 gateway / T4 bridge receiver /
+T5 mailbox / T6 application / T7 publication. These processes share this VM's
+monotonic clock; cross-host absolute monotonic timestamps are not comparable.
+Production tracing is off unless explicitly enabled and contains no credentials.
+
+The original sender's maximum gaps were T0=188.241 ms, T1=233.845 ms,
+T3=234.605 ms; these did not explain the multi-second loss. Bridge command and
+manual timers were delayed up to 2.973 seconds. Synchronous socket sends peaked
+at only 40.338 ms in that trace, so network sends alone were **not** the proven
+cause. Callback profiling found recurring heartbeat durations of 0.9–1.3 s.
+A separate read-only probe of the live 720,000-cell `/map` took 959.979 ms to
+execute the same complete raster verification. It was repeated every heartbeat
+on the single-threaded ROS executor, starving leased command application.
+
+### Narrow fixes and safety invariants
+
+- Cache only successful map verification, bound to content signature, configured
+  revision, YAML stat and image stat. Changed grid/revision/artifacts invalidate
+  it; full artifact/grid validation remains mandatory before caching.
+- All socket writes now use a dedicated worker: a bounded 64-item FIFO for
+  critical/control results and one pending value per high-rate telemetry type.
+  Overflow fails closed, invalidates manual ownership and reconnects rather
+  than silently dropping critical acknowledgements. Disconnect clears epochs;
+  view changes discard irrelevant pending LiDAR state. Actual 3D send metadata
+  is updated by the socket worker, not on ROS enqueue.
+- The acceptance sender has its own 100-ms wall-clock refresh thread. Diagnostic
+  ROS/WS polling cannot block its cadence. Serialized writes and generations
+  ensure STOP invalidates held motion and no older refresh follows wire STOP.
+- The 0.4-s manual lease, 0.5-s arbiter freshness, steering gating, sensor fidelity,
+  physical tolerances and simulation-time settling model are unchanged.
+
+### Fresh Forward continuity
+
+Held for 4.002 simulation seconds / 25.300 wall seconds. Gazebo body-forward
+displacement +0.842639 m; position-derived odometry +0.801488 m. Start/end Gazebo
+poses (14.999989,5.499947,1.571681) -> (14.999022,6.342585,1.572553).
+All 124 observed arbiter states after the initial 0.5-wall-second acquisition
+window were WEB_MANUAL, with no NONE interruption. Maximum non-zero manual
+topic gap=145.344 ms; selected topic gap=148.088 ms.
+All ingress-correlated refreshes: client=221.270 ms, Django=261.185 ms,
+bridge receive=270.928 ms. Accepted publication correlation gap=254.196 ms;
+mailbox replacement naturally coalesces intermediate commands.
+STOP settled in 1.480 simulation seconds / 8.553 wall seconds, RTF=0.173047,
+with wheel position drift rates 0.000501/0.000498 rad/s and body drift
+0.00005445 m/s. Physics was not modified.
+
+FORWARD_CONTINUITY=PASS. Full direction and safety gates remain pending the
+subsequent sequential tests; this focused pass does not imply Stage B PASS.
+
+Static validation at this checkpoint: 41 targeted Python tests PASS; changed
+Python compile PASS; swerve_bridge symlink build PASS (setuptools deprecation
+warning only); Django check/migration check PASS and 29 targeted tests PASS;
+git diff --check PASS. No frontend/shell source changed.

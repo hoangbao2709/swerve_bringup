@@ -221,6 +221,17 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         })
         self.assertEqual(mode.type, 'ROBOT_MODE')
         self.assertEqual(command.type, 'ROBOT_MANUAL')
+        traced = TypeAdapter(ClientMessage).validate_python({
+            'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'STOP',
+            'sequence_id': 103, 'client_monotonic': 12.5,
+        })
+        self.assertEqual(traced.sequence_id, 103)
+        self.assertEqual(traced.client_monotonic, 12.5)
+        with self.assertRaises(ValueError):
+            TypeAdapter(ClientMessage).validate_python({
+                'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'STOP',
+                'client_monotonic': float('nan'),
+            })
 
     async def test_detail_navigation_messages_are_schema_validated(self):
         goal = TypeAdapter(ClientMessage).validate_python({

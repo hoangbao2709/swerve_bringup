@@ -728,6 +728,8 @@ class CmdRobotManual(_Base):
     type: Literal["ROBOT_MANUAL"] = "ROBOT_MANUAL"
     robot_id: RobotId = Field(min_length=1, max_length=64)
     action: Literal["FORWARD", "BACKWARD", "LEFT", "RIGHT", "ROTATE_LEFT", "ROTATE_RIGHT", "STOP"]
+    sequence_id: Optional[int] = Field(default=None, ge=0)
+    client_monotonic: Optional[float] = Field(default=None, allow_inf_nan=False, ge=0)
 
 
 class CmdNavGoal(_Base):

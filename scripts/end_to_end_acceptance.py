@@ -784,6 +784,7 @@ def set_mode(probe, ws, robot_id, mode, timeout=8.0):
 
 
 def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
+    from manual_refresh import ManualRefreshWorker
     settling = probe.wait_mechanical_settling(ws, timeout=timeout)
     if not settling['passed']:
         return {'passed': False, 'reason': settling['reason'], 'settling': settling}
@@ -798,7 +799,6 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     sim_start = probe.sim_time()
     manual_start_wall = time.monotonic()
     wall_deadline = time.monotonic() + timeout
-    next_send = 0.0
     send_times = []
     command_index = len(probe.manual_cmd_events)
     selected_index = len(probe.selected_cmd_events)
@@ -807,17 +807,19 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     steering_index = len(probe.steering_events)
     joint_index = len(probe.joint_events)
     control_index = len(probe.control_statuses)
-    payload = json.dumps({'type': 'ROBOT_MANUAL', 'robot_id': robot_id, 'action': action})
-    while (probe.sim_time() - sim_start < duration_sim_s
-           and time.monotonic() < wall_deadline):
-        now = time.monotonic()
-        if now >= next_send:
-            ws.send(payload)
-            send_times.append(now)
-            next_send = now + WEB_COMMAND_REFRESH_WALL_S
-        probe.pump(ws, 0.02)
-    stop_time = time.monotonic()
-    ws.send(json.dumps({'type': 'ROBOT_MANUAL', 'robot_id': robot_id, 'action': 'STOP'}))
+    sender = ManualRefreshWorker(lambda payload: ws.send(json.dumps(payload)), robot_id,
+                                 WEB_COMMAND_REFRESH_WALL_S).start()
+    try:
+        sender.hold(action)
+        while (probe.sim_time() - sim_start < duration_sim_s
+               and time.monotonic() < wall_deadline):
+            if sender.error:
+                raise RuntimeError('manual refresh transport failed') from sender.error
+            probe.pump(ws, 0.02)
+        stop_time = time.monotonic()
+    finally:
+        sender.close()
+    send_times = [row['T0'] for row in sender.events if row['action'] == action]
     zero_seen = probe.wait_until(
         lambda: any(row[0] >= stop_time and all(abs(value) <= 1e-4 for value in row[1:])
                     for row in probe.manual_cmd_events[command_index:]),

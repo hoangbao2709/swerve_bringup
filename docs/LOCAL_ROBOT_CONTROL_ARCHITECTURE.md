@@ -97,8 +97,23 @@ For 3D, a one-slot latest-frame buffer separates ROS callbacks from WebSocket
 I/O. One sender worker serializes frames; a new unsent frame replaces stale
 pending data. Disconnect and view changes clear pending frames. Diagnostics
 include source/send timestamps, frame ID, point count, source/output FPS, and
-dropped-frame count. Browser JSON remains compact and bounded. ROS horizontal
+dropped-frame count. All bridge socket writes now pass through a single outbound
+worker. Critical acknowledgements/results have a bounded 64-message priority
+FIFO (overflow invalidates manual control and reconnects); high-rate telemetry
+has one pending value per message type. Network serialization/send never runs
+inside a ROS callback. Disconnect invalidates queued output epochs, and view
+changes discard pending LiDAR state. 3D output metrics are recorded at actual
+wire send, not at enqueue. Browser JSON remains compact and bounded. ROS horizontal
 samples, vertical channels, and sensor update rate are unchanged.
+
+Successful canonical raster verification is cached against the ROS map content,
+configured revision and YAML/image file versions. Any change invalidates the
+cache. This avoids repeating a full map-image comparison every heartbeat on the
+control executor without bypassing map validation. Optional
+`WARETWIN_MANUAL_TIMING=1` tracing correlates client sequence/ingress/mailbox/
+publication timestamps; tracing is disabled by default and contains no secrets.
+Acceptance uses a separate bounded-cadence manual refresh worker, independent
+of ROS and WebSocket diagnostic polling; STOP invalidates held generations.
 
 ## Nav2 path preview and authorization
 

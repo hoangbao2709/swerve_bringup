@@ -39,6 +39,9 @@ class RosBridgeGateway(RobotGateway):
         elif action == 'CONTROL_MODE':
             message['type'] = 'CONTROL_MODE'
         elif action == 'MANUAL_CMD':
+            if '_timing' in message:
+                import time
+                message['_timing'] = dict(message['_timing'], T3=time.monotonic())
             # Keep the wire contract self-describing.  The ROS bridge still
             # enforces its own control_mode, so this field is not a trust
             # boundary; it lets consumers/logs correlate the command with the
@@ -59,4 +62,9 @@ class RosBridgeGateway(RobotGateway):
         else:
             raise ValueError(f'unsupported robot action: {action}')
         sent = await registry.send(message)
+        if '_timing' in message:
+            import logging, json, time
+            logging.getLogger(__name__).warning('MANUAL_DJANGO_TIMING %s', json.dumps({
+                'sequence_id': message.get('sequence_id'), **message['_timing'],
+                'T3_sent': time.monotonic()}))
         return {'ok': sent, 'message': message}

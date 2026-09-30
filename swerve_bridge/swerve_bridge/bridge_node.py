@@ -5,6 +5,7 @@ import hashlib
 import math
 import queue
 from .control_mailbox import ControlMailbox
+from .outbound_mailbox import OutboundMailbox
 import threading
 import os
 import re
@@ -188,6 +189,8 @@ class SwerveBridge(Node):
         self.mode_request_id = None
         self.mode_request_started = 0.0
         self.manual_generation = 0
+        self.manual_timing_enabled = os.environ.get('WARETWIN_MANUAL_TIMING') == '1'
+        self.control_timing = {}
         self.manual_twist = Twist()
         self.manual_deadline = 0.0
         self.emergency_stop_active = False
@@ -216,6 +219,8 @@ class SwerveBridge(Node):
         self.ws = None
         self.ws_lock = threading.Lock()
         self.stop_event = threading.Event()
+        self.outbound = OutboundMailbox()
+        self.outbound_disconnect = threading.Event()
         self.active_map_revision = None
         self.ros_map_revision = self._read_running_world_revision()
         self.nav2_revision = None
@@ -309,15 +314,17 @@ class SwerveBridge(Node):
             self.command_diagnostics_cb, 10)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.create_timer(1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)), self.detail_timer)
-        self.create_timer(self.telemetry_period, self.telemetry_timer)
+        self.create_timer(1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)), self.profile_callback(self.detail_timer))
+        self.create_timer(self.telemetry_period, self.profile_callback(self.telemetry_timer))
         self.create_timer(0.1, self.poll_local_control_confirmations,
                           clock=self._wall_clock)
         self.create_timer(
             1.0 / max(0.1, float(self.get_parameter('heartbeat_rate').value)),
-            self.heartbeat_timer, clock=self._wall_clock)
+            self.profile_callback(self.heartbeat_timer), clock=self._wall_clock)
         self.create_timer(0.05, self.manual_timer, clock=self._wall_clock)
         self.create_timer(0.05, self.process_commands, clock=self._wall_clock)
+        self.outbound_thread = threading.Thread(target=self.outbound_sender, daemon=True)
+        self.outbound_thread.start()
         self.thread = threading.Thread(target=self.websocket_loop, daemon=True)
         self.thread.start()
         self.lidar_sender_thread = threading.Thread(
@@ -327,6 +334,23 @@ class SwerveBridge(Node):
     @staticmethod
     def _normalize_namespace(value) -> str:
         return str(value or '').strip().strip('/')
+
+    def profile_callback(self, callback):
+        if not self.manual_timing_enabled:
+            return callback
+        def measured():
+            started = time.monotonic()
+            try:
+                return callback()
+            finally:
+                elapsed = time.monotonic() - started
+                key = callback.__name__ + '_max_duration'
+                self.control_timing[key] = max(self.control_timing.get(key, 0), elapsed)
+                if elapsed > 0.1:
+                    self.get_logger().info('CALLBACK_TIMING ' + json.dumps({
+                        'callback': callback.__name__, 'duration': elapsed,
+                        'started': started, 'finished': time.monotonic()}))
+        return measured
 
     def _scoped_topic(self, value) -> str:
         """Resolve a configured absolute/relative topic for one robot.
@@ -488,6 +512,7 @@ class SwerveBridge(Node):
             self.detail_view = view
             self.detail_view_epoch += 1
             self.lidar_frame_buffer.clear()
+            self.outbound.discard_views()
             self.last_web_cloud_source_stamp = None
             self.last_scan_publish_monotonic = 0.0
             self.last_cloud_publish_monotonic = 0.0
@@ -522,12 +547,65 @@ class SwerveBridge(Node):
         with self.ws_lock:
             if self.ws is None:
                 return False
+            ws = self.ws
+        try:
+            self.outbound.offer(payload)
+            return True
+        except BufferError:
+            # Never silently lose a safety/control acknowledgement. Fail
+            # closed and invalidate manual ownership if the bounded peer is
+            # unable to keep up; reconnect resets output and command epochs.
+            self.incoming.put({'type': 'MANUAL_DISCONNECT'})
+            self.outbound.clear()
+            self.outbound_disconnect.set()
+            with self.ws_lock:
+                if self.ws is ws:
+                    self.ws = None
+            self.get_logger().error('critical bridge output overflow; manual control invalidated')
+            return False
+
+    def outbound_sender(self):
+        while not self.stop_event.is_set():
+            item = self.outbound.take()
+            if item is None:
+                continue
+            epoch, payload = item
+            with self.ws_lock:
+                ws = self.ws
+            if ws is None or not self.outbound.current(epoch):
+                continue
+            if payload.get('type') == 'LIDAR_MAP_3D' and (
+                    self.detail_view != 'LIDAR_3D' or payload.get('view_epoch') != self.detail_view_epoch):
+                continue
+            started = time.monotonic()
             try:
-                self.ws.send(json.dumps(payload))
-                return True
+                if payload.get('type') == 'LIDAR_MAP_3D':
+                    payload['send_timestamp'] = self.now()
+                    now = time.monotonic()
+                    if self.last_lidar_send_monotonic is not None:
+                        self.lidar_output_intervals.append(now - self.last_lidar_send_monotonic)
+                    payload['web_output_fps'] = self._frequency(self.lidar_output_intervals)
+                    payload['dropped_frames'] = self.lidar_frame_buffer.dropped_frames + self.outbound.dropped
+                ws.send(json.dumps(payload))
+                if payload.get('type') == 'LIDAR_MAP_3D':
+                    self.last_lidar_send_monotonic = time.monotonic()
+                    self.last_lidar_output_metadata = {
+                        key: payload.get(key) for key in (
+                            'source_timestamp', 'send_timestamp', 'frame_id', 'point_count',
+                            'source_fps', 'web_output_fps', 'dropped_frames', 'view')}
+                    self.send({'type': 'LIDAR_STREAM_DIAGNOSTICS', 'robot_id': self.robot_id,
+                               **self.last_lidar_output_metadata})
             except Exception as exc:
-                self.get_logger().warning(f'ROS bridge send failed: {exc}')
-                return False
+                self.get_logger().warning(f'ROS bridge send failed: {type(exc).__name__}')
+                self.incoming.put({'type': 'MANUAL_DISCONNECT'})
+                with self.ws_lock:
+                    if self.ws is ws:
+                        self.ws = None
+                self.outbound.clear()
+                self.outbound_disconnect.set()
+            finally:
+                self.control_timing['max_sync_ws_send_duration'] = max(
+                    self.control_timing.get('max_sync_ws_send_duration', 0), time.monotonic() - started)
 
     def lidar_frame_sender(self):
         """Keep WebSocket backpressure out of the ROS callback/executor path."""
@@ -538,25 +616,7 @@ class SwerveBridge(Node):
             if (self.detail_view != 'LIDAR_3D'
                     or payload.get('view_epoch') != self.detail_view_epoch):
                 continue
-            now = time.monotonic()
-            if self.last_lidar_send_monotonic is not None:
-                interval = now - self.last_lidar_send_monotonic
-                if interval > 0.0:
-                    self.lidar_output_intervals.append(interval)
-            self.last_lidar_send_monotonic = now
-            payload['send_timestamp'] = self.now()
-            payload['web_output_fps'] = self._frequency(self.lidar_output_intervals)
-            payload['dropped_frames'] = self.lidar_frame_buffer.dropped_frames
-            if not self.send(payload):
-                continue
-            self.last_lidar_output_metadata = {
-                key: payload.get(key) for key in (
-                    'source_timestamp', 'send_timestamp', 'frame_id', 'point_count',
-                    'source_fps', 'web_output_fps', 'dropped_frames', 'view',
-                )
-            }
-            self.send({'type': 'LIDAR_STREAM_DIAGNOSTICS', 'robot_id': self.robot_id,
-                       **self.last_lidar_output_metadata})
+            self.send(payload)
 
     def send_bridge_status(self, state, error=None):
         self.last_bridge_error = error
@@ -585,6 +645,7 @@ class SwerveBridge(Node):
                 # otherwise valid 101 response with "Invalid WebSocket
                 # Header".
                 ws = websocket.create_connection(url, timeout=2, enable_multithread=True)
+                self.outbound_disconnect.clear()
                 with self.ws_lock:
                     self.ws = ws
                 self.last_web_cloud_source_stamp = None
@@ -598,13 +659,19 @@ class SwerveBridge(Node):
                                'active_map_revision': self.loaded_local_map_revision,
                                'canonical_map_revision': self.ros_map_revision,
                                'frame_id': 'map', 'timestamp': self.now()})
-                while not self.stop_event.is_set():
+                while not self.stop_event.is_set() and not self.outbound_disconnect.is_set():
                     try:
                         raw = ws.recv()
                         if raw:
                             data = json.loads(raw)
                             if isinstance(data, dict):
+                                if '_timing' in data:
+                                    data['_timing']['T4'] = time.monotonic()
                                 self.incoming.put(data)
+                                if self.manual_timing_enabled and data.get('type') == 'MANUAL_CMD' and '_timing' in data:
+                                    self.get_logger().info('MANUAL_RECEIVE_TIMING ' + json.dumps({
+                                        'sequence_id': data.get('sequence_id'), **data['_timing'],
+                                        'T5': time.monotonic(), 'generation': self.incoming.generation}))
                             else:
                                 self.get_logger().warning('Ignoring non-object command from Django bridge')
                     except websocket.WebSocketTimeoutException:
@@ -620,6 +687,7 @@ class SwerveBridge(Node):
                 backoff = min(30.0, backoff * 2.0)
             finally:
                 self.incoming.put({'type': 'MANUAL_DISCONNECT'})
+                self.outbound.clear()
                 with self.ws_lock:
                     if self.ws is ws:
                         self.ws = None
@@ -652,6 +720,7 @@ class SwerveBridge(Node):
         self._refresh_map_sync_status()
 
     def manual_timer(self):
+        self.trace_control_callback('manual_timer')
         with self.incoming.lock:
             self._manual_timer()
 
@@ -1411,6 +1480,40 @@ class SwerveBridge(Node):
                                             error='ekf_v30e accepted the request but map-frame TF did not confirm the initial pose')
 
     def _loaded_nav2_revision(self, nav2_node_present):
+        # Revalidating the complete raster on every heartbeat can monopolize
+        # the single ROS executor. Cache only successful, content-bound checks;
+        # a new grid, configured revision or modified artifact invalidates it.
+        if not nav2_node_present or self.latest_map is None:
+            return None
+        signature = getattr(self, 'latest_map_signature', None)
+        try:
+            stat = self.nav2_map_file.stat()
+            key = (self.nav2_configured_revision, signature,
+                   stat.st_mtime_ns, stat.st_size)
+            cached = getattr(self, '_nav2_validation_cache', None)
+            if signature is not None and cached and cached['key'] == key:
+                image_stat = cached['image'].stat()
+                if (image_stat.st_mtime_ns, image_stat.st_size) == cached['image_stat']:
+                    return cached['revision']
+        except OSError:
+            return None
+        result = self._verify_loaded_nav2_revision(nav2_node_present)
+        if result is not None and signature is not None:
+            try:
+                text = self.nav2_map_file.read_text(encoding='utf-8')
+                image_match = re.search(r'^image:\s*(.+?)\s*$', text, re.MULTILINE)
+                image = (self.nav2_map_file.parent / image_match.group(1).strip().strip('"\'')).resolve(strict=True)
+                image_stat = image.stat()
+                self._nav2_validation_cache = {
+                    'key': key, 'image': image,
+                    'image_stat': (image_stat.st_mtime_ns, image_stat.st_size),
+                    'revision': result,
+                }
+            except (OSError, AttributeError):
+                pass
+        return result
+
+    def _verify_loaded_nav2_revision(self, nav2_node_present):
         """Only report a Nav2 revision after /map exactly matches its image."""
         if not nav2_node_present or self.latest_map is None:
             return None
@@ -1588,6 +1691,7 @@ class SwerveBridge(Node):
         self.send_map_revision_status()
 
     def process_commands(self):
+        self.trace_control_callback('process_commands')
         while True:
             try:
                 data = self.incoming.get_nowait()
@@ -2123,6 +2227,7 @@ class SwerveBridge(Node):
             self._apply_manual_command(data)
 
     def _apply_manual_command(self, data):
+        applied_started = time.monotonic()
         action = str(data.get('action') or '').upper()
         if not self.incoming.current(data):
             return
@@ -2166,8 +2271,24 @@ class SwerveBridge(Node):
         # first hop between a Web command and the command arbiter: a loaded
         # single-threaded ROS executor can delay that timer callback.
         self.cmd_pub.publish(command)
+        if getattr(self, 'manual_timing_enabled', False) and '_timing' in data:
+            timing = dict(data['_timing'], T5=data.get('_received_monotonic'),
+                          T6=applied_started, T7=time.monotonic())
+            self.get_logger().info('MANUAL_TIMING ' + json.dumps({
+                'sequence_id': data.get('sequence_id'), 'generation': data.get('_generation'),
+                'action': action, **timing, **self.control_timing}))
         self.nav_state = 'MANUAL' if action != 'STOP' else 'IDLE'
         self.send_control_status(True)
+
+    def trace_control_callback(self, name):
+        if not getattr(self, 'manual_timing_enabled', False):
+            return
+        now = time.monotonic()
+        previous = self.control_timing.get(name + '_last')
+        self.control_timing[name + '_last'] = now
+        if previous is not None:
+            key = name + '_max_delay'
+            self.control_timing[key] = max(self.control_timing.get(key, 0), now - previous)
 
     def navigate(self, data):
         if self.local_map_load_pending:
@@ -2632,6 +2753,7 @@ class SwerveBridge(Node):
 
     def destroy_node(self):
         self.stop_event.set()
+        self.outbound.clear()
         self.lidar_frame_buffer.clear()
         self.cmd_pub.publish(Twist())
         with self.ws_lock:

@@ -1166,6 +1166,9 @@ class TwinRuntime:
             return await asyncio.to_thread(run_whatif, base, scen, req, start_tick)
 
     async def handle_message(self, consumer, data: dict[str, Any], user) -> None:
+        route_monotonic = time.monotonic()
+        consumer_monotonic = data.get('_consumer_monotonic')
+        data = {key: value for key, value in data.items() if key != '_consumer_monotonic'}
         try:
             msg = client_adapter.validate_python(data)
         except ValidationError as exc:
@@ -1301,8 +1304,14 @@ class TwinRuntime:
                 self.manual_owners[msg.robot_id] = consumer.channel_name
             else:
                 self.manual_owners.pop(msg.robot_id, None)
+            manual_payload = {'action': msg.action}
+            if msg.sequence_id is not None:
+                manual_payload['sequence_id'] = msg.sequence_id
+            if os.environ.get('WARETWIN_MANUAL_TIMING') == '1':
+                manual_payload['_timing'] = {'T0': msg.client_monotonic,
+                    'T1': consumer_monotonic, 'T2': route_monotonic}
             result = await self.gateway().send_command(
-                msg.robot_id, 'MANUAL_CMD', {'action': msg.action})
+                msg.robot_id, 'MANUAL_CMD', manual_payload)
             if not result.get('ok'):
                 await consumer.send_json({
                     'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',

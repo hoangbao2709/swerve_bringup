@@ -58,6 +58,8 @@ class TwinConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json({'type': 'ERROR', 'code': 'RATE_LIMITED', 'message': 'client message rate limit exceeded'})
             return
         try:
+            if content.get('type') == 'ROBOT_MANUAL':
+                content = dict(content, _consumer_monotonic=time.monotonic())
             await runtime.handle_message(self, content, self.scope.get('waretwin_user'))
         except Exception as exc:
             # Keep a malformed/failed command isolated to this frame. The

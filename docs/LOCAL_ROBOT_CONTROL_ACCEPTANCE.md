@@ -445,7 +445,7 @@ production READY runs with controller claims, fresh R01 heartbeat and at least
 the first failing layer; no additional production run or Stage B motion test
 was performed in this attempt.
 
-## Production two-start retest — latest outcome
+## Production two-start retest — historical outcome before library-selection fix
 
 Started from clean commit `63cdc08`; corrected source and installed spawner
 matched byte-for-byte. The synchronous log fix was present. Both runs used
@@ -563,3 +563,91 @@ REMAINING_ISSUES=Two full production READY starts must be repeated with the
 bond wait synchronization repair before any Stage B Web motion test. Current
 second-run heartbeat and idle-zero acceptance remain unverified. No Nav Goal,
 Mapping, map persistence, initial pose, or VDA5050 test was performed.
+
+## Bond-patch production verification — latest outcome (2026-09-30)
+
+This section supersedes earlier runtime summaries. Initial worktree was clean
+at `c55c21f`; the compatibility library was built. Shell `ldd` resolved the
+workspace library, but that was not sufficient evidence of production loading.
+
+```text
+START_1=PASS (production stack reached complete READY)
+STOP_CLEAN=PASS
+START_2=UNVERIFIED (not run after patch-loading defect was identified)
+BOND_PATCH_LOADED=FAIL (first production process loaded system bondcpp)
+NAV2_READY_START_1=PASS
+NAV2_READY_START_2=UNVERIFIED
+BRIDGE_READY_START_1=PASS
+BRIDGE_READY_START_2=UNVERIFIED
+IDLE_ZERO_START_1=PASS
+IDLE_ZERO_START_2=UNVERIFIED
+STAGE_A_GATE=FAIL (required patched-library verification failed; two-start gate incomplete)
+WEB_MANUAL_FORWARD=UNVERIFIED
+WEB_MANUAL_BACKWARD=UNVERIFIED
+WEB_MANUAL_LEFT=UNVERIFIED
+WEB_MANUAL_RIGHT=UNVERIFIED
+WEB_MANUAL_ROTATE_LEFT=UNVERIFIED
+WEB_MANUAL_ROTATE_RIGHT=UNVERIFIED
+WEB_MANUAL_STOP=UNVERIFIED
+WEB_MANUAL_TIMEOUT_STOP=UNVERIFIED
+WEB_DISCONNECT_STOP=UNVERIFIED
+MODE_CHANGE_STOP=UNVERIFIED
+COMMAND_ARBITER_ESTOP=UNVERIFIED
+ESTOP_CLEAR_NO_RESUME=UNVERIFIED
+WEB_MANUAL_R01=UNVERIFIED
+STAGE_B_GATE=NOT_RUN
+```
+
+Production command was `source scripts/ros_env.sh` followed by
+`./scripts/start_stack.sh navigation`, on managed ROS domain 0. Gazebo PID
+97054; robot spawn completed in 28.433 seconds. Full readiness reached the
+Nav2 action gate at 91.432 seconds. JSB, steering and drive were ACTIVE;
+arbiter, swerve, odom, filtered odom, both LiDAR clouds, scan and local/global
+TF passed production readiness. All six Nav2 lifecycle nodes became ACTIVE,
+each bond connected, and `/navigate_to_pose` existed. Django's health response
+reported fresh `online_robot_ids=["R01"]`, `ros_bridge=true`, `ros=true`.
+
+Follow-up ROS CLI confirmed unique claimed command interfaces:
+`steer_front_joint/position`, `steer_rear_joint/position`,
+`wheel_front_drive_joint/velocity`, `wheel_rear_drive_joint/velocity`.
+The idle subscriber collected 108 selected-command samples over 2.009 seconds:
+zero non-zero commands, sole publisher `command_arbiter`, source NONE, mode
+AUTONOMOUS, E-STOP false, all manual/nav/tag source-active flags false.
+
+Current ROS/bridge logs contained no matches for transition-in-transition,
+StateUndefinedException, bond timeout, undefined symbol, symbol lookup error,
+segfault or segmentation fault. The health diagnostics did retain a LiDAR TF
+future-extrapolation error under slow simulation; live TF readiness passed.
+This observation was not hidden or treated as evidence of Web motion.
+
+FIRST_FAILING_LAYER=Production Nav2 library selection. `/proc/97085/maps`
+showed `/opt/ros/humble/lib/libbondcpp.so`, despite the managed shell and
+supervisor resolving the workspace replacement. The navigation launch's
+`additional_env` replaced LD_LIBRARY_PATH with system-only directories for
+every Nav2 node. Thus this successful startup did not exercise the bond patch.
+
+FIX=Navigation launch now prepends the selected swerve_bringup install's lib
+directory only when its version-gated `libbondcpp.so` exists. The remaining
+sanitized Humble library paths and AMENT_PREFIX_PATH are unchanged. No
+controller, lifecycle ownership, bond timeout or motion behavior changed.
+Regression coverage includes patch-present, patch-absent and a real dynamic
+loader test using the exact launch environment. Corrected production loading
+remains UNVERIFIED until a new production retest inspects process mappings.
+
+After discovering the deployment defect, the managed ROS/frontend/backend
+groups were stopped. No stack ROS/Gazebo processes remained; unrelated
+processes were preserved. No second startup or motion command was sent.
+Current-boot kernel checks before and after the run found no SCSI/I/O/OOM
+errors. Initial available RAM was 5.2 GiB, swap use 40.2 MiB, root free 6.0 GiB.
+
+TESTS=PASS: 25 targeted library-environment/controller/readiness/log pytest
+tests; changed Python compile; `colcon build --symlink-install
+--packages-select swerve_bringup` (one package, 39.2 seconds); post-build
+library-environment tests (3 passed); paired-bond CTest (20 cycles, passed
+in 0.74 seconds); final diff check. No frontend/backend changes or suites;
+no shell scripts changed.
+
+REMAINING_ISSUES=Retest two complete production starts with the corrected Nav2
+library environment, verify the live patched process mappings on both, then
+perform Stage B only if all gates pass. Web Teleop remains unverified. No Nav
+Goal, Mapping, Save/Load Map, Init Pose or VDA5050 was tested.

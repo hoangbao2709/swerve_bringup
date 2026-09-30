@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 
 import yaml
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -89,6 +89,20 @@ def _validate_saved_map(yaml_path: str, default_map: Path) -> Path:
     return map_path
 
 
+def _nav2_environment():
+    # Keep unrelated overlays out of native Humble Nav2, but retain this
+    # workspace's version-gated bondcpp repair. Shell ldd alone is insufficient:
+    # additional_env also controls the actual lifecycle nodes' library loader.
+    library_paths = ['/opt/ros/humble/lib', '/usr/lib/x86_64-linux-gnu']
+    compat_directory = Path(get_package_prefix('swerve_bringup')) / 'lib'
+    if (compat_directory / 'libbondcpp.so').is_file():
+        library_paths.insert(0, str(compat_directory))
+    return {
+        'AMENT_PREFIX_PATH': '/opt/ros/humble',
+        'LD_LIBRARY_PATH': ':'.join(library_paths),
+    }
+
+
 def _nav_nodes(context, *, params_default: str, default_map: Path):
     map_path = _validate_saved_map(LaunchConfiguration('map_file').perform(context), default_map)
     if map_path == default_map.resolve() and LaunchConfiguration('allow_dev_map').perform(context).lower() != 'true':
@@ -109,10 +123,7 @@ def _nav_nodes(context, *, params_default: str, default_map: Path):
         system_binary = os.path.join('/opt/ros/humble', 'lib', package, executable)
         return system_binary if os.access(system_binary, os.X_OK) else executable
 
-    nav2_env = {
-        'AMENT_PREFIX_PATH': '/opt/ros/humble',
-        'LD_LIBRARY_PATH': '/opt/ros/humble/lib:/usr/lib/x86_64-linux-gnu',
-    }
+    nav2_env = _nav2_environment()
     common = [str(params_path), {'use_sim_time': use_sim_time}]
     nodes = [
         Node(package='nav2_map_server', executable='map_server', name='map_server', output='screen',

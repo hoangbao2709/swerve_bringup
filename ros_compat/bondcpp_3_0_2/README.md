@@ -13,7 +13,11 @@ Nav2's `createBondConnection`, even after a lifecycle node becomes ACTIVE.
 This replacement is compiled only against bondcpp 3.0.2's installed headers.
 It preserves the upstream library name, class layout, constructors, symbols,
 timeouts and heartbeat checks. `scripts/ros_env.sh` puts this workspace's
-library first for its processes; no system ROS library is overwritten.
+library first for its processes. Navigation launch explicitly retains that
+directory in its sanitized native Nav2 environment when the library exists;
+it does not inherit unrelated overlay library paths. Verify `/proc/<pid>/maps`
+for the running lifecycle manager, not only shell `ldd`. No system ROS library
+is overwritten.
 With another bondcpp version, CMake does not build/install this replacement.
 
 The paired-bond C++ test runs real ROS callbacks concurrently with repeated

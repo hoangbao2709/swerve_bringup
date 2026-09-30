@@ -178,6 +178,25 @@ def _set_stack_mode(path: Path | None, mode: str) -> None:
         os.replace(temporary, path)
 
 
+def _reset_nav2_lifecycle_state(state_file: str | Path | None, mode: str) -> None:
+    """Reset the one-shot lifecycle owner only after the previous child stops."""
+    if not state_file:
+        return
+    path = Path(state_file)
+    if mode != 'navigation':
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        'state': 'NOT_REQUESTED',
+        'launch_id': str(time.monotonic_ns()),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
+    os.replace(temporary, path)
+
+
 def _run_readiness(root: Path, mode: str, robot_id: str, backend_url: str | None,
                    map_file: str | None, log_path: str | None,
                    deadline: float, child: subprocess.Popen,
@@ -195,6 +214,9 @@ def _run_readiness(root: Path, mode: str, robot_id: str, backend_url: str | None
             args.extend(('--log-path', log_path))
         if mode == 'navigation' and map_file:
             args.extend(('--map-file', map_file))
+        lifecycle_state_file = (env or os.environ).get('WARETWIN_NAV2_LIFECYCLE_STATE_FILE')
+        if mode == 'navigation' and lifecycle_state_file:
+            args.extend(('--lifecycle-state-file', lifecycle_state_file))
         try:
             result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True,
                                     timeout=min(40.0, max(5.0, remaining + 5.0)))
@@ -204,6 +226,15 @@ def _run_readiness(root: Path, mode: str, robot_id: str, backend_url: str | None
             if result.returncode == 0:
                 return True, 'runtime readiness gate passed'
             reason = output.strip().splitlines()[-1] if output.strip() else 'readiness probe failed'
+            if lifecycle_state_file:
+                try:
+                    lifecycle_state = json.loads(
+                        Path(lifecycle_state_file).read_text(encoding='utf-8')
+                    ).get('state')
+                except (OSError, ValueError, TypeError):
+                    lifecycle_state = None
+                if lifecycle_state == 'FAILED':
+                    return False, 'Nav2 lifecycle startup failed; refusing a second STARTUP request'
         except subprocess.TimeoutExpired:
             reason = 'readiness probe timed out'
         if child.poll() is not None:
@@ -253,9 +284,11 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
 
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
+    lifecycle_state_file = os.environ.get('WARETWIN_NAV2_LIFECYCLE_STATE_FILE')
     while not stopping:
         if child is None:
             print(f'[MAP-SUPERVISOR] launching revision={active_revision or "development"}', flush=True)
+            _reset_nav2_lifecycle_state(lifecycle_state_file, active_mode)
             child = subprocess.Popen(command)
         code = child.poll()
         if code is not None:
@@ -282,6 +315,7 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                     _write_mode_status(mode_status_file, mode_request, 'RESTARTING',
                                        'ROS/Gazebo restart in progress; simulated robot will respawn at its configured start pose')
                     _stop_process(child)
+                    _reset_nav2_lifecycle_state(lifecycle_state_file, target_mode)
                     transition_env = os.environ.copy()
                     transition_env['WARETWIN_STACK_START_MONOTONIC_S'] = str(time.monotonic())
                     transition_env.pop('WARETWIN_GAZEBO_STARTED_MONOTONIC_S', None)
@@ -300,6 +334,7 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                         print(f'[MODE-SUPERVISOR] mode={target_mode} readiness=FAIL reason={reason}; restoring {previous_mode}', file=sys.stderr, flush=True)
                         _write_mode_status(mode_status_file, mode_request, 'ROLLING_BACK', reason)
                         _stop_process(child)
+                        _reset_nav2_lifecycle_state(lifecycle_state_file, previous_mode)
                         rollback_env = os.environ.copy()
                         rollback_env['WARETWIN_STACK_START_MONOTONIC_S'] = str(time.monotonic())
                         rollback_env.pop('WARETWIN_GAZEBO_STARTED_MONOTONIC_S', None)

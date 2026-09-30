@@ -937,7 +937,8 @@ class TwinRuntime:
         await self.broadcast_runtime_status()
 
     def health_snapshot(self) -> dict[str, Any]:
-        ros_connected = bool(self.online_robot_ids()) if self.is_external else False
+        online_robot_ids = self.online_robot_ids() if self.is_external else []
+        ros_connected = bool(online_robot_ids)
         diagnostics = dict(self.ros_diagnostics)
         diagnostics['ros'] = bool(diagnostics.get('ros') and ros_connected)
         gazebo = bool(diagnostics.get('gazebo') and ros_connected)
@@ -950,6 +951,7 @@ class TwinRuntime:
             # A socket that stopped sending heartbeats is not healthy even if
             # Channels has not delivered its disconnect callback yet.
             'ros_bridge': ros_connected,
+            'online_robot_ids': online_robot_ids,
             'websocket': websocket_ready,
             'ros': diagnostics['ros'],
             'gazebo': gazebo,

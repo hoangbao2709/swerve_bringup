@@ -107,6 +107,84 @@ had 6.0 GiB free. The launch reported canonical map revision 21. Stack-owned
 processes were stopped after the failed Nav2 gate; unrelated port-8000 service
 was not touched.
 
+### Phase 1B: deferred Nav2 lifecycle startup
+
+NAV2_LIFECYCLE_ROOT_CAUSE=The prior runtime log proves that
+`lifecycle_manager_navigation` failed first while activating `map_server`,
+with `transition invoked while in transition`; the prior trace does not identify
+which actor/source caused that overlap. Source audit found one production Nav2 lifecycle
+manager, the mapping manager is conditional on mapping mode, and the readiness
+probe is the only source-tree caller of `ManageLifecycleNodes.STARTUP`. The
+previous trace did not record the manager parameters or pre-transition node
+states, so a duplicate/autostart/local-map caller is not established as the
+cause.
+
+NAV2_LIFECYCLE_FIX=Readiness now checks the deferred manager contract at
+runtime (`autostart=false`, expected node list), verifies exactly one
+`map_server` and no mapping lifecycle manager, matches the selected map YAML,
+and confirms a stable all-UNCONFIGURED snapshot again immediately before
+startup. It atomically claims one STARTUP per launch generation across probe
+retries, records `NOT_REQUESTED/REQUESTED/IN_PROGRESS/ACTIVE/FAILED`, waits
+for transitions to settle, and captures lifecycle states and manager logs on
+failure. The supervisor resets the state only after stopping the previous
+launch child.
+
+START_1=PASS (production `source scripts/ros_env.sh && ./scripts/start_stack.sh navigation`; full READY, headless; no motion test)
+START_2=FAIL (fresh production launch spawned the robot, but did not pass the controller activation gate; no Nav2 startup request was made)
+GAZEBO_READY=PASS (both starts)
+ROBOT_SPAWNED=PASS (both starts)
+CONTROLLER_MANAGER_READY=PASS (START_1; START_2 did not reach readiness confirmation after a controller-manager response timeout)
+JOINT_STATE_BROADCASTER_ACTIVE=PASS (START_1 readiness and START_2 launch log)
+STEERING_CONTROLLER_ACTIVE=PASS (START_1 readiness and START_2 launch log)
+DRIVE_CONTROLLER_ACTIVE=PASS (START_1); FAIL (START_2 spawner blocked before activation)
+COMMAND_ARBITER_READY=PASS (START_1); UNVERIFIED (START_2 did not reach dependent startup)
+SWERVE_CONTROLLER_READY=PASS (START_1); UNVERIFIED (START_2 did not reach dependent startup)
+ODOM_READY=PASS (START_1); UNVERIFIED (START_2 readiness stopped at controller gate)
+LIDAR_READY=PASS (START_1); UNVERIFIED (START_2 readiness stopped at controller gate)
+TF_READY=PASS (START_1); UNVERIFIED (START_2 readiness stopped at controller gate)
+NAV2_READY=PASS (START_1 one STARTUP response success=true; all six lifecycle nodes ACTIVE; `/navigate_to_pose` present); UNVERIFIED (START_2 never reached Nav2)
+BRIDGE_READY=PASS (START_1 `/swerve_bridge` and fresh backend robot_id=R01 heartbeat); UNVERIFIED (START_2 never reached bridge readiness)
+TEST_ROS_DOMAIN_ID=0 (sourced active `.runtime/stack.env`; backend health reports R01 online, ROS bridge and ROS healthy)
+CONTROLLER_INTERFACES=PASS (claimed: steer_front_joint/position, steer_rear_joint/position, wheel_front_drive_joint/velocity, wheel_rear_drive_joint/velocity; controller listing shows no overlap)
+IDLE_SELECTED_CMD_ZERO=PASS (30 selected Twist samples, 0 non-zero; owner and active source NONE; manual/nav/tag flags false; command-arbiter E-STOP diagnostic known false; no motion command sent)
+
+Phase 1B runtime evidence: before the single STARTUP request, all six Nav2
+lifecycle nodes reported `unconfigured(1)`. The live lifecycle graph reported
+`map_server=1`, `lifecycle_manager_navigation=1`,
+`lifecycle_manager_mapping_map=0`; the manager reported `autostart=false` and
+the expected six-node list. The selected YAML was canonical revision 21 and
+matched `/map_server`'s `yaml_filename`. The one request returned
+`success=true`; all six states were ACTIVE immediately afterward. The bridge
+heartbeat was tied to R01 in the backend's fresh `online_robot_ids` list, not
+inferred from WebSocket connectivity. The ROS CLI follow-up printed
+`TEST_ROS_DOMAIN_ID=0` and confirmed controllers, claimed interfaces, nodes,
+and actions. The bridge's `/emergency_stop` publisher had no initial Bool
+sample, but the command arbiter's own diagnostic reported `estop_active=false`;
+that diagnostic was used as the known runtime E-STOP state.
+
+Phase 1B tests before the reproducibility restart: 23 targeted Python readiness,
+command ownership, and map-sync tests passed; 6 Django health tests passed;
+`manage.py makemigrations --check` passed; changed Python sources compiled;
+`bash -n scripts/start_stack.sh` and `git diff --check` passed; `colcon build
+--symlink-install` passed for the discovered `swerve_bringup` package. The
+pre-START_1 VM gate found 5.3 GiB available RAM, 17 MiB swap use, 6.0 GiB free
+on `/`, and no matching current-boot storage, blocked-task, or OOM errors.
+
+START_2 runtime evidence: after a clean stop and process check, the second
+production `start_stack.sh navigation` run again started Gazebo and spawned
+`swerve_base`. `joint_state_broadcaster` and `steering_controller` logged
+successful activation, but `drive_controller`'s spawner remained blocked in
+`futex_wait_queue` for more than three minutes. The controller manager logged
+`failed to send response to /controller_manager/list_controllers (timeout)`;
+readiness ended with
+`required ros2_control controllers not ready: controller_activation_sequence_not_complete`.
+No Nav2 lifecycle request, bridge heartbeat check, or idle sample was reached
+on this run. The stack was stopped cleanly. The current test window had no new
+SCSI/I/O, blocked-task, or OOM errors; available RAM was 3.4 GiB while running
+and 5.2 GiB after stop, swap remained 17 MiB used, and `/` retained 6.0 GiB.
+Thus START_2 is a runtime FAIL, not an environment-blocked storage result.
+No third startup cycle was run.
+
 | Item | Result | Evidence / reason |
 |---|---|---|
 | CONTROL_TAB | PASS | Live R01 detail route loaded with controls and no browser/page errors. |

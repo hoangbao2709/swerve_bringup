@@ -13,7 +13,7 @@ class HealthApiTests(TestCase):
         for key in (
             'status', 'backend_status', 'backend_ready', 'system_status', 'system_ready',
             'database', 'ros_bridge', 'websocket', 'ros', 'gazebo',
-            'mode', 'runtime_state', 'timestamp', 'version', 'components',
+            'online_robot_ids', 'mode', 'runtime_state', 'timestamp', 'version', 'components',
         ):
             self.assertIn(key, payload)
         self.assertTrue(payload['database'])
@@ -52,6 +52,17 @@ class HealthApiTests(TestCase):
         self.assertEqual(payload['system_status'], 'DISCONNECTED')
         self.assertFalse(payload['ok'])
         self.assertEqual(payload['status'], 'degraded')
+        self.assertEqual(payload['online_robot_ids'], [])
+
+    def test_health_exposes_robot_id_for_a_fresh_bridge_heartbeat(self):
+        with (
+            patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'),
+            patch.object(runtime, 'online_robot_ids', return_value=['R01']),
+        ):
+            payload = self.client.get('/api/health/').json()
+        self.assertTrue(payload['ros_bridge'])
+        self.assertEqual(payload['online_robot_ids'], ['R01'])
+        self.assertEqual(payload['components']['online_robot_ids'], ['R01'])
 
     def test_real_robot_is_disconnected_without_robot_heartbeat(self):
         payload = self._health_for_mode('REAL_ROBOT')

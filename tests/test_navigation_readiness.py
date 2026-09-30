@@ -230,6 +230,57 @@ def test_startup_timeline_keeps_required_stages_in_order(readiness_module):
     assert positions == sorted(positions)
 
 
+def test_nav2_startup_claim_is_persisted_and_single_shot(readiness_module, tmp_path):
+    state_file = tmp_path / 'runtime' / 'nav2-startup.json'
+
+    assert readiness_module.read_nav2_startup_state(state_file) == {
+        'state': 'NOT_REQUESTED',
+    }
+    claimed, first = readiness_module.claim_nav2_startup(
+        state_file, launch_id='launch-test', lifecycle_before={'map_server': {'id': 1}},
+    )
+    assert claimed
+    assert first['state'] == 'REQUESTED'
+    assert first['launch_id'] == 'launch-test'
+
+    claimed_again, previous = readiness_module.claim_nav2_startup(state_file)
+    assert not claimed_again
+    assert previous['state'] == 'REQUESTED'
+    assert readiness_module.update_nav2_startup_state(
+        state_file, 'IN_PROGRESS', request_id=first['request_id'],
+    )['state'] == 'IN_PROGRESS'
+    assert readiness_module.read_nav2_startup_state(state_file)['request_id'] == first['request_id']
+
+
+def test_nav2_lifecycle_transition_states_are_not_considered_settled(readiness_module):
+    settled = {
+        name: {'id': 1, 'label': 'unconfigured'}
+        for name in readiness_module.NAV2_LIFECYCLE_NODES
+    }
+    assert readiness_module.Readiness._lifecycle_states_settled(settled)
+
+    transitioning = dict(settled)
+    transitioning['map_server'] = {'id': 10, 'label': 'activating'}
+    assert not readiness_module.Readiness._lifecycle_states_settled(transitioning)
+    assert not readiness_module.Readiness._lifecycle_states_are(transitioning, 1)
+
+
+def test_supervisor_resets_nav2_startup_guard_for_each_new_navigation_child(
+    readiness_module, tmp_path,
+):
+    import ros_stack_supervisor
+
+    state_file = tmp_path / 'runtime' / 'nav2-startup.json'
+    readiness_module.update_nav2_startup_state(state_file, 'FAILED', failure='test')
+    ros_stack_supervisor._reset_nav2_lifecycle_state(state_file, 'navigation')
+    state = readiness_module.read_nav2_startup_state(state_file)
+    assert state['state'] == 'NOT_REQUESTED'
+    assert state['launch_id']
+
+    ros_stack_supervisor._reset_nav2_lifecycle_state(state_file, 'mapping')
+    assert not state_file.exists()
+
+
 def test_gazebo_world_readiness_is_reported_once():
     source = (ROOT / 'scripts/navigation_readiness.py').read_text(encoding='utf-8')
     module = ast.parse(source)

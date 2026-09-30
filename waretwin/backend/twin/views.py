@@ -389,6 +389,7 @@ def health(request):
         'system_ready': system_status == 'OK',
         'database': database_ok,
         'ros_bridge': components['ros_bridge'],
+        'online_robot_ids': components['online_robot_ids'],
         'websocket': components['websocket'],
         'ros': components['ros'],
         'gazebo': components['gazebo'],
@@ -492,6 +493,7 @@ def system_status(request):
         'runtime': {
             'bridge_state': components['bridge_state'],
             'ros_connected': components['ros_connected'],
+            'online_robot_ids': components['online_robot_ids'],
             'nav2_state': runtime.nav2_state,
             'last_telemetry_at': runtime.last_telemetry_iso,
             'loop_errors': runtime.loop_errors,

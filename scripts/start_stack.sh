@@ -12,6 +12,8 @@ echo "T0_START_STACK=PASS monotonic_s=$STACK_START_MONOTONIC_S"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/scripts/stack_common.sh"
+NAV2_LIFECYCLE_STATE_FILE="$STACK_RUNTIME_DIR/nav2-lifecycle-startup.json"
+export WARETWIN_NAV2_LIFECYCLE_STATE_FILE="$NAV2_LIFECYCLE_STATE_FILE"
 
 MODE="${1:-mapping}"
 if [[ "$MODE" == "-h" || "$MODE" == "--help" ]]; then
@@ -361,10 +363,12 @@ setsid bash -c '
   root="$1"; domain="$2"; ws_url="$3"; request_file="$4"; revision="$5"; robot_id="$6"
   ros_log="$7"; ros_bridge_log="$8"; mode_request="$9"; mode_status="${10}"
   initial_mode="${11}"; stack_env="${12}"; backend_url="${13}"; map_file="${14}"
-  shift 14
+  lifecycle_state_file="${15}"
+  shift 15
   cd "$root"
   source scripts/ros_env.sh
   export ROS_DOMAIN_ID="$domain" ROS_WS_URL="$ws_url"
+  export WARETWIN_NAV2_LIFECYCLE_STATE_FILE="$lifecycle_state_file"
   python3 scripts/ros_stack_supervisor.py --request-file "$request_file" \
     --initial-revision "$revision" --robot-id "$robot_id" \
     --mode-request-file "$mode_request" --mode-status-file "$mode_status" \
@@ -375,7 +379,7 @@ setsid bash -c '
 ' _ "$ROOT_DIR" "$ROS_DOMAIN_ID_SELECTED" "$ROS_WS_URL_SELECTED" "$MAP_SYNC_REQUEST_FILE" \
   "$PUBLISHED_REVISION" "$ROBOT_ID" "$(stack_log_file ros)" "$(stack_log_file ros_bridge)" \
   "$MODE_SWITCH_REQUEST_FILE" "$MODE_SWITCH_STATUS_FILE" "$MODE" "$STACK_RUNTIME_DIR/stack.env" \
-  "$BACKEND_URL" "${MAP_FILE:-}" \
+  "$BACKEND_URL" "${MAP_FILE:-}" "$NAV2_LIFECYCLE_STATE_FILE" \
   ros2 launch swerve_bringup system.launch.py "${ROS_ARGS[@]}" \
   > /dev/null 2>&1 < /dev/null &
 stack_write_pid ros "$!"
@@ -438,6 +442,7 @@ ros_readiness_report() {
       --timeout "$probe_timeout"
       --backend-url "$BACKEND_URL"
       --log-path "$(stack_log_file ros)"
+      --lifecycle-state-file "$NAV2_LIFECYCLE_STATE_FILE"
     )
     if [[ "$MODE" == navigation && -n "$MAP_FILE" ]]; then
       readiness_args+=(--map-file "$MAP_FILE")
@@ -485,6 +490,11 @@ while (( SECONDS < ready_deadline )); do
     break
   fi
   if ! stack_owned_pid ros && ! stack_owned_group ros; then
+    break
+  fi
+  if [[ "$MODE" == navigation && -f "$NAV2_LIFECYCLE_STATE_FILE" ]] \
+    && rg -q '"state"[[:space:]]*:[[:space:]]*"FAILED"' "$NAV2_LIFECYCLE_STATE_FILE"; then
+    echo '[FAIL] Nav2 lifecycle startup failed; refusing another STARTUP request for this launch.' >&2
     break
   fi
   sleep 2

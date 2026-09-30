@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Authoritative readiness gate for a fresh swerve navigation session."""
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -10,6 +11,9 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 import rclpy
 from controller_manager_msgs.srv import ListControllers, ListHardwareInterfaces
@@ -18,6 +22,7 @@ from gazebo_msgs.srv import SpawnEntity
 from lifecycle_msgs.srv import GetState
 from nav_msgs.msg import OccupancyGrid, Odometry
 from nav2_msgs.srv import ManageLifecycleNodes
+from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
@@ -45,6 +50,14 @@ NAV2_LIFECYCLE_NODES = (
     'waypoint_follower',
 )
 NAV2_REQUIRED_NODES = NAV2_LIFECYCLE_NODES + ('lifecycle_manager_navigation',)
+NAV2_SETTLED_STATE_LABELS = {'unconfigured', 'inactive', 'active', 'finalized'}
+NAV2_TRANSITION_STATE_LABELS = {
+    'configuring', 'cleaningup', 'shuttingdown', 'activating',
+    'deactivating', 'errorprocessing',
+}
+NAV2_STARTUP_STATES = {
+    'NOT_REQUESTED', 'REQUESTED', 'IN_PROGRESS', 'ACTIVE', 'FAILED',
+}
 CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S = 10.0
 # Controller state queries are deliberately much slower than the control loop:
 # the spawners own activation, and readiness only verifies the settled result.
@@ -120,10 +133,82 @@ MAP_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 
+def read_nav2_startup_state(state_file):
+    """Read the cross-probe one-shot state for this ROS launch generation."""
+    if not state_file:
+        return {'state': 'NOT_REQUESTED'}
+    try:
+        payload = json.loads(Path(state_file).read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return {'state': 'NOT_REQUESTED'}
+    except (OSError, ValueError, TypeError):
+        return {'state': 'INVALID'}
+    if not isinstance(payload, dict) or payload.get('state') not in NAV2_STARTUP_STATES:
+        return {'state': 'INVALID'}
+    return payload
+
+
+def update_nav2_startup_state(state_file, state, **details):
+    """Atomically persist startup state while serializing readiness processes."""
+    state = str(state).upper()
+    if state not in NAV2_STARTUP_STATES:
+        raise ValueError(f'invalid Nav2 startup state: {state}')
+    if not state_file:
+        return {'state': state, **details}
+    path = Path(state_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + '.lock')
+    with lock_path.open('a', encoding='utf-8') as lock_stream:
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+        previous = read_nav2_startup_state(path)
+        payload = {
+            **previous,
+            **details,
+            'state': state,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+        temporary = path.with_suffix(path.suffix + '.tmp')
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
+        os.replace(temporary, path)
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+    return payload
+
+
+def claim_nav2_startup(state_file, launch_id=None, lifecycle_before=None):
+    """Atomically consume the sole STARTUP request allowed for one launch."""
+    if not state_file:
+        return True, update_nav2_startup_state(
+            None, 'REQUESTED', launch_id=launch_id or str(uuid.uuid4()),
+            lifecycle_before=lifecycle_before,
+        )
+    path = Path(state_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + '.lock')
+    with lock_path.open('a', encoding='utf-8') as lock_stream:
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+        previous = read_nav2_startup_state(path)
+        if previous['state'] != 'NOT_REQUESTED':
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+            return False, previous
+        payload = {
+            'state': 'REQUESTED',
+            'launch_id': launch_id or previous.get('launch_id') or str(uuid.uuid4()),
+            'request_id': str(uuid.uuid4()),
+            'requested_at': datetime.now(timezone.utc).isoformat(),
+            'lifecycle_before': lifecycle_before,
+        }
+        temporary = path.with_suffix(path.suffix + '.tmp')
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
+        os.replace(temporary, path)
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+    return True, payload
+
+
 class Readiness(Node):
     """Checks live data and state, never just graph membership."""
     def __init__(self, model, mode='navigation', map_file=None,
-                 robot_id='R01', backend_url=None, log_path=None):
+                 robot_id='R01', backend_url=None, log_path=None,
+                 lifecycle_state_file=None):
         super().__init__('navigation_readiness_probe', parameter_overrides=[
             Parameter('use_sim_time', Parameter.Type.BOOL, True)])
         if not self.get_parameter('use_sim_time').value:
@@ -136,6 +221,10 @@ class Readiness(Node):
         self.robot_id = str(robot_id)
         self.backend_url = backend_url
         self.log_path = log_path
+        self.lifecycle_state_file = (
+            Path(lifecycle_state_file).expanduser()
+            if lifecycle_state_file else None
+        )
         self.timeline_events = {}
         self.timeline_reported = False
         self.stack_start_monotonic = self._monotonic_env(
@@ -205,6 +294,9 @@ class Readiness(Node):
         self.lifecycle = {name: self.create_client(GetState, f'/{name}/get_state') for name in names}
         self.nav_lifecycle_manager = (
             self.create_client(ManageLifecycleNodes, '/lifecycle_manager_navigation/manage_nodes')
+            if self.mode == 'navigation' else None)
+        self.nav_lifecycle_manager_parameters = (
+            self.create_client(GetParameters, '/lifecycle_manager_navigation/get_parameters')
             if self.mode == 'navigation' else None)
         self.map_parameters = self.create_client(GetParameters, '/map_server/get_parameters')
         self.bridge_parameters = self.create_client(GetParameters, '/swerve_bridge/get_parameters')
@@ -803,14 +895,47 @@ class Readiness(Node):
                 detail = ' not_checked=' + ','.join(pending)
             print(f'{summary_name}={status}{detail}', flush=True)
 
-    def _wait_lifecycle(self, deadline):
+    @staticmethod
+    def _lifecycle_state_value(state):
+        if state is None:
+            return {'id': None, 'label': 'unavailable'}
+        return {'id': int(state.id), 'label': str(state.label).strip().lower()}
+
+    @staticmethod
+    def _lifecycle_states_text(states):
+        return ','.join(
+            f'/{name}={state.get("label", "unknown")}({state.get("id")})'
+            for name, state in states.items()
+        )
+
+    @staticmethod
+    def _lifecycle_states_are(states, wanted_id):
+        return bool(states) and all(
+            state.get('id') == wanted_id for state in states.values()
+        )
+
+    @staticmethod
+    def _lifecycle_states_settled(states):
+        return bool(states) and all(
+            state.get('id') is not None
+            and state.get('label') in NAV2_SETTLED_STATE_LABELS
+            for state in states.values()
+        )
+
+    def _wait_lifecycle_settled(self, deadline):
         states = {}
+        transition_reported = False
         while time.monotonic() < deadline:
-            for name, client in self.lifecycle.items():
-                response = self._service_call(client, min(deadline, time.monotonic() + 2.0))
-                states[name] = response.current_state.id if response else None
-            if all(state == 3 for state in states.values()):
+            states = self._lifecycle_snapshot(deadline)
+            if self._lifecycle_states_settled(states):
                 return states
+            if not transition_reported and any(
+                state.get('label') in NAV2_TRANSITION_STATE_LABELS
+                for state in states.values()
+            ):
+                transition_reported = True
+                print('NAV2_LIFECYCLE_TRANSITION_IN_PROGRESS=PASS '
+                      f'states={self._lifecycle_states_text(states)}', flush=True)
             rclpy.spin_once(self, timeout_sec=0.2)
         return states
 
@@ -818,8 +943,255 @@ class Readiness(Node):
         states = {}
         for name, client in self.lifecycle.items():
             response = self._service_call(client, min(deadline, time.monotonic() + 2.0))
-            states[name] = response.current_state.id if response else None
+            state = response.current_state if response else None
+            states[name] = self._lifecycle_state_value(state)
         return states
+
+    def _nav2_graph_counts(self):
+        counts = {'map_server': 0, 'lifecycle_manager_navigation': 0,
+                  'lifecycle_manager_mapping_map': 0}
+        for name, _namespace in self.get_node_names_and_namespaces():
+            if name in counts:
+                counts[name] += 1
+        return counts
+
+    def _read_nav2_manager_configuration(self, deadline):
+        response = self._service_call(
+            self.nav_lifecycle_manager_parameters,
+            min(deadline, time.monotonic() + 3.0),
+            lambda request: setattr(request, 'names', ['autostart', 'node_names']),
+        )
+        if response is None or len(response.values) != 2:
+            return None, self.last_service_error or 'lifecycle manager parameters unavailable'
+        autostart, node_names = response.values
+        if autostart.type != ParameterType.PARAMETER_BOOL:
+            return None, f'autostart_parameter_wrong_type:{autostart.type}'
+        if node_names.type != ParameterType.PARAMETER_STRING_ARRAY:
+            return None, f'node_names_parameter_wrong_type:{node_names.type}'
+        return {
+            'autostart': bool(autostart.bool_value),
+            'node_names': list(node_names.string_array_value),
+        }, None
+
+    def _read_map_yaml_parameter(self, deadline):
+        response = self._service_call(
+            self.map_parameters, min(deadline, time.monotonic() + 3.0),
+            lambda request: setattr(request, 'names', ['yaml_filename']),
+        )
+        if response is None or not response.values:
+            return None, self.last_service_error or 'map_server yaml_filename unavailable'
+        value = response.values[0]
+        if value.type != ParameterType.PARAMETER_STRING:
+            return None, f'map_server_yaml_filename_wrong_type:{value.type}'
+        actual = os.path.realpath(value.string_value)
+        if self.expected_map_file and actual != self.expected_map_file:
+            return actual, f'map_server_yaml_filename_mismatch:expected={self.expected_map_file}:actual={actual}'
+        return actual, None
+
+    def _startup_state(self):
+        return read_nav2_startup_state(self.lifecycle_state_file)
+
+    def _update_startup_state(self, state, **details):
+        payload = update_nav2_startup_state(self.lifecycle_state_file, state, **details)
+        return payload
+
+    def _lifecycle_log_offset(self):
+        if not self.log_path:
+            return None
+        try:
+            return os.path.getsize(self.log_path)
+        except OSError:
+            return None
+
+    def _lifecycle_manager_log_lines(self, offset):
+        if not self.log_path or offset is None:
+            return []
+        try:
+            with open(self.log_path, 'rb') as stream:
+                stream.seek(offset)
+                content = stream.read().decode('utf-8', errors='replace')
+        except OSError:
+            return []
+        lines = []
+        for line in content.splitlines():
+            if ('[lifecycle_manager_navigation]' in line or '[map_server]' in line
+                    or 'transition invoked while in transition' in line):
+                lines.append(re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', line.strip()))
+        return lines[-80:]
+
+    def _print_lifecycle_manager_log(self, offset):
+        lines = self._lifecycle_manager_log_lines(offset)
+        first_failure = None
+        for line in lines:
+            match = re.search(r'Failed to change state for node:\s*([^.:]+)', line)
+            if match:
+                first_failure = match.group(1).strip()
+                break
+        if first_failure:
+            print(f'NAV2_FIRST_LIFECYCLE_FAILURE={first_failure}', flush=True)
+        for line in lines:
+            print(f'NAV2_LIFECYCLE_LOG={line}', flush=True)
+        if not lines:
+            print('NAV2_LIFECYCLE_LOG=UNAVAILABLE', flush=True)
+
+    def _deferred_nav2_contract(self, deadline):
+        graph_counts = self._nav2_graph_counts()
+        print('NAV2_LIFECYCLE_GRAPH=' + ','.join(
+            f'{name}={count}' for name, count in graph_counts.items()), flush=True)
+        if (graph_counts['map_server'] != 1
+                or graph_counts['lifecycle_manager_navigation'] != 1
+                or graph_counts['lifecycle_manager_mapping_map'] != 0):
+            return False, f'invalid_nav2_lifecycle_graph:{graph_counts}'
+        manager, error = self._read_nav2_manager_configuration(deadline)
+        if error:
+            return False, error
+        print('NAV2_LIFECYCLE_MANAGER_CONFIG=' + json.dumps(manager, sort_keys=True), flush=True)
+        expected_names = [
+            'map_server', 'controller_server', 'planner_server', 'behavior_server',
+            'bt_navigator', 'waypoint_follower',
+        ]
+        if manager['autostart']:
+            return False, 'deferred_nav2_contract_violated:autostart=true'
+        if manager['node_names'] != expected_names:
+            return False, f'nav2_lifecycle_manager_node_names_mismatch:{manager["node_names"]}'
+        map_yaml, error = self._read_map_yaml_parameter(deadline)
+        if error:
+            return False, error
+        print(f'MAP_SERVER_YAML=PASS path={map_yaml}', flush=True)
+        return True, None
+
+    def _ensure_nav2_lifecycle_ready(self, result, deadline):
+        states = self._wait_lifecycle_settled(deadline)
+        state_text = self._lifecycle_states_text(states)
+        print(f'NAV2_LIFECYCLE_BEFORE={state_text}', flush=True)
+        startup = self._startup_state()
+        startup_state = startup['state']
+        print(f'NAV2_STARTUP_STATE_BEFORE={startup_state}', flush=True)
+
+        def fail(reason, after=None, log_offset=None):
+            if after is not None:
+                print('NAV2_LIFECYCLE_AFTER=' + self._lifecycle_states_text(after), flush=True)
+            self._report_stage(result, 'NAV2_LIFECYCLE_READY', False, reason)
+            result['stages']['NAV2_STARTUP_STATE'] = 'FAILED'
+            print('NAV2_STARTUP_STATE=FAILED', flush=True)
+            if startup_state not in ('FAILED', 'INVALID'):
+                self._update_startup_state(
+                    'FAILED', failure=reason,
+                    lifecycle_before=states,
+                    lifecycle_after=after,
+                )
+            if log_offset is not None:
+                self._print_lifecycle_manager_log(log_offset)
+            return False, states, reason
+
+        if startup_state == 'INVALID':
+            return fail('nav2_startup_state_file_invalid')
+        if startup_state == 'FAILED':
+            return fail('previous_nav2_startup_request_failed_without_retry')
+        if not states:
+            return fail('nav2_lifecycle_state_snapshot_unavailable')
+
+        if self._lifecycle_states_are(states, 3):
+            if startup_state not in ('REQUESTED', 'IN_PROGRESS', 'ACTIVE'):
+                return fail(f'unexpected_nav2_active_before_startup_request:{startup_state}')
+            self._update_startup_state('ACTIVE', lifecycle_after=states)
+            result['stages']['NAV2_STARTUP_STATE'] = 'ACTIVE'
+            self._report_stage(
+                result, 'NAV2_LIFECYCLE_READY', True,
+                success_detail=' active=' + ','.join('/' + name for name in NAV2_LIFECYCLE_NODES),
+            )
+            print('NAV2_STARTUP_STATE=ACTIVE', flush=True)
+            return True, states, None
+
+        if startup_state in ('REQUESTED', 'IN_PROGRESS', 'ACTIVE'):
+            # A prior readiness process owns the only request for this launch.
+            # Never issue another STARTUP while it is in flight or after a
+            # partial transition; inspect the settled state and report it.
+            reason = ('nav2_startup_request_already_consumed_but_nodes_not_active:'
+                      f'{startup_state}:{state_text}')
+            return fail(reason, after=states)
+
+        if not self._lifecycle_states_are(states, 1):
+            reason = f'nav2_lifecycle_settled_partial_state_no_startup:{state_text}'
+            return fail(reason, after=states)
+
+        contract_ok, contract_error = self._deferred_nav2_contract(deadline)
+        if not contract_ok:
+            return fail(contract_error or 'deferred_nav2_contract_invalid', after=states)
+
+        confirmed = self._wait_lifecycle_settled(deadline)
+        print('NAV2_LIFECYCLE_PRE_REQUEST_CONFIRM='
+              + self._lifecycle_states_text(confirmed), flush=True)
+        if not self._lifecycle_states_are(confirmed, 1):
+            reason = ('nav2_lifecycle_state_changed_before_startup_request:'
+                      + self._lifecycle_states_text(confirmed))
+            return fail(reason, after=confirmed)
+        states = confirmed
+
+        claimed, request_state = claim_nav2_startup(
+            self.lifecycle_state_file,
+            lifecycle_before=states,
+        )
+        if not claimed:
+            observed_state = request_state['state']
+            print(f'NAV2_STARTUP_REQUEST_SKIPPED=PASS state={observed_state}', flush=True)
+            states = self._wait_lifecycle_settled(deadline)
+            if self._lifecycle_states_are(states, 3):
+                self._update_startup_state('ACTIVE', lifecycle_after=states)
+                result['stages']['NAV2_STARTUP_STATE'] = 'ACTIVE'
+                return True, states, None
+            reason = (
+                f'nav2_startup_already_claimed_by_another_probe:{observed_state}:'
+                f'{self._lifecycle_states_text(states)}'
+            )
+            print('NAV2_LIFECYCLE_AFTER=' + self._lifecycle_states_text(states), flush=True)
+            self._report_stage(result, 'NAV2_LIFECYCLE_READY', False, reason)
+            result['stages']['NAV2_STARTUP_STATE'] = observed_state
+            return False, states, reason
+
+        request_id = request_state.get('request_id')
+        self._update_startup_state(
+            'IN_PROGRESS', request_id=request_id,
+            request_sent_at=datetime.now(timezone.utc).isoformat(),
+            request_sent_monotonic_ns=time.monotonic_ns(),
+        )
+        result['stages']['NAV2_STARTUP_STATE'] = 'IN_PROGRESS'
+        self._record_timeline(
+            'T15_NAV2_LIFECYCLE_STARTUP_BEGIN',
+            detail=f'one-shot STARTUP request_id={request_id}',
+        )
+        log_offset = self._lifecycle_log_offset()
+        print('NAV2_STARTUP_REQUEST_SENT=PASS '
+              f'request_id={request_id} wall_time={datetime.now(timezone.utc).isoformat()} '
+              f'monotonic_ns={time.monotonic_ns()}', flush=True)
+        response = self._service_call(
+            self.nav_lifecycle_manager,
+            deadline,
+            lambda request: setattr(request, 'command', ManageLifecycleNodes.Request.STARTUP),
+        )
+        response_success = bool(response and response.success)
+        print(f'NAV2_STARTUP_RESPONSE={str(response_success).lower()}', flush=True)
+        after = self._lifecycle_snapshot(deadline)
+        print('NAV2_LIFECYCLE_AFTER=' + self._lifecycle_states_text(after), flush=True)
+        self._print_lifecycle_manager_log(log_offset)
+        if not response_success:
+            error = self.last_service_error or 'response.success=false'
+            reason = f'lifecycle_manager_navigation_startup_failed:{error}'
+            return fail(reason, after=after)
+
+        states = self._wait_lifecycle_settled(deadline)
+        if self._lifecycle_states_are(states, 3):
+            self._update_startup_state('ACTIVE', lifecycle_after=states)
+            result['stages']['NAV2_STARTUP_STATE'] = 'ACTIVE'
+            self._report_stage(
+                result, 'NAV2_LIFECYCLE_READY', True,
+                success_detail=' active=' + ','.join('/' + name for name in NAV2_LIFECYCLE_NODES),
+            )
+            print('NAV2_STARTUP_STATE=ACTIVE', flush=True)
+            return True, states, None
+
+        reason = 'nav2_lifecycle_not_active_after_startup:' + self._lifecycle_states_text(states)
+        return fail(reason, after=states)
 
     def _wait_map_file(self, deadline):
         if self.expected_map_file is None:
@@ -842,6 +1214,10 @@ class Readiness(Node):
     def _wait_ros_bridge(self, deadline):
         last_reason = 'bridge_identity_not_ready'
         while time.monotonic() < deadline:
+            if not self._node_present('swerve_bridge'):
+                last_reason = 'bridge_node_missing:/swerve_bridge'
+                rclpy.spin_once(self, timeout_sec=0.2)
+                continue
             response = self._service_call(
                 self.bridge_parameters, min(deadline, time.monotonic() + 2.0),
                 lambda request: setattr(request, 'names', ['robot_id', 'runtime_state']),
@@ -868,11 +1244,16 @@ class Readiness(Node):
                     self.backend_url.rstrip('/') + '/api/health/', timeout=1.0
                 ) as response_stream:
                     health = json.loads(response_stream.read().decode('utf-8'))
-                if health.get('ros_bridge') and health.get('ros'):
+                online_robot_ids = health.get('online_robot_ids')
+                if (health.get('ros_bridge') and health.get('ros')
+                        and isinstance(online_robot_ids, list)
+                        and self.robot_id in online_robot_ids):
+                    print(f'BACKEND_R01_HEARTBEAT=PASS robot_id={self.robot_id} '
+                          'source=/api/health online_robot_ids', flush=True)
                     return True, None
                 last_reason = (
                     f'backend_has_no_live_ros_bridge:ros_bridge={health.get("ros_bridge")},'
-                    f'ros={health.get("ros")}'
+                    f'ros={health.get("ros")},online_robot_ids={online_robot_ids}'
                 )
             except (OSError, ValueError, urllib.error.URLError) as exc:
                 last_reason = f'backend_health_error:{type(exc).__name__}:{exc}'
@@ -1062,50 +1443,10 @@ class Readiness(Node):
                 nav_nodes_ok = nav_nodes_ok and node_ok
             if not nav_nodes_ok:
                 return self._finish(result, 'one or more required Nav2 nodes are not running')
-            lifecycle_states = self._lifecycle_snapshot(deadline)
-            if not all(state == 3 for state in lifecycle_states.values()):
-                # start_stack sets autostart=false while Gazebo is cold, then
-                # this single readiness participant requests normal Nav2
-                # lifecycle startup once all lower-layer prerequisites pass.
-                # The production launcher leaves lifecycle nodes unconfigured
-                # until this gate has verified Gazebo, controls, TF, and sensors.
-                if all(state == 1 for state in lifecycle_states.values()):
-                    self._record_timeline(
-                        'T15_NAV2_LIFECYCLE_STARTUP_BEGIN',
-                        detail='calling lifecycle_manager_navigation STARTUP',
-                    )
-                    response = self._service_call(
-                        self.nav_lifecycle_manager,
-                        deadline,
-                        lambda request: setattr(request, 'command', ManageLifecycleNodes.Request.STARTUP),
-                    )
-                    if response is None or not response.success:
-                        error = self.last_service_error or 'response.success=false'
-                        self._report_stage(
-                            result, 'NAV2_LIFECYCLE_READY', False,
-                            f'lifecycle_manager_navigation_startup_failed:{error}',
-                        )
-                        return self._finish(result, f'Nav2 lifecycle manager startup failed: {error}')
-                    result['stages']['NAV2_STARTUP_REQUESTED'] = True
-                    print('NAV2_STARTUP_REQUESTED=PASS', flush=True)
-                lifecycle_states = self._wait_lifecycle(deadline)
-            lifecycle_ok = bool(lifecycle_states) and all(
-                lifecycle_states.get(name) == 3 for name in NAV2_LIFECYCLE_NODES
-            )
-            result['stages']['NAV2_LIFECYCLE_READY'] = lifecycle_ok
-            if lifecycle_ok:
-                self._report_stage(
-                    result, 'NAV2_LIFECYCLE_READY', True,
-                    success_detail=' active=' + ','.join('/' + name for name in NAV2_LIFECYCLE_NODES),
-                )
-            else:
-                inactive = ', '.join(
-                    f'/{name}={lifecycle_states.get(name)}'
-                    for name in NAV2_LIFECYCLE_NODES if lifecycle_states.get(name) != 3
-                )
-                self._report_stage(result, 'NAV2_LIFECYCLE_READY', False,
-                                   f'inactive_lifecycle_nodes:{inactive}')
-                return self._finish(result, f'Nav2 lifecycle not ACTIVE: {inactive}')
+            lifecycle_ok, lifecycle_states, lifecycle_error = self._ensure_nav2_lifecycle_ready(
+                result, deadline)
+            if not lifecycle_ok:
+                return self._finish(result, f'Nav2 lifecycle not READY: {lifecycle_error}')
             map_file_ok = self._wait_map_file(deadline)
             if map_file_ok:
                 self._report_stage(
@@ -1162,11 +1503,17 @@ def main(argv=None):
     parser.add_argument('--map-file')
     parser.add_argument('--backend-url')
     parser.add_argument('--log-path')
+    parser.add_argument(
+        '--lifecycle-state-file',
+        default=os.environ.get('WARETWIN_NAV2_LIFECYCLE_STATE_FILE'),
+        help='managed runtime file that prevents repeated Nav2 STARTUP requests',
+    )
     parser.add_argument('--json')
     args, ros_args = parser.parse_known_args(argv)
     rclpy.init(args=ros_args)
     node = Readiness(args.model, args.mode, args.map_file,
-                     args.robot_id, args.backend_url, args.log_path)
+                     args.robot_id, args.backend_url, args.log_path,
+                     args.lifecycle_state_file)
     try:
         try:
             result = node.check(args.timeout)

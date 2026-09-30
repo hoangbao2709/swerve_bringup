@@ -4,6 +4,33 @@ project(swerve_bringup)
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
+# Humble bondcpp 3.0.2 polls its FSM without locking while Nav2's bond
+# callbacks transition it. Keep its exact ABI/source and backport synchronized
+# wait methods inside this workspace. Newer system versions need no override.
+find_package(bondcpp REQUIRED)
+if(bondcpp_VERSION VERSION_EQUAL "3.0.2")
+  find_package(rclcpp REQUIRED)
+  find_package(rclcpp_lifecycle REQUIRED)
+  find_package(bond REQUIRED)
+  find_package(smclib REQUIRED)
+  add_library(bondcpp_humble_compat SHARED
+    ros_compat/bondcpp_3_0_2/bond.cpp
+    ros_compat/bondcpp_3_0_2/BondSM_sm.cpp)
+  target_include_directories(bondcpp_humble_compat PRIVATE ${bondcpp_INCLUDE_DIRS})
+  ament_target_dependencies(bondcpp_humble_compat rclcpp rclcpp_lifecycle bond smclib)
+  target_link_libraries(bondcpp_humble_compat uuid)
+  target_compile_features(bondcpp_humble_compat PUBLIC cxx_std_17)
+  set_target_properties(bondcpp_humble_compat PROPERTIES OUTPUT_NAME bondcpp)
+  install(TARGETS bondcpp_humble_compat LIBRARY DESTINATION lib)
+  if(BUILD_TESTING)
+    find_package(ament_cmake_gtest REQUIRED)
+    ament_add_gtest(test_bond_wait tests/test_bond_wait.cpp)
+    target_include_directories(test_bond_wait PRIVATE ${bondcpp_INCLUDE_DIRS})
+    ament_target_dependencies(test_bond_wait rclcpp rclcpp_lifecycle bond smclib)
+    target_link_libraries(test_bond_wait bondcpp_humble_compat)
+  endif()
+endif()
+
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GoToTag.action"
 )

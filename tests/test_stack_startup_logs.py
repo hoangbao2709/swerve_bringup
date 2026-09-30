@@ -33,3 +33,21 @@ def test_log_initialization_precedes_async_ros_process_and_startup_error_probe()
     background = source.index("setsid bash -c '\n", initial)
     error_probe = source.index("if rg -q '\\[ERROR\\]", background)
     assert initial < bridge < background < error_probe
+
+
+def test_log_retention_keeps_five_numeric_archives_and_preserves_other_files(tmp_path):
+    for index in range(8):
+        (tmp_path / f'ros.log.previous.{index:019d}').write_text(str(index))
+    unrelated = tmp_path / 'ros.log.previous.operator-note'
+    unrelated.write_text('preserve')
+    (tmp_path / 'ros.log').write_text('last run')
+    result = subprocess.run(
+        ['bash', '-c', 'source "$1/scripts/stack_common.sh"; STACK_LOG_DIR="$2"; stack_prepare_log ros',
+         '_', str(ROOT), str(tmp_path)], capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    retained = [path for path in tmp_path.glob('ros.log.previous.*')
+                if path.name.split('.previous.')[-1].isdigit()]
+    assert len(retained) == 5
+    assert {path.read_text() for path in retained} == {'4', '5', '6', '7', 'last run'}
+    assert unrelated.read_text() == 'preserve'

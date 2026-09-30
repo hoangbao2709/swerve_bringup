@@ -228,11 +228,10 @@ These results describe source-level behavior only:
 - ROS package build: passed for `swerve_bringup` and `swerve_bridge`.
 - `git diff --check`: passed.
 
-## Remaining runtime gates
+## Earlier runtime checklist (superseded by latest results below)
 
-- Diagnose the Nav2 `transition invoked while in transition` startup failure,
-  then pass the complete production readiness gate and perform one clean
-  reproducibility restart.
+- Deferred single-owner Nav2 startup was verified by Phase 1B START_1.
+  Current restart and dependency results are recorded in the latest run below.
 - Confirm `/swerve_bridge` plus the backend-observed R01 heartbeat and capture a
   matching-domain idle `/cmd_vel_selected` zero sample.
 - Retest Web manual forward/STOP after immediate bridge publication; establish
@@ -445,3 +444,122 @@ production READY runs with controller claims, fresh R01 heartbeat and at least
 30 idle zero samples. The requested diagnose/fix/STOP rule was honored after
 the first failing layer; no additional production run or Stage B motion test
 was performed in this attempt.
+
+## Production two-start retest — latest outcome
+
+Started from clean commit `63cdc08`; corrected source and installed spawner
+matched byte-for-byte. The synchronous log fix was present. Both runs used
+the production `start_stack.sh navigation` path, headless, robot R01,
+canonical revision 21, and managed ROS domain 0. No motion command was sent.
+
+START_1=PASS (complete production READY plus controller/idle/heartbeat checks)
+STOP_CLEAN=PASS (between starts and after START_2 failure; no stack ROS/Gazebo survivors)
+START_2=FAIL (Nav2 manager bond formation after map_server activation)
+GAZEBO_READY=PASS (both)
+ROBOT_SPAWNED=PASS (both)
+CONTROLLER_MANAGER_READY=PASS (both)
+JSB_ACTIVE=PASS (both)
+STEERING_ACTIVE=PASS (both)
+DRIVE_ACTIVE=PASS (both)
+COMMAND_ARBITER_READY=PASS (both)
+SWERVE_CONTROLLER_READY=PASS (both)
+ODOM_READY=PASS (both)
+LIDAR_READY=PASS (both raw cloud, filtered cloud and scan)
+TF_READY=PASS (both map->odom->base_link and odom->base_footprint)
+NAV2_READY=PASS (START_1); FAIL (START_2)
+BRIDGE_READY=PASS (START_1); UNVERIFIED (START_2 stopped before bridge gate)
+CONTROLLER_INTERFACES=PASS (both)
+IDLE_SELECTED_CMD_ZERO=PASS (START_1); UNVERIFIED (START_2 stopped before idle probe)
+TEST_ROS_DOMAIN_ID=0 (both production runs; START_1 follow-up sourced managed stack.env)
+STAGE_A_GATE=FAIL
+
+START_1 evidence: full READY after 98.209 seconds, Gazebo PID 88401,
+spawn duration 30.712 seconds. All three spawners confirmed exact ACTIVE
+states/interface claims and exited cleanly in sequence. One deferred Nav2
+STARTUP (`f0e22eb4-b6a4-4900-b752-386559d11243`) returned success=true;
+all six lifecycle nodes became ACTIVE and `/navigate_to_pose` was available.
+`ros2 control list_controllers --claimed-interfaces` and
+`list_hardware_interfaces` confirmed the two steering position and two wheel
+velocity command interfaces, claimed without overlap. Django health reported
+fresh `online_robot_ids=["R01"]`, `ros_bridge=true`, `ros=true`.
+The read-only idle subscriber received 101 selected Twist samples over
+2.001 seconds, with zero nonzero values. The only selected-command publisher
+was `command_arbiter`; diagnostics reported owner NONE, mode AUTONOMOUS,
+manual/nav/tag inactive, E-STOP false, and no last-command age.
+
+After START_1, `stop_stack.sh` confirmed the ROS/frontend/backend groups
+stopped, and process inspection found no survivors. Pre-START_2 storage checks
+were clean. START_2 spawned in 21.206 seconds with Gazebo PID 90338. The drive
+spawner encountered one lost first `list_controllers` reply, logged
+`CONTROLLER_RESPONSE_LOST`, retried the read-only request on its persistent
+client, then loaded/configured/activated drive and exited cleanly. This directly
+verifies the spawner recovery that the previous second start lacked.
+
+FIRST_FAILING_LAYER=Nav2 lifecycle manager's bond formation, not controller
+activation or duplicate global lifecycle startup. START_2 recorded one STARTUP
+(`b885475f-0774-4de3-93a8-9c04c8ea42db`), with all six nodes UNCONFIGURED
+beforehand, autostart=false, one map_server, one navigation manager, and no
+mapping manager. The manager configured every node, activated map_server,
+then returned success=false with `transition invoked while in transition`.
+Post-failure states were map_server ACTIVE(3), all other five nodes INACTIVE(2).
+No second STARTUP was sent; the one-shot guard stopped the failed stack.
+
+NAV2_BOND_ROOT_CAUSE=Installed bondcpp 3.0.2's `waitUntilFormed` reads
+`sm_.getState()` without taking the FSM mutex while heartbeat callbacks perform
+state transitions under that mutex. The FSM temporarily clears its state during
+the transition, and the unlocked read can throw smclib's
+`StateUndefinedException` with exactly the observed message. Nav2's
+`changeStateForNode` calls `createBondConnection` after a successful lifecycle
+activation, which explains map_server ACTIVE despite the manager exception.
+This is separate from the previously verified deferred startup ownership fix.
+Primary sources:
+[bondcpp 3.0.2 wait implementation](https://github.com/ros/bond_core/blob/3.0.2/bondcpp/src/bond.cpp)
+and [Nav2 lifecycle manager](https://github.com/ros-navigation/navigation2/blob/humble/nav2_lifecycle_manager/src/lifecycle_manager.cpp).
+Managed-environment loader inspection confirmed /opt/ros/humble Nav2 and
+bondcpp were used, not the unrelated cartoros2 overlay.
+
+NAV2_BOND_FIX=Backport synchronized state reads in waitUntilFormed and
+waitUntilBroken against the installed bondcpp 3.0.2 headers. Condition-variable
+waiting releases the same mutex so heartbeat callbacks can finish. Exact
+upstream source/layout, interfaces, deadlines, and heartbeat/bond safety remain
+intact. CMake builds the workspace compatibility library only for version
+3.0.2; system ROS files are untouched. Post-build `ldd` in the canonical ROS
+environment confirms the lifecycle manager resolves the workspace's patched
+`libbondcpp.so`. The repair passed a real paired-bond test with 20 concurrent
+formation/break cycles; it has NOT yet been production-retested. No third
+production start was run, honoring diagnose/fix/STOP after the first failure.
+
+Requested source quality: package.xml now directly declares
+controller_manager_msgs and the compatibility library's build/runtime
+dependencies/license; archived previous ROS logs retain at most five numeric
+archives per log, leaving unrelated files/symlinks untouched. The old generic
+unresolved-Nav2 checklist is marked superseded and corrected to acknowledge
+Phase 1B's successful deferred startup, while this new bond regression remains
+explicit in the latest status.
+
+WEB_MANUAL_FORWARD=UNVERIFIED
+WEB_MANUAL_BACKWARD=UNVERIFIED
+WEB_MANUAL_LEFT=UNVERIFIED
+WEB_MANUAL_RIGHT=UNVERIFIED
+WEB_MANUAL_ROTATE_LEFT=UNVERIFIED
+WEB_MANUAL_ROTATE_RIGHT=UNVERIFIED
+WEB_MANUAL_STOP=UNVERIFIED
+WEB_MANUAL_TIMEOUT_STOP=UNVERIFIED
+WEB_DISCONNECT_STOP=UNVERIFIED
+MODE_CHANGE_STOP=UNVERIFIED
+COMMAND_ARBITER_ESTOP=UNVERIFIED
+ESTOP_CLEAR_NO_RESUME=UNVERIFIED
+WEB_MANUAL_R01=UNVERIFIED
+STAGE_B_GATE=NOT_RUN (Stage A failed)
+
+TESTS=PASS: 22 targeted controller/readiness/log pytest tests; C++ paired-bond
+CTest (20 cycles); Python compile for changed test; bash syntax; ROS
+`colcon build --symlink-install --packages-select swerve_bringup`; git diff
+check. Backend/frontend source was unchanged, so those suites were not rerun.
+STORAGE_HEALTH=PASS: no new current-boot SCSI/I/O/blocked-task/OOM errors before
+or between starts. Available RAM 5.2–5.3 GiB, swap 17 MiB initially / 34 MiB
+between starts, root free space 6.0 GiB. The failure was not storage-blocked.
+REMAINING_ISSUES=Two full production READY starts must be repeated with the
+bond wait synchronization repair before any Stage B Web motion test. Current
+second-run heartbeat and idle-zero acceptance remain unverified. No Nav Goal,
+Mapping, map persistence, initial pose, or VDA5050 test was performed.

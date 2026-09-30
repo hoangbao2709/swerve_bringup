@@ -9,7 +9,8 @@ stack_pid_file() { printf '%s/%s.pid' "$STACK_RUNTIME_DIR" "$1"; }
 stack_log_file() { printf '%s/%s.log' "$STACK_LOG_DIR" "$1"; }
 
 stack_prepare_log() {
-  local path
+  local path archive
+  local -a archives=()
   path="$(stack_log_file "$1")"
   # Startup probes run in the parent before an asynchronous tee may open the
   # file. Preserve the old run, then create this run's empty log synchronously
@@ -18,6 +19,17 @@ stack_prepare_log() {
     mv -- "$path" "$path.previous.$(date +%s%N)"
   fi
   : > "$path"
+  # Keep five previous runs per log. Only regular files with our numeric
+  # timestamp suffix qualify; unrelated files and symlinks are untouched.
+  for archive in "$path".previous.*; do
+    [[ -f "$archive" && ! -L "$archive" ]] || continue
+    [[ "${archive##*.previous.}" =~ ^[0-9]+$ ]] || continue
+    archives+=("$archive")
+  done
+  if ((${#archives[@]} > 5)); then
+    mapfile -t archives < <(printf '%s\n' "${archives[@]}" | LC_ALL=C sort -r)
+    rm -f -- "${archives[@]:5}"
+  fi
 }
 
 stack_valid_ros_domain() {

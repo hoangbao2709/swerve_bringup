@@ -6,7 +6,7 @@ tag_route_planner:
     navigate_action: /navigate_to_pose
     tag_id_topic: /v30e/tag_id
     offset_topic: /v30e/offset
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /cmd_vel_tag
     approach_radius: 0.20
     approach_speed: 0.05
     tag_acquire_timeout: 5.0

@@ -31,7 +31,8 @@ swerve_bridge:
     lidar_3d_min_height: -1.0
     lidar_3d_max_height: 3.0
     clock_topic: /clock
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /cmd_vel_manual
+    control_mode_topic: /robot_control_mode
     emergency_stop_topic: /emergency_stop
     navigate_action: /go_to_tag
     navigate_server_timeout: 2.0

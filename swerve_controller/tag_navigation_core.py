@@ -44,6 +44,8 @@ class RouteState:
     ARRIVED = 'ARRIVED'
     TAG_ACQUIRE_FAILED = 'TAG_ACQUIRE_FAILED'
     WRONG_TAG = 'WRONG_TAG'
+    CANCELLED = 'CANCELLED'
+    FAILED = 'FAILED'
 
 
 class RouteExecutor:

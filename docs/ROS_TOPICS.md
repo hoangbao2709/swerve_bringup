@@ -15,7 +15,14 @@ simulation `use_sim_time=true` is required and `/clock` comes from Gazebo.
 | `/odom` | `nav_msgs/Odometry` | swerve odometry |
 | `/odometry/filtered` | `nav_msgs/Odometry` | robot_localization EKF |
 | `/clock` | `rosgraph_msgs/Clock` | Gazebo |
-| `/cmd_vel` | `geometry_msgs/Twist` | manual/Nav2/bridge to controller |
+| `/cmd_vel` | `geometry_msgs/Twist` | direct/manual ROS command input |
+| `/cmd_vel_manual` | `geometry_msgs/Twist` | leased Web manual input from authenticated bridge |
+| `/cmd_vel_nav` | `geometry_msgs/Twist` | Nav2 controller and recovery behaviors |
+| `/cmd_vel_tag` | `geometry_msgs/Twist` | tag-relative approach controller |
+| `/robot_control_mode` | `std_msgs/String` | bridge-published latched MANUAL/AUTONOMOUS ownership mode |
+| `/tag_navigation/state` | `std_msgs/String` | tag route state used for explicit approach ownership |
+| `/cmd_vel_selected` | `geometry_msgs/Twist` | selected fresh input from `command_arbiter` to swerve controller |
+| `/command_owner` | `std_msgs/String` | current MANUAL/NAV2/TAG_ROUTE/ESTOP source |
 | `/emergency_stop` | `std_msgs/Bool` | bridge safety command |
 
 The bridge measures LiDAR age, frame, stamp and frequency. DDS does not expose a
@@ -32,17 +39,19 @@ portable dropped-message counter through this node, so dropped messages remain
 | `/go_to_tag` | project `GoToTag` action used by the bridge |
 | `/navigate_to_pose` | Nav2 action boundary when configured |
 
-The controller enforces max linear/angular velocity, wheel velocity,
-acceleration, steering rate/angle and the command timeout. Manual and
-autonomous commands must not be sent concurrently by the UI.
+The `command_arbiter` selects exactly one fresh source by mode, then sends it
+to the swerve controller. The controller applies max linear/angular velocity,
+wheel velocity, acceleration, steering rate/angle and its own command timeout.
+Manual/Web commands cannot override Nav2; Nav2 idle outputs cannot override
+Manual. E-STOP overrides every source.
 
 The browser sends `ROBOT_MODE` and repeated `ROBOT_MANUAL` frames through
-Django; the bridge converts them to bounded `/cmd_vel` commands. Manual actions
-are `FORWARD`, `BACKWARD`, `LEFT`, `RIGHT`, `ROTATE_LEFT`, `ROTATE_RIGHT` and
-`STOP`. Commands expire after `manual_command_timeout` (0.4 s by default), so
-lost WebSocket/keyboard focus stops the robot. `EMERGENCY_STOP` publishes a
-latched `/emergency_stop` Boolean and zero velocity; clear it explicitly before
-resuming control.
+Django; the bridge converts them to bounded `/cmd_vel_manual` commands. Manual
+actions are `FORWARD`, `BACKWARD`, `LEFT`, `RIGHT`, `ROTATE_LEFT`,
+`ROTATE_RIGHT` and `STOP`. Commands expire after `manual_command_timeout`
+(0.4 s by default), so lost WebSocket/keyboard focus publishes a final zero.
+`EMERGENCY_STOP` publishes a latched `/emergency_stop` Boolean and zero
+velocity; clear it explicitly before resuming control.
 
 For a multi-robot deployment, launch one bridge per robot with a unique
 `robot_id` and set its `namespace` parameter (for example `robot_1`). The bridge
@@ -71,7 +80,10 @@ saved map YAML -> nav2_map_server
 /scan + /lidar/points_filtered -> Nav2 costmaps
 /odometry/filtered -> local odom/base state
 V30E/tag localization -> map -> odom correction
-Nav2 -> /cmd_vel -> swerve_controller
+Nav2 -> /cmd_vel_nav --+
+Web manual -> /cmd_vel_manual --+
+Direct ROS -> /cmd_vel ---------+-> command_arbiter -> /cmd_vel_selected -> swerve_controller -> ros2_control
+Tag approach -> /cmd_vel_tag ---+
 ```
 
 SLAM is not started in navigation mode. The selected `map_file` is validated

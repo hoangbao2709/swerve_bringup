@@ -260,9 +260,11 @@ Start in this order:
 ```
 
 The navigation launch starts the static `map_server`, controller, planner,
-behavior, BT navigator, waypoint follower and lifecycle manager. The
-controller's `/cmd_vel` goes directly to the existing swerve controller, which
-converts `vx`, `vy`, `wz` to steering and drive commands. SLAM Toolbox is not
+behavior, BT navigator, waypoint follower and lifecycle manager. Nav2 publishes
+to `/cmd_vel_nav`; `command_arbiter` selects it only in AUTONOMOUS mode. Direct
+ROS manual commands use `/cmd_vel`, while Django bridge teleop uses the leased
+`/cmd_vel_manual` input. The swerve controller converts the selected
+`/cmd_vel_selected` values to steering and drive commands. SLAM Toolbox is not
 started in navigation mode; the selected saved map plus the V30E/tag
 localization filter own the `map -> odom` correction. Navigation still starts
 the LiDAR preprocessing and point-cloud-to-scan stages so
@@ -272,7 +274,8 @@ disabled in this mode.
 Navigation checks:
 
 ```bash
-ros2 topic echo /cmd_vel
+ros2 topic echo /cmd_vel_nav
+ros2 topic echo /cmd_vel_selected
 ros2 topic echo /local_costmap/costmap --once
 ros2 topic echo /local_costmap/voxel_grid --once
 ros2 action list | rg navigate
@@ -280,7 +283,7 @@ ros2 action list | rg navigate
 
 Test forward, left/right goals, pure strafe, in-place rotation, diagonal
 goals, narrow aisles, static obstacles, and an obstacle inserted while moving.
-Acceptance requires a real `/cmd_vel` path through the swerve controller,
+Acceptance requires a real selected command path through the swerve controller,
 costmap marking/clearing from PointCloud2, replanning or stopping when blocked,
 and no teleport or animation-based motion. The runtime acceptance below covers
 startup, live data, TF, bridge health and Nav2 lifecycle; goal-motion and

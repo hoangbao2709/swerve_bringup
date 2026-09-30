@@ -232,8 +232,17 @@ class TagRoutePlanner(Node):
 
     def stop(self): self.cmd_pub.publish(Twist())
     def finish(self, success, reason, canceled=False):
-        if self.active is None or self.active['done'].is_set(): return
-        self.stop(); self.cancel_segment(); self.active['success'], self.active['reason'] = success, reason; self.active['done'].set()
+        with self.lock:
+            if self.active is None or self.active['done'].is_set(): return
+            self.stop(); self.cancel_segment()
+            if canceled:
+                self.route_executor.state = RouteState.CANCELLED
+            elif not success and self.route_executor.state not in (
+                    RouteState.TAG_ACQUIRE_FAILED, RouteState.WRONG_TAG):
+                self.route_executor.state = RouteState.FAILED
+            self.active['success'], self.active['reason'] = success, reason
+            self.publish_status()
+            self.active['done'].set()
 
     def publish_route(self):
         from nav_msgs.msg import Path

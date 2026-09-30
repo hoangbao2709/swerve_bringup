@@ -54,6 +54,30 @@ def test_model_states_callback_confirms_live_robot_name(readiness_module):
     assert probe.timeline_events['T6_ROBOT_ENTITY_CONFIRMED']['status'] == 'PASS'
 
 
+def test_command_arbiter_readiness_requires_selected_topic_endpoints_and_owner_sample(
+    readiness_module,
+):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.command_owner_seen = True
+    probe._node_present = lambda name: name == 'command_arbiter'
+    probe.get_publishers_info_by_topic = lambda topic: [
+        SimpleNamespace(node_name='command_arbiter')
+    ]
+    probe.get_subscriptions_info_by_topic = lambda topic: [
+        SimpleNamespace(node_name='swerve_controller')
+    ]
+
+    assert probe._command_arbiter_graph_ready()
+
+    probe.command_owner_seen = False
+    assert not probe._command_arbiter_graph_ready()
+    probe.command_owner_seen = True
+    probe.get_subscriptions_info_by_topic = lambda topic: []
+    assert not probe._command_arbiter_graph_ready()
+
+
 def test_spawn_duration_uses_request_and_response_log_timestamps(
     readiness_module, tmp_path, capsys,
 ):

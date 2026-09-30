@@ -29,7 +29,7 @@ from rosgraph_msgs.msg import Clock
 from swerve_bringup.action import GoToTag
 from sensor_msgs.msg import JointState, LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from tf2_ros import Buffer, TransformException, TransformListener
 from robot_localization.srv import SetPose
@@ -88,7 +88,8 @@ class SwerveBridge(Node):
         self.declare_parameter('lidar_3d_min_height', -1.0)
         self.declare_parameter('lidar_3d_max_height', 3.0)
         self.declare_parameter('clock_topic', '/clock')
-        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel_manual')
+        self.declare_parameter('control_mode_topic', '/robot_control_mode')
         self.declare_parameter('emergency_stop_topic', '/emergency_stop')
         self.declare_parameter('navigate_action', '/go_to_tag')
         self.declare_parameter('navigate_pose_action', '/navigate_to_pose')
@@ -216,6 +217,7 @@ class SwerveBridge(Node):
         lidar_filtered_topic = self._scoped_topic(self.get_parameter('lidar_filtered_topic').value)
         clock_topic = self._scoped_topic(self.get_parameter('clock_topic').value)
         cmd_vel_topic = self._scoped_topic(self.get_parameter('cmd_vel_topic').value)
+        control_mode_topic = self._scoped_topic(self.get_parameter('control_mode_topic').value)
         emergency_stop_topic = self._scoped_topic(self.get_parameter('emergency_stop_topic').value)
         navigate_action = self._scoped_topic(self.get_parameter('navigate_action').value)
         self.create_subscription(Odometry, odom_topic, self.odom_cb, 20)
@@ -229,6 +231,15 @@ class SwerveBridge(Node):
         self.create_subscription(Clock, clock_topic, self.clock_cb, gazebo_clock_qos_profile())
         self.cmd_pub = self.create_publisher(
             Twist, cmd_vel_topic, 20)
+        mode_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.control_mode_pub = self.create_publisher(String, control_mode_topic, mode_qos)
+        mode_message = String()
+        mode_message.data = self.control_mode
+        self.control_mode_pub.publish(mode_message)
         estop_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -503,8 +514,13 @@ class SwerveBridge(Node):
         """Publish the dead-man command while the web operator is holding it."""
         if self.emergency_stop_active or self.control_mode != 'MANUAL':
             return
+        if self.manual_deadline <= 0.0:
+            return
         if time.monotonic() > self.manual_deadline:
             self.manual_twist = Twist()
+            self.manual_deadline = 0.0
+            self.cmd_pub.publish(self.manual_twist)
+            return
         self.cmd_pub.publish(self.manual_twist)
 
     def _robot_is_stopped(self):
@@ -1651,10 +1667,15 @@ class SwerveBridge(Node):
             except Exception as exc:
                 self.cancel_pending = False
                 self.get_logger().warning(f'failed to cancel autonomous goal before manual mode: {exc}')
+        previous_mode = self.control_mode
         self.control_mode = mode
         self.manual_twist = Twist()
         self.manual_deadline = 0.0
-        self.cmd_pub.publish(Twist())
+        if previous_mode == 'MANUAL':
+            self.cmd_pub.publish(Twist())
+        mode_message = String()
+        mode_message.data = mode
+        self.control_mode_pub.publish(mode_message)
         self.nav_state = 'MANUAL' if mode == 'MANUAL' else 'IDLE'
         self.send_control_status(True)
 

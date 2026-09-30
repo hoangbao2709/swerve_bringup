@@ -32,6 +32,17 @@ install(
 )
 
 install(
+  PROGRAMS swerve_controller/command_arbiter_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME command_arbiter_node
+)
+
+install(
+  FILES swerve_controller/command_ownership.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
   PROGRAMS swerve_controller/swerve_odometry_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME swerve_odometry_node

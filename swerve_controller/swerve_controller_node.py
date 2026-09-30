@@ -40,7 +40,7 @@ class SwerveController(Node):
         self.declare_parameter('command_timeout', 0.5)
         self.declare_parameter('control_rate', 50.0)
         self.declare_parameter('speed_deadband', 0.01)
-        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel_selected')
         self.declare_parameter('emergency_stop_topic', '/emergency_stop')
         self.declare_parameter('steering_command_topic', '/steering_controller/commands')
         self.declare_parameter('drive_command_topic', '/drive_controller/commands')

@@ -53,6 +53,8 @@ def generate_launch_description():
     default_world_path = os.path.join(pkg_share, 'worlds', 'warehouse.world')
     swerve_controller_config = os.path.join(
         pkg_share, 'config', 'swerve_controller.yaml')
+    command_arbiter_config = os.path.join(
+        pkg_share, 'config', 'command_arbiter.yaml')
     swerve_odometry_config = os.path.join(
         pkg_share, 'config', 'swerve_odometry.yaml')
     ekf_config = os.path.join(pkg_share, 'config', 'ekf.yaml')
@@ -210,6 +212,14 @@ def generate_launch_description():
         parameters=[swerve_controller_config, {'use_sim_time': use_sim_time}],
     )
 
+    command_arbiter = Node(
+        package='swerve_bringup',
+        executable='command_arbiter_node',
+        name='command_arbiter',
+        output='screen',
+        parameters=[command_arbiter_config, {'use_sim_time': use_sim_time}],
+    )
+
     swerve_odometry = Node(
         package='swerve_bringup',
         executable='swerve_odometry_node',
@@ -238,7 +248,7 @@ def generate_launch_description():
         OnProcessExit(target_action=controller_spawners[1], on_exit=[controller_spawners[2]]))
     start_nodes = RegisterEventHandler(
         OnProcessExit(target_action=controller_spawners[2],
-                      on_exit=[swerve_controller, swerve_odometry, ekf]))
+                      on_exit=[command_arbiter, swerve_controller, swerve_odometry, ekf]))
 
     return LaunchDescription([
         DeclareLaunchArgument(

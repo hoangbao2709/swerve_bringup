@@ -23,7 +23,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -95,6 +95,10 @@ class MotionProbe(Node):
         self.joint_events: list[tuple[float, dict, dict]] = []
         self.map = None
         self.cmd_events: list[tuple[float, float, float, float]] = []
+        self.manual_cmd_events: list[tuple[float, float, float, float]] = []
+        self.nav_cmd_events: list[tuple[float, float, float, float]] = []
+        self.selected_cmd_events: list[tuple[float, float, float, float]] = []
+        self.command_owner_events: list[tuple[float, str]] = []
         self.cmd_publisher_gids: list[str | None] = []
         self.steering_events: list[tuple[float, ...]] = []
         self.drive_events: list[tuple[float, ...]] = []
@@ -105,6 +109,7 @@ class MotionProbe(Node):
         self.control_statuses: list[dict] = []
         self.runtime_status = None
         self.command = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.nav_command = self.create_publisher(Twist, '/cmd_vel_nav', 10)
         qos = QoSProfile(depth=20, reliability=ReliabilityPolicy.BEST_EFFORT,
                          durability=DurabilityPolicy.VOLATILE)
         self.create_subscription(Odometry, '/odom', self._odom_cb, qos)
@@ -116,6 +121,18 @@ class MotionProbe(Node):
                                             durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.cmd_subscription = self.create_subscription(
             Twist, '/cmd_vel', self._cmd_cb, 20)
+        self.create_subscription(
+            Twist, '/cmd_vel_manual',
+            lambda msg: self._record_command(self.manual_cmd_events, msg), 20)
+        self.create_subscription(
+            Twist, '/cmd_vel_nav',
+            lambda msg: self._record_command(self.nav_cmd_events, msg), 20)
+        self.create_subscription(
+            Twist, '/cmd_vel_selected',
+            lambda msg: self._record_command(self.selected_cmd_events, msg), 20)
+        self.create_subscription(
+            String, '/command_owner',
+            lambda msg: self.command_owner_events.append((time.monotonic(), str(msg.data))), 20)
         self.create_subscription(Float64MultiArray, '/steering_controller/commands',
                                  lambda msg: self.steering_events.append(
                                      (time.monotonic(), *tuple(msg.data))), 20)
@@ -173,10 +190,13 @@ class MotionProbe(Node):
             self.map = msg
 
     def _cmd_cb(self, msg, info=None):
-        self.cmd_events.append((time.monotonic(), msg.linear.x,
-                                msg.linear.y, msg.angular.z))
+        self._record_command(self.cmd_events, msg)
         gid = getattr(info, 'publisher_gid', None)
         self.cmd_publisher_gids.append(bytes(gid).hex() if gid is not None else None)
+
+    @staticmethod
+    def _record_command(events, msg):
+        events.append((time.monotonic(), msg.linear.x, msg.linear.y, msg.angular.z))
 
     def _action_status_cb(self, msg):
         self.action_status_events.append((
@@ -285,7 +305,7 @@ class MotionProbe(Node):
             'unexpected_idle_traffic': bool(nonzero) or len(events) > 2,
         }
 
-    def stop_direct(self, timeout=1.5):
+    def stop_direct(self, timeout=1.5, *, nav_source=False):
         start_time = time.monotonic()
         start_index = len(self.drive_events)
         stop_until = start_time + timeout
@@ -294,7 +314,7 @@ class MotionProbe(Node):
         while time.monotonic() < stop_until:
             now = time.monotonic()
             if now - last_publish >= 0.10:
-                self.command.publish(Twist())
+                (self.nav_command if nav_source else self.command).publish(Twist())
                 last_publish = now
             self.pump(timeout=0.02)
             zero_seen = any(all(abs(value) <= 1e-4 for value in row[1:])
@@ -317,6 +337,8 @@ class MotionProbe(Node):
         start_sim = self.sim_time()
         start_wall = time.monotonic()
         command_index = len(self.cmd_events)
+        selected_index = len(self.selected_cmd_events)
+        owner_index = len(self.command_owner_events)
         steering_index = len(self.steering_events)
         drive_index = len(self.drive_events)
         joint_index = len(self.joint_events)
@@ -376,6 +398,11 @@ class MotionProbe(Node):
         recent_cmd = self.cmd_events[command_index:]
         active_cmd = [row for row in recent_cmd
                       if any(abs(value) > 1e-4 for value in row[1:])]
+        selected_cmd = self.selected_cmd_events[selected_index:]
+        active_selected_cmd = [row for row in selected_cmd
+                               if any(abs(value) > 1e-4 for value in row[1:])]
+        owners = self.command_owner_events[owner_index:]
+        direct_owner_seen = any(owner == 'DIRECT_MANUAL' for _, owner in owners)
         drive = self.drive_events[drive_index:]
         steering = self.steering_events[steering_index:]
         joint_samples = self.joint_events[joint_index:]
@@ -421,7 +448,8 @@ class MotionProbe(Node):
         steering_response = (steering_active and steering_position_change > 0.10
                              if steering_required else True)
         passed = bool(
-            elapsed_sim > 0.0 and direction_passed and active_cmd and drive_active
+            elapsed_sim > 0.0 and direction_passed and active_cmd and active_selected_cmd
+            and direct_owner_seen and drive_active
             and (wheel_velocity_max > 0.05 or wheel_position_change > 0.05)
             and steering_response and stop_result['zero_drive_command_seen']
             and (label != 'FORWARD' or watchdog_result.get('zero_drive_command_seen')))
@@ -448,6 +476,8 @@ class MotionProbe(Node):
             'directional_displacement_m_or_yaw_rad': physical_metric,
             'tolerance': threshold, 'sim_duration_s': elapsed_sim,
             'cmd_vel_nonzero_samples': len(active_cmd),
+            'selected_cmd_vel_nonzero_samples': len(active_selected_cmd),
+            'command_owner': 'DIRECT_MANUAL' if direct_owner_seen else None,
             'steering_command_samples': len(steering),
             'steering_nonzero': steering_active,
             'drive_command_samples': len(drive), 'drive_nonzero': drive_active,
@@ -535,7 +565,9 @@ class MotionProbe(Node):
         if pose0 is None or gazebo0 is None:
             return {'passed': False, 'server_ready': True,
                     'reason': 'map_or_gazebo_pose_missing_before_goal', 'goal': goal_pose}
-        command_index = len(self.cmd_events)
+        command_index = len(self.nav_cmd_events)
+        selected_index = len(self.selected_cmd_events)
+        owner_index = len(self.command_owner_events)
         drive_index = len(self.drive_events)
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = 'map'
@@ -550,13 +582,13 @@ class MotionProbe(Node):
         while time.monotonic() < deadline and not goal_future.done():
             self.pump(timeout=0.03)
         if not goal_future.done():
-            self.stop_direct()
+            self.stop_direct(nav_source=True)
             return {'passed': False, 'server_ready': True,
                     'reason': 'goal_acceptance_timeout:/navigate_to_pose',
                     'goal': goal_pose}
         goal_handle = goal_future.result()
         if not goal_handle or not goal_handle.accepted:
-            self.stop_direct()
+            self.stop_direct(nav_source=True)
             return {'passed': False, 'server_ready': True,
                     'reason': 'goal_rejected:/navigate_to_pose', 'goal': goal_pose,
                     'accepted': False}
@@ -583,11 +615,16 @@ class MotionProbe(Node):
                 '(NavigateToPose result has no error detail field)'
             )
 
-        stop_result = self.stop_direct()
+        stop_result = self.stop_direct(nav_source=True)
         pose1, gazebo1 = self.map_pose(), self.gazebo_pose
-        commands = self.cmd_events[command_index:]
+        commands = self.nav_cmd_events[command_index:]
         active_commands = [row for row in commands
                            if any(abs(value) > 1e-4 for value in row[1:])]
+        selected = self.selected_cmd_events[selected_index:]
+        active_selected = [row for row in selected
+                           if any(abs(value) > 1e-4 for value in row[1:])]
+        owners = self.command_owner_events[owner_index:]
+        nav_owner_seen = any(owner == 'NAV2' for _, owner in owners)
         drives = self.drive_events[drive_index:]
         drive_active = any(any(abs(value) > 1e-4 for value in row[1:]) for row in drives)
         pose_change = dist(pose0, pose1) if pose1 is not None else None
@@ -596,7 +633,8 @@ class MotionProbe(Node):
         final_yaw_error = (abs(wrap_angle(gazebo1[2] - goal_pose[2]))
                            if gazebo1 is not None else None)
         passed = bool(
-            terminal_status == 'SUCCEEDED' and active_commands and drive_active
+            terminal_status == 'SUCCEEDED' and active_commands and active_selected
+            and nav_owner_seen and drive_active
             and pose_change is not None and pose_change > TRANSLATION_TOLERANCE_M
             and physical_change is not None and physical_change > TRANSLATION_TOLERANCE_M
             and final_goal_error is not None
@@ -617,6 +655,8 @@ class MotionProbe(Node):
             'goal_yaw_tolerance_rad': NAV_GOAL_YAW_TOLERANCE_RAD,
             'stop_result': stop_result,
             'cmd_vel_nonzero_samples': len(active_commands),
+            'selected_cmd_vel_nonzero_samples': len(active_selected),
+            'command_owner': 'NAV2' if nav_owner_seen else None,
             'drive_command_samples': len(drives), 'drive_nonzero': drive_active,
         }
 
@@ -686,7 +726,9 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     wall_deadline = time.monotonic() + timeout
     next_send = 0.0
     send_times = []
-    command_index = len(probe.cmd_events)
+    command_index = len(probe.manual_cmd_events)
+    selected_index = len(probe.selected_cmd_events)
+    owner_index = len(probe.command_owner_events)
     drive_index = len(probe.drive_events)
     steering_index = len(probe.steering_events)
     joint_index = len(probe.joint_events)
@@ -704,15 +746,20 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     ws.send(json.dumps({'type': 'ROBOT_MANUAL', 'robot_id': robot_id, 'action': 'STOP'}))
     zero_seen = probe.wait_until(
         lambda: any(row[0] >= stop_time and all(abs(value) <= 1e-4 for value in row[1:])
-                    for row in probe.cmd_events[command_index:]),
+                    for row in probe.manual_cmd_events[command_index:]),
         min(5.0, max(1.0, timeout / 4.0)), ws,
     )
     pose1 = probe.odom
     gazebo1 = probe.gazebo_pose
     joint1 = probe.joint_snapshot(probe.joint_state)
-    commands = probe.cmd_events[command_index:]
+    commands = probe.manual_cmd_events[command_index:]
     active_commands = [row for row in commands if row[0] < stop_time
                        and any(abs(value) > 1e-4 for value in row[1:])]
+    selected_commands = probe.selected_cmd_events[selected_index:]
+    active_selected_commands = [row for row in selected_commands
+                                if any(abs(value) > 1e-4 for value in row[1:])]
+    owners = probe.command_owner_events[owner_index:]
+    manual_owner_seen = any(owner == 'WEB_MANUAL' for _, owner in owners)
     drives = probe.drive_events[drive_index:]
     steering = probe.steering_events[steering_index:]
     joint_samples = probe.joint_events[joint_index:]
@@ -765,7 +812,8 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
         for row in active_commands)
     direction_tolerance = (ROTATION_TOLERANCE_RAD if expected_component == 'angular_z'
                            else TRANSLATION_TOLERANCE_M)
-    passed = bool(command_ack and command_direction_seen and drive_active
+    passed = bool(command_ack and command_direction_seen and active_selected_commands
+                  and manual_owner_seen and drive_active
                   and (wheel_velocity_max > 0.05 or wheel_position_change > 0.05)
                   and physical_metric is not None
                   and physical_metric > direction_tolerance
@@ -785,6 +833,8 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
         'gazebo_p0': gazebo0, 'gazebo_p1': gazebo1,
         'gazebo_body_delta': gazebo_delta, 'odom_body_delta': odom_delta,
         'cmd_vel_nonzero_samples': len(active_commands),
+        'selected_cmd_vel_nonzero_samples': len(active_selected_commands),
+        'command_owner': 'WEB_MANUAL' if manual_owner_seen else None,
         'observed_cmd_vel': ([{'linear_x': row[1], 'linear_y': row[2],
                                'angular_z': row[3]} for row in active_commands[:5]]),
         'expected_direction_component': expected_component,
@@ -822,7 +872,9 @@ def web_navigation(probe, ws, robot_id, timeout):
 
     x, y, yaw = goal
     pose0, gazebo0 = probe.map_pose(), probe.gazebo_pose
-    command_index = len(probe.cmd_events)
+    command_index = len(probe.nav_cmd_events)
+    selected_index = len(probe.selected_cmd_events)
+    owner_index = len(probe.command_owner_events)
     drive_index = len(probe.drive_events)
     action_status_index = len(probe.action_status_events)
     goal_payload = {
@@ -855,8 +907,13 @@ def web_navigation(probe, ws, robot_id, timeout):
         terminal = {'status': 'TIMEOUT', 'reason': f'no terminal NAV_STATUS within {timeout:.1f}s'}
 
     pose1, gazebo1 = probe.map_pose(), probe.gazebo_pose
-    commands = probe.cmd_events[command_index:]
+    commands = probe.nav_cmd_events[command_index:]
     active_commands = [row for row in commands if any(abs(value) > 1e-4 for value in row[1:])]
+    selected_commands = probe.selected_cmd_events[selected_index:]
+    active_selected_commands = [row for row in selected_commands
+                                if any(abs(value) > 1e-4 for value in row[1:])]
+    owners = probe.command_owner_events[owner_index:]
+    nav_owner_seen = any(owner == 'NAV2' for _, owner in owners)
     drives = probe.drive_events[drive_index:]
     drive_active = any(any(abs(value) > 1e-4 for value in row[1:]) for row in drives)
     pose_change = dist(pose0, pose1) if pose1 is not None else None
@@ -867,6 +924,7 @@ def web_navigation(probe, ws, robot_id, timeout):
     status_name = str(terminal.get('status') or 'UNKNOWN').upper()
     accepted = accepted or status_name == 'SUCCEEDED'
     passed = bool(accepted and status_name == 'SUCCEEDED' and active_commands
+                  and active_selected_commands and nav_owner_seen
                   and drive_active and pose_change is not None
                   and pose_change > TRANSLATION_TOLERANCE_M
                   and physical_change is not None
@@ -889,6 +947,8 @@ def web_navigation(probe, ws, robot_id, timeout):
         'goal_xy_tolerance_m': NAV_GOAL_XY_TOLERANCE_M,
         'goal_yaw_tolerance_rad': NAV_GOAL_YAW_TOLERANCE_RAD,
         'cmd_vel_nonzero_samples': len(active_commands),
+        'selected_cmd_vel_nonzero_samples': len(active_selected_commands),
+        'command_owner': 'NAV2' if nav_owner_seen else None,
         'drive_command_samples': len(drives), 'drive_nonzero': drive_active,
         'action_status_topic_samples': len(probe.action_status_events[action_status_index:]),
     }
@@ -939,6 +999,21 @@ def main() -> int:
         print(f'IDLE_CMD_VEL samples={idle["samples"]} nonzero={idle["nonzero_samples"]} '
               f'unexpected={idle["unexpected_idle_traffic"]}', flush=True)
 
+        bridge_ready_for_direct = probe.wait_until(
+            lambda: probe.runtime_status is not None
+            and args.robot_id in probe.runtime_status.get('connected_robot_ids', []),
+            15.0, ws,
+        )
+        result['stages']['R01_BRIDGE_READY_FOR_DIRECT_CONTROL'] = bridge_ready_for_direct
+        manual_mode_ready = False
+        if bridge_ready_for_direct:
+            manual_mode_ready, mode_reason = set_mode(probe, ws, args.robot_id, 'MANUAL')
+            result['stages']['DIRECT_MANUAL_MODE_R01'] = manual_mode_ready
+            if not manual_mode_ready:
+                result['direct_manual_mode_reason'] = mode_reason
+        else:
+            result['stages']['DIRECT_MANUAL_MODE_R01'] = False
+
         sequence = (
             ('FORWARD', (0.25, 0.0, 0.0)),
             ('STRAFE', (0.0, 0.25, 0.0)),
@@ -946,10 +1021,13 @@ def main() -> int:
         )
         direct_results = {}
         direct_blocker = None
-        if idle['unexpected_idle_traffic']:
+        if idle['unexpected_idle_traffic'] or not bridge_ready_for_direct or not manual_mode_ready:
             direct_blocker = 'DIRECT_FORWARD'
             result['stages']['DIRECT_FORWARD'] = None
-            print('DIRECT_FORWARD=UNVERIFIED reason=unexpected_idle_cmd_vel_traffic; '
+            reason = ('unexpected_idle_cmd_vel_traffic' if idle['unexpected_idle_traffic']
+                      else 'R01_bridge_unavailable' if not bridge_ready_for_direct
+                      else 'MANUAL_mode_not_accepted')
+            print(f'DIRECT_FORWARD=UNVERIFIED reason={reason}; '
                   'motion not commanded', flush=True)
         else:
             for label, velocity in sequence:
@@ -959,6 +1037,8 @@ def main() -> int:
                 stage_name = f'DIRECT_{label}'
                 result['stages'][stage_name] = passed
                 result['stages'][f'DIRECT_ROS_{label}'] = passed
+                result['stages'][f'DIRECT_{label}_COMMAND_OWNER'] = (
+                    motion.get('command_owner') == 'DIRECT_MANUAL')
                 status = 'PASS' if passed else 'FAIL'
                 print(f'{stage_name}={status} reason={motion.get("reason")} '
                       f'command={motion.get("command")} '
@@ -974,16 +1054,26 @@ def main() -> int:
 
         all_direct = (not direct_blocker and len(direct_results) == len(sequence)
                       and all(item['passed'] for item in direct_results.values()))
-        direct_navigation = ({'passed': False, 'reason': f'blocked_by_{direct_blocker}',
+        direct_nav_mode_ready = False
+        if all_direct:
+            direct_nav_mode_ready, direct_nav_mode_reason = set_mode(
+                probe, ws, args.robot_id, 'AUTONOMOUS')
+            result['stages']['DIRECT_AUTONOMOUS_MODE_R01'] = direct_nav_mode_ready
+        else:
+            direct_nav_mode_reason = f'blocked_by_{direct_blocker}'
+        direct_navigation = ({'passed': False,
+                              'reason': (f'AUTONOMOUS_mode_not_accepted:{direct_nav_mode_reason}'
+                                         if all_direct else f'blocked_by_{direct_blocker}'),
                               'server_ready': None, 'accepted': None, 'status': 'UNVERIFIED'}
-                             if not all_direct else
+                             if not (all_direct and direct_nav_mode_ready) else
                              probe.direct_navigation(args.navigation_timeout))
         result['direct_navigation'] = direct_navigation
-        if all_direct:
+        if all_direct and direct_nav_mode_ready:
             direct_nav_stages = (
                 ('DIRECT_NAV_SERVER_READY', bool(direct_navigation.get('server_ready'))),
                 ('DIRECT_NAV_GOAL_ACCEPTED', bool(direct_navigation.get('accepted'))),
                 ('DIRECT_NAV_CMD_VEL', direct_navigation.get('cmd_vel_nonzero_samples', 0) > 0),
+                ('DIRECT_NAV_COMMAND_OWNER', direct_navigation.get('command_owner') == 'NAV2'),
                 ('DIRECT_NAV_CONTROLLER_COMMAND', bool(direct_navigation.get('drive_nonzero'))),
                 ('DIRECT_NAV_MOTION', direct_navigation.get('gazebo_displacement_m') is not None
                  and direct_navigation['gazebo_displacement_m'] > TRANSLATION_TOLERANCE_M),
@@ -1006,11 +1096,14 @@ def main() -> int:
                       flush=True)
         else:
             for stage_name in ('DIRECT_NAV_SERVER_READY', 'DIRECT_NAV_GOAL_ACCEPTED',
-                               'DIRECT_NAV_CMD_VEL', 'DIRECT_NAV_CONTROLLER_COMMAND',
+                               'DIRECT_NAV_CMD_VEL', 'DIRECT_NAV_COMMAND_OWNER',
+                               'DIRECT_NAV_CONTROLLER_COMMAND',
                                'DIRECT_NAV_MOTION', 'DIRECT_NAV_GOAL_TOLERANCE',
                                'DIRECT_NAV_SUCCEEDED'):
                 result['stages'][stage_name] = None
-            print(f'DIRECT_NAV_GOAL=UNVERIFIED reason=blocked_by_{direct_blocker}', flush=True)
+            nav_reason = (f'AUTONOMOUS_mode_not_accepted:{direct_nav_mode_reason}'
+                          if all_direct else f'blocked_by_{direct_blocker}')
+            print(f'DIRECT_NAV_GOAL=UNVERIFIED reason={nav_reason}', flush=True)
 
         manual = {'passed': False, 'reason': f'blocked_by_{direct_blocker}',
                   'bridge_r01_connected': None}
@@ -1082,6 +1175,8 @@ def main() -> int:
                  f'samples={manual.get("cmd_vel_nonzero_samples", 0)}'),
                 ('WEB_MANUAL_CONTROLLER_COMMAND', bool(manual.get('drive_nonzero')),
                  f'drive_samples={manual.get("drive_command_samples", 0)}'),
+                ('WEB_MANUAL_COMMAND_OWNER', manual.get('command_owner') == 'WEB_MANUAL',
+                 f'owner={manual.get("command_owner")}'),
                 ('WEB_MANUAL_COMMAND_ACCEPTED', bool(manual.get('controller_command_ack')),
                  'R01_bridge_acknowledged_manual_command'),
                 ('WEB_MANUAL_MOTION', bool(manual.get('passed')),
@@ -1095,7 +1190,7 @@ def main() -> int:
         else:
             for stage_name in ('WEB_MANUAL_CMD_VEL', 'WEB_MANUAL_CONTROLLER_COMMAND',
                                'WEB_MANUAL_COMMAND_ACCEPTED', 'WEB_MANUAL_MOTION',
-                               'WEB_MANUAL_STOP_ZERO'):
+                               'WEB_MANUAL_COMMAND_OWNER', 'WEB_MANUAL_STOP_ZERO'):
                 result['stages'][stage_name] = None
 
         manual_ok = bool(manual.get('passed'))
@@ -1117,6 +1212,8 @@ def main() -> int:
                  f'accepted={navigation.get("accepted")}'),
                 ('WEB_NAV_CMD_VEL', navigation.get('cmd_vel_nonzero_samples', 0) > 0,
                  f'samples={navigation.get("cmd_vel_nonzero_samples", 0)}'),
+                ('WEB_NAV_COMMAND_OWNER', navigation.get('command_owner') == 'NAV2',
+                 f'owner={navigation.get("command_owner")}'),
                 ('WEB_NAV_CONTROLLER_COMMAND', bool(navigation.get('drive_nonzero')),
                  f'drive_samples={navigation.get("drive_command_samples", 0)}'),
                 ('WEB_NAV_MOTION', navigation.get('gazebo_displacement_m') is not None
@@ -1134,17 +1231,18 @@ def main() -> int:
                       f'reason={navigation.get("reason")} {detail}', flush=True)
         else:
             for stage_name in ('WEB_NAV_GOAL_ACCEPTED', 'WEB_NAV_CMD_VEL',
-                               'WEB_NAV_CONTROLLER_COMMAND', 'WEB_NAV_MOTION',
+                               'WEB_NAV_COMMAND_OWNER', 'WEB_NAV_CONTROLLER_COMMAND', 'WEB_NAV_MOTION',
                                'WEB_NAV_GOAL_TOLERANCE', 'WEB_NAV_SUCCEEDED'):
                 result['stages'][stage_name] = None
 
         all_web_manual = all(result['stages'].get(key) is True for key in (
-            'WEB_MANUAL_CMD_VEL', 'WEB_MANUAL_CONTROLLER_COMMAND',
+            'WEB_MANUAL_CMD_VEL', 'WEB_MANUAL_CONTROLLER_COMMAND', 'WEB_MANUAL_COMMAND_OWNER',
             'WEB_MANUAL_COMMAND_ACCEPTED', 'WEB_MANUAL_MOTION', 'WEB_MANUAL_STOP_ZERO',
             'WEB_MANUAL_FORWARD', 'WEB_MANUAL_BACKWARD', 'WEB_MANUAL_LEFT',
             'WEB_MANUAL_RIGHT', 'WEB_MANUAL_ROTATE_LEFT', 'WEB_MANUAL_ROTATE_RIGHT'))
         all_web_nav = all(result['stages'].get(key) is True for key in (
-            'WEB_NAV_GOAL_ACCEPTED', 'WEB_NAV_CMD_VEL', 'WEB_NAV_CONTROLLER_COMMAND',
+            'WEB_NAV_GOAL_ACCEPTED', 'WEB_NAV_CMD_VEL', 'WEB_NAV_COMMAND_OWNER',
+            'WEB_NAV_CONTROLLER_COMMAND',
             'WEB_NAV_MOTION', 'WEB_NAV_GOAL_TOLERANCE', 'WEB_NAV_SUCCEEDED'))
         all_direct_navigation = bool(direct_navigation.get('passed'))
         result['passed'] = bool(all_direct and all_direct_navigation

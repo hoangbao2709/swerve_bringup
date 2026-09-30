@@ -24,9 +24,13 @@ validated and cannot take down the connection by itself.
 
 Robot control follows the same boundary: the Control page sends mode changes
 and held manual actions over `/ws`; Django validates and forwards them to the
-bridge; the bridge owns the dead-man timer and publishes bounded `/cmd_vel`.
-Autonomous navigation is rejected while manual mode is active, and an E-stop
-is sent as a real backend/ROS command rather than a frontend-only flag.
+bridge; the bridge owns the dead-man timer and publishes bounded
+`/cmd_vel_manual`. Nav2 and tag approach publish on separate inputs. The
+`command_arbiter` selects one fresh input according to the latched
+MANUAL/AUTONOMOUS mode and tag-route state, then publishes
+`/cmd_vel_selected` to the swerve controller. Autonomous navigation is rejected
+while manual mode is active, and E-STOP overrides every source through the real
+ROS safety input.
 
 ## Runtime modes
 

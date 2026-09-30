@@ -1,0 +1,13 @@
+command_arbiter:
+  ros__parameters:
+    direct_cmd_vel_topic: /cmd_vel
+    manual_cmd_vel_topic: /cmd_vel_manual
+    nav_cmd_vel_topic: /cmd_vel_nav
+    tag_cmd_vel_topic: /cmd_vel_tag
+    control_mode_topic: /robot_control_mode
+    tag_route_state_topic: /tag_navigation/state
+    emergency_stop_topic: /emergency_stop
+    selected_cmd_vel_topic: /cmd_vel_selected
+    command_owner_topic: /command_owner
+    command_timeout: 0.5
+    control_rate: 50.0

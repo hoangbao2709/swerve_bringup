@@ -19,6 +19,7 @@ Authenticated ROS Bridge (R01)
         |                              |
         | SLAM Toolbox   Nav2   TF     |
         | map / scan     EKF    LiDAR  |
+        | command_arbiter              |
         +------------------------------+
         |
         v
@@ -140,12 +141,19 @@ interoperability require a real broker/adapter runtime test.
 
 The existing control protocol remains the only web motion path. MANUAL mode is
 accepted by the bridge before `MANUAL_CMD` can update its short dead-man lease;
-key/button release sends STOP and a missed lease publishes zero. AUTONOMOUS
-mode accepts NavigateToPose commands, and the mode switch cancels an active
-navigation goal before entering MANUAL. E-STOP sets the ROS emergency-stop
-input, publishes zero velocity, cancels an active goal, and is cleared only by
-the existing explicit clear-stop action. No second command mux or alternate
-frontend control publisher is introduced here.
+key/button release sends STOP and a missed lease publishes a final zero. At the
+swerve controller input, the direct/manual ROS topic (`/cmd_vel`), leased Web
+manual topic (`/cmd_vel_manual`), Nav2 topic (`/cmd_vel_nav`), and tag approach
+topic (`/cmd_vel_tag`) remain separate. The `command_arbiter` ROS component
+selects one fresh source according to the latched robot mode and tag route
+state, publishes `/cmd_vel_selected` and `/command_owner`, then the swerve
+controller computes actuator commands from the selected stream. MANUAL selects
+Web input while its lease is fresh,
+then direct ROS input; AUTONOMOUS selects Nav2, with the tag-relative approach
+input owning only while `/tag_navigation/state` is `APPROACH_TAG`. Mode changes
+and E-STOP clear buffered commands. E-STOP also sets the existing ROS stop
+input, cancels an active goal, and is cleared only by the explicit clear-stop
+action.
 
 The Web UI and Python/ROS tests validate the command protocol and data
 processing paths. Global/LiDAR data rendering, mapping services, localization,

@@ -27,6 +27,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState, LaserScan, PointCloud2
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -156,6 +157,7 @@ class Readiness(Node):
         self.map_seen = False
         self.points_seen = False
         self.filtered_points_seen = False
+        self.command_owner_seen = False
         clock_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT,
                                durability=DurabilityPolicy.VOLATILE)
         self.readiness_subscriptions['clock'] = self.create_subscription(
@@ -185,6 +187,8 @@ class Readiness(Node):
         self.readiness_subscriptions['filtered_points'] = self.create_subscription(
             PointCloud2, '/lidar/points_filtered',
             lambda msg: self._cloud_cb('filtered_points_seen', msg), sensor_qos)
+        self.readiness_subscriptions['command_owner'] = self.create_subscription(
+            String, '/command_owner', self._command_owner_cb, 10)
         self.factory = self.create_client(SpawnEntity, '/spawn_entity')
         self.robot_description = self.create_client(GetParameters, '/robot_state_publisher/get_parameters')
         self.controllers = self.create_client(ListControllers, '/controller_manager/list_controllers')
@@ -380,11 +384,38 @@ class Readiness(Node):
         if self.map_seen:
             self._stop_monitoring('map')
 
+    def _command_owner_cb(self, msg):
+        self.command_owner_seen = str(msg.data) in (
+            'NONE', 'ESTOP', 'WEB_MANUAL', 'DIRECT_MANUAL', 'NAV2', 'TAG_ROUTE')
+
     def _topic_present(self, topic):
         try:
             return any(name == topic for name, _ in self.get_topic_names_and_types())
         except Exception:
             return False
+
+    def _command_arbiter_graph_ready(self):
+        publishers = self.get_publishers_info_by_topic('/cmd_vel_selected')
+        subscribers = self.get_subscriptions_info_by_topic('/cmd_vel_selected')
+        arbiter_publishes_selected = any(
+            row.node_name == 'command_arbiter' for row in publishers)
+        controller_subscribes_selected = any(
+            row.node_name == 'swerve_controller' for row in subscribers)
+        return bool(self._node_present('command_arbiter')
+                    and self.command_owner_seen
+                    and arbiter_publishes_selected
+                    and controller_subscribes_selected)
+
+    def _command_arbiter_stage(self, result, deadline):
+        ready = self._spin_until(self._command_arbiter_graph_ready, deadline)
+        return self._report_stage(
+            result,
+            'COMMAND_ARBITER_READY',
+            ready,
+            'command_arbiter_or_cmd_vel_selected_path_unavailable',
+            success_detail=' node=/command_arbiter publisher=/cmd_vel_selected '
+                           'subscriber=/swerve_controller command_owner_observed',
+        )
 
     @staticmethod
     def _gazebo_process_present():
@@ -849,6 +880,9 @@ class Readiness(Node):
                 print(f'CONTROLLER_RUNTIME_LOG={self.log_path}', flush=True)
         if not controllers_ok:
             return self._finish(result, f'required ros2_control controllers not ready: {self.controller_failure}')
+
+        if not self._command_arbiter_stage(result, deadline):
+            return self._finish(result, 'command arbiter or selected velocity path is unavailable')
 
         if not self._topic_stage(result, 'JOINT_STATES_READY', '/joint_states', 'joints_seen'):
             return self._finish(result, 'no valid /joint_states message with required steering/drive joints')

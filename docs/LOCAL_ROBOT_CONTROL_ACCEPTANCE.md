@@ -993,3 +993,206 @@ mode/disconnect/gateway tests (system check clean); Python compile; colcon
 symlink build of swerve_bringup and swerve_bridge (two packages, only the
 existing setuptools EasyInstall deprecation warning); git diff check.
 No shell source changed, so bash syntax validation was not needed.
+
+## 2026-10-01: physics-time STOP diagnosis and encoder consistency
+
+This is the latest Stage B status. Phase 1 / Stage A stays CLOSED and PASS;
+startup, Nav2 lifecycle, bondcpp, controller spawning and bridge startup source
+were not changed. No Nav Goal, Mapping, Save/Load Map, Init Pose or VDA5050 test
+ran. Historical motion/safety passes above remain historical, not fresh passes.
+
+### Focused LEFT -> STOP evidence
+
+SETTLING_DIAGNOSIS=PASS
+SETTLING_CLASSIFICATION=NUMERICAL_FEEDBACK, with small measured encoder creep
+and low real-time factor; not evidence of continued meaningful chassis motion.
+
+The focused collector subscribed read-only to manual/selected Twist, drive and
+steering targets, joint positions/velocities, Gazebo pose/twist, odom pose/twist
+and `/clock`. Every trace row included monotonic wall time and simulation time.
+Motion came only through authenticated WebSocket -> Django -> R01 bridge ->
+manual source -> arbiter -> selected source -> swerve -> ros2_control -> Gazebo.
+It never published a ROS motion command or changed joint state.
+
+An initial isolated LEFT -> STOP did not reproduce the previous velocity
+failure: steering settled at +pi/2 and raw wheel velocities were approximately
++0.047/+0.046 rad/s. A subsequent focused LEFT left persistent reported
+velocity noise at the same lateral orientation. One temporary recorder failed
+while copying a deque concurrently; its output was not used for acceptance.
+Snapshot copying was corrected in the ignored diagnostic, with STOP/AUTONOMOUS
+requested in cleanup. A following baseline probe sent **no motion** and recorded
+the existing post-LEFT residual continuously for 45 wall seconds:
+
+| Measurement | Observed result |
+| --- | --- |
+| Wall elapsed | 45.020022 s |
+| Simulation elapsed | 7.208 s |
+| Effective RTF (`delta /clock` / wall elapsed) | 0.160107 |
+| Selected Twist / drive targets | (0,0,0) / (0,0), throughout |
+| Held steering targets | (+pi/2,+pi/2), throughout |
+| Front position change / range-derived rate | -0.007050 rad / 0.000978 rad/s |
+| Rear position change / range-derived rate | +0.017267 rad / 0.002395 rad/s |
+| Front reported velocity: mean / last | -0.152860 / -0.153830 rad/s |
+| Rear reported velocity: mean / last | -0.084175 / -0.082660 rad/s |
+| Gazebo displacement | dx=-0.00002204 m, dy=-0.00000403 m, yaw=+0.00000947 rad |
+| Gazebo final linear speed | 0.00120448 m/s |
+| Old odom displacement | dx=-0.013673 m, dy=-0.052453 m, yaw=-0.052361 rad |
+| Old odom final linear speed | 0.00754093 m/s |
+
+Wheel positions do change slightly; they are not ignored. Their drift is
+roughly 0.066/0.162 mm/s at the physical 0.0675 m wheel radius, while the
+reported velocities suggest roughly 10/6 mm/s. The rear position changes in
+the **opposite direction** to its reported velocity. Actual Gazebo chassis
+displacement is only about 22 micrometres over this interval. This supports
+numerical/state feedback inconsistency rather than large sustained wheel slip
+or chassis motion. No friction, damping, contact geometry, solver parameters,
+sensor settings, drive ramp or watchdog were changed.
+
+The model already uses GroupVelocityController with velocity command interfaces,
+joint friction/damping 0.05/0.10 and existing drive contact friction 2.0.
+Inspection does not justify increasing any of those values. Steering remains
+held at STOP; no recenter comparison or production recenter was needed.
+The captured LEFT steering targets ramped monotonically to +pi/2, with no
+large equivalent-angle jumps or drive-reversal chatter. No hysteresis was added.
+
+### Corrections, without synthetic feedback
+
+SETTLING_ROOT_CAUSE=The old harness mixed physics with wall time and used an
+inconsistent instantaneous wheel-velocity signal as the sole wheel STOP gate.
+Old odometry also preferred that signal over measured encoder position changes,
+integrating phantom translation/yaw while Gazebo was nearly stationary.
+
+SETTLING_FIX=Pure read-only `MechanicalSettling` monitor uses simulation time
+as the primary elapsed/window clock. It reports wall seconds, simulation seconds
+and effective RTF separately. The 45-second physics budget remains 45 simulation
+seconds; the 180-wall-second outer watchdog is an operational bound, not a
+physics verdict. A non-advancing clock for 5 wall seconds fails explicitly as
+SIM_CLOCK_STALLED; rewind and wall-watchdog failures have distinct reasons.
+
+For at least 0.8 continuous simulation seconds, require fresh, finite observed
+data and ALL of:
+
+- selected Twist AND drive targets below 1e-6;
+- Gazebo AND odom twist components below the unchanged 0.02 m/s or rad/s limit;
+- wheel **position range / window duration** below 0.005 rad/s for each wheel;
+- actual steering AND steering-target variation below the unchanged 0.03 rad;
+- actual Gazebo XY drift below 0.001 m/s and yaw drift below 0.001 rad/s.
+
+The wheel criterion corresponds to at most 0.3375 mm/s of rim displacement,
+well below a meaningful 50 mm motion acceptance and above measured stationary
+encoder creep. Position *range*, not just net change, rejects real oscillatory
+rotation and slip even when net angle change cancels. The added Gazebo drift
+gate bounds real chassis creep as well as twist. Reported wheel velocity is
+retained in the results and raw JointState stream, not overwritten or hidden.
+Thresholds/window/timeouts are configurable function/monitor parameters.
+
+A first physics-window retest still failed because old odom yaw rose to about
+0.039 rad/s, despite stable Gazebo/encoder positions. It correctly ended as
+WALL_WATCHDOG after 180.008 wall seconds / 29.445 simulation seconds, **not**
+as proof of a 45-simulation-second physical failure. Odom accumulated about
+1.067 rad of phantom yaw during the whole trace. No threshold was loosened.
+
+The Gazebo odometry configuration now selects `prefer_position_velocity=true`,
+using the existing encoder-position derivative path with JointState simulation
+timestamps. Actual wheel rotation still produces signed measured velocity;
+reported velocity remains available in JointState. The node default stays false
+for hardware configurations; reported velocity / position fallback is preserved
+and regression-tested. There is no command-based inference, fake zero state,
+joint teleportation, new TF publisher or change of localization ownership.
+
+### LEFT settling verification after the correction
+
+The production stack was cleanly stopped, the changed ROS package built, and
+the normal `start_stack.sh navigation` path reached READY on domain 0. This was
+a normal code-reload prerequisite, not a Stage A reliability retest.
+
+The focused LEFT -> STOP passed the unchanged physical criteria:
+
+```text
+LEFT_SETTLING=PASS
+LEFT_STOP_WHEEL_VEL_FRONT=+0.03206664 rad/s (raw reported)
+LEFT_STOP_WHEEL_VEL_REAR=+0.03199204 rad/s (raw reported)
+LEFT_STOP_WHEEL_POSITION_DRIFT_FRONT=0.00217658 rad/s (window range rate)
+LEFT_STOP_WHEEL_POSITION_DRIFT_REAR=0.00220456 rad/s (window range rate)
+LEFT_STOP_BODY_SPEED=0.00105721 m/s
+LEFT_STOP_ODOM_SPEED=0.00000893 m/s
+SETTLING_WALL_SECONDS=7.449412
+SETTLING_SIM_SECONDS=0.874
+GAZEBO_RTF=0.117325
+STABLE_SIM_WINDOW=0.808 s
+```
+
+Gazebo XY drift in the stable window was 0.00015241 m/s and yaw drift
+0.00000218 rad/s. Raw reported wheel velocity remains numerically inconsistent,
+but actual encoder rotation and body drift are explicitly bounded.
+The focused move itself was only +0.008765 m lateral in Gazebo / +0.008384 m
+in odom; this establishes settling, **not** a meaningful-motion acceptance pass.
+
+### Full Stage B attempt: stopped at first motion failure
+
+Only after LEFT settling passed, the sequential Web retest began. The first
+Forward request was held for 4.026 simulation seconds / 27.092 wall seconds,
+followed by STOP and full measured settling. It moved +0.014854 m forward in
+Gazebo and +0.014302 m in odom, below the unchanged 0.05 m physical threshold.
+Its start/end Gazebo poses were
+(14.9912234,5.5003897,1.5716148) -> (14.9910276,5.5152437,1.5720898).
+No motion tolerance or lease was increased to turn this into PASS.
+
+The first observable divergence is **manual-source refresh continuity** during
+the requested Web hold, not STOP mechanics. Manual output had only 56 captured
+messages (36 non-zero) over that hold, with up to 2.912 wall seconds between
+non-zero deliveries. Selected Twist correctly alternated WEB_MANUAL and NONE:
+only 502/1322 samples were non-zero, approximately 1.696 of the 4.026 simulation
+seconds. This exceeds the existing lease/source freshness budgets and makes
+the arbiter safely select zero. Drive ramp consequently remained intermittent;
+the first layer at which output continuity is lost is `/cmd_vel_manual`.
+This trace alone does not distinguish Django/transport delay from bridge
+callback starvation; CPU load was high and RTF low, but cause must be measured,
+not assumed. Do not weaken freshness checks or blame controller physics.
+
+Forward STOP nevertheless passed after 8.593 simulation seconds / 57.505 wall
+seconds, RTF 0.149429, with wheel drift rates 0.004955/0.004880 rad/s and near-zero
+position-derived odom twist. This directly shows why a 45-wall-second physics
+verdict would have been premature. No further direction or safety motion ran.
+
+```text
+WEB_MANUAL_FORWARD=FAIL (fresh retest; insufficient physical displacement)
+WEB_MANUAL_BACKWARD=UNVERIFIED (not reached in fresh sequential retest)
+WEB_MANUAL_LEFT=UNVERIFIED (settling PASS is not motion acceptance)
+WEB_MANUAL_RIGHT=UNVERIFIED
+WEB_MANUAL_ROTATE_LEFT=UNVERIFIED
+WEB_MANUAL_ROTATE_RIGHT=UNVERIFIED
+WEB_MANUAL_STOP=PASS (focused LEFT and attempted Forward physical STOP)
+POINTER_RELEASE_STOP=UNVERIFIED
+WEB_MANUAL_TIMEOUT_STOP=UNVERIFIED
+WEB_DISCONNECT_STOP=UNVERIFIED
+MODE_CHANGE_STOP=UNVERIFIED
+COMMAND_ARBITER_MANUAL=PASS (actual ownership/selection observed)
+COMMAND_ARBITER_ESTOP=UNVERIFIED
+ESTOP_CLEAR_NO_RESUME=UNVERIFIED
+ESTOP_ZERO_LATENCY_MS=UNVERIFIED
+TIMEOUT_STOP_LATENCY_MS=UNVERIFIED
+WEB_MANUAL_R01=FAIL
+STAGE_B_GATE=FAIL
+```
+
+Temporary safety/browser harnesses were prepared but **not executed** because
+the first full-motion acceptance failed. An observer thread logged a context
+shutdown exception after the motion trace had been saved; it was diagnostic
+cleanup, not a production-node exception or motion evidence. STOP and
+AUTONOMOUS were requested through Web in cleanup, then the complete managed
+stack stopped cleanly; no stack-owned ROS/Gazebo process remained.
+
+TESTS=PASS: 35 targeted Python/controller/bridge/mailbox/clock/settling/odometry
+tests; changed Python compile; swerve_bringup colcon symlink build; diff check.
+No Django/frontend source or shell source changed, so those suites were not
+rerun. Runtime probes/JSON/logs remain ignored and are not committed.
+
+Current-boot checks found no new SCSI/I/O timeout or OOM event. The final kernel
+window did report `drain_vmap_area_work hogged CPU for >10000us` four times;
+this is CPU-load evidence, not a storage failure or proof of the refresh-gap cause.
+
+REMAINING_ISSUES=Trace requested Web frame timestamps through Django forwarding,
+bridge ingress/processing and manual publishing to locate the refresh gaps;
+then repeat all directions and dedicated safety/browser tests. Stage B remains
+FAIL. No Nav Goal test is authorized by this partial result.

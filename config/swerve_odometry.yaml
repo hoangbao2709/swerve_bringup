@@ -8,6 +8,10 @@ swerve_odometry:
     wheel_radius: 0.0637
     # Calibrated against Gazebo contact motion.
     wheel_velocity_sign: 1.0
+    # Gazebo's post-contact instantaneous velocity can disagree with encoder
+    # position increments, creating phantom odom drift at zero drive target.
+    # Differentiate measured positions with JointState simulation timestamps.
+    prefer_position_velocity: true
     publish_rate: 50.0
     joint_state_timeout: 0.3
     odom_frame: odom

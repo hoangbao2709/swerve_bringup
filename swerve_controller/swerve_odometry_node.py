@@ -39,6 +39,7 @@ class SwerveOdometry(Node):
         super().__init__('swerve_odometry')
         self.declare_parameter('wheel_radius', 0.0675)
         self.declare_parameter('wheel_velocity_sign', 1.0)
+        self.declare_parameter('prefer_position_velocity', False)
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('joint_state_timeout', 0.3)
         self.declare_parameter('odom_frame', 'odom')
@@ -51,6 +52,7 @@ class SwerveOdometry(Node):
 
         self.radius = float(self.get_parameter('wheel_radius').value)
         self.velocity_sign = float(self.get_parameter('wheel_velocity_sign').value)
+        self.prefer_position_velocity = bool(self.get_parameter('prefer_position_velocity').value)
         self.odom_frame = str(self.get_parameter('odom_frame').value)
         self.base_frame = str(self.get_parameter('base_frame').value)
         self.publish_tf = bool(self.get_parameter('publish_tf').value)
@@ -102,14 +104,18 @@ class SwerveOdometry(Node):
             if steer_name in values and math.isfinite(values[steer_name]):
                 self.steer[module] = values[steer_name]
 
-            if wheel_name in velocities and math.isfinite(velocities[wheel_name]):
-                self.wheel_velocity[module] = velocities[wheel_name]
-            elif wheel_name in values and math.isfinite(values[wheel_name]):
+            position_valid = wheel_name in values and math.isfinite(values[wheel_name])
+            reported_valid = wheel_name in velocities and math.isfinite(velocities[wheel_name])
+            if position_valid and (getattr(self, 'prefer_position_velocity', False) or not reported_valid):
                 old = self.previous_wheel_position[module]
+                self.wheel_velocity[module] = 0.0
                 if old is not None and self.previous_state_time is not None:
                     dt = state_now - self.previous_state_time
                     if dt > 1e-6:
                         self.wheel_velocity[module] = (values[wheel_name] - old) / dt
+            elif reported_valid:
+                self.wheel_velocity[module] = velocities[wheel_name]
+            if position_valid:
                 self.previous_wheel_position[module] = values[wheel_name]
         if any(name in values for name in self.wheel_names.values()):
             self.previous_state_time = state_now

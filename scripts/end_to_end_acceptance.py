@@ -26,6 +26,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
 from tf2_ros import Buffer, TransformException, TransformListener
+from mechanical_settling import MechanicalSettling
 
 
 TRANSLATION_TOLERANCE_M = 0.05
@@ -255,41 +256,46 @@ class MotionProbe(Node):
         return self.get_clock().now().nanoseconds * 1e-9
 
     def wait_mechanical_settling(self, ws=None, timeout=45.0,
-                                body_tolerance=0.02, wheel_tolerance=0.10,
-                                steering_tolerance=0.03, stable_window=0.8):
-        """Observe actual mechanics, not merely a zero command or fixed delay."""
-        start = time.monotonic()
-        stable_since = None
-        while time.monotonic() - start < timeout:
+                                body_tolerance=0.02, wheel_position_rate=0.005,
+                                steering_tolerance=0.03, stable_window=0.8,
+                                wall_timeout=180.0, clock_stall_timeout=5.0,
+                                body_position_rate=0.001):
+        """Timeout/window are simulation seconds; wall time is only a watchdog.
+
+        Wheel position range, not a possibly inconsistent instantaneous velocity,
+        proves actual rotation. Body pose drift is checked in addition to twists.
+        """
+        monitor = MechanicalSettling(self.sim_time(), time.monotonic(),
+            timeout_sim=timeout, timeout_wall=wall_timeout,
+            clock_stall_wall=clock_stall_timeout, window_sim=stable_window,
+            body_tolerance=body_tolerance, wheel_position_rate=wheel_position_rate,
+            body_position_rate=body_position_rate, steering_span=steering_tolerance)
+        while True:
             self.pump(ws, 0.005)
-            joints = self.joint_events[-4:]
-            zero = bool(self.selected_cmd_events) and all(abs(v) < 1e-6 for v in self.selected_cmd_events[-1][1:])
-            body_quiet = (self.odom_velocity is not None and self.gazebo_velocity is not None
-                and all(abs(v) < body_tolerance for v in self.odom_velocity + self.gazebo_velocity))
-            wheels_quiet = len(joints) == 4 and all(
-                abs(velocities.get(name, math.inf)) < wheel_tolerance
-                for _, _, velocities in joints
-                for name in ('wheel_front_drive_joint', 'wheel_rear_drive_joint'))
-            steering_quiet = len(joints) == 4 and all(
-                max(row[1].get(name, math.inf) for row in joints)
-                - min(row[1].get(name, -math.inf) for row in joints) < steering_tolerance
-                for name in ('steer_front_joint', 'steer_rear_joint'))
-            fresh = (bool(joints) and time.monotonic() - joints[-1][0] < 2.0
-                and bool(self.selected_cmd_events)
-                and time.monotonic() - self.selected_cmd_events[-1][0] < 2.0
-                and self.odom_sample_monotonic is not None
-                and time.monotonic() - self.odom_sample_monotonic < 2.0
-                and self.gazebo_pose_sample_monotonic is not None
-                and time.monotonic() - self.gazebo_pose_sample_monotonic < 2.0)
-            if zero and body_quiet and wheels_quiet and steering_quiet and fresh:
-                stable_since = stable_since or time.monotonic()
-                if time.monotonic() - stable_since >= stable_window:
-                    return {'passed': True, 'duration_s': time.monotonic() - start}
-            else:
-                stable_since = None
-        return {'passed': False, 'duration_s': time.monotonic() - start,
-                'reason': 'MECHANICAL_SETTLING_TIMEOUT', 'joint_state': self.joint_state,
-                'odom_velocity': self.odom_velocity, 'gazebo_velocity': self.gazebo_velocity}
+            sample = None
+            if (self.joint_state and self.selected_cmd_events and self.drive_events
+                    and self.steering_events and self.odom_sample_monotonic is not None
+                    and self.gazebo_pose_sample_monotonic is not None):
+                joints = self.joint_state
+                sample = {
+                    'selected': list(self.selected_cmd_events[-1][1:]),
+                    'drive': list(self.drive_events[-1][1:]),
+                    'steering_targets': list(self.steering_events[-1][1:]),
+                    'wheel_positions': [joints['positions'].get(name, math.nan)
+                        for name in ('wheel_front_drive_joint', 'wheel_rear_drive_joint')],
+                    'wheel_velocities': [joints['velocities'].get(name, math.nan)
+                        for name in ('wheel_front_drive_joint', 'wheel_rear_drive_joint')],
+                    'steering_positions': [joints['positions'].get(name, math.nan)
+                        for name in ('steer_front_joint', 'steer_rear_joint')],
+                    'body_velocity': self.gazebo_velocity, 'odom_velocity': self.odom_velocity,
+                    'body_pose': self.gazebo_pose,
+                    'source_wall_times': [joints['monotonic_s'], self.selected_cmd_events[-1][0],
+                        self.drive_events[-1][0], self.steering_events[-1][0],
+                        self.odom_sample_monotonic, self.gazebo_pose_sample_monotonic],
+                }
+            result = monitor.update(self.sim_time(), time.monotonic(), sample)
+            if result is not None:
+                return {**result, 'duration_s': result['settling_wall_seconds']}
 
     def map_pose(self):
         try:

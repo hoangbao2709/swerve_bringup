@@ -92,26 +92,31 @@ def test_mode_confirmation_requires_matching_arbiter_request():
     assert bridge.mode_transition_state=='APPLIED' and sent==[True]
 
 
-@pytest.mark.parametrize('wheel_velocity,passed', [(0.01, True), (0.20, False)])
-def test_mechanical_settling_requires_actual_wheels_quiet(monkeypatch, wheel_velocity, passed):
+@pytest.mark.parametrize('wheel_drift,passed', [(0.001, True), (0.20, False)])
+def test_mechanical_settling_requires_actual_wheel_position_stability(monkeypatch, wheel_drift, passed):
     sys.path.insert(0, str(ROOT / 'scripts'))
     import end_to_end_acceptance as acceptance
     clock = [10.0]
     monkeypatch.setattr(acceptance.time, 'monotonic', lambda: clock[0])
     probe = acceptance.MotionProbe.__new__(acceptance.MotionProbe)
     probe.odom_velocity = probe.gazebo_velocity = (0.0, 0.0, 0.0)
+    probe.gazebo_pose = (0.0, 0.0, 0.0)
+    probe.sim_time = lambda: clock[0]
     probe.selected_cmd_events = [(10.0, 0.0, 0.0, 0.0)]
-    positions = {'steer_front_joint': 0.0, 'steer_rear_joint': 0.0}
-    velocities = {'wheel_front_drive_joint': wheel_velocity, 'wheel_rear_drive_joint': 0.0}
-    probe.joint_state = {'positions': positions, 'velocities': velocities}
+    positions = {'steer_front_joint': 0.0, 'steer_rear_joint': 0.0,
+                 'wheel_front_drive_joint': 0.0, 'wheel_rear_drive_joint': 0.0}
+    velocities = {'wheel_front_drive_joint': 0.20, 'wheel_rear_drive_joint': 0.0}
     def pump(*args):
         clock[0] += 0.1
-        probe.joint_events = [(clock[0], positions, velocities)] * 4
+        current = dict(positions, wheel_front_drive_joint=(clock[0] - 10) * wheel_drift)
+        probe.joint_state = {'positions': current, 'velocities': velocities, 'monotonic_s': clock[0]}
         probe.selected_cmd_events = [(clock[0], 0.0, 0.0, 0.0)]
+        probe.drive_events = [(clock[0], 0.0, 0.0)]
+        probe.steering_events = [(clock[0], 0.0, 0.0)]
         probe.odom_sample_monotonic = clock[0]
         probe.gazebo_pose_sample_monotonic = clock[0]
     probe.pump = pump
     result = probe.wait_mechanical_settling(timeout=2.0)
     assert result['passed'] is passed
     if not passed:
-        assert result['reason'] == 'MECHANICAL_SETTLING_TIMEOUT'
+        assert result['reason'] == 'MECHANICAL_SETTLING_SIM_TIMEOUT'

@@ -158,6 +158,7 @@ EOF
 echo "Starting backend on $BACKEND_URL"
 setsid env BACKEND_HOST="$BACKEND_HOST_SELECTED" BACKEND_PORT="$BACKEND_PORT_SELECTED" \
   WARETWIN_RUNTIME_MODE=GAZEBO_ROS \
+  WARETWIN_STACK_RUNTIME_DIR="$STACK_RUNTIME_DIR" \
   DJANGO_ALLOWED_HOSTS="$ALLOWED_HOSTS_SELECTED" CORS_ALLOWED_ORIGINS="$CORS_SELECTED" \
   bash -c "cd '$ROOT_DIR/waretwin/backend' && exec ./run.sh" \
   > "$(stack_log_file backend)" 2>&1 < /dev/null &
@@ -180,6 +181,8 @@ SPAWN_TEXT="N/A (development world)"
 ALLOW_DEV_WORLD_ARG=false
 [[ "$ALLOW_DEV_WORLD_SELECTED" == true ]] && ALLOW_DEV_WORLD_ARG=true
 MAP_SYNC_REQUEST_FILE="$STACK_RUNTIME_DIR/map-sync-request.json"
+MODE_SWITCH_REQUEST_FILE="$STACK_RUNTIME_DIR/mode-switch-request.json"
+MODE_SWITCH_STATUS_FILE="$STACK_RUNTIME_DIR/mode-switch-status.json"
 DEVELOPMENT_WORLD=0
 
 if ((EXPLICIT_MAP == 1 && EXPLICIT_WORLD == 0)) && [[ "$ALLOW_DEV_WORLD_SELECTED" != true ]]; then
@@ -294,7 +297,11 @@ fi
 
 # Runtime requests are launch-owned state. A fresh start already resolves the
 # currently published revision, so any prior request is obsolete.
-rm -f "$MAP_SYNC_REQUEST_FILE" "$MAP_SYNC_REQUEST_FILE.tmp"
+rm -f "$MAP_SYNC_REQUEST_FILE" "$MAP_SYNC_REQUEST_FILE.tmp" \
+  "$MODE_SWITCH_REQUEST_FILE" "$MODE_SWITCH_REQUEST_FILE.tmp"
+cat > "$MODE_SWITCH_STATUS_FILE" <<EOF
+{"robot_id":"$ROBOT_ID","mode":"$MODE","status":"STARTING","message":"initial runtime readiness is in progress"}
+EOF
 cat > "$STACK_RUNTIME_DIR/stack.env" <<EOF
 MODE=$MODE
 BACKEND_PORT=$BACKEND_PORT_SELECTED
@@ -352,16 +359,23 @@ echo "Gazebo GUI=$GUI_ARG RViz=$RVIZ_ARG"
 setsid bash -c '
   set -euo pipefail
   root="$1"; domain="$2"; ws_url="$3"; request_file="$4"; revision="$5"; robot_id="$6"
-  ros_log="$7"; ros_bridge_log="$8"
-  shift 8
+  ros_log="$7"; ros_bridge_log="$8"; mode_request="$9"; mode_status="${10}"
+  initial_mode="${11}"; stack_env="${12}"; backend_url="${13}"; map_file="${14}"
+  shift 14
   cd "$root"
   source scripts/ros_env.sh
   export ROS_DOMAIN_ID="$domain" ROS_WS_URL="$ws_url"
   python3 scripts/ros_stack_supervisor.py --request-file "$request_file" \
-    --initial-revision "$revision" --robot-id "$robot_id" -- "$@" 2>&1 \
+    --initial-revision "$revision" --robot-id "$robot_id" \
+    --mode-request-file "$mode_request" --mode-status-file "$mode_status" \
+    --initial-mode "$initial_mode" --stack-env-file "$stack_env" \
+    --readiness-root "$root" --backend-url "$backend_url" --map-file "$map_file" \
+    -- "$@" 2>&1 \
     | tee "$ros_log" "$ros_bridge_log" >/dev/null
 ' _ "$ROOT_DIR" "$ROS_DOMAIN_ID_SELECTED" "$ROS_WS_URL_SELECTED" "$MAP_SYNC_REQUEST_FILE" \
   "$PUBLISHED_REVISION" "$ROBOT_ID" "$(stack_log_file ros)" "$(stack_log_file ros_bridge)" \
+  "$MODE_SWITCH_REQUEST_FILE" "$MODE_SWITCH_STATUS_FILE" "$MODE" "$STACK_RUNTIME_DIR/stack.env" \
+  "$BACKEND_URL" "${MAP_FILE:-}" \
   ros2 launch swerve_bringup system.launch.py "${ROS_ARGS[@]}" \
   > /dev/null 2>&1 < /dev/null &
 stack_write_pid ros "$!"
@@ -496,6 +510,10 @@ if ((ros_ready == 0)); then
   exit 1
 fi
 
+cat > "$MODE_SWITCH_STATUS_FILE.tmp" <<EOF
+{"robot_id":"$ROBOT_ID","mode":"$MODE","status":"READY","message":"initial runtime mode passed the existing readiness gate"}
+EOF
+mv -f "$MODE_SWITCH_STATUS_FILE.tmp" "$MODE_SWITCH_STATUS_FILE"
 printf '%s\n' "$last_ros_report"
 echo
 if [[ "$MODE" == mapping ]]; then

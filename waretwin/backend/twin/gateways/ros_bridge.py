@@ -12,11 +12,24 @@ class RosBridgeGateway(RobotGateway):
     async def snapshot(self) -> dict[str, Any]:
         return {}
 
+    async def request_control(self, robot_id: str, operation: str,
+                              payload: dict[str, Any], timeout: float = 20.0) -> dict[str, Any]:
+        """Request an operation from the selected robot and await ROS result."""
+        import uuid
+        message = dict(payload)
+        message.update({
+            'type': 'LOCAL_CONTROL', 'operation': operation,
+            'robot_id': robot_id, 'request_id': uuid.uuid4().hex,
+        })
+        return await registry.request(message, timeout=timeout)
+
     async def send_command(self, robot_id: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         message = dict(payload)
         message.update({'robot_id': robot_id})
         if action == 'NAVIGATE':
             message['type'] = 'NAV_GOAL'
+        elif action == 'PATH_PREVIEW':
+            message['type'] = 'PATH_PREVIEW'
         elif action == 'CANCEL_NAVIGATION':
             message['type'] = 'CANCEL_NAVIGATION'
         elif action == 'STOP':

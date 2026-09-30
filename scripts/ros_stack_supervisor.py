@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -127,6 +128,90 @@ def command_for_revision(base: Sequence[str], root: Path, revision: int,
     return command
 
 
+def command_for_mode(base: Sequence[str], mode: str) -> list[str]:
+    """Return the same launch command with one explicit runtime mode."""
+    mode = str(mode).strip().lower()
+    if mode not in ('mapping', 'navigation'):
+        raise ValueError('mode must be mapping or navigation')
+    command = [arg for arg in base if not arg.startswith('mode:=')
+               and not arg.startswith('defer_nav2_start:=')]
+    command.append(f'mode:={mode}')
+    if mode == 'navigation':
+        command.append('defer_nav2_start:=true')
+    return command
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
+    os.replace(temporary, path)
+
+
+def _write_mode_status(path: Path | None, request: dict, status: str,
+                       message: str | None = None) -> None:
+    if path is None:
+        return
+    _write_json(path, {
+        'request_id': request.get('request_id'),
+        'robot_id': request.get('robot_id'),
+        'mode': request.get('mode'),
+        'status': status,
+        'message': message,
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _set_stack_mode(path: Path | None, mode: str) -> None:
+    if path is None or not path.is_file():
+        return
+    rows = path.read_text(encoding='utf-8').splitlines()
+    updated = False
+    for index, row in enumerate(rows):
+        if row.startswith('MODE='):
+            rows[index] = f'MODE={mode}'
+            updated = True
+            break
+    if updated:
+        temporary = path.with_suffix(path.suffix + '.tmp')
+        temporary.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+        os.replace(temporary, path)
+
+
+def _run_readiness(root: Path, mode: str, robot_id: str, backend_url: str | None,
+                   map_file: str | None, log_path: str | None,
+                   deadline: float, child: subprocess.Popen,
+                   env: dict[str, str] | None = None) -> tuple[bool, str]:
+    script = root / 'scripts' / 'navigation_readiness.py'
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            return False, f'{mode} ROS launch exited with status {child.returncode}'
+        remaining = deadline - time.monotonic()
+        args = [sys.executable, str(script), '--mode', mode, '--model', 'swerve_base',
+                '--robot-id', robot_id, '--timeout', str(min(30.0, max(2.0, remaining)))]
+        if backend_url:
+            args.extend(('--backend-url', backend_url))
+        if log_path:
+            args.extend(('--log-path', log_path))
+        if mode == 'navigation' and map_file:
+            args.extend(('--map-file', map_file))
+        try:
+            result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True,
+                                    timeout=min(40.0, max(5.0, remaining + 5.0)))
+            output = (result.stdout or '') + (result.stderr or '')
+            if output:
+                print(output.rstrip(), flush=True)
+            if result.returncode == 0:
+                return True, 'runtime readiness gate passed'
+            reason = output.strip().splitlines()[-1] if output.strip() else 'readiness probe failed'
+        except subprocess.TimeoutExpired:
+            reason = 'readiness probe timed out'
+        if child.poll() is not None:
+            return False, f'{mode} ROS launch exited with status {child.returncode}'
+        time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+    return False, reason
+
+
 def _stop_process(process: subprocess.Popen, timeout: float = 25.0) -> None:
     if process.poll() is not None:
         return
@@ -143,9 +228,20 @@ def _stop_process(process: subprocess.Popen, timeout: float = 25.0) -> None:
 
 
 def run_supervisor(request_file: Path, initial_revision: int | None,
-                   robot_id: str, base_command: Sequence[str]) -> int:
+                   robot_id: str, base_command: Sequence[str], *,
+                   mode_request_file: Path | None = None,
+                   mode_status_file: Path | None = None,
+                   initial_mode: str | None = None,
+                   stack_env_file: Path | None = None,
+                   readiness_root: Path | None = None,
+                   backend_url: str | None = None,
+                   map_file: str | None = None,
+                   mode_timeout: float = 600.0) -> int:
     active_revision = initial_revision
     command = list(base_command)
+    active_mode = str(initial_mode or next(
+        (arg.split(':=', 1)[1] for arg in command if arg.startswith('mode:=')), 'navigation')).lower()
+    readiness_root = (readiness_root or Path(__file__).resolve().parent.parent).resolve()
     child: subprocess.Popen | None = None
     stopping = False
 
@@ -164,6 +260,76 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
         code = child.poll()
         if code is not None:
             return code
+        if mode_request_file is not None:
+            mode_request = {}
+            try:
+                mode_request = json.loads(mode_request_file.read_text(encoding='utf-8'))
+                if not isinstance(mode_request, dict):
+                    raise ValueError('mode transition request must be a JSON object')
+                target_mode = str(mode_request.get('mode') or '').lower()
+                if str(mode_request.get('robot_id') or '') != robot_id:
+                    raise ValueError('mode transition request robot_id does not match the active stack')
+                if target_mode not in ('mapping', 'navigation'):
+                    raise ValueError('mode transition target must be mapping or navigation')
+                mode_request_file.unlink(missing_ok=True)
+                if target_mode == active_mode:
+                    _write_mode_status(mode_status_file, mode_request, 'READY',
+                                       f'{target_mode} mode is already active')
+                else:
+                    previous_mode, previous_command = active_mode, command
+                    target_command = command_for_mode(command, target_mode)
+                    print(f'[MODE-SUPERVISOR] transition {previous_mode}->{target_mode}; restarting ROS/Gazebo and rechecking readiness', flush=True)
+                    _write_mode_status(mode_status_file, mode_request, 'RESTARTING',
+                                       'ROS/Gazebo restart in progress; simulated robot will respawn at its configured start pose')
+                    _stop_process(child)
+                    transition_env = os.environ.copy()
+                    transition_env['WARETWIN_STACK_START_MONOTONIC_S'] = str(time.monotonic())
+                    transition_env.pop('WARETWIN_GAZEBO_STARTED_MONOTONIC_S', None)
+                    child = subprocess.Popen(target_command, env=transition_env)
+                    ready, reason = _run_readiness(
+                        readiness_root, target_mode, robot_id, backend_url,
+                        map_file, None, time.monotonic() + mode_timeout, child,
+                        env=transition_env)
+                    if ready:
+                        active_mode, command = target_mode, target_command
+                        _set_stack_mode(stack_env_file, active_mode)
+                        _write_mode_status(mode_status_file, mode_request, 'READY',
+                                           'requested runtime mode passed the existing readiness gate')
+                        print(f'[MODE-SUPERVISOR] mode={active_mode} readiness=PASS', flush=True)
+                    else:
+                        print(f'[MODE-SUPERVISOR] mode={target_mode} readiness=FAIL reason={reason}; restoring {previous_mode}', file=sys.stderr, flush=True)
+                        _write_mode_status(mode_status_file, mode_request, 'ROLLING_BACK', reason)
+                        _stop_process(child)
+                        rollback_env = os.environ.copy()
+                        rollback_env['WARETWIN_STACK_START_MONOTONIC_S'] = str(time.monotonic())
+                        rollback_env.pop('WARETWIN_GAZEBO_STARTED_MONOTONIC_S', None)
+                        child = subprocess.Popen(previous_command, env=rollback_env)
+                        restored, restore_reason = _run_readiness(
+                            readiness_root, previous_mode, robot_id, backend_url,
+                            map_file, None, time.monotonic() + mode_timeout, child,
+                            env=rollback_env)
+                        if restored:
+                            active_mode, command = previous_mode, previous_command
+                            _set_stack_mode(stack_env_file, active_mode)
+                            _write_mode_status(mode_status_file, mode_request, 'ROLLED_BACK',
+                                               f'{target_mode} failed readiness ({reason}); {previous_mode} restored')
+                        else:
+                            _stop_process(child)
+                            child = None
+                            _write_mode_status(mode_status_file, mode_request, 'ERROR',
+                                               f'{target_mode} failed readiness ({reason}); restoring {previous_mode} also failed ({restore_reason})')
+                            return 1
+                    continue
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                print(f'[MODE-SUPERVISOR] transition request rejected: {exc}', file=sys.stderr, flush=True)
+                try:
+                    mode_request_file.unlink(missing_ok=True)
+                    failed_request = mode_request if isinstance(mode_request, dict) else {}
+                    _write_mode_status(mode_status_file, failed_request, 'ERROR', str(exc))
+                except Exception:
+                    pass
         try:
             request = json.loads(request_file.read_text(encoding='utf-8'))
             requested_revision = int(request.get('revision'))
@@ -194,12 +360,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument('--request-file', required=True, type=Path)
     parser.add_argument('--initial-revision', type=int)
     parser.add_argument('--robot-id', required=True)
+    parser.add_argument('--mode-request-file', type=Path)
+    parser.add_argument('--mode-status-file', type=Path)
+    parser.add_argument('--initial-mode', choices=('mapping', 'navigation'))
+    parser.add_argument('--stack-env-file', type=Path)
+    parser.add_argument('--readiness-root', type=Path)
+    parser.add_argument('--backend-url')
+    parser.add_argument('--map-file')
+    parser.add_argument('--mode-timeout', type=float, default=600.0)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if args.mode_timeout <= 0:
+        parser.error('--mode-timeout must be positive')
     command = args.command[1:] if args.command and args.command[0] == '--' else args.command
     if not command:
         parser.error('a ROS launch command is required after --')
-    return run_supervisor(args.request_file, args.initial_revision, args.robot_id, command)
+    return run_supervisor(
+        args.request_file, args.initial_revision, args.robot_id, command,
+        mode_request_file=args.mode_request_file,
+        mode_status_file=args.mode_status_file,
+        initial_mode=args.initial_mode,
+        stack_env_file=args.stack_env_file,
+        readiness_root=args.readiness_root,
+        backend_url=args.backend_url,
+        map_file=args.map_file,
+        mode_timeout=args.mode_timeout,
+    )
 
 
 if __name__ == '__main__':

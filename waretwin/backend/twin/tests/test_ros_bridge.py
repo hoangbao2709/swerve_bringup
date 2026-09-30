@@ -1,5 +1,7 @@
 from copy import deepcopy
+import threading
 import time
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch
 
@@ -7,7 +9,7 @@ from pydantic import TypeAdapter
 
 from twin.coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin
 from twin.gateways.ros_bridge import RosBridgeGateway
-from twin.ros_bridge_consumer import RosBridgeConsumer, registry
+from twin.ros_bridge_consumer import RosBridgeConsumer, RosBridgeRegistry, registry
 from twin.runtime import runtime
 from twin.schema import ClientMessage
 
@@ -24,6 +26,78 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         self.assertEqual(twist['vy'], 0.3)
         self.assertEqual(twist['wz'], -0.2)
         self.assertAlmostEqual(twist['velocity'], 0.5)
+
+    async def test_robot_scoped_bridge_rpc_is_resolved_thread_safely(self):
+        local_registry = RosBridgeRegistry()
+
+        class Capture:
+            robot_id = 'R01'
+
+            async def send_json(self, payload):
+                response = {
+                    'type': 'LOCAL_CONTROL_RESULT', 'robot_id': 'R01',
+                    'request_id': payload['request_id'], 'operation': 'MAPPING_START',
+                    'ok': True, 'result': {'mapping_state': 'MAPPING'},
+                }
+                worker = threading.Thread(target=local_registry.resolve_request, args=(response,))
+                worker.start()
+                worker.join()
+
+        local_registry.consumers['R01'] = Capture()
+        result = await local_registry.request({
+            'type': 'LOCAL_CONTROL', 'robot_id': 'R01', 'request_id': 'rpc-1',
+            'operation': 'MAPPING_START',
+        }, timeout=1.0)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['robot_id'], 'R01')
+        self.assertEqual(result['result']['mapping_state'], 'MAPPING')
+
+    async def test_path_preview_is_robot_scoped_and_send_goal_requires_matching_preview(self):
+        old_mode = runtime.runtime_mode
+        old_operation_mode = runtime.operation_mode
+        old_pending = dict(runtime.path_preview_requests)
+        old_approved = dict(runtime.approved_path_previews)
+        runtime.runtime_mode = 'GAZEBO_ROS'
+        runtime.operation_mode = 'NAVIGATION'
+        runtime.path_preview_requests.clear()
+        runtime.approved_path_previews.clear()
+        capture = SimpleNamespace(send_json=AsyncMock())
+        gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+        try:
+            with patch.object(runtime, 'robot_bridge_online', return_value=True), \
+                    patch.object(runtime, 'runtime_status_message', return_value={'map_sync_status': 'SYNCED'}), \
+                    patch.object(runtime, 'gateway', return_value=gateway):
+                await runtime.handle_message(capture, {
+                    'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01', 'request_id': 'preview-1',
+                    'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
+                }, None)
+                gateway.send_command.assert_awaited_with('R01', 'PATH_PREVIEW', {
+                    'request_id': 'preview-1', 'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
+                })
+                key = ('R01', 'preview-1')
+                runtime.approved_path_previews[key] = {
+                    'goal': {'x': 2.0, 'y': 3.0, 'yaw': 0.4},
+                    'created_monotonic': time.monotonic(),
+                    'map_revision': runtime.ros_map_revision,
+                }
+                await runtime.handle_message(capture, {
+                    'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 2.0, 'y': 3.0,
+                    'yaw': 0.4, 'frame_id': 'map', 'preview_request_id': 'preview-1',
+                }, None)
+                gateway.send_command.assert_awaited_with('R01', 'NAVIGATE', {
+                    'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
+                })
+                await runtime.handle_message(capture, {
+                    'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 5.0, 'y': 3.0,
+                    'yaw': 0.4, 'frame_id': 'map', 'preview_request_id': 'preview-1',
+                }, None)
+                self.assertEqual(gateway.send_command.await_count, 2)
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_REQUIRED')
+        finally:
+            runtime.runtime_mode = old_mode
+            runtime.operation_mode = old_operation_mode
+            runtime.path_preview_requests = old_pending
+            runtime.approved_path_previews = old_approved
 
     async def test_gateway_does_not_publish_without_bridge(self):
         previous = registry.consumer

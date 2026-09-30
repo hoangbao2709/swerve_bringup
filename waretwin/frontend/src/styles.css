@@ -1850,3 +1850,57 @@ table.dt.full td { white-space: normal; }
 
 @media (max-width: 1180px) { .robot-detail-header { align-items: flex-start; flex-direction: column; }.robot-detail-header-actions { width: 100%; overflow-x: auto; }.robot-detail-main { grid-template-columns: 205px minmax(0, 1fr) 215px; }.robot-detail-mission, .robot-detail-latency { display: none; } }
 @media (max-width: 900px) { .robot-detail-shell { height: auto; min-height: 100vh; overflow: auto; }.robot-detail-main { grid-template-columns: 1fr; overflow: visible; }.robot-detail-column { overflow: visible; }.robot-detail-panel { max-height: none; }.robot-detail-map-panel { min-height: 520px; }.robot-detail-bottom { grid-template-columns: 1fr; min-height: 0; }.robot-detail-command-error { position: static; grid-column: 1 / -1; max-width: none; }.robot-quick-grid { grid-template-columns: 1fr; } }
+
+/* Robot-scoped local HMI sections and live sensor views. */
+.robot-local-tabs { flex: 0 0 auto; display: flex; gap: 3px; padding: 5px 7px 0; border-bottom: 1px solid #20384e; background: #08111c; }
+.robot-local-tabs button, .robot-map-source-bar button { min-height: 29px; padding: 0 12px; border: 1px solid #29445b; border-bottom: 0; border-radius: 2px 2px 0 0; background: #0b1723; color: #7590a7; font: 700 9px var(--mono); letter-spacing: .08em; }
+.robot-local-tabs button:hover, .robot-map-source-bar button:hover { color: #e5f7ff; border-color: #3c6c88; }
+.robot-local-tabs button.is-active, .robot-map-source-bar button.is-active { background: #102536; color: #70e8e2; border-color: #287483; box-shadow: inset 0 2px #28c5cb; }
+.robot-detail-section-main { flex: 1 1 auto; min-height: 0; padding: 8px; overflow: auto; background: #050a12; }
+.local-robot-section { min-height: 100%; display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); align-content: start; gap: 8px; }
+.local-section-panel { min-height: 0; max-height: 100%; }
+.local-section-panel .robot-detail-panel-body { overflow: auto; }
+.local-form-row, .local-action-row { display: flex; align-items: end; flex-wrap: wrap; gap: 7px; }
+.local-action-row { align-items: center; margin-top: 8px; }
+.local-action-row button, .local-vda-footer button { min-height: 30px; padding: 0 10px; border: 1px solid #2b4a62; border-radius: 2px; color: #c9dbe8; background: #0b1a28; font: 700 9px var(--mono); letter-spacing: .04em; }
+.local-action-row button:hover, .local-vda-footer button:hover { border-color: #48c5d2; color: #f0fcff; }
+.local-action-row button:disabled, .local-vda-footer button:disabled { cursor: not-allowed; opacity: .42; }
+.local-action-row button.robot-console-primary, .local-vda-footer button.robot-console-primary { border-color: #168b91; background: #0d3b42; color: #85f3ec; }
+.local-field { display: flex; min-width: 130px; flex-direction: column; gap: 5px; color: #7794aa; font: 700 8px var(--mono); letter-spacing: .08em; }
+.local-field input:not([type=checkbox]), .local-field select { width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid #29445a; border-radius: 2px; outline: none; background: #07131f; color: #e3eff8; font: 10px var(--mono); letter-spacing: 0; }
+.local-field input:focus, .local-field select:focus { border-color: #38bdc8; }
+.local-field-grow { flex: 1 1 220px; }
+.local-check-field { min-height: 49px; flex-direction: row; align-items: center; justify-content: space-between; padding: 0 9px; border: 1px solid #1d3548; background: #081521; }
+.local-check-field input { width: 16px; height: 16px; accent-color: #24b8bd; }
+.local-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+.local-map-list { display: flex; flex-direction: column; gap: 4px; max-height: 265px; overflow: auto; }
+.local-map-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 7px 9px; border: 1px solid #1e3548; background: #081521; color: #a7c0d2; text-align: left; }
+.local-map-row.is-selected { border-color: #27818b; background: #0b2a32; }
+.local-map-row span { display: grid; gap: 3px; min-width: 0; }.local-map-row b { color: #dbeaf5; font: 700 10px var(--mono); }.local-map-row small { color: #7390a6; font: 8px var(--mono); }
+.local-help { margin: 8px 0 0; color: #68849a; font: 9px/1.5 var(--mono); }
+.local-empty { padding: 12px 0; color: #7892a7; font: 10px var(--mono); }
+.local-feedback { margin-top: 8px; padding: 8px 9px; border: 1px solid #285344; background: #0a2119; color: #83e2aa; font: 9px/1.5 var(--mono); overflow-wrap: anywhere; }
+.local-feedback.error { border-color: #713740; background: #261117; color: #ff9d9d; }
+.local-feedback.ok { border-color: #285344; }
+.local-pose-map { position: relative; min-height: 280px; margin: 10px 0; border: 1px solid #20394f; background: #06101a; }
+.local-pose-map canvas { width: 100%; height: 280px; display: block; }.local-pose-map.is-picking canvas { cursor: crosshair; }
+.local-pose-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.local-vda-panel { grid-column: 1 / -1; }
+.local-form-grid { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)); align-items: stretch; gap: 8px; }
+.local-vda-group { grid-column: 1 / -1; margin-top: 3px; padding: 5px 0 3px; border-bottom: 1px solid #20384e; color: #57bfca; font: 700 9px var(--mono); letter-spacing: .15em; }
+.local-vda-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding-top: 9px; border-top: 1px solid #20384e; }
+.local-vda-footer > div:first-child { display: flex; align-items: center; gap: 9px; color: #718ca3; font: 8px var(--mono); }.local-vda-footer small { color: #65829a; }.local-vda-footer .local-action-row { margin: 0; }
+.local-vda-footer button { min-height: 32px; }.local-vda-footer button.robot-console-primary { background: #0d3b42; }
+.local-diagnostic-runtime { display: flex; gap: 16px; margin-top: 7px; padding-top: 7px; border-top: 1px solid #1b3043; }
+.local-topic-list { display: grid; gap: 5px; margin-top: 9px; color: #84a5bd; font: 9px var(--mono); }
+.robot-map-source-bar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; padding: 5px 8px 0; border-bottom: 1px solid #29445a; background: #091420; }
+.robot-map-source-bar > div { display: flex; align-items: end; gap: 3px; }.robot-map-source-bar > div[aria-label="LiDAR view dimension"] button { min-width: 42px; }
+.map-sync-warning { margin-left: auto; padding: 5px 7px; border: 1px solid #735c29; color: #f0cd68; font: 8px var(--mono); }
+.robot-lidar-view { position: relative; flex: 1 1 auto; min-height: 220px; overflow: hidden; background: #06101a; }
+.robot-lidar-view canvas { display: block; width: 100%; height: 100%; }.robot-lidar-view canvas.is-target-pick { cursor: crosshair; }
+.robot-lidar-view-controls { position: absolute; top: 9px; left: 9px; display: flex; gap: 4px; }.robot-lidar-view-controls button { min-height: 25px; padding: 0 7px; border: 1px solid #29475e; background: #091827dd; color: #9cb6c9; font: 8px var(--mono); }
+.robot-lidar-view-readout { position: absolute; right: 8px; bottom: 7px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 5px 7px; border: 1px solid #27445b; background: #050d17e8; color: #8caabd; font: 8px var(--mono); }
+.robot-lidar-3d-view { min-height: 220px; }.robot-lidar-3d-view canvas { cursor: grab; }.robot-lidar-3d-view canvas:active { cursor: grabbing; }
+@media (max-width: 1000px) { .local-robot-section { grid-template-columns: 1fr; }.local-vda-panel { grid-column: auto; }.local-form-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); } }
+@media (max-width: 900px) { .robot-local-tabs { overflow-x: auto; }.robot-detail-section-main { overflow: visible; }.robot-map-source-bar { flex-wrap: wrap; }.local-status-grid { grid-template-columns: 1fr; }.local-vda-footer { align-items: flex-start; flex-direction: column; }.local-form-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 580px) { .local-form-grid { grid-template-columns: 1fr; }.local-vda-group { grid-column: auto; }.robot-map-source-bar { min-height: 38px; }.robot-map-source-bar button { padding: 0 7px; }.robot-detail-goal-toolbar { flex-wrap: wrap; }.robot-detail-goal-toolbar > span { flex: 1 1 100%; } }

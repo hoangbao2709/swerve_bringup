@@ -3,12 +3,18 @@ import { apiFetch, clearEmergencyStop, emergencyStop } from "../../services/api"
 import { wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
 import { useSimulationRunner } from "../../simulation/runner";
 import { layout, useStore } from "../../state/store";
-import type { RobotDetailError, RobotDetailGoal, RobotDetailMapSnapshot, RobotDetailPath, RobotDetailScan, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
+import type { RobotDetailError, RobotDetailGoal, RobotDetailMapSnapshot, RobotDetailPath, RobotDetailPathPreview, RobotDetailScan, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
 import type { WarehouseLayout } from "../../layout/types";
 import { createWorldTransform, floorBoundary, screenToWorld, worldToScreen, type WorldBounds, type WorldTransform } from "../../layout/coordinates";
+import { LocalRobotSection } from "./LocalRobotSections";
+import { localLidarPointToMap, previewLidarPath, RobotLidar2DView, RobotLidar3DView } from "./RobotLidarViews";
 
 type WorldGoal = { x: number; y: number; yaw: number };
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
+type LocalTab = "CONTROL" | "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
+type MapSource = "GLOBAL" | "LIDAR";
+type LidarDimension = "2D" | "3D";
+const LOCAL_TABS: LocalTab[] = ["CONTROL", "MAPPING", "LOCALIZATION", "VDA5050", "DIAGNOSTICS"];
 
 const MANUAL_ACTIONS: Array<{ action: ManualAction; label: string; title: string }> = [
   { action: "FORWARD", label: "▲", title: "Forward (W / ↑)" },
@@ -98,28 +104,42 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const localPath = useStore((state) => state.robotDetail[robotId]?.localPath ?? null);
   const goal = useStore((state) => state.robotDetail[robotId]?.goal ?? null);
   const navigationStatus = useStore((state) => state.robotDetail[robotId]?.navigationStatus ?? null);
+  const lidar2d = useStore((state) => state.robotDetail[robotId]?.lidar2d ?? null);
+  const lidar3d = useStore((state) => state.robotDetail[robotId]?.lidar3d ?? null);
+  const pathPreview = useStore((state) => state.robotDetail[robotId]?.pathPreview ?? null);
+  const activeLocalMapId = useStore((state) => state.robotDetail[robotId]?.activeLocalMapId ?? null);
+  const setRobotDetail = useStore((state) => state.setRobotDetail);
+  const mapSync = useStore((state) => state.mapSync);
+  const robotMapSync = mapSync.robots[robotId];
   const [controlMode, setControlMode] = useState<"MANUAL" | "AUTONOMOUS">(robot?.control_mode ?? "AUTONOMOUS");
+  const [activeTab, setActiveTab] = useState<LocalTab>("CONTROL");
+  const [mapSource, setMapSource] = useState<MapSource>("GLOBAL");
+  const [lidarDimension, setLidarDimension] = useState<LidarDimension>("2D");
   const [goalPreview, setGoalPreview] = useState<WorldGoal | null>(null);
+  const [pathRequestState, setPathRequestState] = useState<"IDLE" | "PLANNING">("IDLE");
+  const latestPathRequest = useRef("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [host, setHost] = useState<HostStatus | null>(null);
   const manualTimer = useRef<number | null>(null);
   const manualActive = useRef(false);
-  const previousRobot = useRef(robotId);
 
   const robotBridgeOnline = connectedRobotIds.includes(robotId);
   const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && (runtimeMode === "LOCAL_SIM" || (robotBridgeOnline && rosConnected && websocketState === "CONNECTED")));
   const controlOnline = Boolean(robotOnline && runtimeMode !== "LOCAL_SIM" && robotBridgeOnline && rosConnected && websocketState === "CONNECTED");
   const localization = diagnostics?.localization ?? rawLocalization?.state ?? null;
+  const canonicalMapReady = !activeLocalMapId && (robotMapSync?.status ?? mapSync.status) === "SYNCED";
+  const approvedPreview: RobotDetailPathPreview | null = pathPreview?.request_id === latestPathRequest.current ? pathPreview : null;
 
   useEffect(() => {
     select(robotId);
     setGoalPreview(null);
-  }, [robotId, select]);
+    latestPathRequest.current = "";
+    setPathRequestState("IDLE");
+    setRobotDetail(robotId, { pathPreview: null });
+  }, [robotId, select, setRobotDetail]);
 
   useEffect(() => {
-    if (previousRobot.current === robotId) return;
-    previousRobot.current = robotId;
     setControlMode(robot?.control_mode ?? "AUTONOMOUS");
   }, [robot?.control_mode, robotId]);
 
@@ -161,11 +181,15 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
 
   const setMode = useCallback((next: "MANUAL" | "AUTONOMOUS") => {
     stopManual();
+    latestPathRequest.current = "";
+    setGoalPreview(null);
+    setPathRequestState("IDLE");
+    setRobotDetail(robotId, { pathPreview: null });
     if (!controlOnline) { setError("MANUAL/AUTONOMOUS requires an online ROS bridge"); return; }
     if (!wsSetRobotMode(robotId, next)) { setError("Robot control channel is disconnected"); return; }
     setControlMode(next);
     setError("");
-  }, [controlOnline, robotId, stopManual]);
+  }, [controlOnline, robotId, setRobotDetail, stopManual]);
 
   const holdManual = useCallback((action: ManualAction) => {
     if (action === "STOP") { stopManual(); return; }
@@ -201,15 +225,60 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [holdManual, stopManual]);
 
   const sendGoal = () => {
-    if (!goalPreview) return;
+    if (!goalPreview || !approvedPreview || approvedPreview.status !== "VALID") return;
     if (controlMode !== "AUTONOMOUS") { setError("Switch to AUTONOMOUS before sending a goal"); return; }
     if (!controlOnline) { setError("Navigation goal requires an online ROS bridge"); return; }
-    if (!wsSend({ type: "NAV_GOAL", robot_id: robotId, x: goalPreview.x, y: goalPreview.y, yaw: goalPreview.yaw, frame_id: "map" })) {
+    if (!canonicalMapReady) { setError("The active ROS map is not synchronized with this warehouse map"); return; }
+    if (!wsSend({ type: "NAV_GOAL", robot_id: robotId, x: goalPreview.x, y: goalPreview.y, yaw: goalPreview.yaw, frame_id: "map", preview_request_id: approvedPreview.request_id })) {
       setError("Navigation goal was not sent");
       return;
     }
     setGoalPreview(null);
+    latestPathRequest.current = "";
+    setPathRequestState("IDLE");
+    setRobotDetail(robotId, { pathPreview: null });
     setError("");
+  };
+
+  const requestPathPreview = useCallback((target: WorldGoal) => {
+    setGoalPreview(target);
+    setError("");
+    if (!canonicalMapReady) {
+      latestPathRequest.current = "";
+      setPathRequestState("IDLE");
+      setRobotDetail(robotId, { pathPreview: null });
+      setError("Path planning is blocked: the selected robot is not on the canonical warehouse map");
+      return;
+    }
+    if (!controlOnline || controlMode !== "AUTONOMOUS") {
+      latestPathRequest.current = "";
+      setPathRequestState("IDLE");
+      setRobotDetail(robotId, { pathPreview: null });
+      setError("Switch to online AUTONOMOUS mode to request a Nav2 path preview");
+      return;
+    }
+    const requestId = typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    latestPathRequest.current = requestId;
+    setPathRequestState("PLANNING");
+    setRobotDetail(robotId, { pathPreview: null });
+    if (!wsSend({ type: "PATH_PREVIEW_REQUEST", robot_id: robotId, request_id: requestId, x: target.x, y: target.y, yaw: target.yaw, frame_id: "map" })) {
+      latestPathRequest.current = "";
+      setPathRequestState("IDLE");
+      setError("Path preview request was not sent because the WebSocket is disconnected");
+    }
+  }, [canonicalMapReady, controlMode, controlOnline, robotId, setRobotDetail]);
+
+  useEffect(() => {
+    if (pathPreview?.request_id && pathPreview.request_id === latestPathRequest.current) setPathRequestState("IDLE");
+  }, [pathPreview]);
+
+  const cancelPathPreview = () => {
+    latestPathRequest.current = "";
+    setGoalPreview(null);
+    setPathRequestState("IDLE");
+    setRobotDetail(robotId, { pathPreview: null });
   };
 
   const navCommand = (type: "NAV_CANCEL" | "NAV_PAUSE" | "NAV_RESUME") => {
@@ -248,20 +317,32 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
         </div>
       </header>
 
-      <main className="robot-detail-main">
+      <nav className="robot-local-tabs" role="tablist" aria-label="Local robot control sections">
+        {LOCAL_TABS.map((tab) => <button key={tab} type="button" role="tab" aria-selected={activeTab === tab} className={activeTab === tab ? "is-active" : ""} onClick={() => setActiveTab(tab)}>{tab}</button>)}
+      </nav>
+
+      {activeTab !== "CONTROL" ? <main className="robot-detail-section-main">
+        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} mapSnapshot={mapSnapshot} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeState={runtimeState} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} />
+      </main> : <main className="robot-detail-main">
         <aside className="robot-detail-column robot-detail-left">
           <SystemInputsPanel robotId={robotId} robot={robot} controlMode={controlMode} runtimeMode={runtimeMode} goal={goalPreview ?? goal} mission={tagMission?.robot_id === robotId ? tagMission : null} />
           <StatePanel robot={robot} localization={localization} diagnostics={detailDiagnostics ?? diagnostics} controller={controller} navigationStatus={navigationStatus} />
         </aside>
 
         <section className="robot-detail-map-panel">
-          <DetailMapCanvas robotId={robotId} robot={robot} mapSnapshot={mapSnapshot} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} onGoalPreview={setGoalPreview} />
+          <div className="robot-map-source-bar">
+            <div role="tablist" aria-label="Primary map source"><button type="button" role="tab" aria-selected={mapSource === "GLOBAL"} className={mapSource === "GLOBAL" ? "is-active" : ""} onClick={() => setMapSource("GLOBAL")}>GLOBAL MAP</button><button type="button" role="tab" aria-selected={mapSource === "LIDAR"} className={mapSource === "LIDAR" ? "is-active" : ""} onClick={() => setMapSource("LIDAR")}>LIDAR MAP</button></div>
+            {mapSource === "LIDAR" && <div role="tablist" aria-label="LiDAR view dimension"><button type="button" role="tab" aria-selected={lidarDimension === "2D"} className={lidarDimension === "2D" ? "is-active" : ""} onClick={() => setLidarDimension("2D")}>2D</button><button type="button" role="tab" aria-selected={lidarDimension === "3D"} className={lidarDimension === "3D" ? "is-active" : ""} onClick={() => setLidarDimension("3D")}>3D</button></div>}
+            {activeLocalMapId && <span className="map-sync-warning">MAP OUT OF SYNC · GOALS BLOCKED</span>}
+            {!activeLocalMapId && !canonicalMapReady && <span className="map-sync-warning">MAP SYNC {robotMapSync?.status ?? mapSync.status} · GOALS BLOCKED</span>}
+          </div>
+          {mapSource === "GLOBAL" ? <DetailMapCanvas robotId={robotId} robot={robot} mapSnapshot={mapSnapshot} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} onGoalPreview={requestPathPreview} /> : lidarDimension === "2D" ? <RobotLidar2DView frame={lidar2d} robot={robot} onPick={robot && canonicalMapReady ? (local) => requestPathPreview({ ...localLidarPointToMap(local, robot), yaw: robot.heading }) : undefined} overlay={previewLidarPath(approvedPreview, lidar2d)} /> : <RobotLidar3DView frame={lidar3d} overlay={previewLidarPath(approvedPreview, lidar3d)} />}
           <div className="robot-detail-goal-toolbar">
-            <span>{goalPreview ? `GOAL PREVIEW ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad` : "Click map to preview a map-frame goal"}</span>
-            <button type="button" disabled={!goalPreview} onClick={() => setGoalPreview((value) => value ? { ...value, yaw: value.yaw - Math.PI / 12 } : value)}>YAW −</button>
-            <button type="button" disabled={!goalPreview} onClick={() => setGoalPreview((value) => value ? { ...value, yaw: value.yaw + Math.PI / 12 } : value)}>YAW +</button>
-            <button type="button" disabled={!goalPreview || !controlOnline || controlMode !== "AUTONOMOUS"} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
-            <button type="button" disabled={!goalPreview} onClick={() => setGoalPreview(null)}>CANCEL</button>
+            <span>{goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination to request a Nav2 path preview"}</span>
+            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview({ ...goalPreview, yaw: goalPreview.yaw - Math.PI / 12 })}>YAW −</button>
+            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview({ ...goalPreview, yaw: goalPreview.yaw + Math.PI / 12 })}>YAW +</button>
+            <button type="button" disabled={!goalPreview || !approvedPreview || approvedPreview.status !== "VALID" || !controlOnline || controlMode !== "AUTONOMOUS" || !canonicalMapReady || runtimeState !== "NAVIGATION"} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
+            <button type="button" disabled={!goalPreview} onClick={cancelPathPreview}>CANCEL</button>
           </div>
         </section>
 
@@ -271,6 +352,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
           <ErrorMessagesPanel errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} />
         </aside>
       </main>
+      }
 
       <footer className="robot-detail-bottom">
         <ManualBar controlMode={controlMode} controlOnline={controlOnline} holdManual={holdManual} moveButtonEvents={moveButtonEvents} setMode={setMode} />
@@ -393,9 +475,9 @@ function Metric({ label, value, mono = false, status = false }: { label: string;
   return <div className="robot-detail-metric"><span>{label}</span>{status ? <StatusValue value={value} /> : <b className={mono ? "mono" : ""}>{safeText(value)}</b>}</div>;
 }
 
-type MapCanvasProps = { robotId: string; robot?: RobotState; mapSnapshot: RobotDetailMapSnapshot | null; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; onGoalPreview: (goal: WorldGoal | null) => void };
+type MapCanvasProps = { robotId: string; robot?: RobotState; mapSnapshot: RobotDetailMapSnapshot | null; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; onGoalPreview: (goal: WorldGoal) => void };
 
-function DetailMapCanvas({ robotId, robot, mapSnapshot, globalPath, localPath, goal, goalPreview, onGoalPreview }: MapCanvasProps) {
+function DetailMapCanvas({ robotId, robot, mapSnapshot, globalPath, localPath, goal, goalPreview, pathPreview, onGoalPreview }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -441,8 +523,8 @@ function DetailMapCanvas({ robotId, robot, mapSnapshot, globalPath, localPath, g
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawDetailMap(ctx, size.width, size.height, transform, bounds, mapSnapshot, occupancyRaster, scan, robot, globalPath, localPath, goal, goalPreview, { showGrid, showLidar, showPaths, showWarehouse });
-  }, [bounds, goal, goalPreview, globalPath, localPath, mapSnapshot, occupancyRaster, robot, scan, showGrid, showLidar, showPaths, showWarehouse, size.height, size.width, transform]);
+    drawDetailMap(ctx, size.width, size.height, transform, bounds, mapSnapshot, occupancyRaster, scan, robot, globalPath, localPath, goal, goalPreview, pathPreview, { showGrid, showLidar, showPaths, showWarehouse });
+  }, [bounds, goal, goalPreview, globalPath, localPath, mapSnapshot, occupancyRaster, pathPreview, robot, scan, showGrid, showLidar, showPaths, showWarehouse, size.height, size.width, transform]);
 
   const handleMapClick = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -491,7 +573,7 @@ function makeTransform(width: number, height: number, bounds: MapBounds, zoom: n
   return { ...world, toCanvas: (x, y) => worldToScreen({ x, y }, world), toWorld: (x, y) => screenToWorld({ x, y }, world) };
 }
 
-function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: number, transform: MapTransform, bounds: MapBounds, mapSnapshot: RobotDetailMapSnapshot | null, occupancyRaster: HTMLCanvasElement | null, scan: RobotDetailScan | null, robot: RobotState | undefined, globalPath: RobotDetailPath | null, localPath: RobotDetailPath | null, goal: RobotDetailGoal | null, goalPreview: WorldGoal | null, layers: { showGrid: boolean; showLidar: boolean; showPaths: boolean; showWarehouse: boolean }) {
+function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: number, transform: MapTransform, bounds: MapBounds, mapSnapshot: RobotDetailMapSnapshot | null, occupancyRaster: HTMLCanvasElement | null, scan: RobotDetailScan | null, robot: RobotState | undefined, globalPath: RobotDetailPath | null, localPath: RobotDetailPath | null, goal: RobotDetailGoal | null, goalPreview: WorldGoal | null, pathPreview: RobotDetailPathPreview | null, layers: { showGrid: boolean; showLidar: boolean; showPaths: boolean; showWarehouse: boolean }) {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#07101c";
   ctx.fillRect(0, 0, width, height);
@@ -513,6 +595,7 @@ function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: num
   if (layers.showPaths) {
     drawPath(ctx, globalPath?.frame_id === "map" ? globalPath.points : [], worldToCanvas, "#9b87ff", 2.6, false);
     drawPath(ctx, localPath?.frame_id === "map" ? localPath.points : [], worldToCanvas, "#33c7ff", 1.8, true);
+    drawPath(ctx, pathPreview?.status === "VALID" ? pathPreview.path : [], worldToCanvas, "#f4cf52", 2.8, false);
   }
   if (layers.showLidar && scan?.frame_id === "map") {
     if (robot) {

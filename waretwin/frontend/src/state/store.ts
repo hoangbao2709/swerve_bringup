@@ -73,6 +73,8 @@ export interface WindowInstance {
 
 export const EMPTY_ROBOT_DETAIL: RobotDetailState = {
   scan: null,
+  lidar2d: null,
+  lidar3d: null,
   map: null,
   globalPath: null,
   localPath: null,
@@ -82,6 +84,9 @@ export const EMPTY_ROBOT_DETAIL: RobotDetailState = {
   errors: [],
   navigationStatus: null,
   remainingDistanceM: null,
+  pathPreview: null,
+  mappingState: null,
+  activeLocalMapId: null,
 };
 
 export let layout = layoutJson as unknown as WarehouseLayout;

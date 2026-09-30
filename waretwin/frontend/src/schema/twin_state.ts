@@ -586,6 +586,48 @@ export type RobotDetailPath = {
   frame_id: string;
   timestamp?: string | null;
   points: RobotWorldPoint[];
+  local_points?: RobotWorldPoint[];
+};
+export type RobotDetailLidar2D = {
+  robot_id: RobotId;
+  timestamp?: string | null;
+  source_stamp?: number | null;
+  frame_id: string;
+  source_frame_id: string;
+  point_count: number;
+  points: RobotWorldPoint[];
+  path: RobotWorldPoint[];
+  goal: { x: number; y: number; yaw: number } | null;
+  render_fps?: number | null;
+};
+export type RobotDetailLidar3D = {
+  robot_id: RobotId;
+  timestamp?: string | null;
+  render_timestamp?: string | null;
+  source_stamp?: number | null;
+  frame_id: string;
+  source_frame_id: string;
+  point_count: number;
+  points: Array<[number, number, number]>;
+  bounds: { min: [number, number, number]; max: [number, number, number] } | null;
+  render_fps?: number | null;
+  epoch: string;
+  revision: number;
+  path: RobotWorldPoint[];
+  goal: { x: number; y: number; yaw: number } | null;
+};
+export type RobotDetailPathPreview = {
+  robot_id: RobotId;
+  request_id: string;
+  status: "VALID" | "INVALID" | "NO_PATH";
+  reason?: string | null;
+  frame_id?: "map";
+  path: RobotWorldPoint[];
+  local_path?: RobotWorldPoint[];
+  path_length_m: number | null;
+  goal: { x: number; y: number; yaw: number; frame_id?: string };
+  local_goal?: { x: number; y: number; yaw: number } | null;
+  timestamp?: string | null;
 };
 export type RobotDetailGoal = {
   robot_id: RobotId;
@@ -613,6 +655,8 @@ export type RobotSystemDiagnostics = RosDiagnostics & {
 };
 export type RobotDetailState = {
   scan: RobotDetailScan | null;
+  lidar2d: RobotDetailLidar2D | null;
+  lidar3d: RobotDetailLidar3D | null;
   map: RobotDetailMapSnapshot | null;
   globalPath: RobotDetailPath | null;
   localPath: RobotDetailPath | null;
@@ -622,6 +666,9 @@ export type RobotDetailState = {
   errors: RobotDetailError[];
   navigationStatus: string | null;
   remainingDistanceM: number | null;
+  pathPreview: RobotDetailPathPreview | null;
+  mappingState: string | null;
+  activeLocalMapId: string | null;
 };
 
 /**
@@ -648,10 +695,15 @@ export type ServerMessage =
   | { type: "TAG_NAV_EVENT"; robot_id: string; mission_id?: number; event: string; details?: unknown; timestamp?: string }
   | { type: "ROBOT_STATE"; robot_id: RobotId; frame_id: "map"; map_revision: number | null; base_frame_id?: string; x: number; y: number; z?: number; yaw: number; vx: number; vy: number; wz: number; navigation_state?: string; control_mode?: "MANUAL" | "AUTONOMOUS"; timestamp?: string }
   | { type: "LIDAR_SCAN"; scan: RobotDetailScan }
+  | { type: "LIDAR_MAP_2D"; robot_id: RobotId; timestamp?: string | null; source_stamp?: number | null; frame_id: string; source_frame_id: string; point_count: number; points: RobotWorldPoint[]; path: RobotWorldPoint[]; goal: { x: number; y: number; yaw: number } | null; render_fps?: number | null }
+  | { type: "LIDAR_MAP_3D"; robot_id: RobotId; timestamp?: string | null; render_timestamp?: string | null; source_stamp?: number | null; frame_id: string; source_frame_id: string; point_count: number; points: Array<[number, number, number]>; bounds: { min: [number, number, number]; max: [number, number, number] } | null; render_fps?: number | null; epoch: string; revision: number; path: RobotWorldPoint[]; goal: { x: number; y: number; yaw: number } | null }
   | { type: "MAP_SNAPSHOT"; map: RobotDetailMapSnapshot }
   | { type: "NAV_GLOBAL_PATH"; path: RobotDetailPath }
   | { type: "NAV_LOCAL_PATH"; path: RobotDetailPath }
   | { type: "NAV_GOAL"; goal: RobotDetailGoal }
+  | { type: "PATH_PREVIEW_RESULT"; robot_id: RobotId; request_id: string; status: "VALID" | "INVALID" | "NO_PATH"; reason?: string | null; frame_id?: "map"; path: RobotWorldPoint[]; local_path?: RobotWorldPoint[]; local_goal?: { x: number; y: number; yaw: number } | null; path_length_m: number | null; goal: { x: number; y: number; yaw: number; frame_id?: string }; timestamp?: string | null }
+  | { type: "LOCAL_MAP_STATUS"; robot_id: RobotId; loaded: boolean; map_id?: string | null; frame_id?: string; timestamp?: string | null }
+  | { type: "VDA5050_RUNTIME_STATUS"; robot_id: RobotId; status: string; order_id?: string; node_id?: string; reason?: string }
   | { type: "CONTROLLER_STATE"; controller: RobotControllerState }
   | { type: "SYSTEM_DIAGNOSTICS"; robot_id: RobotId; diagnostics: RobotSystemDiagnostics; timestamp?: string }
   | { type: "NAV_STATUS"; robot_id: RobotId; status: string; reason?: string | null; target_tag_id?: number | null; x?: number | null; y?: number | null; yaw?: number | null; timestamp?: string }
@@ -668,7 +720,8 @@ export type ClientMessage =
   | { type: "SELECT_ROBOT"; robot_id: RobotId | null }           // 讓後端提高該機器人更新頻率 (可選)
   | { type: "ROBOT_MODE"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS" }
   | { type: "ROBOT_MANUAL"; robot_id: RobotId; action: "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT" | "STOP" }
-  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string }
+  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string; preview_request_id?: string }
+  | { type: "PATH_PREVIEW_REQUEST"; robot_id: RobotId; request_id: string; x: number; y: number; yaw: number; frame_id: "map" }
   | { type: "NAV_CANCEL"; robot_id: RobotId }
   | { type: "NAV_PAUSE"; robot_id: RobotId }
   | { type: "NAV_RESUME"; robot_id: RobotId }

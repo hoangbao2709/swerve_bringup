@@ -23,17 +23,25 @@ from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as RosPath
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from nav2_map_server.srv import LoadMap
 from rosgraph_msgs.msg import Clock
 from swerve_bringup.action import GoToTag
 from sensor_msgs.msg import JointState, LaserScan, PointCloud2
+from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Bool
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from tf2_ros import Buffer, TransformException, TransformListener
+from robot_localization.srv import SetPose
+from slam_toolbox.srv import Pause as SlamPause, SaveMap as SlamSaveMap
 
 from .qos import canonical_map_qos_profile, gazebo_clock_qos_profile
 from .coordinates import (is_small_future_tf_skew, pose_from_transform,
                           quaternion_yaw, rotate_translate_xy)
+from .web_map_renderer import (
+    bounded_voxel_points, laser_scan_xy, path_length, point_xyz,
+    successful_path_result, transform_points_xyz,
+)
 
 
 def yaw_from_quaternion(q) -> float:
@@ -59,6 +67,7 @@ class SwerveBridge(Node):
         self.declare_parameter('odom_topic', '/odometry/filtered')
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('lidar_topic', '/lidar/points')
+        self.declare_parameter('lidar_filtered_topic', '/lidar/points_filtered')
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('map_topic', '/map')
         self.declare_parameter('global_path_topic', '/plan')
@@ -71,6 +80,13 @@ class SwerveBridge(Node):
         self.declare_parameter('tf_future_tolerance_s', 0.1)
         self.declare_parameter('lidar_ui_hz', 5.0)
         self.declare_parameter('lidar_max_points', 720)
+        self.declare_parameter('lidar_web_3d_hz', 3.0)
+        self.declare_parameter('lidar_max_3d_points', 4000)
+        self.declare_parameter('lidar_3d_voxel_size', 0.04)
+        self.declare_parameter('lidar_3d_min_range', 0.15)
+        self.declare_parameter('lidar_3d_max_range', 25.0)
+        self.declare_parameter('lidar_3d_min_height', -1.0)
+        self.declare_parameter('lidar_3d_max_height', 3.0)
         self.declare_parameter('clock_topic', '/clock')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('emergency_stop_topic', '/emergency_stop')
@@ -118,7 +134,17 @@ class SwerveBridge(Node):
         self.last_scan_monotonic = None
         self.last_scan_stamp = None
         self.latest_scan = None
+        self.latest_cloud = None
+        self.latest_filtered_cloud = None
+        self.latest_cloud_monotonic = None
+        self.latest_filtered_cloud_monotonic = None
         self.last_scan_publish_monotonic = 0.0
+        self.last_cloud_publish_monotonic = 0.0
+        self.cloud_intervals = deque(maxlen=20)
+        self.last_cloud_frame_wall = None
+        self.web_cloud_revision = 0
+        self.last_web_cloud_source_stamp = None
+        self.web_cloud_epoch = f'{self.robot_id}-{time.time_ns()}'
         self.latest_map = None
         self.latest_map_signature = None
         self.latest_global_path = None
@@ -144,6 +170,13 @@ class SwerveBridge(Node):
         self.active_pose_goal = None
         self.active_context = None
         self.active_pose_context = None
+        self.path_preview_goals = {}
+        self.active_vda_order = None
+        self.slam_paused = False
+        self.slam_mapping_elapsed_s = 0.0
+        self.slam_mapping_started_monotonic = time.monotonic() if self.runtime_state == 'MAPPING' else None
+        self.loaded_local_map_id = None
+        self.local_map_load_pending = False
         self.paused_pose_context = None
         self.goal_request_pending = False
         self.cancel_pending = False
@@ -180,6 +213,7 @@ class SwerveBridge(Node):
         odom_topic = self._scoped_topic(self.get_parameter('odom_topic').value)
         joint_states_topic = self._scoped_topic(self.get_parameter('joint_states_topic').value)
         lidar_topic = self._scoped_topic(self.get_parameter('lidar_topic').value)
+        lidar_filtered_topic = self._scoped_topic(self.get_parameter('lidar_filtered_topic').value)
         clock_topic = self._scoped_topic(self.get_parameter('clock_topic').value)
         cmd_vel_topic = self._scoped_topic(self.get_parameter('cmd_vel_topic').value)
         emergency_stop_topic = self._scoped_topic(self.get_parameter('emergency_stop_topic').value)
@@ -187,6 +221,7 @@ class SwerveBridge(Node):
         self.create_subscription(Odometry, odom_topic, self.odom_cb, 20)
         self.create_subscription(JointState, joint_states_topic, self.joint_cb, 10)
         self.create_subscription(PointCloud2, lidar_topic, self.lidar_cb, 10)
+        self.create_subscription(PointCloud2, lidar_filtered_topic, self.filtered_lidar_cb, 1)
         # Gazebo Classic publishes /clock as best-effort + volatile.  The
         # default rclpy profile is reliable, which is incompatible and leaves
         # simulation_time permanently null.  Match the Gazebo profile without
@@ -207,6 +242,16 @@ class SwerveBridge(Node):
         self.nav_client = ActionClient(self, GoToTag, navigate_action)
         navigate_pose_action = self._scoped_topic(self.get_parameter('navigate_pose_action').value) if self.has_parameter('navigate_pose_action') else self._scoped_topic('/navigate_to_pose')
         self.nav_pose_client = ActionClient(self, NavigateToPose, navigate_pose_action)
+        self.path_preview_client = ActionClient(
+            self, ComputePathToPose, self._scoped_topic('/compute_path_to_pose'))
+        self.map_load_client = self.create_client(
+            LoadMap, self._scoped_topic('/map_server/load_map'))
+        self.initial_pose_client = self.create_client(
+            SetPose, self._scoped_topic('/ekf_v30e/set_pose'))
+        self.slam_pause_client = self.create_client(
+            SlamPause, self._scoped_topic('/slam_toolbox/pause_new_measurements'))
+        self.slam_save_client = self.create_client(
+            SlamSaveMap, self._scoped_topic('/slam_toolbox/save_map'))
         scan_topic = self._scoped_topic(self.get_parameter('scan_topic').value)
         map_topic = self._scoped_topic(self.get_parameter('map_topic').value)
         global_path_topic = self._scoped_topic(self.get_parameter('global_path_topic').value)
@@ -280,6 +325,15 @@ class SwerveBridge(Node):
             if interval > 0.0:
                 self.lidar_intervals.append(interval)
         self.last_lidar_monotonic = now
+        self.last_lidar_frame_id = str(msg.header.frame_id or '')
+        stamp = msg.header.stamp
+        self.last_lidar_stamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        self.latest_cloud = msg
+        self.latest_cloud_monotonic = now
+
+    def filtered_lidar_cb(self, msg):
+        self.latest_filtered_cloud = msg
+        self.latest_filtered_cloud_monotonic = time.monotonic()
         self.last_lidar_frame_id = str(msg.header.frame_id or '')
         stamp = msg.header.stamp
         self.last_lidar_stamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
@@ -388,9 +442,14 @@ class SwerveBridge(Node):
                 ws = websocket.create_connection(url, timeout=2, enable_multithread=True)
                 with self.ws_lock:
                     self.ws = ws
+                self.last_web_cloud_source_stamp = None
                 backoff = 1.0
                 self.send_bridge_status('CONNECTED')
                 self.send_map_revision_status()
+                if self.loaded_local_map_id:
+                    self.send({'type': 'LOCAL_MAP_STATUS', 'robot_id': self.robot_id,
+                               'loaded': True, 'map_id': self.loaded_local_map_id,
+                               'frame_id': 'map', 'timestamp': self.now()})
                 while not self.stop_event.is_set():
                     try:
                         raw = ws.recv()
@@ -448,10 +507,20 @@ class SwerveBridge(Node):
             self.manual_twist = Twist()
         self.cmd_pub.publish(self.manual_twist)
 
+    def _robot_is_stopped(self):
+        if self.latest_odom is None:
+            return False
+        twist = self.latest_odom.twist.twist
+        values = (twist.linear.x, twist.linear.y, twist.angular.z)
+        return all(math.isfinite(float(value)) and abs(float(value)) <= 0.05
+                   for value in values)
+
     def heartbeat_timer(self):
         self.send({'type': 'HEARTBEAT', 'robot_id': self.robot_id,
                    'nav2_state': self.nav_state, 'bridge_state': 'CONNECTED',
                    'runtime_state': self.runtime_state, 'control_mode': self.control_mode,
+                   'mapping_state': ('PAUSED' if self.slam_paused else 'MAPPING') if self.runtime_state == 'MAPPING' else 'INACTIVE',
+                   'mapping_elapsed_s': self._mapping_elapsed_s(),
                    'timestamp': self.now()})
         diagnostics = self.collect_diagnostics()
         self.send({'type': 'ROS_DIAGNOSTICS', 'robot_id': self.robot_id,
@@ -574,9 +643,9 @@ class SwerveBridge(Node):
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
 
-    def _transform_scan(self, scan):
+    def _transform_scan(self, scan, requested_frame=None):
         source_frame = str(scan.header.frame_id or '')
-        target_frame = str(self.get_parameter('map_frame').value or 'map')
+        target_frame = str(requested_frame or self.get_parameter('map_frame').value or 'map')
         if not source_frame:
             raise TransformException('LaserScan frame_id is empty')
         transform = None
@@ -592,27 +661,17 @@ class SwerveBridge(Node):
             translation = (float(t.x), float(t.y), float(t.z))
             quaternion = (float(q.x), float(q.y), float(q.z), float(q.w))
 
-        qx, qy, qz, qw = quaternion
-        valid = []
-        for index, value in enumerate(scan.ranges):
-            distance = float(value)
-            if not math.isfinite(distance) or distance < float(scan.range_min) or distance > float(scan.range_max):
-                continue
-            angle = float(scan.angle_min) + index * float(scan.angle_increment)
-            lx, ly, lz = distance * math.cos(angle), distance * math.sin(angle), 0.0
-            # Quaternion rotation, expanded to avoid a dependency on
-            # tf2_geometry_msgs in the bridge process.
-            tx = 2.0 * (qy * lz - qz * ly)
-            ty = 2.0 * (qz * lx - qx * lz)
-            tz = 2.0 * (qx * ly - qy * lx)
-            rx = lx + qw * tx + (qy * tz - qz * ty)
-            ry = ly + qw * ty + (qz * tx - qx * tz)
-            rz = lz + qw * tz + (qx * ty - qy * tx)
-            valid.append((distance, [translation[0] + rx, translation[1] + ry]))
-
         limit = max(1, int(self.get_parameter('lidar_max_points').value))
-        stride = max(1, math.ceil(len(valid) / limit))
-        sampled = valid[::stride][:limit]
+        valid_ranges = [float(value) for value in scan.ranges
+                        if math.isfinite(float(value))
+                        and float(scan.range_min) <= float(value) <= float(scan.range_max)]
+        local_points = laser_scan_xy(
+            scan.ranges, float(scan.angle_min), float(scan.angle_increment),
+            float(scan.range_min), float(scan.range_max), max_points=limit,
+        )
+        transformed = transform_points_xyz(
+            ((x, y, 0.0) for x, y in local_points), translation, quaternion)
+        sampled = [[x, y] for x, y, _z in transformed]
         return {
             'robot_id': self.robot_id,
             'topic': self.scan_topic_name,
@@ -624,12 +683,144 @@ class SwerveBridge(Node):
             'angle_increment': float(scan.angle_increment),
             'range_min': float(scan.range_min), 'range_max': float(scan.range_max),
             'point_count': len(sampled),
-            'minimum_range': min((item[0] for item in valid), default=None),
-            'maximum_range': max((item[0] for item in valid), default=None),
+            'minimum_range': min(valid_ranges, default=None),
+            'maximum_range': max(valid_ranges, default=None),
             'scan_hz_sim': self._frequency(self.scan_sim_intervals),
             'scan_hz_wall': self._frequency(self.scan_intervals),
-            'points': [point for _distance, point in sampled],
+            'points': sampled,
         }
+
+    def _map_to_base(self, x, y, stamp=None):
+        target = str(self.get_parameter('base_footprint_frame').value or 'base_footprint')
+        source = str(self.get_parameter('map_frame').value or 'map')
+        if target == source:
+            return float(x), float(y), 0.0
+        when = stamp if stamp is not None else Time()
+        transform = self.tf_buffer.lookup_transform(
+            target, source, when, timeout=Duration(seconds=0.05))
+        t, q = transform.transform.translation, transform.transform.rotation
+        result = rotate_translate_xy(
+            float(x), float(y), (float(t.x), float(t.y), float(t.z)),
+            (float(q.x), float(q.y), float(q.z), float(q.w)))
+        return result[0], result[1], yaw_from_quaternion(q)
+
+    def _local_path(self):
+        msg = self.latest_global_path
+        if msg is None:
+            return []
+        result = []
+        stamp = Time()
+        for item in msg.poses:
+            x, y, _yaw = self._map_to_base(
+                item.pose.position.x, item.pose.position.y, stamp)
+            result.append([x, y])
+        return result
+
+    def _local_goal(self):
+        msg = self.latest_goal_pose
+        if msg is None:
+            return None
+        frame = str(msg.header.frame_id or '')
+        x, y = float(msg.pose.position.x), float(msg.pose.position.y)
+        yaw = yaw_from_quaternion(msg.pose.orientation)
+        if frame == str(self.get_parameter('map_frame').value or 'map'):
+            x, y, yaw_tf = self._map_to_base(x, y, Time())
+            yaw += yaw_tf
+        elif frame != str(self.get_parameter('base_footprint_frame').value or 'base_footprint'):
+            raise TransformException(f'goal frame {frame!r} cannot be projected to the LiDAR view')
+        return {'x': x, 'y': y, 'yaw': math.atan2(math.sin(yaw), math.cos(yaw))}
+
+    def _render_lidar_2d(self):
+        if self.latest_scan is None:
+            return
+        target = str(self.get_parameter('base_footprint_frame').value or 'base_footprint')
+        scan = self._transform_scan(self.latest_scan, target)
+        try:
+            route = self._local_path()
+            goal = self._local_goal()
+        except TransformException:
+            route, goal = [], None
+        self.send({
+            'type': 'LIDAR_MAP_2D', 'robot_id': self.robot_id,
+            'timestamp': scan['timestamp'], 'source_stamp': scan['stamp'],
+            'frame_id': target, 'source_frame_id': scan['source_frame_id'],
+            'point_count': scan['point_count'], 'points': scan['points'],
+            'path': route, 'goal': goal,
+            'render_fps': self._frequency(self.scan_intervals),
+        })
+
+    def _render_lidar_3d(self):
+        filtered_is_fresh = (self.latest_filtered_cloud is not None
+                             and self.latest_filtered_cloud_monotonic is not None
+                             and time.monotonic() - self.latest_filtered_cloud_monotonic <= 1.0)
+        source = self.latest_filtered_cloud if filtered_is_fresh else self.latest_cloud
+        if source is None:
+            return
+        stamp = source.header.stamp
+        source_stamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        if source_stamp == self.last_web_cloud_source_stamp:
+            return
+        source_frame = str(source.header.frame_id or '')
+        target = str(self.get_parameter('base_footprint_frame').value or 'base_footprint')
+        if not source_frame:
+            raise TransformException('PointCloud2 frame_id is empty')
+        stamp = Time.from_msg(source.header.stamp)
+        if source_frame == target:
+            transform = None
+        else:
+            transform = self.tf_buffer.lookup_transform(
+                target, source_frame, stamp, timeout=Duration(seconds=0.05))
+        translation, quaternion = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)
+        if transform is not None:
+            t, q = transform.transform.translation, transform.transform.rotation
+            translation = (float(t.x), float(t.y), float(t.z))
+            quaternion = (float(q.x), float(q.y), float(q.z), float(q.w))
+
+        raw = point_cloud2.read_points(source, field_names=('x', 'y', 'z'), skip_nans=True)
+        transformed = transform_points_xyz(
+            (point_xyz(item) for item in raw), translation, quaternion)
+        values = bounded_voxel_points(
+            transformed,
+            max_points=int(self.get_parameter('lidar_max_3d_points').value),
+            min_range=float(self.get_parameter('lidar_3d_min_range').value),
+            max_range=float(self.get_parameter('lidar_3d_max_range').value),
+            min_height=float(self.get_parameter('lidar_3d_min_height').value),
+            max_height=float(self.get_parameter('lidar_3d_max_height').value),
+            voxel_size=float(self.get_parameter('lidar_3d_voxel_size').value),
+        )
+        try:
+            route = self._local_path()
+            goal = self._local_goal()
+        except TransformException:
+            route, goal = [], None
+        xyz = [[round(x, 3), round(y, 3), round(z, 3)] for x, y, z in values]
+        bounds = None
+        if values:
+            bounds = {
+                'min': [min(row[index] for row in xyz) for index in range(3)],
+                'max': [max(row[index] for row in xyz) for index in range(3)],
+            }
+        next_revision = self.web_cloud_revision + 1
+        payload = {
+            'type': 'LIDAR_MAP_3D', 'robot_id': self.robot_id,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'source_stamp': source_stamp,
+            'render_timestamp': datetime.now(timezone.utc).isoformat(),
+            'frame_id': target, 'source_frame_id': source_frame,
+            'point_count': len(xyz), 'points': xyz, 'bounds': bounds,
+            'render_fps': self._frequency(self.cloud_intervals),
+            'epoch': self.web_cloud_epoch, 'revision': next_revision,
+            'path': route, 'goal': goal,
+        }
+        if self.send(payload):
+            self.last_web_cloud_source_stamp = source_stamp
+            self.web_cloud_revision = next_revision
+            now = time.monotonic()
+            if self.last_cloud_frame_wall is not None:
+                interval = now - self.last_cloud_frame_wall
+                if interval > 0:
+                    self.cloud_intervals.append(interval)
+            self.last_cloud_frame_wall = now
 
     def detail_timer(self):
         """Publish bounded, robot-scoped detail snapshots to Django."""
@@ -637,9 +828,20 @@ class SwerveBridge(Node):
             try:
                 payload = self._transform_scan(self.latest_scan)
                 self.send({'type': 'LIDAR_SCAN', 'scan': payload})
+                self._render_lidar_2d()
                 self.last_scan_publish_monotonic = time.monotonic()
                 self.last_tf_error = None
             except (TransformException, ValueError, TypeError) as exc:
+                self.last_tf_error = str(exc)[:300]
+
+        cloud_hz = max(0.1, float(self.get_parameter('lidar_web_3d_hz').value))
+        cloud_available = self.latest_cloud is not None or self.latest_filtered_cloud is not None
+        if cloud_available and time.monotonic() - self.last_cloud_publish_monotonic >= 1.0 / cloud_hz:
+            try:
+                self._render_lidar_3d()
+                self.last_cloud_publish_monotonic = time.monotonic()
+                self.last_tf_error = None
+            except (TransformException, ValueError, TypeError, KeyError, IndexError) as exc:
                 self.last_tf_error = str(exc)[:300]
 
         if self.latest_map is not None and self.latest_map_signature != self.last_sent_map_signature:
@@ -1069,6 +1271,16 @@ class SwerveBridge(Node):
             try:
                 if kind == 'MAP_PUBLISHED':
                     self.apply_published_map(data)
+                elif kind == 'PATH_PREVIEW':
+                    self.preview_path(data)
+                elif kind == 'LOCAL_CONTROL':
+                    self.local_control(data)
+                elif kind == 'VDA5050_ORDER':
+                    self.accept_vda_order(data)
+                elif kind == 'VDA5050_INSTANT_ACTIONS':
+                    self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                               'status': 'UNSUPPORTED',
+                               'message': 'instant action execution is not configured in this ROS bridge'})
                 elif kind in ('NAV_GOAL', 'TAG_NAV_GOAL'):
                     self.navigate(data)
                 elif kind in ('CANCEL_NAVIGATION', 'TAG_NAV_CANCEL', 'TAG_NAV_PAUSE'):
@@ -1096,6 +1308,284 @@ class SwerveBridge(Node):
                 self.get_logger().error(f'ROS bridge command {kind} failed: {exc}')
                 self.send({'type': 'BRIDGE_ERROR', 'code': 'COMMAND_FAILED',
                            'command': kind, 'message': str(exc)[:300], 'timestamp': self.now()})
+
+    def preview_path(self, data):
+        request_id = str(data.get('request_id') or '')
+        goal = {
+            'x': float(data.get('x', float('nan'))),
+            'y': float(data.get('y', float('nan'))),
+            'yaw': float(data.get('yaw', 0.0)),
+        }
+        def result(status, reason=None, points=None):
+            points = points or []
+            local_points = []
+            local_goal = None
+            if points:
+                try:
+                    local_points = [list(self._map_to_base(x, y, Time())[:2]) for x, y in points]
+                except TransformException:
+                    local_points = []
+            try:
+                if all(math.isfinite(value) for value in goal.values()):
+                    local_x, local_y, map_to_base_yaw = self._map_to_base(goal['x'], goal['y'], Time())
+                    local_yaw = goal['yaw'] + map_to_base_yaw
+                    local_goal = {
+                        'x': local_x, 'y': local_y,
+                        'yaw': math.atan2(math.sin(local_yaw), math.cos(local_yaw)),
+                    }
+            except TransformException:
+                pass
+            self.send({
+                'type': 'PATH_PREVIEW_RESULT', 'robot_id': self.robot_id,
+                'request_id': request_id, 'status': status, 'reason': reason,
+                'frame_id': 'map', 'path': points, 'local_path': local_points,
+                'local_goal': local_goal,
+                'path_length_m': path_length(points),
+                'goal': {**goal, 'frame_id': 'map'}, 'timestamp': self.now(),
+            })
+
+        if not request_id or data.get('frame_id', 'map') != 'map':
+            result('INVALID', 'path preview requires a request id and map-frame target')
+            return
+        if self.control_mode != 'AUTONOMOUS' or self.emergency_stop_active:
+            result('INVALID', 'path preview requires AUTONOMOUS mode with no emergency stop')
+            return
+        if self.loaded_local_map_id:
+            result('INVALID', 'path planning is blocked while a non-canonical local map is loaded')
+            return
+        if not all(math.isfinite(value) for value in goal.values()):
+            result('INVALID', 'goal coordinates must be finite')
+            return
+        if not self.path_preview_client.server_is_ready():
+            result('NO_PATH', 'Nav2 ComputePathToPose action server is unavailable')
+            return
+        action_goal = ComputePathToPose.Goal()
+        action_goal.goal.header.frame_id = 'map'
+        action_goal.goal.header.stamp = self.get_clock().now().to_msg()
+        action_goal.goal.pose.position.x = goal['x']
+        action_goal.goal.pose.position.y = goal['y']
+        action_goal.goal.pose.orientation.z = math.sin(goal['yaw'] / 2.0)
+        action_goal.goal.pose.orientation.w = math.cos(goal['yaw'] / 2.0)
+        action_goal.use_start = False
+        self.path_preview_goals[request_id] = goal
+        future = self.path_preview_client.send_goal_async(action_goal)
+        future.add_done_callback(lambda completed: self.path_preview_goal_response(
+            completed, request_id, goal, result))
+
+    def path_preview_goal_response(self, future, request_id, goal, send_result):
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self.path_preview_goals.pop(request_id, None)
+            send_result('NO_PATH', f'Nav2 planner request failed: {type(exc).__name__}')
+            return
+        if handle is None or not handle.accepted:
+            self.path_preview_goals.pop(request_id, None)
+            send_result('NO_PATH', 'Nav2 planner rejected the path request')
+            return
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(lambda completed: self.path_preview_result(
+            completed, request_id, send_result))
+
+    def path_preview_result(self, future, request_id, send_result):
+        self.path_preview_goals.pop(request_id, None)
+        try:
+            response = future.result()
+            poses = response.result.path.poses
+            if not successful_path_result(
+                    response.status, GoalStatus.STATUS_SUCCEEDED, len(poses)):
+                reason = ('Nav2 path request did not succeed'
+                          if response.status != GoalStatus.STATUS_SUCCEEDED
+                          else 'Nav2 returned an empty path')
+                send_result('NO_PATH', reason)
+                return
+            path_payload = self._pose_path_payload(response.result.path, self.robot_id)
+        except Exception as exc:
+            send_result('NO_PATH', f'Nav2 path result failed: {type(exc).__name__}')
+            return
+        send_result('VALID', None, path_payload['points'])
+
+    def _send_local_control_result(self, data, ok, result=None, error=None):
+        self.send({
+            'type': 'LOCAL_CONTROL_RESULT', 'robot_id': self.robot_id,
+            'request_id': str(data.get('request_id') or ''),
+            'operation': str(data.get('operation') or ''),
+            'ok': bool(ok), 'result': result or {}, 'error': error,
+            'timestamp': self.now(),
+        })
+
+    def local_control(self, data):
+        operation = str(data.get('operation') or '').upper()
+        if operation in ('MAPPING_START', 'MAPPING_STOP'):
+            if self.runtime_state != 'MAPPING':
+                self._send_local_control_result(data, False, error='SLAM Toolbox is not active in this runtime')
+                return
+            if not self.slam_pause_client.service_is_ready():
+                self._send_local_control_result(data, False, error='SLAM Toolbox pause service is unavailable')
+                return
+            wanted_paused = operation == 'MAPPING_STOP'
+            if self.slam_paused == wanted_paused:
+                self._send_local_control_result(data, True, {'mapping_state': 'PAUSED' if wanted_paused else 'MAPPING'})
+                return
+            future = self.slam_pause_client.call_async(SlamPause.Request())
+            future.add_done_callback(lambda completed: self.mapping_toggle_result(
+                completed, data, wanted_paused))
+            return
+        if operation == 'MAP_SAVE':
+            if self.runtime_state != 'MAPPING':
+                self._send_local_control_result(data, False, error='map saving requires SLAM Toolbox mapping mode')
+                return
+            if not self.slam_save_client.service_is_ready():
+                self._send_local_control_result(data, False, error='SLAM Toolbox save_map service is unavailable')
+                return
+            prefix = Path(str(data.get('output_prefix') or '')).expanduser().resolve()
+            if not prefix.parent.is_dir() or prefix.name in ('', '.', '..'):
+                self._send_local_control_result(data, False, error='map save location is invalid')
+                return
+            request = SlamSaveMap.Request()
+            request.name.data = str(prefix)
+            future = self.slam_save_client.call_async(request)
+            future.add_done_callback(lambda completed: self.map_save_result(completed, data, prefix))
+            return
+        if operation == 'MAP_LOAD':
+            if self.runtime_state != 'NAVIGATION':
+                self._send_local_control_result(data, False, error='map loading requires the active Nav2 navigation runtime')
+                return
+            if (self.emergency_stop_active or self.control_mode != 'MANUAL' or not self._robot_is_stopped()
+                    or self.active_goal is not None or self.active_pose_goal is not None
+                    or self.goal_request_pending or self.local_map_load_pending):
+                self._send_local_control_result(data, False,
+                                                error='map loading requires a stopped robot in MANUAL mode with no active goal')
+                return
+            yaml_path = Path(str(data.get('map_yaml') or '')).expanduser().resolve()
+            if not yaml_path.is_file() or yaml_path.suffix.lower() not in ('.yaml', '.yml'):
+                self._send_local_control_result(data, False, error='selected map YAML does not exist')
+                return
+            if not self.map_load_client.service_is_ready():
+                self._send_local_control_result(data, False, error='Nav2 map_server/load_map service is unavailable')
+                return
+            request = LoadMap.Request()
+            request.map_url = str(yaml_path)
+            self.local_map_load_pending = True
+            try:
+                future = self.map_load_client.call_async(request)
+            except Exception as exc:
+                self.local_map_load_pending = False
+                self._send_local_control_result(data, False,
+                                                error=f'Nav2 map load request failed: {type(exc).__name__}')
+                return
+            future.add_done_callback(lambda completed: self.map_load_result(completed, data))
+            return
+        if operation == 'INITIAL_POSE':
+            if (self.emergency_stop_active or self.control_mode != 'MANUAL' or not self._robot_is_stopped()
+                    or self.active_goal is not None or self.active_pose_goal is not None
+                    or self.goal_request_pending or self.local_map_load_pending):
+                self._send_local_control_result(data, False,
+                                                error='initial pose requires a stopped robot in MANUAL mode with no active goal')
+                return
+            if self.loaded_local_map_id:
+                self._send_local_control_result(data, False, error='initial pose is disabled while a non-canonical local map is loaded')
+                return
+            if not self.initial_pose_client.service_is_ready():
+                self._send_local_control_result(data, False, error='authoritative ekf_v30e/set_pose service is unavailable')
+                return
+            request = SetPose.Request()
+            pose = PoseWithCovarianceStamped()
+            pose.header.stamp = self.get_clock().now().to_msg()
+            pose.header.frame_id = 'map'
+            pose.pose.pose.position.x = float(data['x'])
+            pose.pose.pose.position.y = float(data['y'])
+            pose.pose.pose.orientation.z = math.sin(float(data['yaw']) / 2.0)
+            pose.pose.pose.orientation.w = math.cos(float(data['yaw']) / 2.0)
+            pose.pose.covariance[0] = 0.04
+            pose.pose.covariance[7] = 0.04
+            pose.pose.covariance[35] = 0.03
+            request.pose = pose
+            future = self.initial_pose_client.call_async(request)
+            future.add_done_callback(lambda completed: self.simple_service_result(
+                completed, data, 'ekf_v30e accepted the initial pose'))
+            return
+        self._send_local_control_result(data, False, error=f'unsupported local control operation {operation}')
+
+    def mapping_toggle_result(self, future, data, wanted_paused):
+        try:
+            response = future.result()
+            success = bool(response.status)
+        except Exception as exc:
+            self._send_local_control_result(data, False, error=f'SLAM Toolbox pause request failed: {type(exc).__name__}')
+            return
+        if not success:
+            self._send_local_control_result(data, False, error='SLAM Toolbox did not confirm the mapping state transition')
+            return
+        if wanted_paused:
+            if self.slam_mapping_started_monotonic is not None:
+                self.slam_mapping_elapsed_s += max(0.0, time.monotonic() - self.slam_mapping_started_monotonic)
+            self.slam_mapping_started_monotonic = None
+        else:
+            self.slam_mapping_started_monotonic = time.monotonic()
+        self.slam_paused = wanted_paused
+        self._send_local_control_result(data, True, {
+            'mapping_state': 'PAUSED' if wanted_paused else 'MAPPING',
+        })
+
+    def _mapping_elapsed_s(self):
+        elapsed = self.slam_mapping_elapsed_s
+        if self.slam_mapping_started_monotonic is not None and not self.slam_paused:
+            elapsed += max(0.0, time.monotonic() - self.slam_mapping_started_monotonic)
+        return round(elapsed, 1)
+
+    def map_save_result(self, future, data, prefix):
+        try:
+            response = future.result()
+            success = int(response.result) == int(SlamSaveMap.Response.RESULT_SUCCESS)
+        except Exception as exc:
+            self._send_local_control_result(data, False, error=f'SLAM Toolbox save_map failed: {type(exc).__name__}')
+            return
+        yaml_path = prefix.with_suffix('.yaml')
+        if not success or not yaml_path.is_file():
+            self._send_local_control_result(data, False, error='SLAM Toolbox did not persist a map YAML file')
+            return
+        try:
+            import yaml
+            document = yaml.safe_load(yaml_path.read_text(encoding='utf-8')) or {}
+            image = Path(str(document['image']))
+            if not image.is_absolute():
+                image = yaml_path.parent / image
+            image = image.resolve(strict=True)
+        except Exception as exc:
+            self._send_local_control_result(data, False, error=f'map saver output is incomplete: {type(exc).__name__}')
+            return
+        self._send_local_control_result(data, True, {
+            'name': str(data.get('name') or ''), 'yaml_path': str(yaml_path),
+            'image_path': str(image),
+        })
+
+    def map_load_result(self, future, data):
+        self.local_map_load_pending = False
+        try:
+            response = future.result()
+            success = int(response.result) == int(LoadMap.Response.RESULT_SUCCESS)
+        except Exception as exc:
+            self._send_local_control_result(data, False, error=f'Nav2 map load failed: {type(exc).__name__}')
+            return
+        if not success:
+            self._send_local_control_result(data, False, error=f'Nav2 map_server rejected the selected map (result={response.result})')
+            return
+        self.loaded_local_map_id = str(data.get('map_id') or '')
+        self.send({'type': 'LOCAL_MAP_STATUS', 'robot_id': self.robot_id,
+                   'loaded': True, 'map_id': self.loaded_local_map_id,
+                   'frame_id': 'map', 'timestamp': self.now()})
+        self._send_local_control_result(data, True, {
+            'map_id': self.loaded_local_map_id, 'map_sync_status': 'OUT_OF_SYNC',
+        })
+
+    def simple_service_result(self, future, data, message):
+        try:
+            future.result()
+        except Exception as exc:
+            self._send_local_control_result(data, False, error=f'ROS service request failed: {type(exc).__name__}')
+            return
+        self._send_local_control_result(data, True, {'message': message, 'frame_id': 'map'})
 
     def emergency_stop(self, data):
         self.emergency_stop_active = True
@@ -1147,6 +1637,9 @@ class SwerveBridge(Node):
         if self.emergency_stop_active:
             self.send_control_status(False, 'emergency stop is active')
             return
+        if self.local_map_load_pending and mode != 'MANUAL':
+            self.send_control_status(False, 'map loading is in progress')
+            return
         if mode == 'MANUAL' and (self.active_goal is not None or self.active_pose_goal is not None) and not self.cancel_pending:
             self.pending_cancel_state = 'CANCELLED'
             self.pending_replan = None
@@ -1166,13 +1659,16 @@ class SwerveBridge(Node):
         self.send_control_status(True)
 
     def manual_command(self, data):
+        action = str(data.get('action') or '').upper()
+        if self.local_map_load_pending and action != 'STOP':
+            self.send_control_status(False, 'map loading is in progress')
+            return
         if self.emergency_stop_active:
             self.send_control_status(False, 'emergency stop is active')
             return
         if self.control_mode != 'MANUAL':
             self.send_control_status(False, 'switch to MANUAL mode before sending motion commands')
             return
-        action = str(data.get('action') or '').upper()
         linear = float(self.get_parameter('manual_linear_velocity').value)
         angular = float(self.get_parameter('manual_angular_velocity').value)
         command = Twist()
@@ -1198,6 +1694,9 @@ class SwerveBridge(Node):
         self.send_control_status(True)
 
     def navigate(self, data):
+        if self.local_map_load_pending:
+            self.send_nav_status({'robot_id': self.robot_id}, 'FAILED', 'map loading is in progress')
+            return
         if data.get('x') is not None and data.get('y') is not None:
             self.navigate_pose(data)
             return
@@ -1207,6 +1706,9 @@ class SwerveBridge(Node):
             'robot_id': self.robot_id,
             'target_tag_id': data.get('target_tag_id'),
         }
+        if self.loaded_local_map_id:
+            self.send_nav_status(context, 'FAILED', 'navigation is blocked while a non-canonical local map is loaded')
+            return
         if self.emergency_stop_active:
             self.send_nav_status(context, 'FAILED', 'emergency stop is active')
             return
@@ -1249,8 +1751,18 @@ class SwerveBridge(Node):
             'robot_id': self.robot_id, 'x': float(data.get('x')), 'y': float(data.get('y')),
             'yaw': float(data.get('yaw') or 0.0), 'frame_id': str(data.get('frame_id') or 'map'),
         }
+        vda_context = data.get('vda_order_context')
+        if isinstance(vda_context, dict):
+            context.update({key: value for key, value in vda_context.items()
+                            if key in ('vda_order_id', 'vda_order_update_id', 'vda_node_id', 'vda_node_index')})
         if self.emergency_stop_active:
             self.send_nav_status(context, 'FAILED', 'emergency stop is active')
+            return
+        if self.loaded_local_map_id:
+            self.send_nav_status(context, 'FAILED', 'navigation is blocked while a non-canonical local map is loaded')
+            return
+        if self.local_map_load_pending:
+            self.send_nav_status(context, 'FAILED', 'map loading is in progress')
             return
         if self.control_mode != 'AUTONOMOUS':
             self.send_nav_status(context, 'FAILED', 'switch to AUTONOMOUS mode before navigation')
@@ -1368,6 +1880,131 @@ class SwerveBridge(Node):
             self.cancel_pending = False
         reason = None if status != 'FAILED' else f'NavigateToPose finished with status code {status_code}'
         self.send_nav_status(context, status, reason)
+        if context.get('vda_order_id'):
+            if status == 'SUCCEEDED':
+                self.advance_vda_order(context)
+            else:
+                self.active_vda_order = None
+                self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                           'status': status, 'order_id': context.get('vda_order_id'),
+                           'node_id': context.get('vda_node_id'), 'reason': reason})
+
+    def accept_vda_order(self, data):
+        order = data.get('order')
+        if not isinstance(order, dict):
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'reason': 'order payload must be an object'})
+            return
+        order_id = str(order.get('orderId') or '')
+        try:
+            update_id = int(order.get('orderUpdateId', 0))
+            raw_nodes = order.get('nodes')
+        except (TypeError, ValueError):
+            raw_nodes = None
+            update_id = -1
+        if (not order_id or len(order_id) > 128 or update_id < 0
+                or not isinstance(raw_nodes, list) or not raw_nodes or len(raw_nodes) > 200):
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'reason': 'orderId, orderUpdateId, or nodes are invalid'})
+            return
+        if self.control_mode != 'AUTONOMOUS' or self.emergency_stop_active:
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': 'autonomous mode is unavailable or emergency stop is active'})
+            return
+        if self.loaded_local_map_id:
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': 'fleet orders are blocked while a non-canonical local map is loaded'})
+            return
+        if self.local_map_load_pending:
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': 'fleet orders are blocked while a local map is loading'})
+            return
+        if self.map_sync_status != 'SYNCED':
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': f'fleet orders are blocked while map synchronization is {self.map_sync_status}'})
+            return
+        if self.active_vda_order or self.active_pose_goal or self.active_goal or self.goal_request_pending:
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': 'another navigation goal is active'})
+            return
+        targets = []
+        for node in raw_nodes:
+            if not isinstance(node, dict) or node.get('released') is not True:
+                continue
+            position = node.get('nodePosition')
+            if not isinstance(position, dict) or str(position.get('mapId') or 'map') not in ('map', ''):
+                continue
+            try:
+                x, y = float(position['x']), float(position['y'])
+                yaw = float(position.get('theta', 0.0))
+                sequence_id = int(node.get('sequenceId', 0))
+                allowed_deviation = float(position.get('allowedDeviationXY', 0.25) or 0.25)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not all(math.isfinite(value) for value in (x, y, yaw, allowed_deviation)):
+                continue
+            targets.append({
+                'x': x, 'y': y, 'yaw': yaw,
+                'node_id': str(node.get('nodeId') or sequence_id),
+                'sequence_id': sequence_id,
+                'allowed_deviation_xy': max(0.05, min(1.0, allowed_deviation)),
+            })
+        if not targets:
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': 'order has no released map-frame navigation node'})
+            return
+        try:
+            pose, _frame = self._lookup_robot_pose()
+            first = targets[0]
+            if math.hypot(pose[0] - first['x'], pose[1] - first['y']) <= first['allowed_deviation_xy']:
+                targets.pop(0)
+        except TransformException:
+            pass
+        if not targets:
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'FINISHED', 'order_id': order_id, 'order_update_id': update_id})
+            return
+        self.active_vda_order = {
+            'order_id': order_id, 'order_update_id': update_id,
+            'targets': targets, 'index': 0,
+        }
+        self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                   'status': 'RUNNING', 'order_id': order_id, 'order_update_id': update_id})
+        self._navigate_vda_target()
+
+    def _navigate_vda_target(self):
+        order = self.active_vda_order
+        if not order or order['index'] >= len(order['targets']):
+            return
+        target = order['targets'][order['index']]
+        self.navigate_pose({
+            **target, 'frame_id': 'map',
+            'vda_order_context': {
+                'vda_order_id': order['order_id'],
+                'vda_order_update_id': order['order_update_id'],
+                'vda_node_id': target['node_id'],
+                'vda_node_index': order['index'],
+            },
+        })
+
+    def advance_vda_order(self, context):
+        order = self.active_vda_order
+        if not order or context.get('vda_order_id') != order.get('order_id'):
+            return
+        order['index'] += 1
+        if order['index'] >= len(order['targets']):
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'FINISHED', 'order_id': order['order_id'],
+                       'order_update_id': order['order_update_id']})
+            self.active_vda_order = None
+            return
+        self._navigate_vda_target()
 
     def goal_result(self, future, handle, context):
         try:
@@ -1483,6 +2120,10 @@ class SwerveBridge(Node):
 
     def resume_navigation(self, data):
         """Resume a paused mission by submitting its approved tag goal again."""
+        if self.loaded_local_map_id or self.local_map_load_pending:
+            self.send_nav_status({'robot_id': self.robot_id}, 'FAILED',
+                                 'navigation resume is blocked while a local map transition is active')
+            return
         if self.active_pose_goal is not None:
             self.send_nav_status(self.active_pose_context or {'robot_id': self.robot_id}, 'ACTIVE')
             return

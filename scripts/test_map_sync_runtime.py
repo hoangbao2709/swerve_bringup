@@ -1,10 +1,12 @@
 import hashlib
 import json
+import signal
 from pathlib import Path
 
 import pytest
 
-from ros_stack_supervisor import command_for_revision, verify_bundle
+import ros_stack_supervisor
+from ros_stack_supervisor import command_for_mode, command_for_revision, verify_bundle
 
 
 def _bundle(root: Path, revision: int = 12):
@@ -76,3 +78,86 @@ def test_bundle_rejects_gazebo_bounds_that_disagree_with_canonical_map(tmp_path)
     (tmp_path / 'manifest.json').write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match='Gazebo bounds'):
         verify_bundle(tmp_path, 12, 'R02')
+
+
+def test_mode_transition_command_preserves_stack_args_and_sets_nav2_readiness_mode():
+    base = ['ros2', 'launch', 'swerve_bringup', 'system.launch.py',
+            'world:=warehouse.world', 'map_file:=warehouse.yaml',
+            'mode:=mapping', 'defer_nav2_start:=false']
+    navigation = command_for_mode(base, 'navigation')
+    assert 'world:=warehouse.world' in navigation
+    assert 'map_file:=warehouse.yaml' in navigation
+    assert 'mode:=navigation' in navigation
+    assert 'defer_nav2_start:=true' in navigation
+    assert 'mode:=mapping' not in navigation
+    mapping = command_for_mode(navigation, 'mapping')
+    assert 'mode:=mapping' in mapping
+    assert not any(arg.startswith('defer_nav2_start:=') for arg in mapping)
+    with pytest.raises(ValueError, match='mapping or navigation'):
+        command_for_mode(base, 'local_sim')
+
+
+@pytest.mark.parametrize(('target_ready', 'expected_status', 'expected_mode'), [
+    (True, 'READY', 'mapping'),
+    (False, 'ROLLED_BACK', 'navigation'),
+])
+def test_supervisor_mode_change_gates_ready_or_restores_previous_mode(
+    tmp_path, monkeypatch, target_ready, expected_status, expected_mode,
+):
+    class Child:
+        def __init__(self):
+            self.returncode = None
+        def poll(self):
+            return self.returncode
+        def send_signal(self, _signum):
+            self.returncode = 0
+        def terminate(self):
+            self.returncode = -15
+        def kill(self):
+            self.returncode = -9
+        def wait(self, timeout=None):
+            return self.returncode
+
+    request_file = tmp_path / 'map-request.json'
+    mode_request = tmp_path / 'mode-request.json'
+    status_file = tmp_path / 'mode-status.json'
+    stack_env = tmp_path / 'stack.env'
+    request_file.write_text('{}')
+    mode_request.write_text(json.dumps({
+        'request_id': 'mode-test', 'robot_id': 'R01', 'mode': 'mapping',
+    }))
+    status_file.write_text(json.dumps({'robot_id': 'R01', 'mode': 'navigation', 'status': 'READY'}))
+    stack_env.write_text('MODE=navigation\nROS_DOMAIN_ID=0\n')
+
+    children = []
+    def create_child(_command, **_kwargs):
+        child = Child()
+        children.append(child)
+        return child
+    monkeypatch.setattr(ros_stack_supervisor.subprocess, 'Popen', create_child)
+    handlers = {}
+    monkeypatch.setattr(ros_stack_supervisor.signal, 'signal', lambda number, handler: handlers.__setitem__(number, handler))
+    checks = []
+    def ready(_root, mode, _robot_id, _backend, _map_file, _log_path, _deadline, child, **_kwargs):
+        checks.append(mode)
+        if mode == 'mapping' and not target_ready:
+            return False, 'mapping prerequisites failed'
+        if mode == 'mapping' and target_ready:
+            handlers[signal.SIGTERM](None, None)
+        elif mode == 'navigation':
+            handlers[signal.SIGTERM](None, None)
+        return True, 'ready'
+    monkeypatch.setattr(ros_stack_supervisor, '_run_readiness', ready)
+
+    result = ros_stack_supervisor.run_supervisor(
+        request_file, 12, 'R01',
+        ['ros2', 'launch', 'system.launch.py', 'mode:=navigation', 'defer_nav2_start:=true'],
+        mode_request_file=mode_request, mode_status_file=status_file,
+        initial_mode='navigation', stack_env_file=stack_env,
+        readiness_root=tmp_path, mode_timeout=1.0,
+    )
+    status = json.loads(status_file.read_text())
+    assert result == 0
+    assert status['status'] == expected_status
+    assert stack_env.read_text().startswith(f'MODE={expected_mode}\n')
+    assert checks == (['mapping'] if target_ready else ['mapping', 'navigation'])

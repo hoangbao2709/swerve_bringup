@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from urllib.parse import parse_qs
@@ -21,6 +22,7 @@ class RosBridgeRegistry:
 
     def __init__(self) -> None:
         self.consumers: dict[str, RosBridgeConsumer] = {}
+        self.pending_requests: dict[str, tuple[str, asyncio.AbstractEventLoop, asyncio.Future]] = {}
 
     @property
     def consumer(self):
@@ -55,6 +57,54 @@ class RosBridgeRegistry:
                     'robot_id': getattr(consumer, 'robot_id', robot_id),
                 })
         return sent
+
+    async def request(self, payload: dict, timeout: float = 20.0) -> dict:
+        """Send one robot-scoped bridge RPC and wait for its matching result."""
+        request_id = str(payload.get('request_id') or '').strip()
+        robot_id = str(payload.get('robot_id') or '').strip()
+        if not request_id or not robot_id:
+            return {'ok': False, 'error': 'request_id and robot_id are required'}
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self.pending_requests[request_id] = (robot_id, loop, future)
+        if not await self.send(payload):
+            self.pending_requests.pop(request_id, None)
+            return {'ok': False, 'error': f'ROS bridge for {robot_id} is offline'}
+        try:
+            return await asyncio.wait_for(future, timeout=max(0.1, float(timeout)))
+        except asyncio.TimeoutError:
+            return {'ok': False, 'error': 'robot operation timed out'}
+        finally:
+            self.pending_requests.pop(request_id, None)
+
+    def resolve_request(self, payload: dict) -> None:
+        request_id = str(payload.get('request_id') or '')
+        entry = self.pending_requests.get(request_id)
+        if not entry:
+            return
+        robot_id, loop, future = entry
+        if str(payload.get('robot_id') or '') != robot_id:
+            return
+        try:
+            loop.call_soon_threadsafe(_resolve_future, future, dict(payload))
+        except RuntimeError:
+            log.debug('ROS bridge RPC result arrived after its request loop closed')
+
+    def reject_robot_pending(self, robot_id: str, reason: str) -> None:
+        for request_id, (pending_robot_id, loop, future) in list(self.pending_requests.items()):
+            if pending_robot_id == robot_id:
+                try:
+                    loop.call_soon_threadsafe(_resolve_future, future, {
+                        'ok': False, 'robot_id': robot_id, 'request_id': request_id,
+                        'error': reason,
+                    })
+                except RuntimeError:
+                    log.debug('ROS bridge disconnected after its RPC loop closed')
+
+
+def _resolve_future(future: asyncio.Future, value: dict) -> None:
+    if not future.done():
+        future.set_result(value)
 
 
 registry = RosBridgeRegistry()
@@ -96,6 +146,7 @@ class RosBridgeConsumer(AsyncJsonWebsocketConsumer):
     async def disconnect(self, close_code):
         if registry.consumers.get(getattr(self, 'robot_id', '')) is self:
             registry.consumers.pop(self.robot_id, None)
+            registry.reject_robot_pending(self.robot_id, 'authenticated ROS bridge disconnected')
             try:
                 await runtime.bridge_disconnected(self.robot_id)
             except Exception:

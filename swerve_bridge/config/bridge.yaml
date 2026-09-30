@@ -13,6 +13,7 @@ swerve_bridge:
     odom_topic: /odometry/filtered
     joint_states_topic: /joint_states
     lidar_topic: /lidar/points
+    lidar_filtered_topic: /lidar/points_filtered
     scan_topic: /scan
     map_topic: /map
     global_path_topic: /plan
@@ -22,6 +23,13 @@ swerve_bridge:
     map_frame: map
     lidar_ui_hz: 5.0
     lidar_max_points: 720
+    lidar_web_3d_hz: 3.0
+    lidar_max_3d_points: 4000
+    lidar_3d_voxel_size: 0.04
+    lidar_3d_min_range: 0.15
+    lidar_3d_max_range: 25.0
+    lidar_3d_min_height: -1.0
+    lidar_3d_max_height: 3.0
     clock_topic: /clock
     cmd_vel_topic: /cmd_vel
     emergency_stop_topic: /emergency_stop

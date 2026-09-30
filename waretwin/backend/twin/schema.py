@@ -737,11 +737,22 @@ class CmdNavGoal(_Base):
     y: float
     yaw: float
     frame_id: str = Field(default="map", min_length=1, max_length=64)
+    preview_request_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class CmdNavControl(_Base):
     type: Literal["NAV_CANCEL", "NAV_PAUSE", "NAV_RESUME"]
     robot_id: RobotId = Field(min_length=1, max_length=64)
+
+
+class CmdPathPreviewRequest(_Base):
+    type: Literal["PATH_PREVIEW_REQUEST"] = "PATH_PREVIEW_REQUEST"
+    robot_id: RobotId = Field(min_length=1, max_length=64)
+    request_id: str = Field(min_length=1, max_length=64)
+    x: float = Field(ge=-1_000_000, le=1_000_000)
+    y: float = Field(ge=-1_000_000, le=1_000_000)
+    yaw: float = Field(ge=-1000, le=1000)
+    frame_id: Literal["map"] = "map"
 
 
 class CmdWhatIfRun(_Base):
@@ -781,7 +792,7 @@ class SimControlBody(_Base):
 ClientMessage = Annotated[
     Union[CmdResync, CmdSimControl, CmdInject, CmdClearInjection, CmdCreateTask,
           CmdAssignTask, CmdAckAlert, CmdSelectRobot, CmdRobotMode, CmdRobotManual,
-          CmdNavGoal, CmdNavControl,
+          CmdNavGoal, CmdNavControl, CmdPathPreviewRequest,
           CmdWhatIfRun, CmdCopilotAsk],
     Field(discriminator="type"),
 ]

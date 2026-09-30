@@ -268,6 +268,10 @@ def generate_launch_description():
                                'robot_id': robot_id,
                                'namespace': namespace,
                                'runtime_state': mode,
+                               'map_topic': PythonExpression([
+                                   "'/slam/map' if '", use_sim, "' == 'true' and '", mode,
+                                   "' == 'mapping' else '/map'",
+                               ]),
                                'django_token': LaunchConfiguration('bridge_token'),
                                'django_ws_url': LaunchConfiguration('bridge_ws_url'),
                                'artifact_root': artifact_root,

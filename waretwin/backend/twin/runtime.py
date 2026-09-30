@@ -124,6 +124,12 @@ class TwinRuntime:
         self.map_tf_status = False
         self.map_sync_error: str | None = None
         self.robot_map_sync: dict[str, dict[str, Any]] = {}
+        self.local_map_overrides: dict[str, str] = {}
+        self.local_map_transitions: set[str] = set()
+        self.robot_mapping_state: dict[str, str] = {}
+        self.robot_mapping_elapsed_s: dict[str, float] = {}
+        self.path_preview_requests: dict[tuple[str, str], float] = {}
+        self.approved_path_previews: dict[tuple[str, str], dict[str, Any]] = {}
         self._snapshot_prev()
 
     @property
@@ -610,6 +616,12 @@ class TwinRuntime:
             self.bridge_status = str(data.get('bridge_state') or 'CONNECTED').upper()
             self.nav2_state = str(data.get('nav2_state') or 'CONNECTED')
             self.operation_mode = str(data.get('runtime_state') or self.operation_mode).upper()
+            if data.get('mapping_state'):
+                self.robot_mapping_state[robot_id] = str(data['mapping_state']).upper()
+            try:
+                self.robot_mapping_elapsed_s[robot_id] = max(0.0, float(data.get('mapping_elapsed_s', 0.0)))
+            except (TypeError, ValueError):
+                self.robot_mapping_elapsed_s[robot_id] = 0.0
             if self.operation_mode not in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'ERROR'):
                 self.operation_mode = 'SIMULATION' if self.is_external else self.operation_mode
             self.ros_diagnostics['ros'] = True
@@ -623,7 +635,46 @@ class TwinRuntime:
             # well as forwarding the robot-scoped console payload.
             await self.handle_ros_diagnostics(data)
             await self.broadcast(data)
-        elif kind in ('LIDAR_SCAN', 'MAP_SNAPSHOT', 'NAV_GLOBAL_PATH', 'NAV_LOCAL_PATH', 'NAV_GOAL', 'CONTROLLER_STATE'):
+        elif kind == 'PATH_PREVIEW_RESULT':
+            robot_id = str(data.get('robot_id') or '')
+            request_id = str(data.get('request_id') or '')
+            key = (robot_id, request_id)
+            requested_at = self.path_preview_requests.pop(key, None)
+            if requested_at is None:
+                return
+            now = time.monotonic()
+            self.path_preview_requests = {
+                pending: created for pending, created in self.path_preview_requests.items()
+                if now - created <= 120.0
+            }
+            self.approved_path_previews = {
+                approved: value for approved, value in self.approved_path_previews.items()
+                if now - value.get('created_monotonic', 0.0) <= 120.0
+            }
+            if data.get('status') == 'VALID' and isinstance(data.get('path'), list) and data.get('path'):
+                self.approved_path_previews[key] = {
+                    'goal': data.get('goal') or {},
+                    'created_monotonic': now,
+                    'map_revision': self.robot_map_sync.get(robot_id, {}).get(
+                        'ros_revision', self.ros_map_revision),
+                }
+            await self.broadcast(data)
+        elif kind in ('LIDAR_SCAN', 'LIDAR_MAP_2D', 'LIDAR_MAP_3D', 'MAP_SNAPSHOT',
+                      'NAV_GLOBAL_PATH', 'NAV_LOCAL_PATH', 'NAV_GOAL', 'CONTROLLER_STATE'):
+            await self.broadcast(data)
+        elif kind == 'LOCAL_CONTROL_RESULT':
+            from .ros_bridge_consumer import registry
+            registry.resolve_request(data)
+        elif kind == 'LOCAL_MAP_STATUS':
+            robot_id = str(data.get('robot_id') or '')
+            if robot_id:
+                map_id = str(data.get('map_id') or '')
+                if data.get('loaded') and map_id:
+                    self.local_map_overrides[robot_id] = map_id
+                else:
+                    self.local_map_overrides.pop(robot_id, None)
+            await self.broadcast(data)
+        elif kind == 'VDA5050_RUNTIME_STATUS':
             await self.broadcast(data)
         elif kind == 'BRIDGE_STATUS':
             robot_id = str(data.get('robot_id') or '').strip()
@@ -977,6 +1028,15 @@ class TwinRuntime:
                 return
             result = await self.gateway().send_command(
                 msg.robot_id, 'CONTROL_MODE', {'mode': msg.mode})
+            if msg.mode == 'MANUAL' and result.get('ok'):
+                self.path_preview_requests = {
+                    key: created for key, created in self.path_preview_requests.items()
+                    if key[0] != msg.robot_id
+                }
+                self.approved_path_previews = {
+                    key: value for key, value in self.approved_path_previews.items()
+                    if key[0] != msg.robot_id
+                }
             await consumer.send_json({
                 'type': 'ROBOT_CONTROL_STATUS', 'robot_id': msg.robot_id,
                 'mode': msg.mode, 'accepted': bool(result.get('ok')),
@@ -1002,6 +1062,63 @@ class TwinRuntime:
                     'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
                     'message': 'ROS bridge is offline; manual command was not sent',
                 })
+        elif t == 'PATH_PREVIEW_REQUEST':
+            if msg.robot_id in self.local_map_transitions:
+                await consumer.send_json({
+                    'type': 'PATH_PREVIEW_RESULT', 'robot_id': msg.robot_id,
+                    'request_id': msg.request_id, 'status': 'INVALID',
+                    'reason': 'a local Nav2 map transition is in progress', 'path': [],
+                    'path_length_m': None, 'goal': {'x': msg.x, 'y': msg.y, 'yaw': msg.yaw},
+                })
+                return
+            if not self.is_external or not self.robot_bridge_online(msg.robot_id):
+                await consumer.send_json({
+                    'type': 'PATH_PREVIEW_RESULT', 'robot_id': msg.robot_id,
+                    'request_id': msg.request_id, 'status': 'NO_PATH',
+                    'reason': 'robot ROS bridge is offline', 'path': [],
+                    'path_length_m': None, 'goal': {'x': msg.x, 'y': msg.y, 'yaw': msg.yaw},
+                })
+                return
+            if self.local_map_overrides.get(msg.robot_id):
+                await consumer.send_json({
+                    'type': 'PATH_PREVIEW_RESULT', 'robot_id': msg.robot_id,
+                    'request_id': msg.request_id, 'status': 'INVALID',
+                    'reason': 'local map is not synchronized with the canonical warehouse map',
+                    'path': [], 'path_length_m': None,
+                    'goal': {'x': msg.x, 'y': msg.y, 'yaw': msg.yaw},
+                })
+                return
+            if self.runtime_status_message().get('map_sync_status') != 'SYNCED':
+                await consumer.send_json({
+                    'type': 'PATH_PREVIEW_RESULT', 'robot_id': msg.robot_id,
+                    'request_id': msg.request_id, 'status': 'INVALID',
+                    'reason': 'map components are not synchronized', 'path': [],
+                    'path_length_m': None, 'goal': {'x': msg.x, 'y': msg.y, 'yaw': msg.yaw},
+                })
+                return
+            now = time.monotonic()
+            self.path_preview_requests = {
+                key: created for key, created in self.path_preview_requests.items()
+                if now - created <= 120.0
+            }
+            self.approved_path_previews = {
+                key: value for key, value in self.approved_path_previews.items()
+                if now - value.get('created_monotonic', 0.0) <= 120.0
+            }
+            self.path_preview_requests[(msg.robot_id, msg.request_id)] = now
+            result = await self.gateway().send_command(msg.robot_id, 'PATH_PREVIEW', {
+                'request_id': msg.request_id, 'x': msg.x, 'y': msg.y,
+                'yaw': msg.yaw, 'frame_id': msg.frame_id,
+            })
+            if not result.get('ok'):
+                self.path_preview_requests.pop((msg.robot_id, msg.request_id), None)
+                await consumer.send_json({
+                    'type': 'PATH_PREVIEW_RESULT', 'robot_id': msg.robot_id,
+                    'request_id': msg.request_id, 'status': 'NO_PATH',
+                    'reason': 'path preview command could not reach the ROS bridge',
+                    'path': [], 'path_length_m': None,
+                    'goal': {'x': msg.x, 'y': msg.y, 'yaw': msg.yaw},
+                })
         elif t in ('NAV_GOAL', 'NAV_CANCEL', 'NAV_PAUSE', 'NAV_RESUME'):
             if not self.is_external:
                 await consumer.send_json({
@@ -1013,6 +1130,24 @@ class TwinRuntime:
                 await consumer.send_json({
                     'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
                     'message': f'ROS bridge for {msg.robot_id} is offline; navigation command was not sent',
+                })
+                return
+            if t in ('NAV_GOAL', 'NAV_RESUME') and msg.robot_id in self.local_map_transitions:
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'LOCAL_MAP_TRANSITION',
+                    'message': 'navigation is blocked while the selected robot map is loading',
+                })
+                return
+            if t in ('NAV_GOAL', 'NAV_RESUME') and self.operation_mode != 'NAVIGATION':
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'NAVIGATION_UNAVAILABLE',
+                    'message': 'Nav2 goals are only available in NAVIGATION runtime mode',
+                })
+                return
+            if t == 'NAV_GOAL' and self.local_map_overrides.get(msg.robot_id):
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'MAP_OUT_OF_SYNC',
+                    'message': 'Navigation is disabled while a local map differs from the canonical warehouse map',
                 })
                 return
             if t in ('NAV_GOAL', 'NAV_RESUME') and self.runtime_status_message().get('map_sync_status') != 'SYNCED':
@@ -1028,6 +1163,33 @@ class TwinRuntime:
                         'message': 'Navigation goals must use frame_id=map',
                     })
                     return
+                preview_id = getattr(msg, 'preview_request_id', None)
+                if preview_id:
+                    key = (msg.robot_id, preview_id)
+                    preview = self.approved_path_previews.get(key)
+                    if not preview or time.monotonic() - preview.get('created_monotonic', 0.0) > 120.0:
+                        await consumer.send_json({
+                            'type': 'ERROR', 'code': 'PATH_PREVIEW_REQUIRED',
+                            'message': 'the approved Nav2 path preview has expired or is unavailable',
+                        })
+                        return
+                    current_revision = self.robot_map_sync.get(
+                        msg.robot_id, {}).get('ros_revision', self.ros_map_revision)
+                    if preview.get('map_revision') != current_revision:
+                        await consumer.send_json({
+                            'type': 'ERROR', 'code': 'PATH_PREVIEW_STALE',
+                            'message': 'the ROS map revision changed after this path preview',
+                        })
+                        return
+                    target = preview.get('goal') or {}
+                    if any(abs(float(target.get(key, float('inf'))) - value) > 1e-4
+                           for key, value in (('x', msg.x), ('y', msg.y), ('yaw', msg.yaw))):
+                        await consumer.send_json({
+                            'type': 'ERROR', 'code': 'PATH_PREVIEW_MISMATCH',
+                            'message': 'goal does not match the approved Nav2 path preview',
+                        })
+                        return
+                    self.approved_path_previews.pop(key, None)
                 result = await self.gateway().send_command(msg.robot_id, 'NAVIGATE', {
                     'x': msg.x, 'y': msg.y, 'yaw': msg.yaw, 'frame_id': msg.frame_id,
                 })

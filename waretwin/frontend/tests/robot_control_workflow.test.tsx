@@ -9,6 +9,25 @@ vi.mock("../src/services/api", () => ({
   apiFetch: vi.fn(() => Promise.resolve({ ok: false, status: 503 })),
   emergencyStop: vi.fn(() => Promise.resolve({ ok: true })),
   clearEmergencyStop: vi.fn(() => Promise.resolve({ ok: true })),
+  getLocalRobotMaps: vi.fn(() => Promise.resolve({ maps: [], mapping_state: "MAPPING", active_local_map_id: null })),
+  getLocalRuntimeMode: vi.fn(() => Promise.resolve({
+    robot_id: "R01", current_mode: "MAPPING",
+    transition: { robot_id: "R01", mode: "mapping", status: "READY", message: "mapping mode is ready" },
+  })),
+  requestLocalRuntimeMode: vi.fn(() => Promise.resolve({
+    ok: true, current_mode: "MAPPING", requested_mode: "NAVIGATION", request_id: "test-request",
+    status: "REQUESTED", message: "restart requested",
+  })),
+  getVda5050Configuration: vi.fn(() => Promise.resolve({
+    robot_id: "R01", enabled: false, mqtt_host: "", mqtt_port: 1883, mqtt_username: "",
+    password_configured: false, tls_enabled: false, topic_prefix: "vda5050", interface_name: "uagv",
+    manufacturer: "PTAGV", serial_number: "R01", protocol_version: "2.0.0", mqtt_protocol_version: "3.1.1",
+    allow_task: true, allow_instant_actions: true, auto_reconnect: true, reconnect_interval: 5,
+    connection_timeout: 5, keepalive: 30, client_id: "", connection_status: "DISABLED",
+    last_error: null, ignored_orders: 0, updated_at: null,
+  })),
+  setMappingState: vi.fn(), saveLocalRobotMap: vi.fn(), loadLocalRobotMap: vi.fn(),
+  initializeLocalRobotPose: vi.fn(), applyVda5050Configuration: vi.fn(), testVda5050Connection: vi.fn(),
 }));
 vi.mock("../src/simulation/runner", () => ({ useSimulationRunner: () => undefined }));
 
@@ -113,5 +132,30 @@ describe("robot detail route stability", () => {
     renderNode(<RobotControlDetailPage robotId="R02" />);
     expect(container.textContent).toContain("OFFLINE");
     expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("keeps local mapping and VDA5050 sections inside the selected robot detail page", async () => {
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    expect(container.querySelector('[role="tablist"][aria-label="Local robot control sections"]')).toBeTruthy();
+    const mappingTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.textContent === "MAPPING");
+    await act(async () => { (mappingTab as HTMLElement).click(); });
+    expect(container.textContent).toContain("MAPPING SESSION");
+    expect(container.textContent).toContain("SAVE NAV2 MAP");
+    const vdaTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.textContent === "VDA5050");
+    await act(async () => { (vdaTab as HTMLElement).click(); });
+    expect(container.textContent).toContain("VDA5050 CONFIGURATION");
+    expect(container.textContent).toContain("MQTT HOST");
+    expect(container.textContent).toContain("ALLOW TASK");
+    expect(container.querySelector('input[type="password"]')?.getAttribute("type")).toBe("password");
+    expect(container.querySelector("h1")?.textContent).toBe("R01");
+  });
+
+  it("offers only Global and LiDAR as primary map modes, with 2D/3D under LiDAR", () => {
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    const sourceTabs = container.querySelector('[role="tablist"][aria-label="Primary map source"]');
+    expect(sourceTabs?.textContent).toBe("GLOBAL MAPLIDAR MAP");
+    act(() => Array.from(sourceTabs?.querySelectorAll("button") ?? []).find((button) => button.textContent === "LIDAR MAP")?.click());
+    expect(container.querySelector('[role="tablist"][aria-label="LiDAR view dimension"]')?.textContent).toBe("2D3D");
+    expect(container.querySelector(".robot-lidar-view")).toBeTruthy();
   });
 });

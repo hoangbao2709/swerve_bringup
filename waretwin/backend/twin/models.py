@@ -48,6 +48,39 @@ class RobotEndpoint(models.Model):
     last_seen = models.DateTimeField(null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
+
+class RobotVda5050Configuration(models.Model):
+    """Robot-scoped VDA5050 broker and runtime settings.
+
+    The MQTT password is an encrypted Fernet token. It is deliberately excluded
+    from all serializers and diagnostics; clients only receive the configured
+    flag and can replace the secret without reading it back.
+    """
+    robot_id = models.CharField(max_length=64, unique=True, db_index=True)
+    enabled = models.BooleanField(default=False)
+    mqtt_host = models.CharField(max_length=255, blank=True)
+    mqtt_port = models.PositiveIntegerField(default=1883)
+    mqtt_username = models.CharField(max_length=128, blank=True)
+    mqtt_password_ciphertext = models.TextField(blank=True)
+    tls_enabled = models.BooleanField(default=False)
+    topic_prefix = models.CharField(max_length=128, default='vda5050')
+    interface_name = models.CharField(max_length=64, default='uagv')
+    manufacturer = models.CharField(max_length=64, default='PTAGV')
+    serial_number = models.CharField(max_length=64, blank=True)
+    protocol_version = models.CharField(max_length=16, default='2.0.0')
+    mqtt_protocol_version = models.CharField(max_length=8, default='3.1.1')
+    allow_task = models.BooleanField(default=True)
+    allow_instant_actions = models.BooleanField(default=True)
+    auto_reconnect = models.BooleanField(default=True)
+    reconnect_interval = models.PositiveIntegerField(default=5)
+    connection_timeout = models.PositiveIntegerField(default=5)
+    keepalive = models.PositiveIntegerField(default=30)
+    client_id = models.CharField(max_length=128, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'VDA5050<{self.robot_id}>'
+
 class Mission(models.Model):
     STATUS = [('PENDING','PENDING'),('SENT','SENT'),('RUNNING','RUNNING'),('DONE','DONE'),('FAILED','FAILED'),('CANCELLED','CANCELLED')]
     mission_id = models.CharField(max_length=64, unique=True)

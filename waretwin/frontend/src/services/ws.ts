@@ -313,6 +313,13 @@ function handle(msg: ServerMessage) {
       break;
     case "ROBOT_CONTROL_STATUS":
       if (!msg.accepted) st.setNotice(`Robot control rejected: ${msg.reason || "command was rejected"}`);
+      else if (st.twin.robots[msg.robot_id]) st.setTwin({
+        ...st.twin,
+        robots: {
+          ...st.twin.robots,
+          [msg.robot_id]: { ...st.twin.robots[msg.robot_id], control_mode: msg.mode },
+        },
+      });
       break;
     case "ROBOT_STATE":
       // External bridges normally arrive as PATCH/ROBOT_STATE on the same
@@ -325,6 +332,12 @@ function handle(msg: ServerMessage) {
     case "LIDAR_SCAN":
       st.setRobotDetail(msg.scan.robot_id, { scan: msg.scan });
       break;
+    case "LIDAR_MAP_2D":
+      st.setRobotDetail(msg.robot_id, { lidar2d: msg });
+      break;
+    case "LIDAR_MAP_3D":
+      st.setRobotDetail(msg.robot_id, { lidar3d: msg });
+      break;
     case "MAP_SNAPSHOT":
       st.setRobotDetail(msg.map.robot_id, { map: msg.map });
       break;
@@ -336,6 +349,14 @@ function handle(msg: ServerMessage) {
       break;
     case "NAV_GOAL":
       st.setRobotDetail(msg.goal.robot_id, { goal: msg.goal });
+      break;
+    case "PATH_PREVIEW_RESULT":
+      st.setRobotDetail(msg.robot_id, { pathPreview: msg });
+      break;
+    case "LOCAL_MAP_STATUS":
+      st.setRobotDetail(msg.robot_id, { activeLocalMapId: msg.loaded ? msg.map_id ?? null : null });
+      break;
+    case "VDA5050_RUNTIME_STATUS":
       break;
     case "CONTROLLER_STATE":
       st.setRobotDetail(msg.controller.robot_id, { controller: msg.controller });

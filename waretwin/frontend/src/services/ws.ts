@@ -319,12 +319,23 @@ function handle(msg: ServerMessage) {
       }
       break;
     case "ROBOT_CONTROL_STATUS":
+      if (msg.mode_transition_state === "APPLIED") {
+        const current = st.robotDetail[msg.robot_id];
+        if (current?.modeTransitionState === "REQUESTED" && current.requestedMode !== msg.applied_mode) break;
+        if (current?.modeRequestId && msg.request_id !== current.modeRequestId) break;
+      }
+      st.setRobotDetail(msg.robot_id, {
+        modeRequestId: msg.request_id ?? null,
+        requestedMode: msg.requested_mode ?? null,
+        ...(msg.applied_mode ? { appliedMode: msg.applied_mode } : {}),
+        modeTransitionState: msg.mode_transition_state ?? null,
+      });
       if (!msg.accepted) st.setNotice(`Robot control rejected: ${msg.reason || "command was rejected"}`);
-      else if (st.twin.robots[msg.robot_id]) st.setTwin({
+      else if (msg.mode_transition_state === "APPLIED" && st.twin.robots[msg.robot_id]) st.setTwin({
         ...st.twin,
         robots: {
           ...st.twin.robots,
-          [msg.robot_id]: { ...st.twin.robots[msg.robot_id], control_mode: msg.mode },
+          [msg.robot_id]: { ...st.twin.robots[msg.robot_id], control_mode: msg.applied_mode ?? msg.mode },
         },
       });
       break;

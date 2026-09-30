@@ -66,6 +66,7 @@ install(
 
 install(
   FILES swerve_controller/command_ownership.py
+        swerve_controller/steering_alignment.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

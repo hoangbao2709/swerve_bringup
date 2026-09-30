@@ -87,6 +87,9 @@ class MotionProbe(Node):
         super().__init__('simulation_e2e_acceptance', parameter_overrides=[
             Parameter('use_sim_time', Parameter.Type.BOOL, True)])
         self.odom = None
+        self.odom_velocity = None
+        self.odom_sample_monotonic = None
+        self.gazebo_velocity = None
         self.filtered_odom = None
         self.odom_count = 0
         self.gazebo_pose = None
@@ -151,6 +154,8 @@ class MotionProbe(Node):
         p = pose_from_odom(msg)
         if all(math.isfinite(value) for value in p):
             self.odom = p
+            self.odom_velocity = (msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.angular.z)
+            self.odom_sample_monotonic = time.monotonic()
             self.odom_count += 1
 
     def _filtered_odom_cb(self, msg):
@@ -168,6 +173,8 @@ class MotionProbe(Node):
         pose = pose_from_pose(msg.pose[index])
         if all(math.isfinite(value) for value in pose):
             self.gazebo_pose = pose
+            body_twist = msg.twist[index]
+            self.gazebo_velocity = (body_twist.linear.x, body_twist.linear.y, body_twist.angular.z)
             self.gazebo_pose_count += 1
             self.gazebo_pose_sample_monotonic = time.monotonic()
 
@@ -246,6 +253,43 @@ class MotionProbe(Node):
 
     def sim_time(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
+
+    def wait_mechanical_settling(self, ws=None, timeout=45.0,
+                                body_tolerance=0.02, wheel_tolerance=0.10,
+                                steering_tolerance=0.03, stable_window=0.8):
+        """Observe actual mechanics, not merely a zero command or fixed delay."""
+        start = time.monotonic()
+        stable_since = None
+        while time.monotonic() - start < timeout:
+            self.pump(ws, 0.005)
+            joints = self.joint_events[-4:]
+            zero = bool(self.selected_cmd_events) and all(abs(v) < 1e-6 for v in self.selected_cmd_events[-1][1:])
+            body_quiet = (self.odom_velocity is not None and self.gazebo_velocity is not None
+                and all(abs(v) < body_tolerance for v in self.odom_velocity + self.gazebo_velocity))
+            wheels_quiet = len(joints) == 4 and all(
+                abs(velocities.get(name, math.inf)) < wheel_tolerance
+                for _, _, velocities in joints
+                for name in ('wheel_front_drive_joint', 'wheel_rear_drive_joint'))
+            steering_quiet = len(joints) == 4 and all(
+                max(row[1].get(name, math.inf) for row in joints)
+                - min(row[1].get(name, -math.inf) for row in joints) < steering_tolerance
+                for name in ('steer_front_joint', 'steer_rear_joint'))
+            fresh = (bool(joints) and time.monotonic() - joints[-1][0] < 2.0
+                and bool(self.selected_cmd_events)
+                and time.monotonic() - self.selected_cmd_events[-1][0] < 2.0
+                and self.odom_sample_monotonic is not None
+                and time.monotonic() - self.odom_sample_monotonic < 2.0
+                and self.gazebo_pose_sample_monotonic is not None
+                and time.monotonic() - self.gazebo_pose_sample_monotonic < 2.0)
+            if zero and body_quiet and wheels_quiet and steering_quiet and fresh:
+                stable_since = stable_since or time.monotonic()
+                if time.monotonic() - stable_since >= stable_window:
+                    return {'passed': True, 'duration_s': time.monotonic() - start}
+            else:
+                stable_since = None
+        return {'passed': False, 'duration_s': time.monotonic() - start,
+                'reason': 'MECHANICAL_SETTLING_TIMEOUT', 'joint_state': self.joint_state,
+                'odom_velocity': self.odom_velocity, 'gazebo_velocity': self.gazebo_velocity}
 
     def map_pose(self):
         try:
@@ -720,6 +764,8 @@ def set_mode(probe, ws, robot_id, mode, timeout=8.0):
     passed = probe.wait_until(
         lambda: any(item.get('robot_id') == robot_id and item.get('mode') == mode
                     and item.get('accepted') is True
+                    and item.get('mode_transition_state') == 'APPLIED'
+                    and item.get('applied_mode') == mode
                     for item in probe.control_statuses[initial:]),
         timeout, ws,
     )
@@ -732,6 +778,9 @@ def set_mode(probe, ws, robot_id, mode, timeout=8.0):
 
 
 def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
+    settling = probe.wait_mechanical_settling(ws, timeout=timeout)
+    if not settling['passed']:
+        return {'passed': False, 'reason': settling['reason'], 'settling': settling}
     sensors_ready = probe.wait_until(
         lambda: probe.odom is not None and probe.gazebo_pose is not None
         and probe.joint_state is not None, 10.0, ws)
@@ -768,6 +817,7 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
                     for row in probe.manual_cmd_events[command_index:]),
         min(5.0, max(1.0, timeout / 4.0)), ws,
     )
+    stop_settling = probe.wait_mechanical_settling(ws, timeout=timeout)
     pose1 = probe.odom
     gazebo1 = probe.gazebo_pose
     joint1 = probe.joint_snapshot(probe.joint_state)
@@ -837,7 +887,7 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
                   and physical_metric is not None
                   and physical_metric > direction_tolerance
                   and odom_metric is not None and odom_metric > direction_tolerance * 0.5
-                  and zero_seen)
+                  and zero_seen and stop_settling['passed'])
     max_refresh_gap = max((later - earlier for earlier, later in zip(send_times, send_times[1:])),
                           default=None)
     connected_ids = ((probe.runtime_status or {}).get('connected_robot_ids') or [])
@@ -853,6 +903,7 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
 
     return {
         'passed': passed,
+        'settling': settling, 'stop_settling': stop_settling,
         'reason': None if passed else
             'missing_r01_bridge_ack_directional_cmd_controller_joint_physical_motion_or_stop_zero',
         'robot_id': robot_id, 'bridge_connected_robot_ids': connected_ids,

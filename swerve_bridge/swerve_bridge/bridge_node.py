@@ -4,10 +4,12 @@ import json
 import hashlib
 import math
 import queue
+from .control_mailbox import ControlMailbox
 import threading
 import os
 import re
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from urllib.parse import quote
@@ -180,6 +182,12 @@ class SwerveBridge(Node):
         self.scan_topic_name = None
         self.nav_state = 'IDLE'
         self.control_mode = 'AUTONOMOUS'
+        self.requested_mode = 'AUTONOMOUS'
+        self.applied_mode = 'AUTONOMOUS'
+        self.mode_transition_state = 'APPLIED'
+        self.mode_request_id = None
+        self.mode_request_started = 0.0
+        self.manual_generation = 0
         self.manual_twist = Twist()
         self.manual_deadline = 0.0
         self.emergency_stop_active = False
@@ -204,7 +212,7 @@ class SwerveBridge(Node):
         self.cancel_pending = False
         self.pending_cancel_state = None
         self.pending_replan = None
-        self.incoming = queue.Queue()
+        self.incoming = ControlMailbox()
         self.ws = None
         self.ws_lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -443,6 +451,14 @@ class SwerveBridge(Node):
         }
         self.send({'type': 'COMMAND_DIAGNOSTICS', 'robot_id': self.robot_id,
                    **self.command_diagnostics, 'timestamp': self.now()})
+        applied = data.get('active_control_mode')
+        if applied in ('MANUAL', 'AUTONOMOUS'):
+            self.applied_mode = applied
+        if (self.mode_transition_state == 'REQUESTED'
+                and data.get('control_mode_request_id') == self.mode_request_id
+                and applied == self.requested_mode):
+            self.mode_transition_state = 'APPLIED'
+            self.send_control_status(True)
 
     def active_map_identity(self):
         if self.loaded_local_map_id:
@@ -603,6 +619,7 @@ class SwerveBridge(Node):
                 self.stop_event.wait(backoff)
                 backoff = min(30.0, backoff * 2.0)
             finally:
+                self.incoming.put({'type': 'MANUAL_DISCONNECT'})
                 with self.ws_lock:
                     if self.ws is ws:
                         self.ws = None
@@ -628,14 +645,27 @@ class SwerveBridge(Node):
                        'base_frame_id': base_frame, **pose,
                        'vx': t.linear.x, 'vy': t.linear.y, 'wz': t.angular.z,
                        'navigation_state': self.nav_state,
-                       'control_mode': self.control_mode, 'timestamp': self.now()})
+                       'control_mode': self.applied_mode, 'timestamp': self.now()})
         except (TransformException, ValueError, TypeError) as exc:
             self.tf_status = False
             self.tf_error = str(exc)[:300]
         self._refresh_map_sync_status()
 
     def manual_timer(self):
+        with self.incoming.lock:
+            self._manual_timer()
+
+    def _manual_timer(self):
         """Publish the dead-man command while the web operator is holding it."""
+        if self.mode_transition_state == 'REQUESTED' and time.monotonic() - self.mode_request_started > 5.0:
+            self.mode_transition_state = 'FAILED'
+            self.send_control_status(False, 'arbiter mode application timed out')
+        if (self.manual_generation != self.incoming.generation
+                or self.mode_transition_state != 'APPLIED'):
+            self.manual_twist = Twist()
+            self.manual_deadline = 0.0
+            self.cmd_pub.publish(self.manual_twist)
+            return
         if self.emergency_stop_active or self.control_mode != 'MANUAL':
             return
         if self.manual_deadline <= 0.0:
@@ -658,7 +688,7 @@ class SwerveBridge(Node):
     def heartbeat_timer(self):
         self.send({'type': 'HEARTBEAT', 'robot_id': self.robot_id,
                    'nav2_state': self.nav_state, 'bridge_state': 'CONNECTED',
-                   'runtime_state': self.runtime_state, 'control_mode': self.control_mode,
+                   'runtime_state': self.runtime_state, 'control_mode': self.applied_mode,
                    'mapping_state': ('PAUSED' if self.slam_paused else 'MAPPING') if self.runtime_state == 'MAPPING' else 'INACTIVE',
                    'mapping_elapsed_s': self._mapping_elapsed_s(),
                    'timestamp': self.now()})
@@ -1566,15 +1596,15 @@ class SwerveBridge(Node):
             if not isinstance(data, dict):
                 continue
             now = time.monotonic()
+            kind = str(data.get('type', '')).upper()
             while self.command_times and now - self.command_times[0] > 1.0:
                 self.command_times.popleft()
-            if len(self.command_times) >= 100:
+            if len(self.command_times) >= 100 and kind not in ('CONTROL_MODE', 'MANUAL_CMD', 'MANUAL_DISCONNECT', 'EMERGENCY_STOP', 'CLEAR_EMERGENCY_STOP'):
                 self.get_logger().warning('ROS bridge command rate limit exceeded; dropping command')
                 self.send({'type': 'BRIDGE_ERROR', 'code': 'RATE_LIMITED',
                            'message': 'command rate limit exceeded', 'timestamp': self.now()})
                 continue
             self.command_times.append(now)
-            kind = str(data.get('type', '')).upper()
             try:
                 if kind == 'MAP_PUBLISHED':
                     self.apply_published_map(data)
@@ -1615,6 +1645,10 @@ class SwerveBridge(Node):
                     self.cancel_navigation(data)
                 elif kind == 'CONTROL_MODE':
                     self.set_control_mode(data)
+                elif kind == 'MANUAL_DISCONNECT':
+                    self.manual_twist = Twist()
+                    self.manual_deadline = 0.0
+                    self.cmd_pub.publish(Twist())
                 elif kind == 'MANUAL_CMD':
                     self.manual_command(data)
                 elif kind == 'EMERGENCY_STOP':
@@ -2036,7 +2070,10 @@ class SwerveBridge(Node):
     def send_control_status(self, accepted: bool, reason=None):
         payload = {
             'type': 'ROBOT_CONTROL_STATUS', 'robot_id': self.robot_id,
-            'mode': self.control_mode, 'accepted': bool(accepted),
+            'mode': self.applied_mode, 'accepted': bool(accepted),
+            'requested_mode': self.requested_mode, 'applied_mode': self.applied_mode,
+            'mode_transition_state': self.mode_transition_state,
+            'request_id': self.mode_request_id,
             'timestamp': self.now(),
         }
         if reason:
@@ -2067,18 +2104,33 @@ class SwerveBridge(Node):
                 self.get_logger().warning(f'failed to cancel autonomous goal before manual mode: {exc}')
         previous_mode = self.control_mode
         self.control_mode = mode
+        self.requested_mode = mode
+        self.mode_transition_state = 'REQUESTED'
+        self.mode_request_id = str(data.get('request_id') or uuid.uuid4().hex)
+        self.mode_request_started = time.monotonic()
         self.manual_twist = Twist()
         self.manual_deadline = 0.0
         if previous_mode == 'MANUAL':
             self.cmd_pub.publish(Twist())
         mode_message = String()
-        mode_message.data = mode
+        mode_message.data = json.dumps({'mode': mode, 'request_id': self.mode_request_id})
         self.control_mode_pub.publish(mode_message)
         self.nav_state = 'MANUAL' if mode == 'MANUAL' else 'IDLE'
         self.send_control_status(True)
 
     def manual_command(self, data):
+        with self.incoming.lock:
+            self._apply_manual_command(data)
+
+    def _apply_manual_command(self, data):
         action = str(data.get('action') or '').upper()
+        if not self.incoming.current(data):
+            return
+        received = data.get('_received_monotonic', time.monotonic())
+        lease = max(0.10, float(self.get_parameter('manual_command_timeout').value))
+        if action != 'STOP' and (time.monotonic() - received > lease
+                                 or self.mode_transition_state != 'APPLIED'):
+            return
         if self.local_map_load_pending and action != 'STOP':
             self.send_control_status(False, 'map loading is in progress')
             return
@@ -2107,8 +2159,8 @@ class SwerveBridge(Node):
             self.send_control_status(False, f'unsupported manual action: {action}')
             return
         self.manual_twist = command
-        self.manual_deadline = time.monotonic() + max(
-            0.10, float(self.get_parameter('manual_command_timeout').value))
+        self.manual_generation = data['_generation']
+        self.manual_deadline = received + lease if action != 'STOP' else 0.0
         # Publish each authorized command immediately. The steady-clock timer
         # below refreshes it while the lease is live, but it must not be the
         # first hop between a Web command and the command arbiter: a loaded

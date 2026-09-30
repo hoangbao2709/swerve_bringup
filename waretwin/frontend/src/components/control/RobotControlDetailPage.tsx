@@ -113,6 +113,9 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const activeLocalMapRevision = useStore((state) => state.robotDetail[robotId]?.activeLocalMapRevision ?? null);
   const localMapSyncStatus = useStore((state) => state.robotDetail[robotId]?.localMapSyncStatus ?? null);
   const setRobotDetail = useStore((state) => state.setRobotDetail);
+  const appliedMode = useStore((state) => state.robotDetail[robotId]?.appliedMode);
+  const requestedMode = useStore((state) => state.robotDetail[robotId]?.requestedMode);
+  const modeTransitionState = useStore((state) => state.robotDetail[robotId]?.modeTransitionState);
   const mapSync = useStore((state) => state.mapSync);
   const robotMapSync = mapSync.robots[robotId];
   const [controlMode, setControlMode] = useState<"MANUAL" | "AUTONOMOUS">(robot?.control_mode ?? "AUTONOMOUS");
@@ -164,8 +167,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [robotId, select, setRobotDetail]);
 
   useEffect(() => {
-    setControlMode(robot?.control_mode ?? "AUTONOMOUS");
-  }, [robot?.control_mode, robotId]);
+    setControlMode(appliedMode ?? robot?.control_mode ?? "AUTONOMOUS");
+  }, [appliedMode, robot?.control_mode, robotId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
@@ -222,7 +225,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setRobotDetail(robotId, { pathPreview: null });
     if (!controlOnline) { setError("MANUAL/AUTONOMOUS requires an online ROS bridge"); return; }
     if (!wsSetRobotMode(robotId, next)) { setError("Robot control channel is disconnected"); return; }
-    setControlMode(next);
+    setRobotDetail(robotId, { requestedMode: next, modeTransitionState: "REQUESTED" });
     setError("");
   }, [controlOnline, robotId, setRobotDetail, stopManual]);
 
@@ -233,7 +236,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       if (!wasActive && controlOnline) wsManualCommand(robotId, "STOP");
       return;
     }
-    if (controlMode !== "MANUAL") { setError("Switch to MANUAL before driving"); return; }
+    if (controlMode !== "MANUAL" || modeTransitionState === "REQUESTED" || modeTransitionState === "FAILED") { setError("Wait for applied MANUAL mode before driving"); return; }
     if (!controlOnline) { setError("Manual control is disabled while ROS bridge is disconnected"); return; }
     if (!wsManualCommand(robotId, action)) { setError("Manual command was not sent"); return; }
     if (manualTimer.current !== null) window.clearInterval(manualTimer.current);
@@ -241,7 +244,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     manualTimer.current = window.setInterval(() => {
       if (!wsManualCommand(robotId, action)) stopManual();
     }, 100);
-  }, [controlMode, controlOnline, robotId, stopManual]);
+  }, [controlMode, controlOnline, modeTransitionState, robotId, stopManual]);
 
   useEffect(() => {
     const keyActions: Record<string, ManualAction> = {
@@ -338,10 +341,14 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   };
 
   const moveButtonEvents = (action: ManualAction) => ({
-    onPointerDown: () => holdManual(action),
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      holdManual(action);
+    },
     onPointerUp: stopManual,
     onPointerLeave: stopManual,
     onPointerCancel: stopManual,
+    onLostPointerCapture: stopManual,
   });
 
   return (
@@ -351,7 +358,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
           <button type="button" className="robot-detail-back" onClick={() => pushRoute("/")}>← BACK</button>
           <div><span className="robot-console-kicker">ROBOT CONTROL CONSOLE</span><h1>{robotId}</h1></div>
           <StatusValue value={robotOnline ? "ONLINE" : "OFFLINE"} />
-          <span className="robot-detail-mode">{controlMode}</span>
+          <span className="robot-detail-mode">{controlMode}{modeTransitionState === "REQUESTED" ? ` → ${requestedMode} REQUESTED` : modeTransitionState === "FAILED" ? " TRANSITION FAILED" : " APPLIED"}</span>
           <span className="robot-detail-runtime">{runtimeState} / {safeText(robot?.navigation_state, "N/A")}</span>
           <span className="robot-detail-mission">{currentMission ? `${currentMission.id} · ${currentMission.status}` : "mission N/A"}</span>
           <span className="robot-detail-latency">connection latency {safeNumber(diagnostics?.websocket_latency_ms, 0, " ms")}</span>
@@ -507,7 +514,7 @@ function ErrorMessagesPanel({ errors }: { errors: RobotDetailError[] }) {
   </Panel>;
 }
 
-function ManualBar({ controlMode, controlOnline, holdManual, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; holdManual: (action: ManualAction) => void; moveButtonEvents: (action: ManualAction) => Record<string, () => void>; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
+function ManualBar({ controlMode, controlOnline, holdManual, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; holdManual: (action: ManualAction) => void; moveButtonEvents: (action: ManualAction) => Record<string, (event: React.PointerEvent<HTMLButtonElement>) => void>; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
   return <section className="robot-detail-manual">
     <div className="robot-detail-manual-head"><div><span className="robot-console-kicker">MANUAL CONTROL</span><b>DEAD-MAN ENABLED</b><small>Release key/button → STOP · W/S/A/D · Q/E · arrows · Space STOP</small></div><div className="robot-detail-manual-mode"><button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("MANUAL")}>MANUAL</button><button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button></div></div>
     <div className="robot-detail-manual-pad">{MANUAL_ACTIONS.map((item) => <button type="button" key={item.action} className={`manual-key manual-key-${item.action.toLowerCase()}`} title={item.title} aria-label={item.title} disabled={!controlOnline || controlMode !== "MANUAL"} {...moveButtonEvents(item.action)} onClick={item.action === "STOP" ? () => holdManual("STOP") : undefined}>{item.label}<small>{item.action === "FORWARD" ? "W / ↑" : item.action === "BACKWARD" ? "S / ↓" : item.action === "LEFT" ? "A / ←" : item.action === "RIGHT" ? "D / →" : item.action === "ROTATE_LEFT" ? "Q" : item.action === "ROTATE_RIGHT" ? "E" : "STOP"}</small></button>)}</div>

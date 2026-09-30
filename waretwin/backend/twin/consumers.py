@@ -36,6 +36,11 @@ class TwinConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, close_code):
         try:
+            owners = getattr(runtime, 'manual_owners', {})
+            for robot_id, owner in list(owners.items()):
+                if owner == self.channel_name:
+                    owners.pop(robot_id, None)
+                    await runtime.gateway().send_command(robot_id, 'MANUAL_DISCONNECT', {})
             await self.channel_layer.group_discard('twin_clients', self.channel_name)
         finally:
             runtime.client_count = max(0, runtime.client_count - 1)

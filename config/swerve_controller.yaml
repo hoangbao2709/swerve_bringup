@@ -10,6 +10,8 @@ swerve_controller:
     command_timeout: 0.5
     control_rate: 50.0
     speed_deadband: 0.01
+    steering_alignment_full_error: 0.10
+    steering_alignment_stop_error: 0.70
     cmd_vel_topic: /cmd_vel_selected
     emergency_stop_topic: /emergency_stop
     steering_command_topic: /steering_controller/commands

@@ -37,6 +37,7 @@ class CommandArbiter(Node):
         control_rate = max(1.0, float(self.get_parameter('control_rate').value))
         self.control_rate = control_rate
         self.control_mode = 'AUTONOMOUS'
+        self.mode_request_id = None
         self.tag_route_state = 'IDLE'
         self.emergency_stop = False
         self.sources = {
@@ -97,12 +98,21 @@ class CommandArbiter(Node):
 
     def control_mode_callback(self, msg: String) -> None:
         mode = str(msg.data or '').upper()
+        request_id = None
+        if mode not in ('MANUAL', 'AUTONOMOUS'):
+            try:
+                request = json.loads(msg.data)
+                mode = str(request['mode']).upper()
+                request_id = request.get('request_id')
+            except (ValueError, KeyError, TypeError):
+                return
         if mode not in ('MANUAL', 'AUTONOMOUS'):
             self.get_logger().warning(f'ignoring unsupported control mode {mode!r}')
             return
-        if mode != self.control_mode:
+        if mode != self.control_mode or request_id != self.mode_request_id:
             self.clear_sources()
             self.control_mode = mode
+            self.mode_request_id = request_id
             self.get_logger().info(f'velocity ownership changed to {mode}')
 
     def tag_route_state_callback(self, msg: String) -> None:
@@ -147,6 +157,7 @@ class CommandArbiter(Node):
             diagnostic = {
                 'active_command_source': owner,
                 'active_control_mode': self.control_mode,
+                'control_mode_request_id': self.mode_request_id,
                 'last_command_age': (max(0.0, now - selected[1])
                                      if selected is not None and owner in self.sources else None),
                 'manual_source_active': fresh.get('WEB_MANUAL', False)

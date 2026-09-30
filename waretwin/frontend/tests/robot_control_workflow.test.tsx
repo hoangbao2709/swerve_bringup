@@ -49,7 +49,7 @@ vi.mock("../src/simulation/runner", () => ({ useSimulationRunner: () => undefine
 import { RobotQuickDetailModal } from "../src/components/robot/RobotQuickDetailModal";
 import { RobotControlDetailPage } from "../src/components/control/RobotControlDetailPage";
 import * as api from "../src/services/api";
-import { wsSend } from "../src/services/ws";
+import { wsSend, wsManualCommand, wsSetRobotMode } from "../src/services/ws";
 import type { LocalRobotMap } from "../src/services/api";
 
 const initialState = useStore.getState();
@@ -148,6 +148,31 @@ describe("robot quick detail workflow", () => {
 });
 
 describe("robot detail route stability", () => {
+  it("keeps applied mode while a requested transition is pending", () => {
+    useStore.setState({ runtimeMode: "GAZEBO_ROS", rosConnected: true, websocketState: "CONNECTED", connectedRobotIds: ["R01"] });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    act(() => buttonNamed("AUTONOMOUS")?.click());
+    expect(wsSetRobotMode).toHaveBeenCalledWith("R01", "AUTONOMOUS");
+    expect(container.querySelector(".robot-detail-mode")?.textContent).toContain("MANUAL → AUTONOMOUS REQUESTED");
+    act(() => useStore.getState().setRobotDetail("R01", { appliedMode: "AUTONOMOUS", modeTransitionState: "APPLIED" }));
+    expect(container.querySelector(".robot-detail-mode")?.textContent).toContain("AUTONOMOUS APPLIED");
+  });
+
+  it("pointer hold captures and release, cancel or leave sends STOP", () => {
+    useStore.setState({ runtimeMode: "GAZEBO_ROS", rosConnected: true, websocketState: "CONNECTED", connectedRobotIds: ["R01"] });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
+    const capture = vi.fn(); forward.setPointerCapture = capture;
+    for (const release of ["pointerup", "pointercancel", "pointerout"]) {
+      const down = new Event("pointerdown", { bubbles: true });
+      Object.defineProperty(down, "pointerId", { value: 42 });
+      act(() => forward.dispatchEvent(down));
+      expect(capture).toHaveBeenCalledWith(42);
+      expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+      act(() => forward.dispatchEvent(new Event(release, { bubbles: true })));
+      expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+    }
+  });
   it("renders the direct URL with null map/scan and disables manual motion while disconnected", () => {
     useStore.setState({ twin: null as never, rosDiagnostics: null, rosConnected: false, websocketState: "DISCONNECTED", robotDetail: {} });
     renderNode(<RobotControlDetailPage robotId="R01" />);

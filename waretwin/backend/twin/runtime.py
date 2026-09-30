@@ -912,6 +912,16 @@ class TwinRuntime:
         elif kind in ('MAP_REVISION_STATUS', 'MAP_REVISION_ACK'):
             await self.handle_map_revision_status(data)
         elif kind == 'ROBOT_CONTROL_STATUS':
+            robot_id = str(data.get('robot_id') or '')
+            pending = getattr(self, 'control_mode_requests', {}).get(robot_id)
+            if pending and data.get('request_id') != pending['request_id']:
+                return
+            if pending:
+                pending.update({key: data.get(key) for key in ('applied_mode', 'mode_transition_state')})
+            if data.get('mode_transition_state') == 'APPLIED' and data.get('accepted'):
+                robot = self.engine.state.get('robots', {}).get(robot_id)
+                if robot is not None:
+                    robot['control_mode'] = data.get('applied_mode')
             await self.broadcast(data)
         elif kind in ('TAG_NAV_STATUS', 'TAG_DETECTION', 'LOCALIZATION_STATUS', 'TAG_NAV_ROUTE', 'TAG_NAV_EVENT'):
             await self.handle_tag_navigation_message(kind, data)
@@ -1252,13 +1262,24 @@ class TwinRuntime:
                     'reason': 'ROS bridge for this robot is offline',
                 })
                 return
+            import uuid
+            request_id = uuid.uuid4().hex
+            if not hasattr(self, 'control_mode_requests'):
+                self.control_mode_requests = {}
+            self.control_mode_requests[msg.robot_id] = {
+                'request_id': request_id, 'requested_mode': msg.mode,
+                'applied_mode': eng.state['robots'].get(msg.robot_id, {}).get('control_mode'),
+                'mode_transition_state': 'REQUESTED',
+            }
             result = await self.gateway().send_command(
-                msg.robot_id, 'CONTROL_MODE', {'mode': msg.mode})
+                msg.robot_id, 'CONTROL_MODE', {'mode': msg.mode, 'request_id': request_id})
             if msg.mode == 'MANUAL' and result.get('ok'):
                 self.invalidate_path_previews(msg.robot_id, 'control mode changed')
             await consumer.send_json({
                 'type': 'ROBOT_CONTROL_STATUS', 'robot_id': msg.robot_id,
                 'mode': msg.mode, 'accepted': bool(result.get('ok')),
+                'requested_mode': msg.mode, 'request_id': request_id,
+                'mode_transition_state': 'REQUESTED' if result.get('ok') else 'FAILED',
                 'reason': None if result.get('ok') else 'ROS bridge is offline',
             })
         elif t == 'ROBOT_MANUAL':
@@ -1274,6 +1295,12 @@ class TwinRuntime:
                     'message': f'ROS bridge for {msg.robot_id} is offline; manual command was not sent',
                 })
                 return
+            if not hasattr(self, 'manual_owners'):
+                self.manual_owners = {}
+            if msg.action != 'STOP':
+                self.manual_owners[msg.robot_id] = consumer.channel_name
+            else:
+                self.manual_owners.pop(msg.robot_id, None)
             result = await self.gateway().send_command(
                 msg.robot_id, 'MANUAL_CMD', {'action': msg.action})
             if not result.get('ok'):

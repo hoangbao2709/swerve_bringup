@@ -850,3 +850,146 @@ REMAINING_ISSUES=Physical repeatability/settling for Forward, Left, Rotate Left;
 timely confirmed MANUAL -> AUTONOMOUS ownership transition; pointer hold/
 release with confirmed live output; delayed Web-command-to-zero timing.
 Do not declare Web manual R01 fully accepted from the partial movement passes.
+
+## 2026-09-30: steering coordination / manual freshness retest
+
+This section supersedes the preceding **current Stage B** status, not its
+historical evidence. Phase 1 / Stage A remains CLOSED and PASS. No startup,
+Nav2 lifecycle, bond, controller spawning, sensor fidelity, or physics change
+was made. No Nav Goal, Mapping, Save/Load Map, Init Pose, or VDA5050 test ran.
+
+### Diagnosis and narrowly scoped changes
+
+ROOT_CAUSE_FORWARD=No direction/polarity defect was established. With measured
+settling and a two-simulation-second Web hold, the pre-change trace moved
+0.379212 m in Gazebo and 0.369200 m in odom. The previous short/unsettled
+acceptance window did not establish repeatable movement.
+
+ROOT_CAUSE_LEFT=The first coordination divergence was downstream of matching
+manual/selected Twist: drive targets rose while actual steering was still
+far from its final lateral orientation. One pre-change sample had drive
+targets -1.13/+1.13 rad/s with steering error 1.50079 rad (86 degrees).
+Seven drive samples exceeded 0.5 rad/s with final-angle error above 0.7 rad.
+After STOP, actual wheel feedback also failed the bounded settling gate.
+
+ROOT_CAUSE_ROTATE_LEFT=Not established independently in this retest. Both
+pre-change and post-change sequences stopped at the preceding Left settling
+failure, so a shared alignment risk must not be presented as proven rotational
+root cause.
+
+STEERING_DRIVE_GATING=IMPLEMENTED; symmetric half-cosine scale uses measured
+steering versus the final kinematic target, before the existing drive ramp.
+Parameters `steering_alignment_full_error=0.10` and
+`steering_alignment_stop_error=0.70` radians give full drive below the first
+threshold and zero target above the second. Wheel reversal, shortest-angle
+selection, acceleration limits and authoritative velocity ownership remain.
+Post-change Left had 47 captured drive samples with steering error above
+0.7 rad, **none** with non-zero drive target above 0.01 rad/s.
+
+MANUAL_LATEST_ONLY=IMPLEMENTED; bridge manual input has one replaceable slot,
+monotonic sequence/generation, and bounded coalesced safety controls. STOP,
+mode changes, E-STOP/clear and disconnect invalidate older pending/taken
+manual commands. The lease starts at bridge ingress, not deferred processing;
+expired commands are discarded. Non-manual workflows remain unchanged.
+The owning Django WebSocket disconnect sends a manual invalidation barrier;
+unrelated clients do not stop another client's owned manual command.
+
+MODE_APPLIED_HANDSHAKE=IMPLEMENTED; Django assigns a request ID, the bridge
+publishes it with requested mode, and the arbiter echoes it with its actual
+mode. Only the matching echo produces APPLIED. Backend/frontend ignore stale
+confirmations; the frontend displays requested/applied state and does not
+optimistically apply a forwarded mode. The runtime probe observed actual
+MANUAL and a matching backend APPLIED confirmation before any motion.
+MANUAL -> AUTONOMOUS safety acceptance remains UNVERIFIED below.
+
+POINTER_DEADMAN=STATIC_PASS; pointer capture plus up/cancel/leave/lost-capture
+STOP handlers are component-tested. A real browser pointer-motion/release
+retest did not run after the physical settling gate failed; runtime UNVERIFIED.
+
+### Production retest and first failing layer
+
+Current-boot kernel checks before and after production were clean for new
+I/O/SCSI timeout/OOM errors. One normal post-change production startup used
+`start_stack.sh navigation`, reached full READY on managed ROS domain 0,
+including controllers, interfaces, arbiter, swerve, odom/LiDAR/TF, Nav2 and R01
+heartbeat. This is prerequisite evidence, not a reopening of two-start Stage A.
+
+An initial pre-change diagnostic probe subscribed to `/clock` with incompatible
+QoS. It was interrupted, sent STOP and requested AUTONOMOUS; it is not counted
+as acceptance. The read-only probe was corrected to sensor QoS and now asserts
+live clock before motion. No safety threshold was loosened.
+
+Commands used authenticated WebSocket -> Django -> R01 bridge ->
+`/cmd_vel_manual` -> arbiter -> `/cmd_vel_selected` -> swerve -> ros2_control ->
+Gazebo. The probe never published a ROS motion command. Captures included
+requested action, matching manual and selected Twist, arbiter diagnostics,
+steering/drive targets, actual joint positions/velocities, odom velocity/pose
+and Gazebo velocity/pose. Raw temporary traces/logs remain ignored, not committed.
+
+Before each direction and after STOP, require selected zero, each observed
+body velocity component below 0.02, both actual wheel velocities below
+0.10 rad/s, steering variation below 0.03 rad across four samples, fresh data,
+and 0.8 seconds continuously stable; maximum wait 45 seconds. The harness
+does not treat zero command alone as mechanical settling.
+
+| Direction | Requested/manual/selected (vx,vy,wz) | Gazebo body displacement | Odom body displacement | Before / after STOP settling |
+| --- | --- | --- | --- | --- |
+| Forward | (0.25,0,0) | +0.384917 m forward | +0.366232 m forward | 0.803 / 4.667 s, PASS |
+| Backward | (-0.25,0,0) | -0.278389 m forward | -0.279679 m forward | 0.819 / 3.230 s, PASS |
+| Left | (0,0.25,0) | +0.141636 m lateral | +0.230373 m lateral | 0.812 / 45.019 s, FAIL |
+
+All three directions had real bridge acceptance and MANUAL ownership. Drive
+targets reached 3.703704 rad/s magnitude. Left final steering targets were
+-pi/2 for both modules with reversed wheel drive; actual angles matched
+(-1.570797/-1.570795 rad). Actual moving wheel feedback reached approximately
+-3.068/-3.090 rad/s, proving real lateral drive, not animation.
+
+The **first remaining failing layer is zero drive target -> actual Gazebo
+wheel velocity feedback**, not Web delivery, arbitration or steering target.
+At the failed Left settling deadline: source NONE, all sources inactive,
+E-STOP false; Gazebo velocity approximately
+(-0.000875,-0.000347,-0.000085), odom velocity
+(0,0.008359,0.004726), wheel feedback -0.153484/-0.108958 rad/s.
+A separate subsequent read-only subscriber confirmed selected (0,0,0) and
+drive targets (0,0), but wheel feedback -0.154292/-0.106549 rad/s.
+These observations do not prove sustained body motion or a physics root cause;
+they prove that the unchanged wheel-feedback settling criterion cannot pass.
+No direction-specific fix or looser tolerance was applied.
+
+The test stopped at this failure. Right, Rotate Left, Rotate Right and the
+dedicated safety/browser sequence were not run. Finally STOP and AUTONOMOUS
+were requested through Web; the managed stack was stopped cleanly. The process
+check found no stack-owned ROS/Gazebo leftovers (only the checking shell).
+
+```text
+WEB_MANUAL_FORWARD=PASS
+WEB_MANUAL_BACKWARD=PASS
+WEB_MANUAL_LEFT=FAIL (movement correct; mechanical STOP settling failed)
+WEB_MANUAL_RIGHT=UNVERIFIED (not retested after changes)
+WEB_MANUAL_ROTATE_LEFT=UNVERIFIED
+WEB_MANUAL_ROTATE_RIGHT=UNVERIFIED
+WEB_MANUAL_STOP=FAIL (Left wheel-feedback settling)
+WEB_MANUAL_TIMEOUT_STOP=UNVERIFIED
+WEB_DISCONNECT_STOP=UNVERIFIED
+MODE_CHANGE_STOP=UNVERIFIED
+POINTER_RELEASE_STOP=UNVERIFIED
+COMMAND_ARBITER_MANUAL=PASS
+COMMAND_ARBITER_ESTOP=UNVERIFIED
+ESTOP_CLEAR_NO_RESUME=UNVERIFIED
+WEB_MANUAL_R01=FAIL
+STAGE_B_GATE=FAIL
+ESTOP_ZERO_LATENCY_MS=UNVERIFIED
+TIMEOUT_STOP_LATENCY_MS=UNVERIFIED
+```
+
+Prior safety/direction passes remain historical, not substituted for this
+post-change retest. Remaining work is to diagnose actual wheel feedback at zero
+target/contact mechanics, then repeat the stopped directions and safety checks.
+Do not proceed to Nav Goal.
+
+TESTS=PASS: 19 targeted controller/bridge/mailbox/settling/ownership pytest
+tests; 13 frontend workflow component tests and TypeScript typecheck; 18 Django
+mode/disconnect/gateway tests (system check clean); Python compile; colcon
+symlink build of swerve_bringup and swerve_bridge (two packages, only the
+existing setuptools EasyInstall deprecation warning); git diff check.
+No shell source changed, so bash syntax validation was not needed.

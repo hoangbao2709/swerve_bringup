@@ -61,9 +61,11 @@ def _nearest_tag(robot_id: str, warehouse_id: int | None = None) -> int | None:
     return min(NavigationTag.objects.filter(warehouse=wh, enabled=True), key=lambda t: math.hypot(t.x-x, t.y-y), default=None).tag_id if NavigationTag.objects.filter(warehouse=wh, enabled=True).exists() else None
 
 
-def _map_sync_error() -> str | None:
+def _map_sync_error(robot_id: str | None = None) -> str | None:
     if not runtime.is_external:
         return None
+    if robot_id and runtime.local_map_overrides.get(str(robot_id)):
+        return f'Cannot start fleet mission: {robot_id} is using a local-only map'
     status = runtime.runtime_status_message().get('map_sync_status')
     if status != 'SYNCED':
         return f'Cannot start mission: map revision mismatch ({status})'
@@ -79,7 +81,7 @@ def start(request):
     robot_id = str(body.get('robot_id', '')).strip()
     if not robot_id or body.get('target_tag_id') is None: return _error('robot_id and target_tag_id are required')
     if not runtime.ros_bridge_connected and runtime.is_external: return _error('ROS bridge is offline', 409)
-    sync_error = _map_sync_error()
+    sync_error = _map_sync_error(robot_id)
     if sync_error: return _error(sync_error, 409)
     try:
         wh_id = int(body['warehouse_id']) if body.get('warehouse_id') else None
@@ -92,11 +94,11 @@ def start(request):
 
 
 def _action(request, mission_id: int, action: str, status: str):
-    if action in ('RESUME_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION'):
-        sync_error = _map_sync_error()
-        if sync_error: return _error(sync_error, 409)
     try: mission = RobotNavigationMission.objects.select_related('target_tag').get(pk=mission_id)
     except RobotNavigationMission.DoesNotExist: return _error('mission not found', 404)
+    if action in ('RESUME_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION'):
+        sync_error = _map_sync_error(mission.robot_id)
+        if sync_error: return _error(sync_error, 409)
     if action == 'REPLAN_TAG_NAVIGATION':
         try:
             mission.route = shortest_tag_route(mission.current_tag_id, mission.target_tag.tag_id, mission.warehouse_id)

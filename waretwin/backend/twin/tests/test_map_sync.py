@@ -79,6 +79,7 @@ class MapSyncTests(SimpleTestCase):
         try:
             runtime.connected_robot_ids.clear()
             runtime.robot_map_sync.clear()
+            runtime.connected_robot_ids.add('R01')
             runtime.ros_bridge_connected = True
             runtime.runtime_mode = 'GAZEBO_ROS'
             runtime.operation_mode = 'NAVIGATION'
@@ -91,6 +92,7 @@ class MapSyncTests(SimpleTestCase):
                 }
                 asyncio.run(runtime.handle_map_revision_status({**base, 'robot_id': 'R01'}))
                 self.assertEqual(runtime.runtime_status_message()['map_sync_status'], 'SYNCED')
+                runtime.connected_robot_ids.add('R02')
                 asyncio.run(runtime.handle_map_revision_status({
                     **base, 'robot_id': 'R02', 'gazebo_revision': 11,
                 }))

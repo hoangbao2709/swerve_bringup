@@ -12,6 +12,7 @@ from pathlib import Path
 from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.db import transaction
+from django.utils.module_loading import import_string
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -74,9 +75,104 @@ def _write_mode_request(robot_id: str, mode: str) -> dict:
     return status
 
 
+class SimulationRuntimeAdapter:
+    """Mode transitions for the owned simulation stack supervisor."""
+
+    def get_mode_status(self, robot_id: str) -> dict:
+        return _read_mode_status(robot_id)
+
+    def request_mode_change(self, robot_id: str, target: str) -> dict:
+        with _MODE_SWITCH_LOCK:
+            request_path, _status_path = _mode_files()
+            lock_path = request_path.with_suffix('.lock')
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                os.close(lock_fd)
+                return {'ok': False, 'http_status': 409,
+                        'message': 'a runtime mode transition request is already being queued'}
+            try:
+                if request_path.exists():
+                    return {'ok': False, 'http_status': 409,
+                            'message': 'a runtime mode transition request is already queued'}
+                status = _read_mode_status(robot_id)
+                if status.get('status') == 'UNAVAILABLE':
+                    return {'ok': False, 'http_status': 503,
+                            'message': 'runtime supervisor status is unavailable'}
+                if status.get('status') in ('STARTING', 'REQUESTED', 'RESTARTING', 'ROLLING_BACK'):
+                    return {'ok': False, 'http_status': 409,
+                            'message': 'a runtime mode transition is already in progress'}
+                status = _write_mode_request(robot_id, target.lower())
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+        return {'ok': True, **status,
+                'message': 'simulation runtime transition queued; readiness and rollback are managed by its supervisor'}
+
+
+class RealRobotRuntimeAdapter:
+    """Delegate transitions to a deployment-owned physical robot manager."""
+
+    def _configured_adapter(self):
+        entry_point = getattr(settings, 'WARETWIN_REAL_RUNTIME_ADAPTER', '')
+        if not entry_point:
+            return None
+        try:
+            return import_string(entry_point)()
+        except Exception as exc:
+            raise RuntimeError(f'physical robot runtime adapter could not load: {type(exc).__name__}') from exc
+
+    def get_mode_status(self, robot_id: str) -> dict:
+        try:
+            adapter = self._configured_adapter()
+            if adapter is None:
+                return {'robot_id': robot_id, 'status': 'UNAVAILABLE', 'mode': None,
+                        'message': 'no physical robot process adapter is configured'}
+            result = adapter.get_mode_status(robot_id)
+            if isinstance(result, dict):
+                return result
+        except Exception as exc:
+            return {'robot_id': robot_id, 'status': 'ERROR', 'mode': None,
+                    'message': f'physical robot runtime status failed: {type(exc).__name__}'}
+        return {'robot_id': robot_id, 'status': 'ERROR', 'mode': None,
+                'message': 'physical robot runtime adapter returned invalid status'}
+
+    def request_mode_change(self, robot_id: str, target: str) -> dict:
+        try:
+            adapter = self._configured_adapter()
+        except RuntimeError as exc:
+            return {'ok': False, 'http_status': 502, 'code': 'REAL_RUNTIME_ADAPTER_FAILED',
+                    'message': str(exc)}
+        if adapter is None:
+            return {
+                'ok': False, 'http_status': 501,
+                'code': 'REAL_RUNTIME_ADAPTER_UNAVAILABLE',
+                'message': 'no physical robot process adapter is configured; no Gazebo or unmanaged ROS processes were started',
+            }
+        try:
+            result = adapter.request_mode_change(robot_id, target)
+        except Exception as exc:
+            return {'ok': False, 'http_status': 502,
+                    'code': 'REAL_RUNTIME_ADAPTER_FAILED',
+                    'message': f'physical robot runtime adapter failed: {type(exc).__name__}'}
+        return result if isinstance(result, dict) else {
+            'ok': False, 'http_status': 502, 'code': 'REAL_RUNTIME_ADAPTER_FAILED',
+            'message': 'physical robot runtime adapter returned an invalid result',
+        }
+
+
+def _runtime_adapter(runtime_mode: str):
+    if runtime_mode == 'GAZEBO_ROS':
+        return SimulationRuntimeAdapter()
+    if runtime_mode == 'REAL_ROBOT':
+        return RealRobotRuntimeAdapter()
+    return None
+
+
 def _robot_available(robot_id: str):
     if not runtime.is_external:
-        return _error('local robot control requires the active ROS/Gazebo runtime', 503)
+        return _error('local robot control requires an active ROS robot runtime', 503)
     if not runtime.robot_bridge_online(robot_id):
         return _error(f'authenticated ROS bridge for {robot_id} is offline', 503)
     return None
@@ -114,6 +210,47 @@ def _response_for_bridge_result(result: dict):
     return None
 
 
+def _active_map_geometry(robot_id: str) -> dict | None:
+    active = runtime.active_map_state(robot_id)
+    geometry = runtime.robot_map_geometry.get(robot_id)
+    if (geometry and geometry.get('active_map_id') == active.get('active_map_id')
+            and str(geometry.get('active_map_revision') or '') == str(active.get('active_map_revision') or '')):
+        return geometry
+    local_id = active.get('local_active_map_id')
+    if local_id:
+        try:
+            record, _yaml_path, _image_path = get_robot_map(robot_id, local_id)
+        except (FileNotFoundError, ValueError):
+            return None
+        if record.get('width') and record.get('height'):
+            return {
+                'width': record['width'], 'height': record['height'],
+                'resolution': record['resolution'],
+                'origin': {'x': record['origin'][0], 'y': record['origin'][1],
+                           'yaw': record['origin'][2]},
+                'active_map_id': local_id,
+                'active_map_revision': record['revision'],
+            }
+    return None
+
+
+def _pose_within_active_map(robot_id: str, pose: dict[str, float]) -> bool:
+    geometry = _active_map_geometry(robot_id)
+    if not geometry:
+        return False
+    try:
+        width = int(geometry['width']) * float(geometry['resolution'])
+        height = int(geometry['height']) * float(geometry['resolution'])
+        origin = geometry['origin']
+        dx, dy = pose['x'] - float(origin['x']), pose['y'] - float(origin['y'])
+        yaw = float(origin['yaw'])
+        grid_x = math.cos(yaw) * dx + math.sin(yaw) * dy
+        grid_y = -math.sin(yaw) * dx + math.cos(yaw) * dy
+        return 0.0 <= grid_x < width and 0.0 <= grid_y < height
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 @csrf_exempt
 @api_user_required
 @require_http_methods(['GET'])
@@ -125,14 +262,16 @@ def local_maps(request, robot_id: str):
         maps = list_robot_maps(robot_id)
     except ValueError as exc:
         return _error(str(exc), 500)
+    active_map = runtime.active_map_state(robot_id)
     return JsonResponse({
         'robot_id': robot_id,
         'maps': maps,
         'runtime_mode': runtime.operation_mode,
         'mapping_state': getattr(runtime, 'robot_mapping_state', {}).get(robot_id, 'UNKNOWN'),
         'mapping_duration_s': getattr(runtime, 'robot_mapping_elapsed_s', {}).get(robot_id, 0.0),
-        'active_local_map_id': runtime.local_map_overrides.get(robot_id),
-        'map_sync_status': runtime.runtime_status_message().get('map_sync_status'),
+        **active_map,
+        'active_local_map_id': active_map['local_active_map_id'],
+        'map_sync_status': active_map['map_sync_status'],
     })
 
 
@@ -140,14 +279,18 @@ def local_maps(request, robot_id: str):
 @api_user_required
 @require_http_methods(['GET', 'POST'])
 def local_runtime_mode(request, robot_id: str):
+    adapter = _runtime_adapter(runtime.runtime_mode)
     if request.method == 'GET':
         return JsonResponse({
             'robot_id': robot_id,
             'current_mode': runtime.operation_mode,
-            'transition': _read_mode_status(robot_id),
+            'transition': adapter.get_mode_status(robot_id) if adapter else {
+                'robot_id': robot_id, 'status': 'UNAVAILABLE', 'mode': None,
+                'message': f'no runtime adapter is available for {runtime.runtime_mode}',
+            },
         })
-    if not runtime.is_external or runtime.runtime_mode != 'GAZEBO_ROS':
-        return _error('controlled mapping/navigation transition requires the owned GAZEBO_ROS stack', 409)
+    if not runtime.is_external:
+        return _error('mapping/navigation transition requires a connected robot runtime', 409)
     if not runtime.robot_bridge_online(robot_id):
         return _error(f'authenticated ROS bridge for {robot_id} is offline', 503)
     target = str(_body(request).get('mode') or '').strip().upper()
@@ -162,36 +305,23 @@ def local_runtime_mode(request, robot_id: str):
     robot = runtime.engine.state.get('robots', {}).get(robot_id, {})
     if str(robot.get('control_mode') or '').upper() != 'MANUAL' or str(robot.get('navigation_state') or '').upper() != 'MANUAL':
         return _error('switch to MANUAL mode and stop the robot before changing SLAM/Nav2 runtime mode', 409)
-    state = _read_mode_status(robot_id)
+    adapter = _runtime_adapter(runtime.runtime_mode)
+    if adapter is None:
+        return _error(f'no runtime adapter is available for {runtime.runtime_mode}', 409)
+    state = adapter.get_mode_status(robot_id)
     if state.get('status') in ('STARTING', 'REQUESTED', 'RESTARTING', 'ROLLING_BACK'):
         return _error('a runtime mode transition is already in progress', 409)
-    with _MODE_SWITCH_LOCK:
-        request_path, _status_path = _mode_files()
-        lock_path = request_path.with_suffix('.lock')
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(lock_fd)
-            return _error('a runtime mode transition request is already being queued', 409)
-        try:
-            if request_path.exists():
-                return _error('a runtime mode transition request is already queued', 409)
-            status = _read_mode_status(robot_id)
-            if status.get('status') == 'UNAVAILABLE':
-                return _error('ROS stack mode supervisor status is unavailable', 503)
-            if status.get('status') in ('STARTING', 'REQUESTED', 'RESTARTING', 'ROLLING_BACK'):
-                return _error('a runtime mode transition is already in progress', 409)
-            status = _write_mode_request(robot_id, target.lower())
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            os.close(lock_fd)
+    result = adapter.request_mode_change(robot_id, target)
+    if not result.get('ok'):
+        return _error(str(result.get('message') or 'runtime adapter rejected the transition'),
+                      int(result.get('http_status') or 502), {'code': result.get('code')})
+    status = result
     return JsonResponse({
         'ok': True, 'robot_id': robot_id, 'current_mode': current,
         'requested_mode': target, 'request_id': status['request_id'],
         'status': status['status'],
-        'message': 'ROS/Gazebo will restart; the simulated robot will respawn at its configured start pose.',
-    }, status=202)
+        'message': status.get('message'),
+    }, status=202 if status.get('status') in ('REQUESTED', 'RESTARTING') else 200)
 
 
 @csrf_exempt
@@ -280,18 +410,32 @@ def load_robot_map(request, robot_id: str):
     try:
         try:
             result = _bridge_request(robot_id, 'MAP_LOAD', {
-                'map_id': map_id, 'map_yaml': str(yaml_path),
+                'map_id': map_id, 'map_revision': record['revision'],
+                'map_yaml': str(yaml_path),
             }, timeout=30.0)
         except Exception as exc:
             return _error(f'Nav2 map load request failed: {type(exc).__name__}', 502)
         failure = _response_for_bridge_result(result)
         if failure:
             return failure
+        applied = result.get('result') or {}
+        if (str(applied.get('map_id') or '') != map_id
+                or str(applied.get('active_map_revision') or '') != str(record['revision'])):
+            return _error('ROS confirmed a different active map than the selected artifact', 502)
         runtime.local_map_overrides[robot_id] = map_id
+        runtime.local_map_revisions[robot_id] = str(record['revision'])
+        runtime.local_map_status[robot_id] = {
+            'loaded': True, 'map_id': map_id,
+            'active_map_revision': str(record['revision']),
+            'canonical_map_revision': runtime.published_map_revision,
+        }
+        runtime.invalidate_path_previews(robot_id, 'active map changed')
         return JsonResponse({
             'ok': True, 'robot_id': robot_id, 'active_map': record,
-            'map_sync_status': 'OUT_OF_SYNC',
-            'message': 'Nav2 loaded this map. Autonomous goals remain blocked until the local map is published as the canonical warehouse map.',
+            'active_map_id': map_id, 'active_map_revision': record['revision'],
+            'canonical_map_revision': runtime.published_map_revision,
+            'map_sync_status': 'LOCAL_ONLY',
+            'message': 'Nav2 confirmed this robot-local map. Local navigation is enabled; fleet missions remain tied to the canonical map.',
         })
     finally:
         runtime.local_map_transitions.discard(robot_id)
@@ -315,18 +459,35 @@ def initialize_robot_pose(request, robot_id: str):
     import math
     if not all(math.isfinite(value) for value in pose.values()):
         return _error('x, y, and yaw must be finite numbers')
+    active_map = runtime.active_map_state(robot_id)
+    if (not active_map.get('active_map_id') or not active_map.get('active_map_revision')
+            or active_map.get('map_sync_status') not in ('CANONICAL', 'LOCAL_ONLY')):
+        return _error('the selected robot has no confirmed active map', 409)
+    if not _pose_within_active_map(robot_id, pose):
+        return _error('initial pose must be inside the active map bounds', 400)
     frame_id = str(body.get('frame_id') or 'map')
     if frame_id != 'map':
         return _error('initial pose must use the map frame')
     try:
-        result = _bridge_request(robot_id, 'INITIAL_POSE', {**pose, 'frame_id': frame_id}, timeout=10.0)
+        result = _bridge_request(robot_id, 'INITIAL_POSE', {
+            **pose, 'frame_id': frame_id,
+            'active_map_id': active_map['active_map_id'],
+            'active_map_revision': active_map['active_map_revision'],
+        }, timeout=10.0)
     except Exception as exc:
         return _error(f'initial pose request failed: {type(exc).__name__}', 502)
     failure = _response_for_bridge_result(result)
     if failure:
         return failure
+    applied = result.get('result') or {}
+    if (not applied.get('runtime_pose_confirmed')
+            or applied.get('active_map_id') != active_map['active_map_id']
+            or str(applied.get('active_map_revision') or '') != str(active_map['active_map_revision'])):
+        return _error('localization service did not confirm the requested pose on the active map', 502)
     return JsonResponse({'ok': True, 'robot_id': robot_id, 'frame_id': frame_id,
-                         'pose': pose, 'localization_owner': 'ekf_v30e'})
+                         'pose': pose, 'active_map_id': active_map['active_map_id'],
+                         'active_map_revision': active_map['active_map_revision'],
+                         'localization_owner': 'ekf_v30e'})
 
 
 def _get_vda_config(robot_id: str):

@@ -30,6 +30,8 @@ class RosBridgeGateway(RobotGateway):
             message['type'] = 'NAV_GOAL'
         elif action == 'PATH_PREVIEW':
             message['type'] = 'PATH_PREVIEW'
+        elif action == 'DETAIL_VIEW':
+            message['type'] = 'DETAIL_VIEW'
         elif action == 'CANCEL_NAVIGATION':
             message['type'] = 'CANCEL_NAVIGATION'
         elif action == 'STOP':

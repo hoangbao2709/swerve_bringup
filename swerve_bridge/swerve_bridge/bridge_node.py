@@ -24,7 +24,7 @@ from rclpy.time import Time
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as RosPath
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
-from nav2_map_server.srv import LoadMap
+from nav2_msgs.srv import LoadMap
 from rosgraph_msgs.msg import Clock
 from swerve_bringup.action import GoToTag
 from sensor_msgs.msg import JointState, LaserScan, PointCloud2
@@ -39,8 +39,9 @@ from .qos import canonical_map_qos_profile, gazebo_clock_qos_profile
 from .coordinates import (is_small_future_tf_skew, pose_from_transform,
                           quaternion_yaw, rotate_translate_xy)
 from .web_map_renderer import (
-    bounded_voxel_points, laser_scan_xy, path_length, point_xyz,
-    successful_path_result, transform_points_xyz,
+    LatestFrameBuffer, bounded_voxel_points, compress_occupancy_grid,
+    laser_scan_xy, path_length, point_xyz, successful_path_result,
+    transform_points_xyz,
 )
 
 
@@ -98,6 +99,9 @@ class SwerveBridge(Node):
         self.declare_parameter('manual_angular_velocity', 0.60)
         self.declare_parameter('manual_command_timeout', 0.40)
         self.declare_parameter('artifact_root', 'generated/maps')
+        self.declare_parameter('local_map_root', os.path.join(
+            os.environ.get('WARETWIN_ARTIFACT_ROOT') or os.path.join(os.getcwd(), 'generated', 'maps'),
+            'local_robot_maps'))
         self.declare_parameter('gazebo_world_file', '')
         self.declare_parameter('nav2_map_file', '')
         self.declare_parameter('datamatrix_map_file', '')
@@ -117,6 +121,8 @@ class SwerveBridge(Node):
             'ROS_WS_URL', 'ws://127.0.0.1:8000/ws/ros')
         self.token = str(self.get_parameter('django_token').value)
         self.artifact_root = Path(str(self.get_parameter('artifact_root').value)).expanduser()
+        self.local_map_root = (Path(str(self.get_parameter('local_map_root').value)).expanduser()
+                               / self.robot_id).resolve()
         self.gazebo_world_file = Path(str(self.get_parameter('gazebo_world_file').value)).expanduser()
         self.nav2_map_file = Path(str(self.get_parameter('nav2_map_file').value)).expanduser()
         self.datamatrix_map_file = Path(str(self.get_parameter('datamatrix_map_file').value)).expanduser()
@@ -139,12 +145,22 @@ class SwerveBridge(Node):
         self.latest_filtered_cloud = None
         self.latest_cloud_monotonic = None
         self.latest_filtered_cloud_monotonic = None
+        self.raw_cloud_intervals = deque(maxlen=30)
+        self.filtered_cloud_intervals = deque(maxlen=30)
+        self.last_raw_cloud_monotonic = None
+        self.last_filtered_cloud_monotonic = None
         self.last_scan_publish_monotonic = 0.0
         self.last_cloud_publish_monotonic = 0.0
         self.cloud_intervals = deque(maxlen=20)
         self.last_cloud_frame_wall = None
         self.web_cloud_revision = 0
         self.last_web_cloud_source_stamp = None
+        self.lidar_frame_buffer = LatestFrameBuffer()
+        self.detail_view = 'GLOBAL'
+        self.detail_view_epoch = 0
+        self.last_lidar_send_monotonic = None
+        self.lidar_output_intervals = deque(maxlen=30)
+        self.last_lidar_output_metadata = {}
         self.web_cloud_epoch = f'{self.robot_id}-{time.time_ns()}'
         self.latest_map = None
         self.latest_map_signature = None
@@ -177,7 +193,12 @@ class SwerveBridge(Node):
         self.slam_mapping_elapsed_s = 0.0
         self.slam_mapping_started_monotonic = time.monotonic() if self.runtime_state == 'MAPPING' else None
         self.loaded_local_map_id = None
+        self.loaded_local_map_revision = None
         self.local_map_load_pending = False
+        self.pending_local_map_load = None
+        self.pending_initial_pose = None
+        self.map_callback_count = 0
+        self.path_preview_approvals = {}
         self.paused_pose_context = None
         self.goal_request_pending = False
         self.cancel_pending = False
@@ -274,10 +295,16 @@ class SwerveBridge(Node):
         self.create_subscription(RosPath, global_path_topic, self.global_path_cb, 1)
         self.create_subscription(RosPath, local_path_topic, self.local_path_cb, 1)
         self.create_subscription(PoseStamped, goal_topic, self.goal_pose_cb, 1)
+        self.command_diagnostics = {}
+        self.create_subscription(
+            String, self._scoped_topic('/command_arbiter/diagnostics'),
+            self.command_diagnostics_cb, 10)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_timer(1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)), self.detail_timer)
         self.create_timer(self.telemetry_period, self.telemetry_timer)
+        self.create_timer(0.1, self.poll_local_control_confirmations,
+                          clock=self._wall_clock)
         self.create_timer(
             1.0 / max(0.1, float(self.get_parameter('heartbeat_rate').value)),
             self.heartbeat_timer, clock=self._wall_clock)
@@ -285,6 +312,9 @@ class SwerveBridge(Node):
         self.create_timer(0.05, self.process_commands, clock=self._wall_clock)
         self.thread = threading.Thread(target=self.websocket_loop, daemon=True)
         self.thread.start()
+        self.lidar_sender_thread = threading.Thread(
+            target=self.lidar_frame_sender, daemon=True)
+        self.lidar_sender_thread.start()
 
     @staticmethod
     def _normalize_namespace(value) -> str:
@@ -331,6 +361,9 @@ class SwerveBridge(Node):
 
     def lidar_cb(self, msg):
         now = time.monotonic()
+        if self.last_raw_cloud_monotonic is not None and now > self.last_raw_cloud_monotonic:
+            self.raw_cloud_intervals.append(now - self.last_raw_cloud_monotonic)
+        self.last_raw_cloud_monotonic = now
         if self.last_lidar_monotonic is not None:
             interval = now - self.last_lidar_monotonic
             if interval > 0.0:
@@ -343,8 +376,12 @@ class SwerveBridge(Node):
         self.latest_cloud_monotonic = now
 
     def filtered_lidar_cb(self, msg):
+        now = time.monotonic()
+        if self.last_filtered_cloud_monotonic is not None and now > self.last_filtered_cloud_monotonic:
+            self.filtered_cloud_intervals.append(now - self.last_filtered_cloud_monotonic)
+        self.last_filtered_cloud_monotonic = now
         self.latest_filtered_cloud = msg
-        self.latest_filtered_cloud_monotonic = time.monotonic()
+        self.latest_filtered_cloud_monotonic = now
         self.last_lidar_frame_id = str(msg.header.frame_id or '')
         stamp = msg.header.stamp
         self.last_lidar_stamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
@@ -387,6 +424,58 @@ class SwerveBridge(Node):
         )
         self.latest_map = msg
         self.latest_map_signature = signature
+        self.map_callback_count += 1
+        self._confirm_local_map_if_ready()
+
+    def command_diagnostics_cb(self, msg):
+        try:
+            data = json.loads(str(msg.data or '{}'))
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        self.command_diagnostics = {
+            key: data.get(key) for key in (
+                'active_command_source', 'active_control_mode', 'last_command_age',
+                'manual_source_active', 'nav_source_active', 'tag_source_active',
+                'estop_active',
+            )
+        }
+        self.send({'type': 'COMMAND_DIAGNOSTICS', 'robot_id': self.robot_id,
+                   **self.command_diagnostics, 'timestamp': self.now()})
+
+    def active_map_identity(self):
+        if self.loaded_local_map_id:
+            return {
+                'active_map_id': self.loaded_local_map_id,
+                'active_map_revision': str(self.loaded_local_map_revision or ''),
+                'canonical_map_revision': (str(self.ros_map_revision)
+                                           if self.ros_map_revision is not None else None),
+            }
+        revision = str(self.ros_map_revision) if self.ros_map_revision is not None else None
+        return {
+            'active_map_id': 'CANONICAL' if revision is not None else None,
+            'active_map_revision': revision,
+            'canonical_map_revision': revision,
+        }
+
+    def set_detail_view(self, view):
+        view = str(view or '').upper()
+        if view not in ('GLOBAL', 'LIDAR_2D', 'LIDAR_3D'):
+            return False
+        if view == 'GLOBAL':
+            # The occupancy grid is content-addressed and otherwise sent only
+            # when it changes. Re-send the cached map on a new Global Map view
+            # so late-joining browser clients receive the current map.
+            self.last_sent_map_signature = None
+        if view != self.detail_view:
+            self.detail_view = view
+            self.detail_view_epoch += 1
+            self.lidar_frame_buffer.clear()
+            self.last_web_cloud_source_stamp = None
+            self.last_scan_publish_monotonic = 0.0
+            self.last_cloud_publish_monotonic = 0.0
+        return True
 
     def global_path_cb(self, msg):
         self.latest_global_path = msg
@@ -424,6 +513,35 @@ class SwerveBridge(Node):
                 self.get_logger().warning(f'ROS bridge send failed: {exc}')
                 return False
 
+    def lidar_frame_sender(self):
+        """Keep WebSocket backpressure out of the ROS callback/executor path."""
+        while not self.stop_event.is_set():
+            payload = self.lidar_frame_buffer.take(timeout=0.25)
+            if payload is None:
+                continue
+            if (self.detail_view != 'LIDAR_3D'
+                    or payload.get('view_epoch') != self.detail_view_epoch):
+                continue
+            now = time.monotonic()
+            if self.last_lidar_send_monotonic is not None:
+                interval = now - self.last_lidar_send_monotonic
+                if interval > 0.0:
+                    self.lidar_output_intervals.append(interval)
+            self.last_lidar_send_monotonic = now
+            payload['send_timestamp'] = self.now()
+            payload['web_output_fps'] = self._frequency(self.lidar_output_intervals)
+            payload['dropped_frames'] = self.lidar_frame_buffer.dropped_frames
+            if not self.send(payload):
+                continue
+            self.last_lidar_output_metadata = {
+                key: payload.get(key) for key in (
+                    'source_timestamp', 'send_timestamp', 'frame_id', 'point_count',
+                    'source_fps', 'web_output_fps', 'dropped_frames', 'view',
+                )
+            }
+            self.send({'type': 'LIDAR_STREAM_DIAGNOSTICS', 'robot_id': self.robot_id,
+                       **self.last_lidar_output_metadata})
+
     def send_bridge_status(self, state, error=None):
         self.last_bridge_error = error
         payload = {'type': 'BRIDGE_STATUS', 'state': state, 'robot_id': self.robot_id,
@@ -460,6 +578,9 @@ class SwerveBridge(Node):
                 if self.loaded_local_map_id:
                     self.send({'type': 'LOCAL_MAP_STATUS', 'robot_id': self.robot_id,
                                'loaded': True, 'map_id': self.loaded_local_map_id,
+                               'map_revision': self.loaded_local_map_revision,
+                               'active_map_revision': self.loaded_local_map_revision,
+                               'canonical_map_revision': self.ros_map_revision,
                                'frame_id': 'map', 'timestamp': self.now()})
                 while not self.stop_event.is_set():
                     try:
@@ -485,6 +606,8 @@ class SwerveBridge(Node):
                 with self.ws_lock:
                     if self.ws is ws:
                         self.ws = None
+                self.lidar_frame_buffer.clear()
+                self.last_web_cloud_source_stamp = None
 
     def now(self):
         return datetime.now(timezone.utc).isoformat()
@@ -501,6 +624,7 @@ class SwerveBridge(Node):
             self.send({'type': 'ROBOT_STATE', 'robot_id': self.robot_id,
                        'frame_id': str(self.get_parameter('map_frame').value),
                        'map_revision': self.ros_map_revision,
+                       **self.active_map_identity(),
                        'base_frame_id': base_frame, **pose,
                        'vx': t.linear.x, 'vy': t.linear.y, 'wz': t.angular.z,
                        'navigation_state': self.nav_state,
@@ -759,11 +883,21 @@ class SwerveBridge(Node):
         self.send({
             'type': 'LIDAR_MAP_2D', 'robot_id': self.robot_id,
             'timestamp': scan['timestamp'], 'source_stamp': scan['stamp'],
+            'source_timestamp': scan['stamp'], 'send_timestamp': self.now(),
             'frame_id': target, 'source_frame_id': scan['source_frame_id'],
             'point_count': scan['point_count'], 'points': scan['points'],
             'path': route, 'goal': goal,
+            'source_fps': self._frequency(self.scan_intervals),
+            'web_output_fps': self._frequency(self.scan_intervals),
+            'dropped_frames': 0,
             'render_fps': self._frequency(self.scan_intervals),
         })
+        self.send({'type': 'LIDAR_STREAM_DIAGNOSTICS', 'robot_id': self.robot_id,
+                   'source_timestamp': scan['stamp'], 'send_timestamp': self.now(),
+                   'frame_id': target, 'point_count': scan['point_count'],
+                   'source_fps': self._frequency(self.scan_intervals),
+                   'web_output_fps': self._frequency(self.scan_intervals),
+                   'dropped_frames': 0, 'view': 'LIDAR_2D'})
 
     def _render_lidar_3d(self):
         filtered_is_fresh = (self.latest_filtered_cloud is not None
@@ -821,30 +955,35 @@ class SwerveBridge(Node):
             'type': 'LIDAR_MAP_3D', 'robot_id': self.robot_id,
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'source_stamp': source_stamp,
+            'source_timestamp': source_stamp,
             'render_timestamp': datetime.now(timezone.utc).isoformat(),
             'frame_id': target, 'source_frame_id': source_frame,
             'point_count': len(xyz), 'points': xyz, 'bounds': bounds,
-            'render_fps': self._frequency(self.cloud_intervals),
+            'source_fps': self._frequency(
+                self.filtered_cloud_intervals if filtered_is_fresh else self.raw_cloud_intervals),
+            'web_output_fps': self._frequency(self.lidar_output_intervals),
+            'dropped_frames': self.lidar_frame_buffer.dropped_frames,
+            'render_fps': self._frequency(self.lidar_output_intervals),
             'epoch': self.web_cloud_epoch, 'revision': next_revision,
-            'path': route, 'goal': goal,
+            'path': route, 'goal': goal, 'view': 'LIDAR_3D',
+            'view_epoch': self.detail_view_epoch,
         }
-        if self.send(payload):
-            self.last_web_cloud_source_stamp = source_stamp
-            self.web_cloud_revision = next_revision
-            now = time.monotonic()
-            if self.last_cloud_frame_wall is not None:
-                interval = now - self.last_cloud_frame_wall
-                if interval > 0:
-                    self.cloud_intervals.append(interval)
-            self.last_cloud_frame_wall = now
+        self.lidar_frame_buffer.offer(payload)
+        self.last_web_cloud_source_stamp = source_stamp
+        self.web_cloud_revision = next_revision
 
     def detail_timer(self):
         """Publish bounded, robot-scoped detail snapshots to Django."""
-        if self.latest_scan is not None and time.monotonic() - self.last_scan_publish_monotonic >= 1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)):
+        scan_view = self.detail_view in ('GLOBAL', 'LIDAR_2D')
+        if (scan_view and self.latest_scan is not None
+                and time.monotonic() - self.last_scan_publish_monotonic
+                >= 1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value))):
             try:
-                payload = self._transform_scan(self.latest_scan)
-                self.send({'type': 'LIDAR_SCAN', 'scan': payload})
-                self._render_lidar_2d()
+                if self.detail_view == 'GLOBAL':
+                    payload = self._transform_scan(self.latest_scan)
+                    self.send({'type': 'LIDAR_SCAN', 'scan': payload})
+                else:
+                    self._render_lidar_2d()
                 self.last_scan_publish_monotonic = time.monotonic()
                 self.last_tf_error = None
             except (TransformException, ValueError, TypeError) as exc:
@@ -852,7 +991,8 @@ class SwerveBridge(Node):
 
         cloud_hz = max(0.1, float(self.get_parameter('lidar_web_3d_hz').value))
         cloud_available = self.latest_cloud is not None or self.latest_filtered_cloud is not None
-        if cloud_available and time.monotonic() - self.last_cloud_publish_monotonic >= 1.0 / cloud_hz:
+        if (self.detail_view == 'LIDAR_3D' and cloud_available
+                and time.monotonic() - self.last_cloud_publish_monotonic >= 1.0 / cloud_hz):
             try:
                 self._render_lidar_3d()
                 self.last_cloud_publish_monotonic = time.monotonic()
@@ -867,12 +1007,14 @@ class SwerveBridge(Node):
             sent = self.send({'type': 'MAP_SNAPSHOT', 'map': {
                 'robot_id': self.robot_id, 'frame_id': str(msg.header.frame_id or ''),
                 'map_revision': self.ros_map_revision,
+                **self.active_map_identity(),
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
                 'width': int(msg.info.width), 'height': int(msg.info.height),
                 'resolution': float(msg.info.resolution),
                 'origin': {'x': float(origin.position.x), 'y': float(origin.position.y), 'yaw': yaw_from_quaternion(origin.orientation)},
-                'data': [int(value) for value in msg.data],
+                'data_encoding': 'zlib-base64-offset1',
+                'data_zlib_base64': compress_occupancy_grid(msg.data),
             }})
             if sent:
                 self.last_sent_map_signature = self.latest_map_signature
@@ -988,6 +1130,15 @@ class SwerveBridge(Node):
             'nodes': node_names[:200],
             'topics': topic_names[:300],
             'controllers': self.controller_states[:100],
+            'map_state': {
+                **self.active_map_identity(),
+                'local_active_map_id': self.loaded_local_map_id,
+                'local_active_map_revision': self.loaded_local_map_revision,
+                'canonical_map_revision': self.ros_map_revision,
+                'map_sync_status': 'LOCAL_ONLY' if self.loaded_local_map_id else self.map_sync_status,
+            },
+            'command_ownership': dict(self.command_diagnostics),
+            'lidar_stream': dict(self.last_lidar_output_metadata),
             'simulation_time': self.simulation_time,
             'gazebo_rtf': self.gazebo_rtf,
             'errors': self.detail_errors(),
@@ -1075,19 +1226,159 @@ class SwerveBridge(Node):
             if start == index:
                 raise ValueError('invalid PGM header')
             tokens.append(data[start:index])
-        if tokens[0] != b'P5' or tokens[3] != b'255':
-            raise ValueError('Nav2 image must be an 8-bit binary PGM')
-        if index >= len(data) or data[index] not in b' \t\r\n':
-            raise ValueError('PGM header has no raster delimiter')
-        delimiter = data[index]
-        index += 1
-        if delimiter == 13 and index < len(data) and data[index] == 10:
-            index += 1
+        if tokens[0] not in (b'P2', b'P5') or tokens[3] != b'255':
+            raise ValueError('Nav2 image must be an 8-bit P2 or P5 PGM')
         width, height = int(tokens[1]), int(tokens[2])
-        raster = data[index:]
-        if len(raster) != width * height:
-            raise ValueError('PGM raster length does not match its dimensions')
+        if width <= 0 or height <= 0:
+            raise ValueError('PGM dimensions must be positive')
+        if tokens[0] == b'P5':
+            if index >= len(data) or data[index] not in b' \t\r\n':
+                raise ValueError('PGM header has no raster delimiter')
+            delimiter = data[index]
+            index += 1
+            if delimiter == 13 and index < len(data) and data[index] == 10:
+                index += 1
+            raster = data[index:]
+            if len(raster) != width * height:
+                raise ValueError('PGM raster length does not match its dimensions')
+        else:
+            values = []
+            while index < len(data):
+                while index < len(data) and data[index] in b' \t\r\n':
+                    index += 1
+                if index >= len(data):
+                    break
+                if data[index:index + 1] == b'#':
+                    newline = data.find(b'\n', index)
+                    if newline < 0:
+                        break
+                    index = newline + 1
+                    continue
+                start = index
+                while index < len(data) and data[index] not in b' \t\r\n#':
+                    index += 1
+                try:
+                    pixel = int(data[start:index])
+                except ValueError as exc:
+                    raise ValueError('PGM raster contains an invalid pixel') from exc
+                if not 0 <= pixel <= 255:
+                    raise ValueError('PGM pixel is outside 0-255')
+                values.append(pixel)
+            if len(values) != width * height:
+                raise ValueError('PGM raster length does not match its dimensions')
+            raster = bytes(values)
         return width, height, raster
+
+    def _local_map_matches_yaml(self, grid, yaml_path):
+        try:
+            import yaml
+            document = yaml.safe_load(yaml_path.read_text(encoding='utf-8')) or {}
+            image_path = Path(str(document['image']))
+            if not image_path.is_absolute():
+                image_path = yaml_path.parent / image_path
+            image_path = image_path.resolve(strict=True)
+            if not image_path.is_relative_to(self.local_map_root):
+                return False
+            width, height, pixels = self._read_pgm(image_path)
+            resolution = float(document['resolution'])
+            origin = tuple(float(value) for value in document['origin'])
+            actual_origin = grid.info.origin
+            actual = (float(actual_origin.position.x), float(actual_origin.position.y),
+                      yaw_from_quaternion(actual_origin.orientation))
+            if (str(grid.header.frame_id or '') != 'map'
+                    or int(grid.info.width) != width or int(grid.info.height) != height
+                    or not math.isclose(float(grid.info.resolution), resolution, abs_tol=1e-6)
+                    or len(origin) != 3
+                    or any(not math.isclose(a, b, abs_tol=1e-5)
+                           for a, b in zip(actual, origin))):
+                return False
+            if len(grid.data) != width * height:
+                return False
+            occupied_threshold = float(document.get('occupied_thresh', 0.65))
+            free_threshold = float(document.get('free_thresh', 0.196))
+            negate = bool(int(document.get('negate', 0)))
+            for row in range(height):
+                image_row = height - row - 1
+                for column in range(width):
+                    gray = pixels[image_row * width + column] / 255.0
+                    probability = gray if negate else 1.0 - gray
+                    expected = (100 if probability > occupied_threshold else
+                                0 if probability < free_threshold else -1)
+                    if int(grid.data[row * width + column]) != expected:
+                        return False
+            return True
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, ImportError):
+            return False
+
+    def _confirm_local_map_if_ready(self):
+        pending = self.pending_local_map_load
+        if not pending or not pending.get('service_confirmed'):
+            return
+        if self.map_callback_count <= pending['baseline_map_count']:
+            return
+        if not self._local_map_matches_yaml(self.latest_map, pending['yaml_path']):
+            return
+        self.pending_local_map_load = None
+        self.local_map_load_pending = False
+        self.loaded_local_map_id = pending['map_id']
+        self.loaded_local_map_revision = pending['map_revision']
+        self.last_sent_map_signature = None
+        identity = self.active_map_identity()
+        self.send({'type': 'LOCAL_MAP_STATUS', 'robot_id': self.robot_id,
+                   'loaded': True, 'map_id': self.loaded_local_map_id,
+                   'map_revision': self.loaded_local_map_revision,
+                   **identity, 'frame_id': 'map', 'timestamp': self.now()})
+        self._send_local_control_result(pending['data'], True, {
+            'map_id': self.loaded_local_map_id,
+            'active_map_revision': self.loaded_local_map_revision,
+            'canonical_map_revision': self.ros_map_revision,
+            'map_sync_status': 'LOCAL_ONLY',
+            'runtime_map_confirmed': True,
+        })
+
+    def poll_local_control_confirmations(self):
+        pending = self.pending_local_map_load
+        if pending and time.monotonic() > pending['deadline_monotonic']:
+            self.pending_local_map_load = None
+            self.local_map_load_pending = False
+            self._send_local_control_result(
+                pending['data'], False,
+                error='Nav2 accepted map load but /map did not confirm the selected artifact')
+        self._check_initial_pose_confirmation()
+
+    def _check_initial_pose_confirmation(self):
+        pending = self.pending_initial_pose
+        if not pending:
+            return
+        active = self.active_map_identity()
+        if (active.get('active_map_id') != pending['active_map_id']
+                or active.get('active_map_revision') != pending['active_map_revision']):
+            self.pending_initial_pose = None
+            self._send_local_control_result(pending['data'], False,
+                                            error='active map changed while initializing pose')
+            return
+        try:
+            actual, _frame = self._lookup_robot_pose()
+            distance = math.hypot(float(actual['x']) - pending['pose']['x'],
+                                  float(actual['y']) - pending['pose']['y'])
+            yaw_error = math.atan2(math.sin(float(actual['yaw']) - pending['pose']['yaw']),
+                                   math.cos(float(actual['yaw']) - pending['pose']['yaw']))
+            if distance <= 0.25 and abs(yaw_error) <= 0.35:
+                self.pending_initial_pose = None
+                self._send_local_control_result(pending['data'], True, {
+                    'message': 'ekf_v30e set-pose accepted and map-frame TF confirmed',
+                    'frame_id': 'map', 'pose': pending['pose'],
+                    'active_map_id': pending['active_map_id'],
+                    'active_map_revision': pending['active_map_revision'],
+                    'runtime_pose_confirmed': True,
+                })
+                return
+        except (TransformException, ValueError, TypeError, KeyError):
+            pass
+        if time.monotonic() > pending['deadline_monotonic']:
+            self.pending_initial_pose = None
+            self._send_local_control_result(pending['data'], False,
+                                            error='ekf_v30e accepted the request but map-frame TF did not confirm the initial pose')
 
     def _loaded_nav2_revision(self, nav2_node_present):
         """Only report a Nav2 revision after /map exactly matches its image."""
@@ -1291,6 +1582,11 @@ class SwerveBridge(Node):
                     self.preview_path(data)
                 elif kind == 'LOCAL_CONTROL':
                     self.local_control(data)
+                elif kind == 'DETAIL_VIEW':
+                    view = data.get('view')
+                    if not self.set_detail_view(view):
+                        self.send({'type': 'BRIDGE_ERROR', 'robot_id': self.robot_id,
+                                   'code': 'INVALID_DETAIL_VIEW', 'message': 'unsupported robot detail view'})
                 elif kind == 'VDA5050_ORDER':
                     self.accept_vda_order(data)
                 elif kind == 'VDA5050_INSTANT_ACTIONS':
@@ -1298,6 +1594,11 @@ class SwerveBridge(Node):
                                'status': 'UNSUPPORTED',
                                'message': 'instant action execution is not configured in this ROS bridge'})
                 elif kind in ('NAV_GOAL', 'TAG_NAV_GOAL'):
+                    if kind == 'NAV_GOAL' and not self.consume_path_preview(data):
+                        self.send_nav_status(
+                            {'robot_id': self.robot_id, 'x': data.get('x'), 'y': data.get('y')},
+                            'FAILED', 'PATH_PREVIEW_INVALID: goal requires a current approved Nav2 preview')
+                        continue
                     self.navigate(data)
                 elif kind in ('CANCEL_NAVIGATION', 'TAG_NAV_CANCEL', 'TAG_NAV_PAUSE'):
                     self.cancel_navigation(data)
@@ -1332,8 +1633,16 @@ class SwerveBridge(Node):
             'y': float(data.get('y', float('nan'))),
             'yaw': float(data.get('yaw', 0.0)),
         }
+        active_map = self.active_map_identity()
+
         def result(status, reason=None, points=None):
             points = points or []
+            current_map = self.active_map_identity()
+            if (current_map.get('active_map_id') != active_map.get('active_map_id')
+                    or current_map.get('active_map_revision') != active_map.get('active_map_revision')):
+                status = 'INVALID'
+                reason = 'active map changed while Nav2 was computing the preview'
+                points = []
             local_points = []
             local_goal = None
             if points:
@@ -1354,11 +1663,28 @@ class SwerveBridge(Node):
             self.send({
                 'type': 'PATH_PREVIEW_RESULT', 'robot_id': self.robot_id,
                 'request_id': request_id, 'status': status, 'reason': reason,
+                **active_map,
                 'frame_id': 'map', 'path': points, 'local_path': local_points,
                 'local_goal': local_goal,
                 'path_length_m': path_length(points),
                 'goal': {**goal, 'frame_id': 'map'}, 'timestamp': self.now(),
             })
+            if status == 'VALID' and points:
+                now = time.monotonic()
+                self.path_preview_approvals = {
+                    key: value for key, value in self.path_preview_approvals.items()
+                    if now - value.get('created_monotonic', now) <= 120.0
+                }
+                self.path_preview_approvals[request_id] = {
+                    'goal': dict(goal), 'active_map_id': active_map['active_map_id'],
+                    'active_map_revision': active_map['active_map_revision'],
+                    'created_monotonic': now,
+                }
+                if len(self.path_preview_approvals) > 128:
+                    oldest = sorted(self.path_preview_approvals,
+                                    key=lambda key: self.path_preview_approvals[key]['created_monotonic'])[:-128]
+                    for key in oldest:
+                        self.path_preview_approvals.pop(key, None)
 
         if not request_id or data.get('frame_id', 'map') != 'map':
             result('INVALID', 'path preview requires a request id and map-frame target')
@@ -1366,8 +1692,10 @@ class SwerveBridge(Node):
         if self.control_mode != 'AUTONOMOUS' or self.emergency_stop_active:
             result('INVALID', 'path preview requires AUTONOMOUS mode with no emergency stop')
             return
-        if self.loaded_local_map_id:
-            result('INVALID', 'path planning is blocked while a non-canonical local map is loaded')
+        if (str(data.get('active_map_id') or '') != str(active_map.get('active_map_id') or '')
+                or str(data.get('active_map_revision') or '') != str(active_map.get('active_map_revision') or '')
+                or not active_map.get('active_map_revision')):
+            result('INVALID', 'PATH_PREVIEW_MAP_MISMATCH: request does not match the active robot map')
             return
         if not all(math.isfinite(value) for value in goal.values()):
             result('INVALID', 'goal coordinates must be finite')
@@ -1387,6 +1715,33 @@ class SwerveBridge(Node):
         future = self.path_preview_client.send_goal_async(action_goal)
         future.add_done_callback(lambda completed: self.path_preview_goal_response(
             completed, request_id, goal, result))
+
+    def consume_path_preview(self, data):
+        request_id = str(data.get('preview_request_id') or '')
+        if not request_id:
+            return False
+        preview = self.path_preview_approvals.get(request_id)
+        if not preview:
+            return False
+        active = self.active_map_identity()
+        try:
+            goal_matches = all(
+                math.isfinite(float(data.get(axis)))
+                and abs(float(preview['goal'][axis]) - float(data[axis])) <= 1e-4
+                for axis in ('x', 'y', 'yaw'))
+        except (KeyError, TypeError, ValueError):
+            goal_matches = False
+        valid = (
+            time.monotonic() - preview['created_monotonic'] <= 120.0
+            and preview['active_map_id'] == active.get('active_map_id')
+            and preview['active_map_revision'] == active.get('active_map_revision')
+            and str(data.get('active_map_id') or '') == active.get('active_map_id')
+            and str(data.get('active_map_revision') or '') == active.get('active_map_revision')
+            and goal_matches
+        )
+        if valid:
+            self.path_preview_approvals.pop(request_id, None)
+        return valid
 
     def path_preview_goal_response(self, future, request_id, goal, send_result):
         try:
@@ -1474,8 +1829,16 @@ class SwerveBridge(Node):
                                                 error='map loading requires a stopped robot in MANUAL mode with no active goal')
                 return
             yaml_path = Path(str(data.get('map_yaml') or '')).expanduser().resolve()
-            if not yaml_path.is_file() or yaml_path.suffix.lower() not in ('.yaml', '.yml'):
+            local_root = self.local_map_root
+            if (not yaml_path.is_file() or yaml_path.suffix.lower() not in ('.yaml', '.yml')
+                    or not yaml_path.is_relative_to(local_root)):
                 self._send_local_control_result(data, False, error='selected map YAML does not exist')
+                return
+            map_id = str(data.get('map_id') or '')
+            map_revision = str(data.get('map_revision') or '')
+            if not map_id or not map_revision:
+                self._send_local_control_result(data, False,
+                                                error='selected local map identity or revision is missing')
                 return
             if not self.map_load_client.service_is_ready():
                 self._send_local_control_result(data, False, error='Nav2 map_server/load_map service is unavailable')
@@ -1483,10 +1846,17 @@ class SwerveBridge(Node):
             request = LoadMap.Request()
             request.map_url = str(yaml_path)
             self.local_map_load_pending = True
+            self.pending_local_map_load = {
+                'data': data, 'map_id': map_id, 'map_revision': map_revision,
+                'yaml_path': yaml_path, 'baseline_map_count': self.map_callback_count,
+                'deadline_monotonic': time.monotonic() + 20.0,
+                'service_confirmed': False,
+            }
             try:
                 future = self.map_load_client.call_async(request)
             except Exception as exc:
                 self.local_map_load_pending = False
+                self.pending_local_map_load = None
                 self._send_local_control_result(data, False,
                                                 error=f'Nav2 map load request failed: {type(exc).__name__}')
                 return
@@ -1499,8 +1869,12 @@ class SwerveBridge(Node):
                 self._send_local_control_result(data, False,
                                                 error='initial pose requires a stopped robot in MANUAL mode with no active goal')
                 return
-            if self.loaded_local_map_id:
-                self._send_local_control_result(data, False, error='initial pose is disabled while a non-canonical local map is loaded')
+            active = self.active_map_identity()
+            if (not active.get('active_map_id') or not active.get('active_map_revision')
+                    or str(data.get('active_map_id') or '') != active['active_map_id']
+                    or str(data.get('active_map_revision') or '') != active['active_map_revision']):
+                self._send_local_control_result(data, False,
+                                                error='initial pose request does not match the confirmed active map')
                 return
             if not self.initial_pose_client.service_is_ready():
                 self._send_local_control_result(data, False, error='authoritative ekf_v30e/set_pose service is unavailable')
@@ -1517,9 +1891,20 @@ class SwerveBridge(Node):
             pose.pose.covariance[7] = 0.04
             pose.pose.covariance[35] = 0.03
             request.pose = pose
-            future = self.initial_pose_client.call_async(request)
-            future.add_done_callback(lambda completed: self.simple_service_result(
-                completed, data, 'ekf_v30e accepted the initial pose'))
+            self.pending_initial_pose = {
+                'data': data, 'pose': {key: float(data[key]) for key in ('x', 'y', 'yaw')},
+                'active_map_id': active['active_map_id'],
+                'active_map_revision': active['active_map_revision'],
+                'deadline_monotonic': time.monotonic() + 8.0,
+            }
+            try:
+                future = self.initial_pose_client.call_async(request)
+            except Exception as exc:
+                self.pending_initial_pose = None
+                self._send_local_control_result(data, False,
+                                                error=f'initial pose service request failed: {type(exc).__name__}')
+                return
+            future.add_done_callback(lambda completed: self.initial_pose_service_result(completed, data))
             return
         self._send_local_control_result(data, False, error=f'unsupported local control operation {operation}')
 
@@ -1577,23 +1962,36 @@ class SwerveBridge(Node):
         })
 
     def map_load_result(self, future, data):
-        self.local_map_load_pending = False
         try:
             response = future.result()
             success = int(response.result) == int(LoadMap.Response.RESULT_SUCCESS)
         except Exception as exc:
+            self.local_map_load_pending = False
+            self.pending_local_map_load = None
             self._send_local_control_result(data, False, error=f'Nav2 map load failed: {type(exc).__name__}')
             return
         if not success:
+            self.local_map_load_pending = False
+            self.pending_local_map_load = None
             self._send_local_control_result(data, False, error=f'Nav2 map_server rejected the selected map (result={response.result})')
             return
-        self.loaded_local_map_id = str(data.get('map_id') or '')
-        self.send({'type': 'LOCAL_MAP_STATUS', 'robot_id': self.robot_id,
-                   'loaded': True, 'map_id': self.loaded_local_map_id,
-                   'frame_id': 'map', 'timestamp': self.now()})
-        self._send_local_control_result(data, True, {
-            'map_id': self.loaded_local_map_id, 'map_sync_status': 'OUT_OF_SYNC',
-        })
+        if not self.pending_local_map_load:
+            self.local_map_load_pending = False
+            self._send_local_control_result(data, False,
+                                            error='map load request state was lost before ROS confirmation')
+            return
+        self.pending_local_map_load['service_confirmed'] = True
+        self._confirm_local_map_if_ready()
+
+    def initial_pose_service_result(self, future, data):
+        try:
+            future.result()
+        except Exception as exc:
+            self.pending_initial_pose = None
+            self._send_local_control_result(data, False,
+                                            error=f'ekf_v30e set-pose service failed: {type(exc).__name__}')
+            return
+        self._check_initial_pose_confirmation()
 
     def simple_service_result(self, future, data, message):
         try:
@@ -1711,6 +2109,11 @@ class SwerveBridge(Node):
         self.manual_twist = command
         self.manual_deadline = time.monotonic() + max(
             0.10, float(self.get_parameter('manual_command_timeout').value))
+        # Publish each authorized command immediately. The steady-clock timer
+        # below refreshes it while the lease is live, but it must not be the
+        # first hop between a Web command and the command arbiter: a loaded
+        # single-threaded ROS executor can delay that timer callback.
+        self.cmd_pub.publish(command)
         self.nav_state = 'MANUAL' if action != 'STOP' else 'IDLE'
         self.send_control_status(True)
 
@@ -1771,6 +2174,9 @@ class SwerveBridge(Node):
         context = {
             'robot_id': self.robot_id, 'x': float(data.get('x')), 'y': float(data.get('y')),
             'yaw': float(data.get('yaw') or 0.0), 'frame_id': str(data.get('frame_id') or 'map'),
+            'preview_request_id': data.get('preview_request_id'),
+            'active_map_id': data.get('active_map_id'),
+            'active_map_revision': data.get('active_map_revision'),
         }
         vda_context = data.get('vda_order_context')
         if isinstance(vda_context, dict):
@@ -1779,8 +2185,18 @@ class SwerveBridge(Node):
         if self.emergency_stop_active:
             self.send_nav_status(context, 'FAILED', 'emergency stop is active')
             return
-        if self.loaded_local_map_id:
-            self.send_nav_status(context, 'FAILED', 'navigation is blocked while a non-canonical local map is loaded')
+        web_local_goal = bool(data.get('preview_request_id'))
+        if self.loaded_local_map_id and not web_local_goal:
+            self.send_nav_status(context, 'FAILED', 'fleet navigation is blocked while a robot-local map is active')
+            return
+        if web_local_goal:
+            active = self.active_map_identity()
+            if (str(data.get('active_map_id') or '') != str(active.get('active_map_id') or '')
+                    or str(data.get('active_map_revision') or '') != str(active.get('active_map_revision') or '')):
+                self.send_nav_status(context, 'FAILED', 'PATH_PREVIEW_MAP_MISMATCH: the active robot map changed')
+                return
+        if self.loaded_local_map_id and not self.loaded_local_map_revision:
+            self.send_nav_status(context, 'FAILED', 'active local map revision is not confirmed')
             return
         if self.local_map_load_pending:
             self.send_nav_status(context, 'FAILED', 'map loading is in progress')
@@ -2141,7 +2557,7 @@ class SwerveBridge(Node):
 
     def resume_navigation(self, data):
         """Resume a paused mission by submitting its approved tag goal again."""
-        if self.loaded_local_map_id or self.local_map_load_pending:
+        if self.local_map_load_pending:
             self.send_nav_status({'robot_id': self.robot_id}, 'FAILED',
                                  'navigation resume is blocked while a local map transition is active')
             return
@@ -2164,6 +2580,7 @@ class SwerveBridge(Node):
 
     def destroy_node(self):
         self.stop_event.set()
+        self.lidar_frame_buffer.clear()
         self.cmd_pub.publish(Twist())
         with self.ws_lock:
             if self.ws is not None:

@@ -65,7 +65,9 @@ def public_configuration(config, connection_state: dict[str, Any] | None = None)
         'protocol_version': config.protocol_version,
         'mqtt_protocol_version': config.mqtt_protocol_version,
         'allow_task': config.allow_task,
-        'allow_instant_actions': config.allow_instant_actions,
+        'allow_instant_actions': False,
+        'instant_actions_supported': False,
+        'instant_actions_status': 'NOT_IMPLEMENTED',
         'auto_reconnect': config.auto_reconnect,
         'reconnect_interval': config.reconnect_interval,
         'connection_timeout': config.connection_timeout,
@@ -121,7 +123,7 @@ def validate_configuration(values: dict[str, Any]) -> dict[str, Any]:
         'protocol_version': text('protocol_version', '2.0.0', 16),
         'mqtt_protocol_version': text('mqtt_protocol_version', '3.1.1', 8),
         'allow_task': boolean('allow_task', True),
-        'allow_instant_actions': boolean('allow_instant_actions', True),
+        'allow_instant_actions': False,
         'auto_reconnect': boolean('auto_reconnect', True),
         'reconnect_interval': _bounded_int(values, 'reconnect_interval', 5, 1, 300),
         'connection_timeout': _bounded_int(values, 'connection_timeout', 5, 1, 60),
@@ -188,14 +190,16 @@ def _topic_base(config) -> str:
 def _on_order(config, client, message) -> None:
     suffix = message.topic.rsplit('/', 1)[-1]
     with _manager_lock:
-        allow_task, allow_instant_actions = _task_policy.get(
-            config.robot_id, (config.allow_task, config.allow_instant_actions))
+        allow_task, _allow_instant_actions = _task_policy.get(
+            config.robot_id, (config.allow_task, False))
     if suffix == 'order' and not allow_task:
         with _manager_lock:
             state = _states.setdefault(config.robot_id, {})
             state['ignored_orders'] = int(state.get('ignored_orders', 0)) + 1
         return
-    if suffix == 'instantActions' and not allow_instant_actions:
+    # Instant-action execution is explicitly outside the current adapter
+    # contract. Never subscribe or forward it to a bridge that cannot execute it.
+    if suffix == 'instantActions' or not suffix == 'order':
         return
     if len(message.payload) > 256_000:
         log.warning('VDA5050 message rejected: payload too large for robot %s', config.robot_id)
@@ -205,10 +209,8 @@ def _on_order(config, client, message) -> None:
         if not isinstance(body, dict):
             raise ValueError('message must be an object')
         from .ros_bridge_consumer import registry
-        command_type = 'VDA5050_ORDER' if suffix == 'order' else 'VDA5050_INSTANT_ACTIONS'
         sent = async_to_sync(registry.send)({
-            'type': command_type, 'robot_id': config.robot_id,
-            'order' if suffix == 'order' else 'instant_actions': body,
+            'type': 'VDA5050_ORDER', 'robot_id': config.robot_id, 'order': body,
         })
         if not sent:
             log.warning('VDA5050 %s not routed: R%s bridge is offline', suffix, config.robot_id)
@@ -221,8 +223,6 @@ def _subscribe(client, config) -> None:
     topics = []
     if config.allow_task:
         topics.append((f'{root}/order', 0))
-    if config.allow_instant_actions:
-        topics.append((f'{root}/instantActions', 0))
     if topics:
         client.subscribe(topics)
 
@@ -265,7 +265,7 @@ def apply_configuration(config) -> dict[str, Any]:
     with _manager_lock:
         # Change policy before retiring the previous client so messages it
         # already queued are checked against the newly saved configuration.
-        _task_policy[robot_id] = (bool(config.allow_task), bool(config.allow_instant_actions))
+        _task_policy[robot_id] = (bool(config.allow_task), False)
         _last_attempt[robot_id] = time.monotonic()
         old = _clients.pop(robot_id, None)
         _states[robot_id] = {'status': 'CONNECTING' if config.enabled else 'DISABLED',

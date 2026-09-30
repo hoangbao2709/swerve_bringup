@@ -310,6 +310,13 @@ function handle(msg: ServerMessage) {
             }]))
           : st.mapSync.robots,
       });
+      for (const [robotId, state] of Object.entries(msg.local_active_maps ?? {})) {
+        st.setRobotDetail(robotId, {
+          activeLocalMapId: state.local_active_map_id ?? null,
+          activeLocalMapRevision: state.local_active_map_revision ?? null,
+          localMapSyncStatus: state.map_sync_status ?? null,
+        });
+      }
       break;
     case "ROBOT_CONTROL_STATUS":
       if (!msg.accepted) st.setNotice(`Robot control rejected: ${msg.reason || "command was rejected"}`);
@@ -327,6 +334,9 @@ function handle(msg: ServerMessage) {
       // publish the richer state packet directly.
       st.setRobotDetail(msg.robot_id, {
         navigationStatus: msg.navigation_state ?? null,
+        activeLocalMapId: msg.active_map_id && msg.active_map_id !== "CANONICAL" ? msg.active_map_id : null,
+        activeLocalMapRevision: msg.active_map_id && msg.active_map_id !== "CANONICAL" ? msg.active_map_revision ?? null : null,
+        localMapSyncStatus: msg.active_map_id && msg.active_map_id !== "CANONICAL" ? "LOCAL_ONLY" : null,
       });
       break;
     case "LIDAR_SCAN":
@@ -354,7 +364,33 @@ function handle(msg: ServerMessage) {
       st.setRobotDetail(msg.robot_id, { pathPreview: msg });
       break;
     case "LOCAL_MAP_STATUS":
-      st.setRobotDetail(msg.robot_id, { activeLocalMapId: msg.loaded ? msg.map_id ?? null : null });
+      st.setRobotDetail(msg.robot_id, {
+        activeLocalMapId: msg.loaded ? msg.map_id ?? null : null,
+        activeLocalMapRevision: msg.loaded ? msg.active_map_revision ?? msg.map_revision ?? null : null,
+        localMapSyncStatus: msg.loaded ? msg.map_sync_status ?? "LOCAL_ONLY" : null,
+      });
+      break;
+    case "COMMAND_DIAGNOSTICS": {
+      const existing = st.robotDetail[msg.robot_id]?.diagnostics;
+      st.setRobotDetail(msg.robot_id, {
+        diagnostics: { ...(existing ?? {
+          ros: false, gazebo: false, controller_manager: false, slam: false,
+          nav2: false, tf: false, lidar: false, nodes: [], topics: [],
+          controllers: [], simulation_time: null, last_update_at: null,
+        }), command_ownership: {
+          active_command_source: msg.active_command_source,
+          active_control_mode: msg.active_control_mode,
+          last_command_age: msg.last_command_age,
+          manual_source_active: msg.manual_source_active,
+          nav_source_active: msg.nav_source_active,
+          tag_source_active: msg.tag_source_active,
+          estop_active: msg.estop_active,
+        } },
+      });
+      break;
+    }
+    case "LIDAR_STREAM_DIAGNOSTICS":
+      st.setRobotDetail(msg.robot_id, { lidarStreamDiagnostics: msg });
       break;
     case "VDA5050_RUNTIME_STATUS":
       break;

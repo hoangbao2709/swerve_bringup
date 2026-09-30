@@ -733,11 +733,13 @@ class CmdRobotManual(_Base):
 class CmdNavGoal(_Base):
     type: Literal["NAV_GOAL"] = "NAV_GOAL"
     robot_id: RobotId = Field(min_length=1, max_length=64)
-    x: float
-    y: float
-    yaw: float
+    x: float = Field(allow_inf_nan=False)
+    y: float = Field(allow_inf_nan=False)
+    yaw: float = Field(allow_inf_nan=False)
     frame_id: str = Field(default="map", min_length=1, max_length=64)
     preview_request_id: Optional[str] = Field(default=None, max_length=64)
+    active_map_id: Optional[str] = Field(default=None, max_length=128)
+    active_map_revision: Optional[str] = Field(default=None, max_length=128)
 
 
 class CmdNavControl(_Base):
@@ -749,10 +751,18 @@ class CmdPathPreviewRequest(_Base):
     type: Literal["PATH_PREVIEW_REQUEST"] = "PATH_PREVIEW_REQUEST"
     robot_id: RobotId = Field(min_length=1, max_length=64)
     request_id: str = Field(min_length=1, max_length=64)
-    x: float = Field(ge=-1_000_000, le=1_000_000)
-    y: float = Field(ge=-1_000_000, le=1_000_000)
-    yaw: float = Field(ge=-1000, le=1000)
+    x: float = Field(ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
+    y: float = Field(ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
+    yaw: float = Field(ge=-1000, le=1000, allow_inf_nan=False)
     frame_id: Literal["map"] = "map"
+    active_map_id: Optional[str] = Field(default=None, max_length=128)
+    active_map_revision: Optional[str] = Field(default=None, max_length=128)
+
+
+class CmdRobotDetailView(_Base):
+    type: Literal["ROBOT_DETAIL_VIEW"] = "ROBOT_DETAIL_VIEW"
+    robot_id: RobotId = Field(min_length=1, max_length=64)
+    view: Literal["GLOBAL", "LIDAR_2D", "LIDAR_3D"]
 
 
 class CmdWhatIfRun(_Base):
@@ -792,7 +802,7 @@ class SimControlBody(_Base):
 ClientMessage = Annotated[
     Union[CmdResync, CmdSimControl, CmdInject, CmdClearInjection, CmdCreateTask,
           CmdAssignTask, CmdAckAlert, CmdSelectRobot, CmdRobotMode, CmdRobotManual,
-          CmdNavGoal, CmdNavControl, CmdPathPreviewRequest,
+          CmdNavGoal, CmdNavControl, CmdPathPreviewRequest, CmdRobotDetailView,
           CmdWhatIfRun, CmdCopilotAsk],
     Field(discriminator="type"),
 ]

@@ -1,11 +1,16 @@
+import base64
 import math
 import sys
+import threading
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from swerve_bridge.web_map_renderer import (
+    LatestFrameBuffer,
     bounded_voxel_points,
+    compress_occupancy_grid,
     laser_scan_xy,
     path_length,
     point_xyz,
@@ -13,6 +18,66 @@ from swerve_bridge.web_map_renderer import (
     successful_path_result,
     transform_points_xyz,
 )
+
+
+def test_compressed_occupancy_grid_round_trips_unknown_and_cost_values():
+    encoded = compress_occupancy_grid([-1, 0, 25, 65, 100])
+    decoded = zlib.decompress(base64.b64decode(encoded))
+    assert list(decoded) == [0, 1, 26, 66, 101]
+
+
+def test_compressed_occupancy_grid_rejects_invalid_or_unbounded_data():
+    import pytest
+
+    with pytest.raises(ValueError, match=r'\[-1, 100\]'):
+        compress_occupancy_grid([-2])
+    with pytest.raises(ValueError, match='exceeds'):
+        compress_occupancy_grid([0, 0, 0], max_cells=2)
+
+
+def test_latest_frame_buffer_replaces_stale_unsent_frames_and_tracks_drops():
+    buffer = LatestFrameBuffer()
+    buffer.offer({'revision': 1})
+    buffer.offer({'revision': 2})
+    buffer.offer({'revision': 3})
+    assert buffer.pending
+    assert buffer.dropped_frames == 2
+    assert buffer.take(timeout=0.01) == {'revision': 3}
+    assert not buffer.pending
+    assert buffer.take(timeout=0.001) is None
+
+
+def test_latest_frame_buffer_disconnect_cleanup_discards_pending_frame():
+    buffer = LatestFrameBuffer()
+    buffer.offer({'large': [1, 2, 3]})
+    buffer.clear()
+    assert buffer.take(timeout=0.001) is None
+    assert buffer.dropped_frames == 0
+
+
+def test_latest_frame_buffer_keeps_only_newest_frame_while_sender_is_slow():
+    buffer = LatestFrameBuffer()
+    first_frame_sending = threading.Event()
+    release_sender = threading.Event()
+    delivered = []
+
+    def slow_sender():
+        delivered.append(buffer.take(timeout=0.2))
+        first_frame_sending.set()
+        release_sender.wait(timeout=1.0)
+        delivered.append(buffer.take(timeout=0.2))
+
+    buffer.offer({'revision': 1})
+    sender = threading.Thread(target=slow_sender)
+    sender.start()
+    assert first_frame_sending.wait(timeout=0.2)
+    buffer.offer({'revision': 2})
+    buffer.offer({'revision': 3})
+    assert buffer.dropped_frames == 1
+    release_sender.set()
+    sender.join(timeout=0.5)
+    assert not sender.is_alive()
+    assert delivered == [{'revision': 1}, {'revision': 3}]
 
 
 def test_laser_scan_converts_only_finite_in_range_samples():

@@ -9,6 +9,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 import rclpy
 import websocket
@@ -276,11 +277,19 @@ class MotionProbe(Node):
     def observe_idle_cmd_vel(self, duration_wall_s=1.0):
         start_time = time.monotonic()
         start_index = len(self.cmd_events)
+        selected_index = len(self.selected_cmd_events)
+        owner_index = len(self.command_owner_events)
         deadline = start_time + duration_wall_s
         while time.monotonic() < deadline:
             self.pump(timeout=min(0.02, deadline - time.monotonic()))
         events = self.cmd_events[start_index:]
         nonzero = [row for row in events if any(abs(value) > 1e-4 for value in row[1:])]
+        selected_events = self.selected_cmd_events[selected_index:]
+        selected_nonzero = [row for row in selected_events
+                            if any(abs(value) > 1e-4 for value in row[1:])]
+        observed_owners = self.command_owner_events[owner_index:]
+        selected_owner = (observed_owners[-1][1] if observed_owners else
+                          self.command_owner_events[-1][1] if self.command_owner_events else None)
         publisher_names = {}
         for endpoint in self.get_publishers_info_by_topic('/cmd_vel'):
             gid = bytes(endpoint.endpoint_gid).hex()
@@ -293,6 +302,11 @@ class MotionProbe(Node):
         return {
             'duration_wall_s': time.monotonic() - start_time,
             'samples': len(events), 'nonzero_samples': len(nonzero),
+            'selected_samples': len(selected_events),
+            'selected_nonzero_samples': len(selected_nonzero),
+            'selected_velocity_zero': bool(selected_events) and not selected_nonzero,
+            'selected_owner': selected_owner,
+            'selected_owner_none_seen': any(owner == 'NONE' for _, owner in observed_owners),
             'events': [{'elapsed_wall_s': row[0] - start_time,
                         'linear_x': row[1], 'linear_y': row[2], 'angular_z': row[3],
                         'publisher_gid': publisher_gids[index],
@@ -364,32 +378,36 @@ class MotionProbe(Node):
         elapsed_sim = self.sim_time() - start_sim
         watchdog_result = {'tested': False}
         if label == 'FORWARD' and last_command_publish_sim is not None:
-            watchdog_start_sim = self.sim_time()
             watchdog_start_wall = time.monotonic()
-            watchdog_drive_index = len(self.drive_events)
+            watchdog_selected_index = len(self.selected_cmd_events)
             watchdog_cmd_index = len(self.cmd_events)
             watchdog_zero_seen = False
-            while (self.sim_time() - watchdog_start_sim < 1.5
-                   and time.monotonic() - watchdog_start_wall < 12.0):
+            # The arbiter lease is measured in wall time, while the controller
+            # update loop uses Gazebo time.  Observe the selected command after
+            # the lease expires; waiting for a zero drive-controller sample
+            # here makes this gate depend on the VM's simulation RTF.
+            watchdog_lease_s = 0.5
+            watchdog_expired_at = command_send_times[-1] + watchdog_lease_s + 0.10
+            while time.monotonic() - watchdog_start_wall < 2.5:
                 self.pump(timeout=0.02)
-                controller_rows = self.drive_events[watchdog_drive_index:]
-                incoming_rows = self.cmd_events[watchdog_cmd_index:]
-                if incoming_rows:
-                    break
-                if any(all(abs(value) <= 1e-4 for value in row[1:])
-                       for row in controller_rows):
-                    watchdog_zero_seen = True
-                    break
-            watchdog_zero_sim = self.sim_time()
+            selected_after_lease = [
+                row for row in self.selected_cmd_events[watchdog_selected_index:]
+                if row[0] >= watchdog_expired_at
+            ]
+            watchdog_zero_seen = bool(selected_after_lease) and all(
+                all(abs(value) <= 1e-4 for value in row[1:])
+                for row in selected_after_lease)
             watchdog_result = {
                 'tested': True,
                 'command_timeout_config_s': 0.5,
-                'zero_drive_command_seen': watchdog_zero_seen,
+                'zero_selected_command_seen': watchdog_zero_seen,
                 'unexpected_cmd_vel_samples_after_publisher_stopped':
                     len(self.cmd_events[watchdog_cmd_index:]),
-                'delay_after_last_command_publish_sim_s':
-                    max(0.0, watchdog_zero_sim - last_command_publish_sim)
+                'delay_after_last_command_publish_wall_s':
+                    max(0.0, time.monotonic() - command_send_times[-1])
                     if watchdog_zero_seen else None,
+                'lease_timeout_wall_s': watchdog_lease_s,
+                'waited_wall_s': time.monotonic() - watchdog_start_wall,
                 'wait_wall_s': time.monotonic() - watchdog_start_wall,
             }
         stop_result = self.stop_direct()
@@ -452,7 +470,7 @@ class MotionProbe(Node):
             and direct_owner_seen and drive_active
             and (wheel_velocity_max > 0.05 or wheel_position_change > 0.05)
             and steering_response and stop_result['zero_drive_command_seen']
-            and (label != 'FORWARD' or watchdog_result.get('zero_drive_command_seen')))
+            and (label != 'FORWARD' or watchdog_result.get('zero_selected_command_seen')))
         max_command_refresh_gap = max(
             (later - earlier for earlier, later in zip(command_send_times, command_send_times[1:])),
             default=None)
@@ -723,6 +741,7 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     pose0, gazebo0 = probe.odom, probe.gazebo_pose
     joint0 = probe.joint_snapshot(probe.joint_state)
     sim_start = probe.sim_time()
+    manual_start_wall = time.monotonic()
     wall_deadline = time.monotonic() + timeout
     next_send = 0.0
     send_times = []
@@ -809,7 +828,7 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     command_direction_seen = any(
         row[component_index] * expected_sign > 0.01
         and all(abs(row[index]) <= 1e-3 for index in range(1, 4) if index != component_index)
-        for row in active_commands)
+        for row in active_selected_commands)
     direction_tolerance = (ROTATION_TOLERANCE_RAD if expected_component == 'angular_z'
                            else TRANSLATION_TOLERANCE_M)
     passed = bool(command_ack and command_direction_seen and active_selected_commands
@@ -822,6 +841,16 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     max_refresh_gap = max((later - earlier for earlier, later in zip(send_times, send_times[1:])),
                           default=None)
     connected_ids = ((probe.runtime_status or {}).get('connected_robot_ids') or [])
+    runtime_status = probe.runtime_status or {}
+    robot_map_sync = (runtime_status.get('robot_map_sync') or {}).get(robot_id) or {}
+    local_active_map = (runtime_status.get('local_active_maps') or {}).get(robot_id) or {}
+
+    def command_observations(events):
+        selected = events[:4] + events[-4:] if len(events) > 8 else events
+        return [{'elapsed_wall_s': round(row[0] - manual_start_wall, 3),
+                 'linear_x': row[1], 'linear_y': row[2], 'angular_z': row[3]}
+                for row in selected]
+
     return {
         'passed': passed,
         'reason': None if passed else
@@ -833,6 +862,7 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
         'gazebo_p0': gazebo0, 'gazebo_p1': gazebo1,
         'gazebo_body_delta': gazebo_delta, 'odom_body_delta': odom_delta,
         'cmd_vel_nonzero_samples': len(active_commands),
+        'manual_source_topic_samples': len(commands),
         'selected_cmd_vel_nonzero_samples': len(active_selected_commands),
         'command_owner': 'WEB_MANUAL' if manual_owner_seen else None,
         'observed_cmd_vel': ([{'linear_x': row[1], 'linear_y': row[2],
@@ -844,6 +874,19 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
         'odom_directional_delta': odom_metric,
         'direction_tolerance': direction_tolerance,
         'controller_command_ack': command_ack,
+        'control_statuses': [{'accepted': item.get('accepted'),
+                              'reason': item.get('reason'),
+                              'mode': item.get('mode')}
+                             for item in action_statuses[-8:]],
+        'manual_source_observations': command_observations(commands),
+        'selected_command_observations': command_observations(selected_commands),
+        'runtime_map_status': {
+            'status': runtime_status.get('map_sync_status'),
+            'error': runtime_status.get('map_sync_error'),
+            'robot': robot_map_sync,
+            'local_active': local_active_map,
+            'tf_status': runtime_status.get('tf_status'),
+        },
         'drive_command_samples': len(drives), 'drive_nonzero': drive_active,
         'steering_command_samples': len(steering), 'stop_zero_seen': zero_seen,
         'sim_duration_s': probe.sim_time() - sim_start,
@@ -871,6 +914,57 @@ def web_navigation(probe, ws, robot_id, timeout):
         return {'passed': False, 'reason': f'ROBOT_MODE_AUTONOMOUS_rejected:{mode_error}', 'goal': goal}
 
     x, y, yaw = goal
+    request_id = str(uuid.uuid4())
+    active_map = ((probe.runtime_status or {}).get('local_active_maps') or {}).get(robot_id) or {}
+    if not active_map.get('active_map_id') or not active_map.get('active_map_revision'):
+        return {'passed': False, 'reason': 'active_robot_map_identity_unavailable', 'goal': goal}
+    preview_payload = {
+        'type': 'PATH_PREVIEW_REQUEST', 'robot_id': robot_id,
+        'request_id': request_id, 'x': x, 'y': y, 'yaw': yaw,
+        'frame_id': 'map', 'active_map_id': active_map['active_map_id'],
+        'active_map_revision': active_map['active_map_revision'],
+    }
+    ws.send(json.dumps(preview_payload))
+    preview = None
+    preview_deadline = time.monotonic() + min(30.0, max(10.0, timeout * 0.25))
+    while time.monotonic() < preview_deadline:
+        probe.pump(ws, 0.03)
+        preview = next((message for message in reversed(probe.ws_messages)
+                        if message.get('type') == 'PATH_PREVIEW_RESULT'
+                        and message.get('robot_id') == robot_id
+                        and message.get('request_id') == request_id), None)
+        if preview is not None:
+            break
+    path = preview.get('path') if isinstance(preview, dict) else None
+    preview_goal = preview.get('goal') if isinstance(preview, dict) else None
+    try:
+        preview_target_matches = isinstance(preview_goal, dict) and all(
+            abs(float(preview_goal.get(axis, float('nan'))) - expected) <= 1e-4
+            for axis, expected in (('x', x), ('y', y), ('yaw', yaw)))
+    except (TypeError, ValueError):
+        preview_target_matches = False
+    preview_valid = bool(
+        preview and str(preview.get('status') or '').upper() == 'VALID'
+        and isinstance(path, list) and path
+        and preview.get('active_map_id') == active_map['active_map_id']
+        and str(preview.get('active_map_revision')) == str(active_map['active_map_revision'])
+        and preview_target_matches
+    )
+    if not preview_valid:
+        return {
+            'passed': False,
+            'reason': (preview or {}).get('reason', 'valid_nav2_path_preview_not_received'),
+            'goal': goal, 'preview': preview, 'path_preview_request': preview_payload,
+            'active_map': active_map,
+            'runtime_map_status': {
+                'status': (probe.runtime_status or {}).get('map_sync_status'),
+                'error': (probe.runtime_status or {}).get('map_sync_error'),
+                'robot': ((probe.runtime_status or {}).get('robot_map_sync') or {}).get(robot_id),
+                'local_active': ((probe.runtime_status or {}).get('local_active_maps') or {}).get(robot_id),
+                'tf_status': (probe.runtime_status or {}).get('tf_status'),
+            },
+        }
+
     pose0, gazebo0 = probe.map_pose(), probe.gazebo_pose
     command_index = len(probe.nav_cmd_events)
     selected_index = len(probe.selected_cmd_events)
@@ -879,7 +973,9 @@ def web_navigation(probe, ws, robot_id, timeout):
     action_status_index = len(probe.action_status_events)
     goal_payload = {
         'type': 'NAV_GOAL', 'robot_id': robot_id, 'x': x, 'y': y,
-        'yaw': yaw, 'frame_id': 'map',
+        'yaw': yaw, 'frame_id': 'map', 'preview_request_id': request_id,
+        'active_map_id': active_map['active_map_id'],
+        'active_map_revision': active_map['active_map_revision'],
     }
     ws.send(json.dumps(goal_payload))
     start = time.monotonic()
@@ -937,8 +1033,22 @@ def web_navigation(probe, ws, robot_id, timeout):
         'passed': passed,
         'reason': None if passed else str(terminal.get('reason') or f'action_status={status_name}'),
         'accepted': accepted, 'status': status_name, 'goal': goal,
-        'web_payload': {'type': 'NAV_GOAL', 'robot_id': robot_id,
-                        'x': goal[0], 'y': goal[1], 'yaw': goal[2], 'frame_id': 'map'},
+        'path_preview_request': preview_payload,
+        'path_preview': {
+            'status': preview.get('status'), 'request_id': request_id,
+            'active_map_id': preview.get('active_map_id'),
+            'active_map_revision': preview.get('active_map_revision'),
+            'path_length_m': preview.get('path_length_m'),
+            'path_points': len(path),
+        },
+        'runtime_map_status': {
+            'status': (probe.runtime_status or {}).get('map_sync_status'),
+            'error': (probe.runtime_status or {}).get('map_sync_error'),
+            'robot': ((probe.runtime_status or {}).get('robot_map_sync') or {}).get(robot_id),
+            'local_active': ((probe.runtime_status or {}).get('local_active_maps') or {}).get(robot_id),
+            'tf_status': (probe.runtime_status or {}).get('tf_status'),
+        },
+        'web_payload': goal_payload,
         'ros_goal': {'x': goal[0], 'y': goal[1], 'yaw': goal[2], 'frame_id': 'map'},
         'goal_reason': terminal.get('reason'), 'p0': pose0, 'p1': pose1,
         'gazebo_p0': gazebo0, 'gazebo_p1': gazebo1,
@@ -960,6 +1070,7 @@ def main() -> int:
     parser.add_argument('--robot-id', default='R01')
     parser.add_argument('--motion-timeout', type=float, default=45.0)
     parser.add_argument('--navigation-timeout', type=float, default=180.0)
+    parser.add_argument('--manual-duration-sim', type=float, default=1.5)
     parser.add_argument('--json')
     args = parser.parse_args()
 
@@ -996,6 +1107,16 @@ def main() -> int:
 
         idle = probe.observe_idle_cmd_vel()
         result['idle_cmd_vel'] = idle
+        idle_arbiter_passed = bool(
+            idle['selected_velocity_zero']
+            and idle['selected_owner'] == 'NONE'
+            and idle['selected_owner_none_seen']
+        )
+        result['stages']['COMMAND_ARBITER_IDLE'] = idle_arbiter_passed
+        print(f'COMMAND_ARBITER_IDLE={"PASS" if idle_arbiter_passed else "FAIL"} '
+              f'selected_samples={idle["selected_samples"]} '
+              f'selected_nonzero={idle["selected_nonzero_samples"]} '
+              f'owner={idle["selected_owner"]}', flush=True)
         print(f'IDLE_CMD_VEL samples={idle["samples"]} nonzero={idle["nonzero_samples"]} '
               f'unexpected={idle["unexpected_idle_traffic"]}', flush=True)
 
@@ -1107,101 +1228,104 @@ def main() -> int:
 
         manual = {'passed': False, 'reason': f'blocked_by_{direct_blocker}',
                   'bridge_r01_connected': None}
-        bridge_ready = False
-        map_synced = False
-        if all_direct:
-            bridge_ready = probe.wait_until(
-                lambda: probe.runtime_status is not None
-                and args.robot_id in probe.runtime_status.get('connected_robot_ids', []),
-                15.0, ws,
-            )
-            map_synced = probe.wait_until(
-                lambda: probe.runtime_status is not None
-                and probe.runtime_status.get('map_sync_status') == 'SYNCED',
-                15.0, ws,
-            )
-            result['stages']['ROS_BRIDGE_R01_WEBSOCKET_READY'] = bridge_ready
-            print(f'ROS_BRIDGE_R01_WEBSOCKET_READY={"PASS" if bridge_ready else "FAIL reason=R01_not_connected_to_Django"} '
-                  f'connected_robot_ids={(probe.runtime_status or {}).get("connected_robot_ids")}', flush=True)
-            result['stages']['WEB_MAP_SYNC_READY'] = map_synced
-            print(f'WEB_MAP_SYNC_READY={"PASS" if map_synced else "FAIL reason=" + str((probe.runtime_status or {}).get("map_sync_error") or "status_not_SYNCED")}', flush=True)
-            if bridge_ready and map_synced:
-                mode_ok, mode_reason = set_mode(probe, ws, args.robot_id, 'MANUAL')
-                result['stages']['WEB_MANUAL_MODE_R01'] = mode_ok
-                print(f'WEB_MANUAL_MODE_R01={"PASS" if mode_ok else "FAIL reason=" + str(mode_reason)}', flush=True)
-                manual_actions = ('FORWARD', 'BACKWARD', 'LEFT', 'RIGHT',
-                                  'ROTATE_LEFT', 'ROTATE_RIGHT')
-                manual_results = {}
-                if mode_ok:
-                    for action in manual_actions:
-                        action_result = web_manual(
-                            probe, ws, args.robot_id, action, duration_sim_s=0.8,
-                            timeout=args.motion_timeout)
-                        manual_results[action] = action_result
-                        result['stages'][f'WEB_MANUAL_{action}'] = bool(action_result['passed'])
-                        print(f'WEB_MANUAL_{action}={"PASS" if action_result["passed"] else "FAIL"} '
+        bridge_ready = probe.wait_until(
+            lambda: probe.runtime_status is not None
+            and args.robot_id in probe.runtime_status.get('connected_robot_ids', []),
+            15.0, ws,
+        )
+
+        def active_robot_map_ready():
+            status = probe.runtime_status or {}
+            active = (status.get('local_active_maps') or {}).get(args.robot_id) or {}
+            return (status.get('map_sync_status') in ('SYNCED', 'CANONICAL')
+                    or active.get('map_sync_status') in ('SYNCED', 'CANONICAL', 'LOCAL_ONLY'))
+
+        map_synced = probe.wait_until(active_robot_map_ready, 15.0, ws)
+        result['stages']['ROS_BRIDGE_R01_WEBSOCKET_READY'] = bridge_ready
+        print(f'ROS_BRIDGE_R01_WEBSOCKET_READY={"PASS" if bridge_ready else "FAIL reason=R01_not_connected_to_Django"} '
+              f'connected_robot_ids={(probe.runtime_status or {}).get("connected_robot_ids")}', flush=True)
+        result['stages']['WEB_MAP_SYNC_READY'] = map_synced
+        print(f'WEB_MAP_SYNC_READY={"PASS" if map_synced else "FAIL reason=" + str((probe.runtime_status or {}).get("map_sync_error") or "active_robot_map_not_ready")}', flush=True)
+        if bridge_ready and map_synced:
+            mode_ok, mode_reason = set_mode(probe, ws, args.robot_id, 'MANUAL')
+            result['stages']['WEB_MANUAL_MODE_R01'] = mode_ok
+            print(f'WEB_MANUAL_MODE_R01={"PASS" if mode_ok else "FAIL reason=" + str(mode_reason)}', flush=True)
+            manual_actions = ('FORWARD', 'BACKWARD', 'LEFT', 'RIGHT',
+                              'ROTATE_LEFT', 'ROTATE_RIGHT')
+            manual_results = {}
+            if mode_ok:
+                for action in manual_actions:
+                    action_result = web_manual(
+                        probe, ws, args.robot_id, action,
+                        duration_sim_s=max(0.2, args.manual_duration_sim),
+                        timeout=args.motion_timeout)
+                    manual_results[action] = action_result
+                    result['stages'][f'WEB_MANUAL_{action}'] = bool(action_result['passed'])
+                    print(f'WEB_MANUAL_{action}={"PASS" if action_result["passed"] else "FAIL"} '
                               f'reason={action_result.get("reason")} '
                               f'cmd_vel={action_result.get("observed_cmd_vel")} '
+                              f'manual_source_samples={action_result.get("manual_source_topic_samples")} '
+                              f'selected_samples={action_result.get("selected_cmd_vel_nonzero_samples")} '
                               f'gazebo_delta={action_result.get("gazebo_body_delta")} '
-                              f'expected_direction_delta={action_result.get("physical_directional_delta")} '
-                              f'stop_zero={action_result.get("stop_zero_seen")} '
-                              f'refresh_gap_s={action_result.get("web_command_max_refresh_gap_s")}',
-                              flush=True)
-                        if not action_result['passed']:
-                            break
-                    for action in manual_actions:
-                        if action not in manual_results:
-                            result['stages'][f'WEB_MANUAL_{action}'] = None
-                else:
-                    manual_results['FORWARD'] = {
-                        'passed': False,
-                        'reason': f'manual_mode_not_accepted:{mode_reason}',
-                    }
-                    for action in manual_actions:
-                        result['stages'][f'WEB_MANUAL_{action}'] = False
-                forward_result = manual_results.get('FORWARD', {})
-                manual = dict(forward_result)
-                manual['actions'] = manual_results
-                manual['passed'] = (len(manual_results) == len(manual_actions)
-                                    and all(item.get('passed') for item in manual_results.values()))
+                          f'expected_direction_delta={action_result.get("physical_directional_delta")} '
+                          f'stop_zero={action_result.get("stop_zero_seen")} '
+                          f'refresh_gap_s={action_result.get("web_command_max_refresh_gap_s")}',
+                          flush=True)
+                    if not action_result['passed']:
+                        break
+                for action in manual_actions:
+                    if action not in manual_results:
+                        result['stages'][f'WEB_MANUAL_{action}'] = None
             else:
-                manual = {'passed': False, 'reason': 'R01_bridge_or_published_map_not_ready'}
+                manual_results['FORWARD'] = {
+                    'passed': False,
+                    'reason': f'manual_mode_not_accepted:{mode_reason}',
+                }
+                for action in manual_actions:
+                    result['stages'][f'WEB_MANUAL_{action}'] = False
+            forward_result = manual_results.get('FORWARD', {})
+            manual = dict(forward_result)
+            manual['actions'] = manual_results
+            manual['passed'] = (len(manual_results) == len(manual_actions)
+                                and all(item.get('passed') for item in manual_results.values()))
         else:
-            print(f'WEB_MANUAL_R01=UNVERIFIED reason=blocked_by_{direct_blocker}', flush=True)
+            manual = {'passed': False, 'reason': 'R01_bridge_or_active_map_not_ready'}
         result['web_manual'] = manual
-        if all_direct:
-            for stage_name, passed, detail in (
-                ('WEB_MANUAL_CMD_VEL', manual.get('cmd_vel_nonzero_samples', 0) > 0,
-                 f'samples={manual.get("cmd_vel_nonzero_samples", 0)}'),
-                ('WEB_MANUAL_CONTROLLER_COMMAND', bool(manual.get('drive_nonzero')),
-                 f'drive_samples={manual.get("drive_command_samples", 0)}'),
-                ('WEB_MANUAL_COMMAND_OWNER', manual.get('command_owner') == 'WEB_MANUAL',
-                 f'owner={manual.get("command_owner")}'),
-                ('WEB_MANUAL_COMMAND_ACCEPTED', bool(manual.get('controller_command_ack')),
-                 'R01_bridge_acknowledged_manual_command'),
-                ('WEB_MANUAL_MOTION', bool(manual.get('passed')),
-                 f'gazebo_delta={manual.get("gazebo_body_delta")}'),
-                ('WEB_MANUAL_STOP_ZERO', bool(manual.get('stop_zero_seen')),
-                 'zero_cmd_vel_observed_after_STOP'),
-            ):
-                result['stages'][stage_name] = bool(passed)
-                print(f'{stage_name}={"PASS" if passed else "FAIL"} '
-                      f'reason={manual.get("reason")} {detail}', flush=True)
-        else:
-            for stage_name in ('WEB_MANUAL_CMD_VEL', 'WEB_MANUAL_CONTROLLER_COMMAND',
-                               'WEB_MANUAL_COMMAND_ACCEPTED', 'WEB_MANUAL_MOTION',
-                               'WEB_MANUAL_COMMAND_OWNER', 'WEB_MANUAL_STOP_ZERO'):
-                result['stages'][stage_name] = None
+        for stage_name, passed, detail in (
+            ('WEB_MANUAL_CMD_VEL', manual.get('selected_cmd_vel_nonzero_samples', 0) > 0,
+             f'selected_samples={manual.get("selected_cmd_vel_nonzero_samples", 0)} '
+             f'manual_source_topic_samples={manual.get("manual_source_topic_samples", 0)}'),
+            ('WEB_MANUAL_CONTROLLER_COMMAND', bool(manual.get('drive_nonzero')),
+             f'drive_samples={manual.get("drive_command_samples", 0)}'),
+            ('WEB_MANUAL_COMMAND_OWNER', manual.get('command_owner') == 'WEB_MANUAL',
+             f'owner={manual.get("command_owner")}'),
+            ('WEB_MANUAL_COMMAND_ACCEPTED', bool(manual.get('controller_command_ack')),
+             'R01_bridge_acknowledged_manual_command'),
+            ('WEB_MANUAL_MOTION', bool(manual.get('passed')),
+             f'gazebo_delta={manual.get("gazebo_body_delta")}'),
+            ('WEB_MANUAL_STOP_ZERO', bool(manual.get('stop_zero_seen')),
+             'zero_cmd_vel_observed_after_STOP'),
+        ):
+            result['stages'][stage_name] = bool(passed)
+            print(f'{stage_name}={"PASS" if passed else "FAIL"} '
+                  f'reason={manual.get("reason")} {detail}', flush=True)
 
         manual_ok = bool(manual.get('passed'))
         navigation = {'passed': False, 'reason': 'blocked_by_failed_precondition',
                       'status': 'UNVERIFIED', 'accepted': None}
-        if all_direct and direct_navigation.get('passed') and manual_ok and bridge_ready and map_synced:
-            navigation = web_navigation(probe, ws, args.robot_id, args.navigation_timeout)
+        if (bridge_ready and map_synced
+                and result['stages'].get('WEB_MANUAL_STOP_ZERO') is not False):
+            mode_ok, mode_reason = set_mode(probe, ws, args.robot_id, 'AUTONOMOUS')
+            if not mode_ok:
+                navigation['reason'] = f'AUTONOMOUS_mode_not_accepted:{mode_reason}'
+                print(f'WEB_NAV_GOAL_R01=UNVERIFIED reason={navigation["reason"]}', flush=True)
+                result['web_navigation'] = navigation
+                mode_ok = False
+            if mode_ok:
+                navigation = web_navigation(probe, ws, args.robot_id, args.navigation_timeout)
         else:
-            reason = ('direct_nav_goal_failed' if all_direct and not direct_navigation.get('passed')
-                      else 'web_manual_r01_failed' if all_direct and not manual_ok
-                      else f'blocked_by_{direct_blocker}')
+            reason = ('web_manual_r01_failed' if not manual_ok
+                      else 'R01_bridge_or_active_map_not_ready')
             navigation['reason'] = reason
             print(f'WEB_NAV_GOAL_R01=UNVERIFIED reason={reason}', flush=True)
         result['web_navigation'] = navigation

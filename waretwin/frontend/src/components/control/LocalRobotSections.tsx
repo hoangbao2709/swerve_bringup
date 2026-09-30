@@ -14,8 +14,9 @@ import {
   type LocalRuntimeModeStatus,
   type Vda5050Configuration,
 } from "../../services/api";
-import type { RobotDetailError, RobotDetailMapSnapshot, RobotSystemDiagnostics, RobotState } from "../../schema/twin_state";
+import type { RobotDetailError, RobotDetailMapSnapshot, RobotLidarStreamDiagnostics, RobotSystemDiagnostics, RobotState } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
+import { decodeOccupancyGrid } from "./occupancyGrid";
 
 type SectionName = "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type Pose = { x: number; y: number; yaw: number };
@@ -32,6 +33,10 @@ type Props = {
   localization: unknown;
   websocketState: string;
   mapRevision: number | null;
+  activeLocalMapId: string | null;
+  activeLocalMapRevision: string | null;
+  localMapSyncStatus: string | null;
+  lidarStreamDiagnostics: RobotLidarStreamDiagnostics | null;
 };
 
 function valueText(value: unknown, fallback = "N/A") {
@@ -84,6 +89,7 @@ function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [operationState, setOperationState] = useState("READY");
   const [modeTransition, setModeTransition] = useState<LocalRuntimeModeStatus | null>(null);
 
   const refresh = useCallback(async () => {
@@ -116,10 +122,11 @@ function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode,
     return () => { active = false; window.clearInterval(timer); };
   }, [robotId]);
 
-  const run = async (action: () => Promise<unknown>, success: (result: unknown) => string) => {
+  const run = async (action: () => Promise<unknown>, success: (result: unknown) => string, pendingState: string) => {
+    setOperationState(pendingState);
     setBusy(true); setError(""); setNotice("");
-    try { const result = await action(); setNotice(success(result)); await refresh(); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Robot map operation failed"); }
+    try { const result = await action(); setNotice(success(result)); await refresh(); setOperationState("READY"); }
+    catch (caught) { setOperationState("ERROR"); setError(caught instanceof Error ? caught.message : "Robot map operation failed"); }
     finally { setBusy(false); }
   };
 
@@ -127,24 +134,24 @@ function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode,
     const result = raw as { map: LocalRobotMap };
     setName(""); setSelected(result.map.id);
     return `SAVE SUCCESS · ${result.map.name} · revision ${result.map.revision}`;
-  });
+  }, "SAVING");
   const load = () => void run(() => loadLocalRobotMap(robotId, selected), (raw) => {
     const result = raw as { active_map: LocalRobotMap; message: string };
     setActiveLocalMapId(result.active_map.id);
     return `MAP LOADED · ${result.active_map.name} · ${result.message}`;
-  });
+  }, "LOADING");
   const changeMapping = (action: "start" | "stop") => void run(
     () => setMappingState(robotId, action),
     (raw) => {
       const result = raw as { mapping_state: string };
       setMappingStateValue(result.mapping_state);
       return `MAPPING ${result.mapping_state}`;
-    },
+    }, action === "start" ? "STARTING" : "STOPPING",
   );
 
   const switchRuntimeMode = async () => {
     const target = runtimeState === "MAPPING" ? "NAVIGATION" : "MAPPING";
-    if (!window.confirm(`Switch ${robotId} to ${target}? ROS/Gazebo will restart and the simulated robot will respawn at its configured start pose.`)) return;
+    if (!window.confirm(`Switch ${robotId} to ${target}? The selected runtime adapter will transition SLAM/Nav2 after a stopped MANUAL handoff.`)) return;
     setBusy(true); setError(""); setNotice("");
     try {
       const result = await requestLocalRuntimeMode(robotId, target);
@@ -162,19 +169,20 @@ function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode,
         <Metric label="ROBOT" value={robotId} mono />
         <Metric label="RUNTIME MODE" value={runtimeState} />
         <Metric label="MAPPING STATE" value={isMapping ? mappingState : "INACTIVE · NAVIGATION MODE"} />
+        <Metric label="WORKFLOW STATE" value={operationState} mono />
         <Metric label="SESSION DURATION" value={`${valueNumber(mappingDuration, 1, " s")}${isMapping && !paused ? " · LIVE" : ""}`} mono />
         <Metric label="MAP SIZE" value={mapSnapshot ? `${mapSnapshot.width} × ${mapSnapshot.height} cells` : "WAITING FOR MAP"} mono />
         <Metric label="RESOLUTION" value={valueNumber(mapSnapshot?.resolution, 3, " m/cell")} mono />
-        <Metric label="ACTIVE LOCAL MAP" value={activeLocalMapId ?? "CANONICAL"} mono />
+        <Metric label="ACTIVE LOCAL MAP" value={activeLocalMapId ? `${activeLocalMapId} · r${mapSnapshot?.active_map_revision ?? "—"}` : "CANONICAL"} mono />
         <Metric label="AVAILABLE MAPS" value={maps.length} mono />
       </div>
       <div className="local-action-row">
         <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !["READY", "ROLLED_BACK", "ERROR"].includes(modeTransition?.status ?? "")} onClick={() => void switchRuntimeMode()}>{runtimeState === "MAPPING" ? "SWITCH TO NAVIGATION" : "START MAPPING MODE"}</button>
-        <button type="button" className="robot-console-primary" disabled={!controlOnline || !isMapping || busy || !paused} onClick={() => changeMapping("start")}>{paused ? "RESUME MAPPING" : "MAPPING ACTIVE"}</button>
+        <button type="button" className="robot-console-primary" disabled={!controlOnline || !isMapping || busy || mappingState === "MAPPING"} onClick={() => changeMapping("start")}>{paused ? "RESUME MAPPING" : "START MAPPING"}</button>
         <button type="button" disabled={!controlOnline || !isMapping || busy || paused} onClick={() => changeMapping("stop")}>STOP MAPPING</button>
-        <span className="local-help">Mode changes restart ROS/Gazebo after a MANUAL stop; the simulated robot returns to its configured start pose.</span>
+        <span className="local-help">The runtime adapter owns SLAM/Nav2 transitions. Confirmed runtime state is shown only after backend/ROS acknowledgement.</span>
       </div>
-      {modeTransition && modeTransition.status !== "READY" && <div className={`local-feedback ${["ERROR", "ROLLED_BACK"].includes(modeTransition.status) ? "error" : "warning"}`} role="status">MODE TRANSITION · {modeTransition.status} · {modeTransition.message ?? "waiting for ROS/Gazebo readiness"}</div>}
+      {modeTransition && modeTransition.status !== "READY" && <div className={`local-feedback ${["ERROR", "ROLLED_BACK"].includes(modeTransition.status) ? "error" : "warning"}`} role="status">MODE TRANSITION · {modeTransition.status} · {modeTransition.message ?? "waiting for runtime readiness"}</div>}
     </SectionPanel>
     <SectionPanel title="SAVE NAV2 MAP">
       <div className="local-form-row">
@@ -192,9 +200,9 @@ function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode,
       </div>}
       <div className="local-action-row">
         <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || runtimeState !== "NAVIGATION" || busy || !selected} onClick={load}>LOAD MAP INTO NAV2</button>
-        {activeLocalMapId && <Status value="MAP OUT OF SYNC · GOALS BLOCKED" />}
+        {activeLocalMapId && <Status value="LOCAL_ONLY · LOCAL NAVIGATION ENABLED" />}
       </div>
-      <p className="local-help">Loading changes the live Nav2 map. Goals stay blocked until the selected map is published into the canonical warehouse map bundle.</p>
+      <p className="local-help">Loading changes this robot’s live Nav2 map. Local navigation may use it immediately after /map confirmation; Fleet missions remain tied to the canonical warehouse map.</p>
     </SectionPanel>
     <SectionPanel title="LIVE MAP PREVIEW">
       {mapSnapshot ? <PosePickerMap map={mapSnapshot} robot={robot} pose={{
@@ -256,7 +264,7 @@ function LocalizationPanel({ robotId, robot, mapSnapshot, controlOnline, localiz
         <button type="button" className="robot-console-primary" disabled={!controlOnline || busy || !Number.isFinite(pose.x + pose.y + pose.yaw)} onClick={() => void apply()}>SET INITIAL POSE</button>
       </div>
       {mapSnapshot ? <PosePickerMap map={mapSnapshot} robot={robot} pose={pose} active={pickMode} onPick={(point) => setPose((old) => ({ ...old, ...point }))} /> : <div className="local-empty">Waiting for the robot scoped ROS map snapshot.</div>}
-      <p className="local-help">The pose is applied through the current authoritative robot_localization EKF service. This does not move the Gazebo entity.</p>
+      <p className="local-help">The pose is applied through the current authoritative robot_localization EKF service. It changes localization and does not teleport the robot.</p>
     </SectionPanel>
     {error && <div className="local-feedback error" role="alert">{error}</div>}
     {notice && <div className="local-feedback ok" role="status">{notice}</div>}
@@ -268,15 +276,24 @@ function PosePickerMap({ map, robot, pose, active, onPick }: MapProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const [occupancy, setOccupancy] = useState<Int8Array | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setOccupancy(null);
+    void decodeOccupancyGrid(map).then((values) => {
+      if (!cancelled) setOccupancy(values);
+    });
+    return () => { cancelled = true; };
+  }, [map]);
   const raster = useMemo(() => {
-    if (typeof document === "undefined") return null;
+    if (typeof document === "undefined" || !occupancy) return null;
     const canvas = document.createElement("canvas");
     canvas.width = map.width; canvas.height = map.height;
     const context = canvas.getContext("2d");
     if (!context) return null;
     const image = context.createImageData(map.width, map.height);
     for (let row = 0; row < map.height; row += 1) for (let column = 0; column < map.width; column += 1) {
-      const value = map.data[row * map.width + column] ?? -1;
+      const value = occupancy[row * map.width + column];
       const index = ((map.height - row - 1) * map.width + column) * 4;
       if (value < 0) { image.data[index + 3] = 0; continue; }
       const wall = value >= 65;
@@ -287,7 +304,7 @@ function PosePickerMap({ map, robot, pose, active, onPick }: MapProps) {
     }
     context.putImageData(image, 0, 0);
     return canvas;
-  }, [map]);
+  }, [map, occupancy]);
   const bounds = useMemo<WorldBounds>(() => {
     const yaw = map.origin.yaw;
     const width = map.width * map.resolution, height = map.height * map.resolution;
@@ -346,7 +363,7 @@ type VdaDraft = Omit<Vda5050Configuration, "connection_status" | "last_error" | 
 const editableVdaFields = [
   "enabled", "mqtt_host", "mqtt_port", "mqtt_username", "tls_enabled", "topic_prefix",
   "interface_name", "manufacturer", "serial_number", "protocol_version",
-  "mqtt_protocol_version", "allow_task", "allow_instant_actions", "auto_reconnect",
+  "mqtt_protocol_version", "allow_task", "auto_reconnect",
   "reconnect_interval", "connection_timeout", "keepalive", "client_id",
 ] as const;
 function vdaSnapshot(draft: VdaDraft) {
@@ -426,7 +443,7 @@ function Vda5050Panel({ robotId }: { robotId: string }) {
         <label className="local-field"><span>CLIENT ID</span><input value={draft.client_id} onChange={(event) => update("client_id", event.target.value)} placeholder={`waretwin-${robotId}`} /></label>
         <div className="local-vda-group">TASK POLICY</div>
         <label className="local-field local-check-field"><span>ALLOW TASK</span><input type="checkbox" checked={draft.allow_task} onChange={(event) => update("allow_task", event.target.checked)} /></label>
-        <label className="local-field local-check-field"><span>ALLOW INSTANT ACTIONS</span><input type="checkbox" checked={draft.allow_instant_actions} onChange={(event) => update("allow_instant_actions", event.target.checked)} /></label>
+        <div className="local-vda-capability"><span>INSTANT ACTION EXECUTION</span><Status value="NOT IMPLEMENTED" /><small>Subscription and execution are disabled; MQTT CONNECTED does not imply this capability.</small></div>
         <div className="local-vda-group">RUNTIME</div>
         <label className="local-field local-check-field"><span>AUTO RECONNECT</span><input type="checkbox" checked={draft.auto_reconnect} onChange={(event) => update("auto_reconnect", event.target.checked)} /></label>
         <label className="local-field"><span>RECONNECT INTERVAL · s</span><input type="number" min={1} max={300} value={draft.reconnect_interval} onChange={(event) => update("reconnect_interval", Number(event.target.value))} /></label>
@@ -446,19 +463,25 @@ function Vda5050Panel({ robotId }: { robotId: string }) {
   </SectionFrame>;
 }
 
-function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtimeState, localization, websocketState, mapRevision }: Props) {
+function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtimeState, localization, websocketState, mapRevision, lidarStreamDiagnostics, activeLocalMapId, activeLocalMapRevision, localMapSyncStatus }: Props) {
   const [vdaStatus, setVdaStatus] = useState("UNKNOWN");
   const [vdaError, setVdaError] = useState("");
+  const [vdaRuntime, setVdaRuntime] = useState<{ enabled: boolean; host: string; port: number; allowTask: boolean; instantActionsSupported: boolean } | null>(null);
   useEffect(() => {
     let active = true;
     const refreshConnection = () => getVda5050Configuration(robotId).then((config) => {
-      if (active) { setVdaStatus(config.connection_status); setVdaError(config.last_error ?? ""); }
+      if (active) {
+        setVdaStatus(config.connection_status); setVdaError(config.last_error ?? "");
+        setVdaRuntime({ enabled: config.enabled, host: config.mqtt_host, port: config.mqtt_port, allowTask: config.allow_task, instantActionsSupported: config.instant_actions_supported });
+      }
     }).catch(() => { if (active) setVdaStatus("UNAVAILABLE"); });
     void refreshConnection();
     const timer = window.setInterval(() => { void refreshConnection(); }, 3000);
     return () => { active = false; window.clearInterval(timer); };
   }, [robotId]);
   const metrics = diagnostics?.metrics ?? {};
+  const command = diagnostics?.command_ownership;
+  const stream = lidarStreamDiagnostics;
   return <SectionFrame>
     <SectionPanel title="ROBOT RUNTIME DIAGNOSTICS" className="local-diagnostics-grid">
       <div className="local-status-grid">
@@ -473,7 +496,26 @@ function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtime
         <Metric label="TF MAP → BASE" value={diagnostics?.tf ? "AVAILABLE" : "UNAVAILABLE"} />
         <Metric label="LIDAR" value={diagnostics?.lidar ? "ACTIVE" : "UNAVAILABLE"} />
         <Metric label="MQTT / VDA5050" value={vdaStatus} />
+        <Metric label="VDA5050 ENABLED" value={vdaRuntime?.enabled ? "YES" : "NO"} />
+        <Metric label="MQTT BROKER" value={vdaRuntime ? `${vdaRuntime.host}:${vdaRuntime.port}` : "N/A"} mono />
+        <Metric label="ALLOW TASK" value={vdaRuntime?.allowTask ? "ENABLED" : "BLOCKED"} />
+        <Metric label="INSTANT ACTIONS" value={vdaRuntime?.instantActionsSupported ? "SUPPORTED" : "NOT IMPLEMENTED"} />
         <Metric label="MAP REVISION" value={mapRevision ?? "N/A"} mono />
+        <Metric label="LOCAL ACTIVE MAP" value={activeLocalMapId ?? "CANONICAL"} mono />
+        <Metric label="LOCAL MAP REVISION" value={activeLocalMapRevision ?? "N/A"} mono />
+        <Metric label="CANONICAL REVISION" value={mapRevision ?? "N/A"} mono />
+        <Metric label="MAP SYNC STATUS" value={localMapSyncStatus ?? diagnostics?.map_state?.map_sync_status ?? "UNKNOWN"} />
+        <Metric label="CONTROL MODE" value={command?.active_control_mode ?? "UNKNOWN"} />
+        <Metric label="ACTIVE COMMAND SOURCE" value={command?.active_command_source ?? "UNKNOWN"} mono />
+        <Metric label="LAST COMMAND AGE" value={command?.last_command_age == null ? "N/A" : valueNumber(command.last_command_age, 2, " s")} mono />
+        <Metric label="MANUAL SOURCE" value={command?.manual_source_active ? "ACTIVE" : "IDLE"} />
+        <Metric label="NAV SOURCE" value={command?.nav_source_active ? "ACTIVE" : "IDLE"} />
+        <Metric label="TAG SOURCE" value={command?.tag_source_active ? "ACTIVE" : "IDLE"} />
+        <Metric label="E-STOP" value={command?.estop_active ? "ACTIVE" : "CLEAR"} />
+        <Metric label="LIDAR SOURCE FPS" value={stream?.source_fps == null ? "N/A" : valueNumber(stream.source_fps, 2, " Hz")} mono />
+        <Metric label="LIDAR WEB OUTPUT FPS" value={stream?.web_output_fps == null ? "N/A" : valueNumber(stream.web_output_fps, 2, " Hz")} mono />
+        <Metric label="LIDAR POINT COUNT" value={stream?.point_count ?? "N/A"} mono />
+        <Metric label="LIDAR DROPPED FRAMES" value={stream?.dropped_frames ?? "N/A"} mono />
         <Metric label="SIMULATION TIME" value={valueNumber(diagnostics?.simulation_time, 3, " s")} mono />
         <Metric label="GAZEBO RTF" value={valueNumber(diagnostics?.gazebo_rtf ?? metrics.gazebo_rtf, 3)} mono />
         <Metric label="WEBSOCKET LATENCY" value={valueNumber(diagnostics?.websocket_latency_ms, 0, " ms")} mono />
@@ -487,7 +529,7 @@ function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtime
         <Metric label="TOPICS" value={diagnostics?.topics?.length ?? 0} mono />
         <Metric label="CONTROLLERS" value={(diagnostics?.controllers ?? []).map((row) => `${row.name}:${row.state}`).join(" · ") || "N/A"} />
       </div>
-      <div className="local-topic-list"><code>/map · /scan · /lidar/points · /lidar/points_filtered</code><code>/tf · /tf_static · /odom · /odometry/filtered</code><code>/navigate_to_pose · /compute_path_to_pose</code></div>
+      <div className="local-topic-list"><code>/map · /scan · /lidar/points · /lidar/points_filtered</code><code>/tf · /tf_static · /odom · /odometry/filtered</code><code>/navigate_to_pose · /compute_path_to_pose · /cmd_vel_selected</code></div>
     </SectionPanel>
     <SectionPanel title="LAST REPORTED ERRORS">
       {errors.length === 0 ? <div className="local-empty">No runtime errors reported.</div> : errors.map((item, index) => <div className={`robot-detail-error-row ${classForStatus(item.severity)}`} key={`${item.code ?? item.message}-${index}`}><div><b>{item.severity}</b><span>{item.message}</span></div><small>{item.timestamp ?? "N/A"}</small></div>)}

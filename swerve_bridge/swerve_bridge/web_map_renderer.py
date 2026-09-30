@@ -6,9 +6,71 @@ browser only receives bounded numeric arrays and frame metadata.
 """
 from __future__ import annotations
 
+import base64
 import itertools
 import math
+import threading
+import time
+import zlib
 from typing import Iterable, Sequence
+
+
+def compress_occupancy_grid(values: Iterable[int], max_cells: int = 4_000_000) -> str:
+    """Return bounded zlib/base64 OccupancyGrid bytes with -1 encoded as 0."""
+    raw = bytearray()
+    for value in values:
+        cell = int(value)
+        if cell < -1 or cell > 100:
+            raise ValueError('occupancy cells must be in [-1, 100]')
+        raw.append(cell + 1)
+        if len(raw) > max_cells:
+            raise ValueError(f'occupancy grid exceeds {max_cells} cells')
+    return base64.b64encode(zlib.compress(raw, level=6)).decode('ascii')
+
+
+class LatestFrameBuffer:
+    """A one-slot handoff for visualization frames.
+
+    A producer never waits for a slow WebSocket sender. Offering a newer frame
+    replaces the unsent one and increments a measurable drop counter.
+    """
+
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._pending = None
+        self._dropped_frames = 0
+
+    def offer(self, frame) -> None:
+        with self._condition:
+            if self._pending is not None:
+                self._dropped_frames += 1
+            self._pending = frame
+            self._condition.notify()
+
+    def take(self, timeout: float | None = None):
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while self._pending is None:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0.0:
+                    return None
+                self._condition.wait(remaining)
+            frame, self._pending = self._pending, None
+            return frame
+
+    def clear(self) -> None:
+        with self._condition:
+            self._pending = None
+
+    @property
+    def dropped_frames(self) -> int:
+        with self._condition:
+            return self._dropped_frames
+
+    @property
+    def pending(self) -> bool:
+        with self._condition:
+            return self._pending is not None
 
 
 def quaternion_rotate_xyz(point: Sequence[float], quaternion: Sequence[float]) -> tuple[float, float, float]:

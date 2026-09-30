@@ -15,6 +15,27 @@ from twin.schema import ClientMessage
 
 
 class RosCoordinateTests(IsolatedAsyncioTestCase):
+    async def test_latest_valid_map_snapshot_is_retained_for_new_control_clients(self):
+        previous = runtime.robot_map_snapshots.copy()
+        payload = {
+            'type': 'MAP_SNAPSHOT',
+            'map': {
+                'robot_id': 'R01', 'frame_id': 'map', 'width': 2, 'height': 2,
+                'resolution': 0.05, 'origin': {'x': 1.0, 'y': 2.0, 'yaw': 0.0},
+                'data': [-1, 0, 100, 50], 'active_map_id': 'CANONICAL',
+                'active_map_revision': '21',
+            },
+        }
+        try:
+            runtime.robot_map_snapshots.clear()
+            with patch.object(runtime, 'broadcast', new_callable=AsyncMock) as broadcast:
+                await runtime.handle_ros_message(payload)
+            self.assertEqual(runtime.robot_map_snapshots['R01'], payload)
+            broadcast.assert_awaited_once_with(payload)
+        finally:
+            runtime.robot_map_snapshots.clear()
+            runtime.robot_map_snapshots.update(previous)
+
     async def test_ros_pose_uses_single_waretwin_adapter(self):
         pose = ros_pose_to_waretwin(1.2, 3.4, 0.5, 1.57)
         self.assertEqual(pose['position'], [1.2, 0.5, 3.4])
@@ -53,51 +74,133 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         self.assertEqual(result['result']['mapping_state'], 'MAPPING')
 
     async def test_path_preview_is_robot_scoped_and_send_goal_requires_matching_preview(self):
-        old_mode = runtime.runtime_mode
-        old_operation_mode = runtime.operation_mode
-        old_pending = dict(runtime.path_preview_requests)
-        old_approved = dict(runtime.approved_path_previews)
+        old_values = {
+            'runtime_mode': runtime.runtime_mode,
+            'operation_mode': runtime.operation_mode,
+            'published_map_revision': runtime.published_map_revision,
+            'robot_map_sync': deepcopy(runtime.robot_map_sync),
+            'connected_robot_ids': set(runtime.connected_robot_ids),
+            'path_preview_requests': dict(runtime.path_preview_requests),
+            'approved_path_previews': deepcopy(runtime.approved_path_previews),
+            'path_preview_results': deepcopy(runtime.path_preview_results),
+            'expired_path_previews': dict(runtime.expired_path_previews),
+            'path_preview_invalidations': dict(runtime.path_preview_invalidations),
+        }
         runtime.runtime_mode = 'GAZEBO_ROS'
         runtime.operation_mode = 'NAVIGATION'
+        runtime.published_map_revision = 21
+        runtime.connected_robot_ids.update(('R01', 'R02'))
+        runtime.robot_map_sync.update({
+            rid: {'ros_revision': 21, 'status': 'SYNCED', 'tf_status': True,
+                  'gazebo_revision': 21, 'nav2_revision': 21, 'tag_map_revision': 21}
+            for rid in ('R01', 'R02')
+        })
         runtime.path_preview_requests.clear()
         runtime.approved_path_previews.clear()
+        runtime.path_preview_results.clear()
+        runtime.expired_path_previews.clear()
+        runtime.path_preview_invalidations.clear()
         capture = SimpleNamespace(send_json=AsyncMock())
         gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+
+        async def request_preview(request_id, *, result_status='VALID'):
+            await runtime.handle_message(capture, {
+                'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01', 'request_id': request_id,
+                'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
+                'active_map_id': 'CANONICAL', 'active_map_revision': '21',
+            }, None)
+            await runtime.handle_ros_message({
+                'type': 'PATH_PREVIEW_RESULT', 'robot_id': 'R01', 'request_id': request_id,
+                'status': result_status,
+                'path': [[0.0, 0.0], [2.0, 3.0]] if result_status == 'VALID' else [],
+                'goal': {'x': 2.0, 'y': 3.0, 'yaw': 0.4},
+                'active_map_id': 'CANONICAL', 'active_map_revision': '21',
+            })
+
+        async def send_goal(request_id, *, robot_id='R01', x=2.0, map_id='CANONICAL', revision='21'):
+            return await runtime.handle_message(capture, {
+                'type': 'NAV_GOAL', 'robot_id': robot_id, 'x': x, 'y': 3.0, 'yaw': 0.4,
+                'frame_id': 'map', 'preview_request_id': request_id,
+                'active_map_id': map_id, 'active_map_revision': revision,
+            }, None)
+
+        def navigation_calls():
+            return [call for call in gateway.send_command.await_args_list
+                    if len(call.args) > 1 and call.args[1] == 'NAVIGATE']
+
         try:
             with patch.object(runtime, 'robot_bridge_online', return_value=True), \
-                    patch.object(runtime, 'runtime_status_message', return_value={'map_sync_status': 'SYNCED'}), \
-                    patch.object(runtime, 'gateway', return_value=gateway):
-                await runtime.handle_message(capture, {
-                    'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01', 'request_id': 'preview-1',
-                    'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
-                }, None)
+                    patch.object(runtime, 'gateway', return_value=gateway), \
+                    patch.object(runtime, 'broadcast', new=AsyncMock()):
+                await request_preview('preview-valid')
                 gateway.send_command.assert_awaited_with('R01', 'PATH_PREVIEW', {
-                    'request_id': 'preview-1', 'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
+                    'request_id': 'preview-valid', 'x': 2.0, 'y': 3.0, 'yaw': 0.4,
+                    'frame_id': 'map', 'active_map_id': 'CANONICAL',
+                    'active_map_revision': '21', 'canonical_map_revision': 21,
                 })
-                key = ('R01', 'preview-1')
-                runtime.approved_path_previews[key] = {
-                    'goal': {'x': 2.0, 'y': 3.0, 'yaw': 0.4},
-                    'created_monotonic': time.monotonic(),
-                    'map_revision': runtime.ros_map_revision,
+                await send_goal('preview-valid', robot_id='R02')
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_INVALID')
+                self.assertEqual(navigation_calls(), [])
+
+                capture.send_json.reset_mock()
+                await send_goal('preview-valid', x=2.5)
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_INVALID')
+                self.assertEqual(navigation_calls(), [])
+
+                capture.send_json.reset_mock()
+                await send_goal('preview-valid', revision='20')
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_MAP_MISMATCH')
+                self.assertEqual(navigation_calls(), [])
+
+                runtime.published_map_revision = 22
+                runtime.robot_map_sync['R01'] = {
+                    **runtime.robot_map_sync['R01'], 'ros_revision': 22,
+                    'gazebo_revision': 22, 'nav2_revision': 22, 'tag_map_revision': 22,
                 }
+                capture.send_json.reset_mock()
+                await send_goal('preview-valid', revision='22')
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_MAP_MISMATCH')
+                self.assertEqual(navigation_calls(), [])
+                runtime.published_map_revision = 21
+                runtime.robot_map_sync['R01'] = {
+                    **runtime.robot_map_sync['R01'], 'ros_revision': 21,
+                    'gazebo_revision': 21, 'nav2_revision': 21, 'tag_map_revision': 21,
+                }
+
+                key = ('R01', 'preview-valid')
+                runtime.path_preview_results[key]['created_monotonic'] = time.monotonic() - 121
+                runtime.approved_path_previews[key]['created_monotonic'] = time.monotonic() - 121
+                capture.send_json.reset_mock()
+                await send_goal('preview-valid')
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_EXPIRED')
+                self.assertEqual(navigation_calls(), [])
+
+                await request_preview('preview-no-path', result_status='NO_PATH')
+                capture.send_json.reset_mock()
+                await send_goal('preview-no-path')
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'NO_VALID_PATH')
+                self.assertEqual(navigation_calls(), [])
+
+                capture.send_json.reset_mock()
                 await runtime.handle_message(capture, {
-                    'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 2.0, 'y': 3.0,
-                    'yaw': 0.4, 'frame_id': 'map', 'preview_request_id': 'preview-1',
+                    'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 2.0, 'y': 3.0, 'yaw': 0.4,
+                    'frame_id': 'map', 'active_map_id': 'CANONICAL', 'active_map_revision': '21',
                 }, None)
-                gateway.send_command.assert_awaited_with('R01', 'NAVIGATE', {
-                    'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
-                })
-                await runtime.handle_message(capture, {
-                    'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 5.0, 'y': 3.0,
-                    'yaw': 0.4, 'frame_id': 'map', 'preview_request_id': 'preview-1',
-                }, None)
-                self.assertEqual(gateway.send_command.await_count, 2)
                 self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_REQUIRED')
+                self.assertEqual(navigation_calls(), [])
+
+                await request_preview('preview-approved')
+                await send_goal('preview-approved')
+                self.assertEqual(len(navigation_calls()), 1)
+                self.assertEqual(gateway.send_command.await_args.args, ('R01', 'NAVIGATE', {
+                    'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
+                    'preview_request_id': 'preview-approved',
+                    'active_map_id': 'CANONICAL', 'active_map_revision': '21',
+                    'canonical_map_revision': 21,
+                }))
         finally:
-            runtime.runtime_mode = old_mode
-            runtime.operation_mode = old_operation_mode
-            runtime.path_preview_requests = old_pending
-            runtime.approved_path_previews = old_approved
+            for key, value in old_values.items():
+                setattr(runtime, key, value)
 
     async def test_gateway_does_not_publish_without_bridge(self):
         previous = registry.consumer
@@ -185,6 +288,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
         old_last_ros_heartbeat = runtime.last_ros_heartbeat
         old_published_revision = runtime.published_map_revision
         old_map_sync_error = runtime.map_sync_error
+        old_robot_map_sync = deepcopy(runtime.robot_map_sync)
         try:
             runtime.runtime_mode = 'GAZEBO_ROS'
             runtime.connected_robot_ids.add('R01')
@@ -193,9 +297,15 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.client_count = 0
             runtime.published_map_revision = 12
             runtime.map_sync_error = None
+            runtime.robot_map_sync['R01'] = {
+                'ros_revision': 12, 'gazebo_revision': 12,
+                'nav2_revision': 12, 'tag_map_revision': 12,
+                'tf_status': True, 'status': 'SYNCED',
+            }
             await runtime.update_external_robot_state({
                 'type': 'ROBOT_STATE', 'robot_id': 'R01', 'frame_id': 'map',
                 'map_revision': 12, 'x': 1.2, 'y': 2.3, 'z': 0.1, 'yaw': 0.4,
+                'active_map_id': 'CANONICAL', 'active_map_revision': '12',
                 'vx': 0.5, 'vy': 0.2, 'wz': -0.1,
                 'navigation_state': 'NAVIGATING', 'control_mode': 'MANUAL',
                 'timestamp': '2026-09-22T00:00:00+00:00',
@@ -225,6 +335,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.last_ros_heartbeat = old_last_ros_heartbeat
             runtime.published_map_revision = old_published_revision
             runtime.map_sync_error = old_map_sync_error
+            runtime.robot_map_sync = old_robot_map_sync
 
     async def test_external_pose_rejects_odometry_frame_and_wrong_revision(self):
         old_mode = runtime.runtime_mode

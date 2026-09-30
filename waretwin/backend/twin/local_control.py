@@ -6,6 +6,8 @@ opaque map IDs over the API. A registry row never exposes its host paths.
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import os
 import re
 import threading
@@ -21,6 +23,71 @@ from .map_artifacts import artifact_root
 _ROBOT_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
 _MAP_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
 _registry_lock = threading.RLock()
+
+
+def _pgm_dimensions(path: Path) -> tuple[int, int]:
+    """Validate a map_saver 8-bit PGM and return its declared dimensions."""
+    data = path.read_bytes()
+    index = 0
+    tokens: list[bytes] = []
+    while len(tokens) < 4:
+        while index < len(data):
+            if data[index] in b' \t\r\n':
+                index += 1
+            elif data[index:index + 1] == b'#':
+                newline = data.find(b'\n', index)
+                if newline < 0:
+                    raise ValueError('PGM comment is not terminated')
+                index = newline + 1
+            else:
+                break
+        start = index
+        while index < len(data) and data[index] not in b' \t\r\n#':
+            index += 1
+        if start == index:
+            raise ValueError('PGM header is incomplete')
+        tokens.append(data[start:index])
+    try:
+        width, height, maximum = int(tokens[1]), int(tokens[2]), int(tokens[3])
+    except ValueError as exc:
+        raise ValueError('PGM dimensions are invalid') from exc
+    if tokens[0] not in (b'P5', b'P2') or width <= 0 or height <= 0 or maximum != 255:
+        raise ValueError('Nav2 map image must be an 8-bit P2 or P5 PGM')
+    if tokens[0] == b'P5':
+        if index >= len(data) or data[index] not in b' \t\r\n':
+            raise ValueError('PGM header has no raster delimiter')
+        delimiter = data[index]
+        index += 1
+        if delimiter == 13 and index < len(data) and data[index] == 10:
+            index += 1
+        if len(data) - index != width * height:
+            raise ValueError('PGM raster length does not match its dimensions')
+    else:
+        values: list[int] = []
+        while index < len(data):
+            while index < len(data) and data[index] in b' \t\r\n':
+                index += 1
+            if index >= len(data):
+                break
+            if data[index:index + 1] == b'#':
+                newline = data.find(b'\n', index)
+                if newline < 0:
+                    break
+                index = newline + 1
+                continue
+            start = index
+            while index < len(data) and data[index] not in b' \t\r\n#':
+                index += 1
+            try:
+                value = int(data[start:index])
+            except ValueError as exc:
+                raise ValueError('PGM raster contains an invalid pixel') from exc
+            if not 0 <= value <= 255:
+                raise ValueError('PGM pixel value is outside 0-255')
+            values.append(value)
+        if len(values) != width * height:
+            raise ValueError('PGM raster length does not match its dimensions')
+    return width, height
 
 
 def robot_map_dir(robot_id: str) -> Path:
@@ -107,14 +174,19 @@ def register_saved_map(robot_id: str, name: str, yaml_path: Path) -> dict[str, A
     image_path = image_path.resolve(strict=True)
     if not image_path.is_relative_to(directory) or not image_path.is_file():
         raise ValueError('map saver image is outside the robot map store')
-    if resolution <= 0 or len(origin) != 3:
+    if (not math.isfinite(resolution) or resolution <= 0 or len(origin) != 3
+            or not all(math.isfinite(item) for item in origin)):
         raise ValueError('map saver output has invalid resolution or origin')
+    if image_path.suffix.lower() != '.pgm':
+        raise ValueError('map saver image must be a supported PGM file')
+    width, height = _pgm_dimensions(image_path)
     now = datetime.now(timezone.utc).isoformat()
     map_id = uuid.uuid4().hex
     row = {
         'id': map_id, 'name': name, 'robot_id': robot_id,
         'created_at': now, 'resolution': resolution, 'origin': origin,
-        'revision': map_id[:12], 'frame_id': 'map',
+        'revision': map_id[:12], 'frame_id': 'map', 'width': width, 'height': height,
+        'image_sha256': hashlib.sha256(image_path.read_bytes()).hexdigest(),
         '_yaml': yaml_path.relative_to(directory).as_posix(),
         '_image': image_path.relative_to(directory).as_posix(),
     }

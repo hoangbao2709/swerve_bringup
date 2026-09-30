@@ -1113,6 +1113,11 @@ def prepare_external_dispatches(runtime) -> tuple[list[dict[str, Any]], bool]:
     for sched in schedules:
         if sched.planned_start and sched.planned_start > now:
             continue
+        # Fleet orders always use the published canonical map. A robot may
+        # still use a private map for local engineering/navigation, but an
+        # active fleet schedule must wait until it returns to the canonical map.
+        if runtime.local_map_overrides.get(sched.robot.robot_id):
+            continue
         robot = states.get(sched.robot.robot_id) or {}
         if robot.get('status') in ('OFFLINE', 'ERROR'):
             continue

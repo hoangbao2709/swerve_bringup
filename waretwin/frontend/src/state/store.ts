@@ -87,6 +87,9 @@ export const EMPTY_ROBOT_DETAIL: RobotDetailState = {
   pathPreview: null,
   mappingState: null,
   activeLocalMapId: null,
+  activeLocalMapRevision: null,
+  localMapSyncStatus: null,
+  lidarStreamDiagnostics: null,
 };
 
 export let layout = layoutJson as unknown as WarehouseLayout;

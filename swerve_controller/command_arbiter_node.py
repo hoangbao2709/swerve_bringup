@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import math
+import json
+import time
 
 import rclpy
 from geometry_msgs.msg import Twist
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
@@ -26,11 +29,13 @@ class CommandArbiter(Node):
         self.declare_parameter('emergency_stop_topic', '/emergency_stop')
         self.declare_parameter('selected_cmd_vel_topic', '/cmd_vel_selected')
         self.declare_parameter('command_owner_topic', '/command_owner')
+        self.declare_parameter('command_diagnostics_topic', '/command_arbiter/diagnostics')
         self.declare_parameter('command_timeout', 0.5)
         self.declare_parameter('control_rate', 50.0)
 
         self.command_timeout = max(0.05, float(self.get_parameter('command_timeout').value))
         control_rate = max(1.0, float(self.get_parameter('control_rate').value))
+        self.control_rate = control_rate
         self.control_mode = 'AUTONOMOUS'
         self.tag_route_state = 'IDLE'
         self.emergency_stop = False
@@ -42,6 +47,8 @@ class CommandArbiter(Node):
             Twist, str(self.get_parameter('selected_cmd_vel_topic').value), 10)
         self.owner_pub = self.create_publisher(
             String, str(self.get_parameter('command_owner_topic').value), 10)
+        self.diagnostics_pub = self.create_publisher(
+            String, str(self.get_parameter('command_diagnostics_topic').value), 10)
         source_topics = (
             ('DIRECT_MANUAL', 'direct_cmd_vel_topic'),
             ('WEB_MANUAL', 'manual_cmd_vel_topic'),
@@ -69,10 +76,13 @@ class CommandArbiter(Node):
         self.create_subscription(
             String, str(self.get_parameter('tag_route_state_topic').value),
             self.tag_route_state_callback, 10)
-        self.timer = self.create_timer(1.0 / control_rate, self.publish_selection)
+        self._diagnostics_counter = 0
+        steady_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self.timer = self.create_timer(1.0 / control_rate, self.publish_selection,
+                                       clock=steady_clock)
 
     def now_seconds(self) -> float:
-        return self.get_clock().now().nanoseconds * 1e-9
+        return time.monotonic()
 
     def clear_sources(self) -> None:
         for owner in self.sources:
@@ -124,6 +134,30 @@ class CommandArbiter(Node):
         owner_message = String()
         owner_message.data = owner
         self.owner_pub.publish(owner_message)
+        self._diagnostics_counter += 1
+        if self._diagnostics_counter >= max(1, round(self.control_rate / 5.0)):
+            self._diagnostics_counter = 0
+            now = self.now_seconds()
+            fresh = {
+                key: sample is not None and now >= sample[1]
+                and now - sample[1] <= self.command_timeout
+                for key, sample in self.sources.items()
+            }
+            selected = self.sources.get(owner)
+            diagnostic = {
+                'active_command_source': owner,
+                'active_control_mode': self.control_mode,
+                'last_command_age': (max(0.0, now - selected[1])
+                                     if selected is not None and owner in self.sources else None),
+                'manual_source_active': fresh.get('WEB_MANUAL', False)
+                                        or fresh.get('DIRECT_MANUAL', False),
+                'nav_source_active': fresh.get('NAV2', False),
+                'tag_source_active': fresh.get('TAG_ROUTE', False),
+                'estop_active': self.emergency_stop,
+            }
+            message = String()
+            message.data = json.dumps(diagnostic, separators=(',', ':'))
+            self.diagnostics_pub.publish(message)
 
 
 def main(args=None) -> None:

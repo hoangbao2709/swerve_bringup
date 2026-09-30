@@ -275,6 +275,7 @@ def generate_launch_description():
                                'django_token': LaunchConfiguration('bridge_token'),
                                'django_ws_url': LaunchConfiguration('bridge_ws_url'),
                                'artifact_root': artifact_root,
+                               'local_map_root': os.path.join(default_artifact_root, 'local_robot_maps'),
                                'gazebo_world_file': LaunchConfiguration('world'),
                                'nav2_map_file': map_file,
                                'datamatrix_map_file': datamatrix_map_file,

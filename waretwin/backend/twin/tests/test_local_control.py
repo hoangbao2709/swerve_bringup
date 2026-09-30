@@ -63,7 +63,7 @@ class LocalMapRegistryTests(TestCase):
 
     def test_duplicate_map_names_are_rejected(self):
         prefix = map_output_prefix('R01', 'same')
-        prefix.with_suffix('.pgm').write_bytes(b'image')
+        prefix.with_suffix('.pgm').write_bytes(b'P5\n1 1\n255\n\x00')
         prefix.with_suffix('.yaml').write_text(
             'image: same.pgm\nresolution: 0.1\norigin: [0, 0, 0]\n', encoding='utf-8')
         register_saved_map('R01', 'same', prefix.with_suffix('.yaml'))
@@ -83,6 +83,9 @@ class Vda5050ConfigurationTests(TestCase):
         self.assertTrue(public['password_configured'])
         self.assertNotIn('mqtt_password', public)
         self.assertNotIn('mqtt_password_ciphertext', public)
+        self.assertFalse(public['allow_instant_actions'])
+        self.assertFalse(public['instant_actions_supported'])
+        self.assertEqual(public['instant_actions_status'], 'NOT_IMPLEMENTED')
         self.assertNotIn(secret, json.dumps(public))
 
     def test_configuration_validation_rejects_bad_ports_host_and_boolean_coercion(self):
@@ -125,8 +128,13 @@ class Vda5050ConfigurationTests(TestCase):
         })()
         client = CaptureClient()
         _subscribe(client, config)
+        self.assertIsNone(client.subscriptions)
+        config.allow_task = True
+        _subscribe(client, config)
         self.assertEqual(len(client.subscriptions), 1)
-        self.assertTrue(client.subscriptions[0][0].endswith('/instantActions'))
+        self.assertTrue(client.subscriptions[0][0].endswith('/order'))
+        self.assertFalse(any(topic.endswith('/instantActions') for topic, _qos in client.subscriptions))
+        config.allow_task = False
         message = type('Message', (), {'topic': 'vda5050/uagv/v2/PTAGV/R01/order', 'payload': b'{"orderId":"blocked"}'})()
         with patch('twin.ros_bridge_consumer.registry.send') as send:
             _on_order(config, client, message)
@@ -204,26 +212,32 @@ class LocalControlApiTests(TestCase):
         self.old_operation_mode = runtime.operation_mode
         with tempfile.TemporaryDirectory() as tempdir, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tempdir)):
             prefix = map_output_prefix('R01', 'floor')
-            prefix.with_suffix('.pgm').write_bytes(b'image')
-            prefix.with_suffix('.yaml').write_text('image: floor.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n', encoding='utf-8')
+            prefix.with_suffix('.pgm').write_bytes(b'P5\n100 100\n255\n' + bytes(10_000))
+            prefix.with_suffix('.yaml').write_text('image: floor.pgm\nresolution: 0.1\norigin: [-5, -5, 0]\n', encoding='utf-8')
             map_record = register_saved_map('R01', 'floor', prefix.with_suffix('.yaml'))
             runtime.operation_mode = 'NAVIGATION'
-            with patch('twin.local_control_views._bridge_request', return_value={'ok': True, 'result': {}}) as request:
+            with patch('twin.local_control_views._bridge_request', side_effect=lambda _robot, _operation, payload, **_kwargs: {
+                'ok': True, 'result': {'map_id': payload['map_id'], 'active_map_revision': payload['map_revision']},
+            }) as request:
                 loaded = self.client.post('/api/robots/R01/local/maps/load',
                                           data=json.dumps({'map_id': map_record['id']}), content_type='application/json')
                 self.assertEqual(loaded.status_code, 200, loaded.content)
                 self.assertEqual(request.call_args.args[1], 'MAP_LOAD')
                 self.assertEqual(runtime.local_map_overrides['R01'], map_record['id'])
 
-        runtime.local_map_overrides.clear()
-        runtime.operation_mode = 'NAVIGATION'
-        with patch('twin.local_control_views._bridge_request', return_value={'ok': True, 'result': {}}) as request:
-            applied = self.client.post('/api/robots/R01/local/initial-pose',
-                                       data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
-                                       content_type='application/json')
-            self.assertEqual(applied.status_code, 200, applied.content)
-            self.assertEqual(request.call_args.args[1], 'INITIAL_POSE')
-            self.assertEqual(request.call_args.args[2]['x'], 2.0)
+            runtime.engine.state['robots']['R01'].update({'control_mode': 'MANUAL', 'navigation_state': 'IDLE',
+                                                          'vx': 0.0, 'vy': 0.0, 'wz': 0.0})
+            with patch('twin.local_control_views._bridge_request', side_effect=lambda _robot, _operation, payload, **_kwargs: {
+                'ok': True, 'result': {'runtime_pose_confirmed': True,
+                                       'active_map_id': payload['active_map_id'],
+                                       'active_map_revision': payload['active_map_revision']},
+            }) as request:
+                applied = self.client.post('/api/robots/R01/local/initial-pose',
+                                           data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
+                                           content_type='application/json')
+                self.assertEqual(applied.status_code, 200, applied.content)
+                self.assertEqual(request.call_args.args[1], 'INITIAL_POSE')
+                self.assertEqual(request.call_args.args[2]['x'], 2.0)
 
     def test_map_load_and_initial_pose_require_manual_stopped_robot(self):
         robot = runtime.engine.state['robots']['R01']
@@ -279,6 +293,29 @@ class LocalControlApiTests(TestCase):
             else:
                 robots['R01'] = previous_robot
 
+    def test_real_robot_mode_change_requires_a_configured_physical_runtime_adapter(self):
+        old_mode, old_operation_mode = runtime.runtime_mode, runtime.operation_mode
+        runtime.runtime_mode = 'REAL_ROBOT'
+        runtime.operation_mode = 'NAVIGATION'
+        runtime.engine.state['robots']['R01'].update({
+            'control_mode': 'MANUAL', 'navigation_state': 'MANUAL',
+            'vx': 0.0, 'vy': 0.0, 'wz': 0.0,
+        })
+        try:
+            with tempfile.TemporaryDirectory() as tempdir, \
+                    override_settings(WARETWIN_REAL_RUNTIME_ADAPTER='',
+                                     WARETWIN_STACK_RUNTIME_DIR=Path(tempdir)), \
+                    patch.object(runtime, 'robot_bridge_online', return_value=True):
+                response = self.client.post(
+                    '/api/robots/R01/local/runtime-mode',
+                    data=json.dumps({'mode': 'MAPPING'}), content_type='application/json')
+            self.assertEqual(response.status_code, 501, response.content)
+            self.assertEqual(response.json()['error']['code'], 'HTTP_501')
+            self.assertEqual(response.json()['error']['details']['code'], 'REAL_RUNTIME_ADAPTER_UNAVAILABLE')
+            self.assertIn('no Gazebo', response.json()['error']['message'])
+        finally:
+            runtime.runtime_mode, runtime.operation_mode = old_mode, old_operation_mode
+
     def test_vda_api_persists_secret_and_test_result_without_returning_secret(self):
         body = {
             'enabled': False, 'mqtt_host': 'broker.local', 'mqtt_port': 1883,
@@ -291,8 +328,10 @@ class LocalControlApiTests(TestCase):
         config = RobotVda5050Configuration.objects.get(robot_id='R01')
         self.assertNotEqual(config.mqtt_password_ciphertext, body['mqtt_password'])
         self.assertFalse(config.allow_task)
+        self.assertFalse(config.allow_instant_actions)
         readback = self.client.get('/api/robots/R01/local/vda5050').json()
         self.assertTrue(readback['password_configured'])
+        self.assertFalse(readback['allow_instant_actions'])
         self.assertNotIn(body['mqtt_password'], json.dumps(readback))
 
         with patch('twin.local_control_views.test_connection', return_value={
@@ -303,6 +342,25 @@ class LocalControlApiTests(TestCase):
         self.assertTrue(tested.json()['ok'])
         self.assertNotIn(body['mqtt_password'], json.dumps(tested.json()))
         test_connection.assert_called_once()
+
+    def test_vda_save_apply_failure_rolls_persisted_configuration_back(self):
+        body = {
+            'enabled': True, 'mqtt_host': 'broker.local', 'mqtt_port': 1883,
+            'mqtt_username': '', 'mqtt_password': '', 'allow_task': False,
+        }
+        with patch('twin.local_control_views.apply_configuration', side_effect=[
+            {'status': 'DISCONNECTED', 'last_error': 'broker refused connection'},
+            {'status': 'DISABLED'},
+        ]) as apply:
+            response = self.client.put('/api/robots/R01/local/vda5050', data=json.dumps(body),
+                                       content_type='application/json')
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()['error']['code'], 'VDA5050_APPLY_FAILED')
+        config = RobotVda5050Configuration.objects.get(robot_id='R01')
+        self.assertFalse(config.enabled)
+        self.assertEqual(config.mqtt_host, '')
+        self.assertTrue(config.allow_task)
+        self.assertEqual(apply.call_count, 2)
 
     def test_vda_read_restores_a_persisted_enabled_robot_configuration(self):
         config = RobotVda5050Configuration.objects.create(

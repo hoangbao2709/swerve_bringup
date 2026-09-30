@@ -29,6 +29,8 @@ class TwinConsumer(AsyncJsonWebsocketConsumer):
         await runtime.ensure_started()
         await self.send_json(runtime.full_message())
         await self.send_json(runtime.runtime_status_message())
+        for snapshot in runtime.robot_map_snapshots.values():
+            await self.send_json(snapshot)
         for floor, values in runtime.engine.traffic.items():
             await self.send_json({'type': 'HEATMAP', 'layer': runtime.heatmap_layer('CONGESTION', values, floor)})
 

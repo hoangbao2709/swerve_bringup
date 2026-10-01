@@ -70,6 +70,23 @@ export type LocalRuntimeModeStatus = {
   message?: string | null;
 };
 
+export type LocalMapLoadResult = {
+  ok: boolean;
+  status?: "TRANSITIONING" | "LOADED" | string;
+  active_map?: LocalRobotMap;
+  active_map_id?: string;
+  active_map_revision?: string;
+  local_active_map_id?: string;
+  local_active_map_revision?: string;
+  canonical_map_revision?: string | number | null;
+  map_source?: "SAVED_LOCAL" | string;
+  map_sync_status?: string;
+  request_id?: string | null;
+  transition?: LocalRuntimeModeStatus;
+  mapping_state?: string;
+  message: string;
+};
+
 export type Vda5050Configuration = {
   robot_id: string;
   enabled: boolean;
@@ -106,7 +123,7 @@ async function localRobotApi<T>(robotId: string, path: string, init: RequestInit
 }
 
 export const getLocalRobotMaps = (robotId: string) =>
-  localRobotApi<{ robot_id: string; maps: LocalRobotMap[]; runtime_mode: string; mapping_state: string; mapping_duration_s: number; active_local_map_id: string | null; local_active_map_id: string | null; local_active_map_revision: string | null; active_map_id: string | null; active_map_revision: string | null; canonical_map_revision: string | number | null; map_sync_status: string | null }>(robotId, "maps");
+  localRobotApi<{ robot_id: string; maps: LocalRobotMap[]; runtime_mode: string; mapping_state: string; mapping_duration_s: number; robot_control_mode: string; robot_stopped: boolean; active_local_map_id: string | null; local_active_map_id: string | null; local_active_map_revision: string | null; active_map_id: string | null; active_map_revision: string | null; canonical_map_revision: string | number | null; map_sync_status: string | null }>(robotId, "maps");
 
 export const getLocalRuntimeMode = (robotId: string) =>
   localRobotApi<{ robot_id: string; current_mode: string; transition: LocalRuntimeModeStatus }>(robotId, "runtime-mode");
@@ -121,7 +138,7 @@ export const saveLocalRobotMap = (robotId: string, name: string) =>
   localRobotApi<{ ok: boolean; map: LocalRobotMap }>(robotId, "maps/save", { method: "POST", body: JSON.stringify({ name }) });
 
 export const loadLocalRobotMap = (robotId: string, map_id: string) =>
-  localRobotApi<{ ok: boolean; active_map: LocalRobotMap; active_map_id: string; active_map_revision: string; canonical_map_revision: string | number | null; map_sync_status: string; message: string }>(robotId, "maps/load", { method: "POST", body: JSON.stringify({ map_id }) });
+  localRobotApi<LocalMapLoadResult>(robotId, "maps/load", { method: "POST", body: JSON.stringify({ map_id }) });
 
 export const initializeLocalRobotPose = (robotId: string, pose: { x: number; y: number; yaw: number; frame_id: "map" }) =>
   localRobotApi<{ ok: boolean; pose: typeof pose; localization_owner: string }>(robotId, "initial-pose", { method: "POST", body: JSON.stringify(pose) });

@@ -178,6 +178,11 @@ def _robot_available(robot_id: str):
     return None
 
 
+def _clear_pending_local_map_load(robot_id: str) -> None:
+    getattr(runtime, 'pending_local_map_loads', {}).pop(robot_id, None)
+    runtime.local_map_transitions.discard(robot_id)
+
+
 def _require_manual_stopped(robot_id: str):
     robot = runtime.engine.state.get('robots', {}).get(robot_id)
     if not robot:
@@ -263,12 +268,20 @@ def local_maps(request, robot_id: str):
     except ValueError as exc:
         return _error(str(exc), 500)
     active_map = runtime.active_map_state(robot_id)
+    robot = runtime.engine.state.get('robots', {}).get(robot_id, {})
+    measured = []
+    try:
+        measured = [float(robot.get(axis, 0.0)) for axis in ('vx', 'vy', 'wz')]
+    except (TypeError, ValueError):
+        measured = []
     return JsonResponse({
         'robot_id': robot_id,
         'maps': maps,
         'runtime_mode': runtime.operation_mode,
         'mapping_state': getattr(runtime, 'robot_mapping_state', {}).get(robot_id, 'UNKNOWN'),
         'mapping_duration_s': getattr(runtime, 'robot_mapping_elapsed_s', {}).get(robot_id, 0.0),
+        'robot_control_mode': str(robot.get('control_mode') or '').upper(),
+        'robot_stopped': bool(len(measured) == 3 and all(math.isfinite(value) and abs(value) <= 0.05 for value in measured)),
         **active_map,
         'active_local_map_id': active_map['local_active_map_id'],
         'map_sync_status': active_map['map_sync_status'],
@@ -281,13 +294,20 @@ def local_maps(request, robot_id: str):
 def local_runtime_mode(request, robot_id: str):
     adapter = _runtime_adapter(runtime.runtime_mode)
     if request.method == 'GET':
+        transition = adapter.get_mode_status(robot_id) if adapter else {
+            'robot_id': robot_id, 'status': 'UNAVAILABLE', 'mode': None,
+            'message': f'no runtime adapter is available for {runtime.runtime_mode}',
+        }
+        pending = getattr(runtime, 'pending_local_map_loads', {}).get(robot_id)
+        if (pending and pending.get('request_id')
+                and transition.get('request_id') == pending['request_id']
+                and transition.get('status') in ('ROLLED_BACK', 'ERROR')):
+            _clear_pending_local_map_load(robot_id)
         return JsonResponse({
             'robot_id': robot_id,
             'current_mode': runtime.operation_mode,
-            'transition': adapter.get_mode_status(robot_id) if adapter else {
-                'robot_id': robot_id, 'status': 'UNAVAILABLE', 'mode': None,
-                'message': f'no runtime adapter is available for {runtime.runtime_mode}',
-            },
+            'transition': transition,
+            'pending_local_map_id': pending.get('map_id') if pending else None,
         })
     if not runtime.is_external:
         return _error('mapping/navigation transition requires a connected robot runtime', 409)
@@ -296,6 +316,8 @@ def local_runtime_mode(request, robot_id: str):
     target = str(_body(request).get('mode') or '').strip().upper()
     if target not in ('MAPPING', 'NAVIGATION'):
         return _error('mode must be MAPPING or NAVIGATION')
+    if robot_id in runtime.local_map_transitions:
+        return _error('runtime mode cannot change during a saved local map load', 409)
     current = str(runtime.operation_mode).upper()
     if current not in ('MAPPING', 'NAVIGATION'):
         return _error(f'cannot switch runtime mode from {current}', 409)
@@ -419,51 +441,149 @@ def load_robot_map(request, robot_id: str):
     problem = _robot_available(robot_id)
     if problem:
         return problem
-    if runtime.operation_mode != 'NAVIGATION':
-        return _error('map load requires the active Nav2 navigation runtime', 409)
     stopped = _require_manual_stopped(robot_id)
     if stopped:
         return stopped
-    if robot_id in runtime.local_map_transitions:
-        return _error('a local map transition is already in progress', 409)
     map_id = str(_body(request).get('map_id') or '').strip()
     try:
-        record, yaml_path, _image_path = get_robot_map(robot_id, map_id)
+        record, yaml_path, image_path = get_robot_map(robot_id, map_id)
     except (FileNotFoundError, ValueError) as exc:
         return _error(str(exc), 404)
-    runtime.local_map_transitions.add(robot_id)
-    try:
+    pending_loads = runtime.pending_local_map_loads
+    pending = pending_loads.get(robot_id)
+    if pending and pending.get('map_id') != map_id:
+        return _error('another saved local map is still loading for this robot', 409)
+
+    mode = str(runtime.operation_mode or '').upper()
+    if mode == 'MAPPING':
+        if pending:
+            adapter = _runtime_adapter(runtime.runtime_mode)
+            status = adapter.get_mode_status(robot_id) if adapter else {}
+            if (status.get('request_id') == pending.get('request_id')
+                    and status.get('status') in ('ROLLED_BACK', 'ERROR')):
+                _clear_pending_local_map_load(robot_id)
+                return _error(status.get('message') or 'navigation runtime transition failed', 409)
+            return JsonResponse({
+                'ok': True, 'status': 'TRANSITIONING', 'robot_id': robot_id,
+                'active_map': record, 'active_map_id': map_id,
+                'active_map_revision': record['revision'],
+                'request_id': pending.get('request_id'),
+                'transition': status,
+                'mapping_state': 'PAUSED',
+                'message': 'SLAM is paused; waiting for the runtime supervisor to start Nav2.',
+            }, status=202)
+
+        adapter = _runtime_adapter(runtime.runtime_mode)
+        if adapter is None:
+            return _error(f'no runtime adapter is available for {runtime.runtime_mode}', 409)
+        transition = adapter.get_mode_status(robot_id)
+        if transition.get('status') != 'READY' or str(transition.get('mode') or '').lower() != 'mapping':
+            return _error('mapping runtime is not ready for a supervised navigation handoff', 409,
+                          {'transition': transition})
+
+        runtime.local_map_transitions.add(robot_id)
         try:
-            result = _bridge_request(robot_id, 'MAP_LOAD', {
-                'map_id': map_id, 'map_revision': record['revision'],
-                'map_yaml': str(yaml_path),
-            }, timeout=30.0)
+            stopped_slam = _bridge_request(robot_id, 'MAPPING_STOP', timeout=8.0)
         except Exception as exc:
-            return _error(f'Nav2 map load request failed: {type(exc).__name__}', 502)
-        failure = _response_for_bridge_result(result)
+            runtime.local_map_transitions.discard(robot_id)
+            return _error(f'SLAM could not be stopped before navigation handoff: {type(exc).__name__}', 502)
+        failure = _response_for_bridge_result(stopped_slam)
         if failure:
+            runtime.local_map_transitions.discard(robot_id)
             return failure
-        applied = result.get('result') or {}
-        if (str(applied.get('map_id') or '') != map_id
-                or str(applied.get('active_map_revision') or '') != str(record['revision'])):
-            return _error('ROS confirmed a different active map than the selected artifact', 502)
-        runtime.local_map_overrides[robot_id] = map_id
-        runtime.local_map_revisions[robot_id] = str(record['revision'])
-        runtime.local_map_status[robot_id] = {
-            'loaded': True, 'map_id': map_id,
-            'active_map_revision': str(record['revision']),
-            'canonical_map_revision': runtime.published_map_revision,
+        runtime.robot_mapping_state[robot_id] = 'PAUSED'
+        runtime.invalidate_path_previews(robot_id, 'runtime changed from mapping to navigation')
+
+        result = adapter.request_mode_change(robot_id, 'NAVIGATION')
+        if not result.get('ok'):
+            runtime.local_map_transitions.discard(robot_id)
+            return _error(str(result.get('message') or 'runtime supervisor rejected navigation handoff'),
+                          int(result.get('http_status') or 502), {'code': result.get('code')})
+        pending = {
+            'map_id': map_id, 'map_revision': str(record['revision']),
+            'request_id': result.get('request_id'),
+            'yaml_path': str(yaml_path), 'image_path': str(image_path),
+            'phase': 'MODE_TRANSITION',
         }
-        runtime.invalidate_path_previews(robot_id, 'active map changed')
+        pending_loads[robot_id] = pending
         return JsonResponse({
-            'ok': True, 'robot_id': robot_id, 'active_map': record,
-            'active_map_id': map_id, 'active_map_revision': record['revision'],
-            'canonical_map_revision': runtime.published_map_revision,
-            'map_sync_status': 'LOCAL_ONLY',
-            'message': 'Nav2 confirmed this robot-local map. Local navigation is enabled; fleet missions remain tied to the canonical map.',
-        })
-    finally:
-        runtime.local_map_transitions.discard(robot_id)
+            'ok': True, 'status': 'TRANSITIONING', 'robot_id': robot_id,
+            'active_map': record, 'active_map_id': map_id,
+            'active_map_revision': record['revision'],
+            'request_id': pending['request_id'],
+            'transition': result, 'mapping_state': 'PAUSED',
+            'map_sync_status': 'LOADING',
+            'message': 'SLAM was paused; the supervisor is restarting the stack in Navigation mode.',
+        }, status=202)
+
+    if mode != 'NAVIGATION':
+        return _error(f'saved local maps cannot load while runtime mode is {mode or "UNKNOWN"}', 409)
+
+    if pending and pending.get('phase') == 'MODE_TRANSITION':
+        adapter = _runtime_adapter(runtime.runtime_mode)
+        transition = adapter.get_mode_status(robot_id) if adapter else {}
+        if (transition.get('request_id') != pending.get('request_id')
+                or transition.get('status') in ('ROLLED_BACK', 'ERROR')):
+            _clear_pending_local_map_load(robot_id)
+            return _error(transition.get('message') or 'saved map navigation transition is no longer active', 409)
+        if (transition.get('status') != 'READY'
+                or str(transition.get('mode') or '').lower() != 'navigation'):
+            return JsonResponse({
+                'ok': True, 'status': 'TRANSITIONING', 'robot_id': robot_id,
+                'active_map': record, 'active_map_id': map_id,
+                'active_map_revision': record['revision'],
+                'request_id': pending.get('request_id'), 'transition': transition,
+                'map_sync_status': 'LOADING',
+                'message': 'waiting for Nav2 and its selected map server to pass readiness.',
+            }, status=202)
+
+    stopped = _require_manual_stopped(robot_id)
+    if stopped:
+        return stopped
+    runtime.local_map_transitions.add(robot_id)
+    if pending is None:
+        pending = {
+            'map_id': map_id, 'map_revision': str(record['revision']),
+            'request_id': None, 'yaml_path': str(yaml_path),
+            'image_path': str(image_path), 'phase': 'MAP_LOAD',
+        }
+        pending_loads[robot_id] = pending
+    try:
+        result = _bridge_request(robot_id, 'MAP_LOAD', {
+            'map_id': map_id, 'map_revision': record['revision'],
+            'map_yaml': str(yaml_path),
+        }, timeout=30.0)
+    except Exception as exc:
+        _clear_pending_local_map_load(robot_id)
+        return _error(f'Nav2 map load request failed: {type(exc).__name__}', 502)
+    failure = _response_for_bridge_result(result)
+    if failure:
+        _clear_pending_local_map_load(robot_id)
+        return failure
+    applied = result.get('result') or {}
+    if (str(applied.get('map_id') or '') != map_id
+            or str(applied.get('active_map_revision') or '') != str(record['revision'])):
+        _clear_pending_local_map_load(robot_id)
+        return _error('ROS confirmed a different active map than the selected artifact', 502)
+    runtime.local_map_overrides[robot_id] = map_id
+    runtime.local_map_revisions[robot_id] = str(record['revision'])
+    runtime.local_map_status[robot_id] = {
+        'loaded': True, 'map_id': map_id,
+        'active_map_revision': str(record['revision']),
+        'canonical_map_revision': runtime.published_map_revision,
+    }
+    _clear_pending_local_map_load(robot_id)
+    runtime.invalidate_path_previews(robot_id, 'active map changed')
+    return JsonResponse({
+        'ok': True, 'status': 'LOADED', 'robot_id': robot_id,
+        'active_map': record, 'active_map_id': map_id,
+        'active_map_revision': record['revision'],
+        'local_active_map_id': map_id,
+        'local_active_map_revision': record['revision'],
+        'canonical_map_revision': runtime.published_map_revision,
+        'map_source': 'SAVED_LOCAL', 'map_sync_status': 'LOCAL_ONLY',
+        'message': 'Nav2 confirmed this robot-local map. Local navigation is enabled; fleet missions remain tied to the canonical map.',
+    })
 
 
 @csrf_exempt
@@ -484,6 +604,10 @@ def initialize_robot_pose(request, robot_id: str):
     import math
     if not all(math.isfinite(value) for value in pose.values()):
         return _error('x, y, and yaw must be finite numbers')
+    if pose['yaw'] < -math.pi or pose['yaw'] > math.pi:
+        return _error('yaw must be within [-pi, pi]')
+    if robot_id in runtime.local_map_transitions:
+        return _error('initial pose is blocked while a saved local map is loading', 409)
     active_map = runtime.active_map_state(robot_id)
     if (not active_map.get('active_map_id') or not active_map.get('active_map_revision')
             or active_map.get('map_sync_status') not in ('CANONICAL', 'LOCAL_ONLY')):

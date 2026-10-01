@@ -133,6 +133,7 @@ class TwinRuntime:
         self.local_map_status: dict[str, dict[str, Any]] = {}
         self.robot_map_geometry: dict[str, dict[str, Any]] = {}
         self.local_map_transitions: set[str] = set()
+        self.pending_local_map_loads: dict[str, dict[str, Any]] = {}
         self.robot_mapping_state: dict[str, str] = {}
         self.robot_mapping_elapsed_s: dict[str, float] = {}
         self.robot_mapping_sessions: dict[str, str] = {}
@@ -1311,6 +1312,13 @@ class TwinRuntime:
         elif t == 'SELECT_ROBOT':
             return
         elif t == 'ROBOT_MODE':
+            if (msg.robot_id in self.local_map_transitions
+                    and msg.mode != 'MANUAL'):
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'LOCAL_MAP_TRANSITION',
+                    'message': 'only MANUAL mode is allowed while the saved local map is loading',
+                })
+                return
             if not self.is_external:
                 await consumer.send_json({
                     'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
@@ -1345,6 +1353,13 @@ class TwinRuntime:
                 'reason': None if result.get('ok') else 'ROS bridge is offline',
             })
         elif t == 'ROBOT_MANUAL':
+            if (msg.robot_id in self.local_map_transitions
+                    and msg.action != 'STOP'):
+                await consumer.send_json({
+                    'type': 'ERROR', 'code': 'LOCAL_MAP_TRANSITION',
+                    'message': 'manual motion is blocked while the saved local map is loading',
+                })
+                return
             if not self.is_external:
                 await consumer.send_json({
                     'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',

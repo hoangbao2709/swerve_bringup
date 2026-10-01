@@ -354,6 +354,8 @@ describe("robot detail route stability", () => {
     } });
     let mappingState = "MAPPING";
     let maps: LocalRobotMap[] = [];
+    let currentMode = "MAPPING";
+    let robotControlMode = "MANUAL";
     const savedMap: LocalRobotMap = {
       id: "local-map-1", name: "floor_1", robot_id: "R01", created_at: "2026-09-30T00:00:00Z",
       resolution: 0.05, origin: [0, 0, 0], revision: "rev-2", frame_id: "map", width: 100, height: 100,
@@ -363,6 +365,11 @@ describe("robot detail route stability", () => {
       mapping_duration_s: 12, active_local_map_id: null, local_active_map_id: null,
       local_active_map_revision: null, active_map_id: "CANONICAL", active_map_revision: "21",
       canonical_map_revision: 21, map_sync_status: "CANONICAL",
+      robot_control_mode: robotControlMode, robot_stopped: true,
+    }));
+    vi.mocked(api.getLocalRuntimeMode).mockImplementation(async () => ({
+      robot_id: "R01", current_mode: currentMode,
+      transition: { robot_id: "R01", mode: currentMode.toLowerCase(), status: "READY", message: "runtime ready" },
     }));
     vi.mocked(api.setMappingState).mockImplementation(async (_robot, action) => {
       mappingState = action === "start" ? "MAPPING" : "PAUSED";
@@ -377,6 +384,20 @@ describe("robot detail route stability", () => {
       ok: true, active_map: savedMap, active_map_id: savedMap.id,
       active_map_revision: savedMap.revision, canonical_map_revision: 21,
       map_sync_status: "LOCAL_ONLY", message: "local navigation enabled",
+    });
+    vi.mocked(api.loadLocalRobotMap).mockImplementationOnce(async () => {
+      currentMode = "NAVIGATION";
+      mappingState = "PAUSED";
+      return {
+        ok: true, status: "TRANSITIONING", active_map: savedMap,
+        active_map_id: savedMap.id, active_map_revision: savedMap.revision,
+        request_id: "nav-transition-1", mapping_state: "PAUSED",
+        message: "waiting for navigation readiness",
+      };
+    });
+    vi.mocked(wsSetRobotMode).mockImplementation((_robotId, mode) => {
+      robotControlMode = mode;
+      return true;
     });
     renderNode(<RobotControlDetailPage robotId="R01" />);
     await act(async () => { buttonNamed("MAPPING")?.click(); await Promise.resolve(); });
@@ -397,14 +418,14 @@ describe("robot detail route stability", () => {
     await act(async () => { buttonNamed("RESUME MAPPING")?.click(); await settleUi(); });
     expect(api.setMappingState).toHaveBeenCalledWith("R01", "start");
 
-    act(() => useStore.setState({ runtimeState: "NAVIGATION" }));
     let finishLoad!: (value: Awaited<ReturnType<typeof api.loadLocalRobotMap>>) => void;
     const pendingLoad = new Promise<Awaited<ReturnType<typeof api.loadLocalRobotMap>>>((resolve) => {
       finishLoad = resolve;
     });
     vi.mocked(api.loadLocalRobotMap).mockReturnValueOnce(pendingLoad);
-    await act(async () => { buttonNamed("LOAD SAVED MAP INTO NAV2")?.click(); await settleUi(); });
+    await act(async () => { buttonNamed("LOAD SAVED MAP FOR NAVIGATION")?.click(); await settleUi(); });
     expect(api.loadLocalRobotMap).toHaveBeenCalledWith("R01", "local-map-1");
+    expect(wsSetRobotMode).toHaveBeenCalledWith("R01", "MANUAL");
     expect(container.textContent).toContain("LOADING");
     await act(async () => {
       finishLoad({
@@ -417,7 +438,7 @@ describe("robot detail route stability", () => {
     expect(container.textContent).toContain("MAP LOADED");
 
     vi.mocked(api.loadLocalRobotMap).mockRejectedValueOnce(new Error("map_server rejected map"));
-    await act(async () => { buttonNamed("LOAD SAVED MAP INTO NAV2")?.click(); await settleUi(); });
+    await act(async () => { buttonNamed("LOAD SAVED MAP FOR NAVIGATION")?.click(); await settleUi(); });
     expect(container.textContent).toContain("map_server rejected map");
     expect(container.textContent).toContain("ERROR");
   });

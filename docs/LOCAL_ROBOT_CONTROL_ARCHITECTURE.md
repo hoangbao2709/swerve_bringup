@@ -43,8 +43,9 @@ ROS or Gazebo processes.
   artifact only after a valid image and YAML exist. Runtime-mode transitions
   are adapter-owned; start/stop of SLAM does not kill unrelated processes.
 - **LOCALIZATION** shows the measured map-frame pose and applies a selected
-  initial pose through the existing `/ekf_v30e/set_pose` interface. This
-  preserves `ekf_v30e` as the single `map -> odom` authority.
+  initial pose through the existing `/set_pose` service served by the
+  `ekf_v30e` node. This preserves `ekf_v30e` as the single `map -> odom`
+  authority.
 - **VDA5050** stores one configuration per robot. MQTT passwords are encrypted
   at rest and API responses expose only `password_configured`. Test Connection
   performs a backend broker attempt. Save & Apply persists then applies the

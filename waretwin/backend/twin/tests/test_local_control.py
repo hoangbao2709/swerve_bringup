@@ -17,6 +17,7 @@ from twin.local_control import (
 )
 from twin.models import RobotVda5050Configuration
 from twin.runtime import runtime
+from twin.local_control_views import SimulationRuntimeAdapter
 from twin.vda5050 import (
     _on_order,
     _mqtt_client,
@@ -215,6 +216,10 @@ class LocalControlApiTests(TestCase):
         self.old_operation_mode = runtime.operation_mode
         self.old_map_snapshots = runtime.robot_map_snapshots.copy()
         self.old_mapping_sessions = runtime.robot_mapping_sessions.copy()
+        self.old_local_map_overrides = runtime.local_map_overrides.copy()
+        self.old_local_map_revisions = runtime.local_map_revisions.copy()
+        self.old_local_map_status = runtime.local_map_status.copy()
+        self.old_pending_local_map_loads = runtime.pending_local_map_loads.copy()
         runtime.runtime_mode = 'GAZEBO_ROS'
         runtime.operation_mode = 'MAPPING'
         runtime.robot_mapping_sessions['R01'] = 'unit-session'
@@ -234,8 +239,11 @@ class LocalControlApiTests(TestCase):
         runtime.operation_mode = self.old_operation_mode
         runtime.robot_map_snapshots.clear(); runtime.robot_map_snapshots.update(self.old_map_snapshots)
         runtime.robot_mapping_sessions.clear(); runtime.robot_mapping_sessions.update(self.old_mapping_sessions)
-        runtime.local_map_overrides.clear()
+        runtime.local_map_overrides.clear(); runtime.local_map_overrides.update(self.old_local_map_overrides)
+        runtime.local_map_revisions.clear(); runtime.local_map_revisions.update(self.old_local_map_revisions)
+        runtime.local_map_status.clear(); runtime.local_map_status.update(self.old_local_map_status)
         runtime.local_map_transitions.clear()
+        runtime.pending_local_map_loads.clear(); runtime.pending_local_map_loads.update(self.old_pending_local_map_loads)
         runtime.robot_mapping_state.clear()
         robots = runtime.engine.state.setdefault('robots', {})
         if self.previous_robot is None:
@@ -337,6 +345,98 @@ class LocalControlApiTests(TestCase):
                 self.assertEqual(request.call_args.args[1], 'INITIAL_POSE')
                 self.assertEqual(request.call_args.args[2]['x'], 2.0)
 
+    def test_one_saved_map_load_stops_slam_switches_runtime_and_confirms_local_map(self):
+        with tempfile.TemporaryDirectory() as tempdir, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tempdir)):
+            prefix = map_output_prefix('R01', 'floor')
+            prefix.with_suffix('.pgm').write_bytes(b'P5\n100 100\n255\n' + bytes(10_000))
+            prefix.with_suffix('.yaml').write_text(
+                'image: floor.pgm\nresolution: 0.1\norigin: [-5, -5, 0]\n'
+                'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
+            map_record = register_saved_map('R01', 'floor', prefix.with_suffix('.yaml'))
+            runtime.operation_mode = 'MAPPING'
+            runtime.robot_mapping_state['R01'] = 'MAPPING'
+
+            with patch.object(SimulationRuntimeAdapter, 'get_mode_status', return_value={
+                    'robot_id': 'R01', 'mode': 'mapping', 'status': 'READY'}), \
+                    patch.object(SimulationRuntimeAdapter, 'request_mode_change', return_value={
+                        'ok': True, 'robot_id': 'R01', 'mode': 'navigation',
+                        'request_id': 'nav-transition-1', 'status': 'REQUESTED',
+                        'message': 'supervised transition queued'}), \
+                    patch('twin.local_control_views._bridge_request', return_value={
+                        'ok': True, 'result': {'mapping_state': 'PAUSED'}
+                    }) as bridge:
+                queued = self.client.post(
+                    '/api/robots/R01/local/maps/load',
+                    data=json.dumps({'map_id': map_record['id']}), content_type='application/json')
+            self.assertEqual(queued.status_code, 202, queued.content)
+            self.assertEqual(queued.json()['status'], 'TRANSITIONING')
+            self.assertEqual(queued.json()['request_id'], 'nav-transition-1')
+            self.assertEqual(bridge.call_args.args[1], 'MAPPING_STOP')
+            self.assertIn('R01', runtime.local_map_transitions)
+            self.assertEqual(runtime.pending_local_map_loads['R01']['map_id'], map_record['id'])
+
+            runtime.operation_mode = 'NAVIGATION'
+            with patch.object(SimulationRuntimeAdapter, 'get_mode_status', return_value={
+                    'robot_id': 'R01', 'mode': 'navigation', 'status': 'READY',
+                    'request_id': 'nav-transition-1'}), \
+                    patch('twin.local_control_views._bridge_request', return_value={
+                        'ok': True, 'result': {
+                            'map_id': map_record['id'],
+                            'active_map_revision': map_record['revision'],
+                        },
+                    }) as bridge:
+                loaded = self.client.post(
+                    '/api/robots/R01/local/maps/load',
+                    data=json.dumps({'map_id': map_record['id']}), content_type='application/json')
+            self.assertEqual(loaded.status_code, 200, loaded.content)
+            self.assertEqual(bridge.call_args.args[1], 'MAP_LOAD')
+            self.assertEqual(bridge.call_args.args[2]['map_yaml'], str(prefix.with_suffix('.yaml')))
+            self.assertEqual(loaded.json()['map_sync_status'], 'LOCAL_ONLY')
+            self.assertEqual(loaded.json()['map_source'], 'SAVED_LOCAL')
+            self.assertEqual(runtime.active_map_state('R01')['local_active_map_id'], map_record['id'])
+            self.assertNotIn('R01', runtime.local_map_transitions)
+            self.assertNotIn('R01', runtime.pending_local_map_loads)
+
+    def test_invalid_local_map_is_rejected_before_stopping_slam_or_switching_modes(self):
+        with patch.object(SimulationRuntimeAdapter, 'request_mode_change') as switch, \
+                patch('twin.local_control_views._bridge_request') as bridge:
+            response = self.client.post(
+                '/api/robots/R01/local/maps/load',
+                data=json.dumps({'map_id': 'not-registered'}), content_type='application/json')
+        self.assertEqual(response.status_code, 404)
+        switch.assert_not_called()
+        bridge.assert_not_called()
+
+    def test_failed_local_map_load_clears_pending_transition_state(self):
+        with tempfile.TemporaryDirectory() as tempdir, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tempdir)):
+            prefix = map_output_prefix('R01', 'floor')
+            prefix.with_suffix('.pgm').write_bytes(b'P5\n100 100\n255\n' + bytes(10_000))
+            prefix.with_suffix('.yaml').write_text(
+                'image: floor.pgm\nresolution: 0.1\norigin: [-5, -5, 0]\n'
+                'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
+            map_record = register_saved_map('R01', 'floor', prefix.with_suffix('.yaml'))
+            runtime.operation_mode = 'NAVIGATION'
+            failed_results = (
+                (TimeoutError('bridge timeout'), 502),
+                ({'ok': False, 'error': 'map_server rejected the saved artifact'}, 502),
+                ({'ok': True, 'result': {
+                    'map_id': 'different-map', 'active_map_revision': 'different-revision',
+                }}, 502),
+            )
+            with patch('twin.local_control_views._bridge_request') as bridge:
+                for result, expected_status in failed_results:
+                    with self.subTest(result=result):
+                        bridge.side_effect = result if isinstance(result, Exception) else None
+                        if not isinstance(result, Exception):
+                            bridge.return_value = result
+                        response = self.client.post(
+                            '/api/robots/R01/local/maps/load',
+                            data=json.dumps({'map_id': map_record['id']}),
+                            content_type='application/json')
+                        self.assertEqual(response.status_code, expected_status, response.content)
+                        self.assertNotIn('R01', runtime.local_map_transitions)
+                        self.assertNotIn('R01', runtime.pending_local_map_loads)
+
     def test_map_load_and_initial_pose_require_manual_stopped_robot(self):
         robot = runtime.engine.state['robots']['R01']
         robot['control_mode'] = 'AUTONOMOUS'
@@ -356,6 +456,42 @@ class LocalControlApiTests(TestCase):
                 content_type='application/json')
         self.assertEqual(response.status_code, 409)
         request.assert_not_called()
+
+    def test_initial_pose_rejects_nonfinite_malformed_and_out_of_range_values(self):
+        robot = runtime.engine.state['robots']['R01']
+        robot.update({'control_mode': 'MANUAL', 'navigation_state': 'IDLE',
+                      'vx': 0.0, 'vy': 0.0, 'wz': 0.0})
+        invalid_poses = (
+            {'x': float('nan'), 'y': 0.0, 'yaw': 0.0},
+            {'x': 0.0, 'y': 0.0, 'yaw': float('inf')},
+            {'x': 0.0, 'y': 0.0, 'yaw': 'north'},
+            {'x': 0.0, 'y': 0.0, 'yaw': 3.2},
+        )
+        with patch('twin.local_control_views._bridge_request') as bridge:
+            for pose in invalid_poses:
+                with self.subTest(pose=pose):
+                    response = self.client.post(
+                        '/api/robots/R01/local/initial-pose',
+                        data=json.dumps({**pose, 'frame_id': 'map'}),
+                        content_type='application/json')
+                    self.assertEqual(response.status_code, 400, response.content)
+            bridge.assert_not_called()
+
+    def test_initial_pose_is_blocked_during_local_map_transition(self):
+        robot = runtime.engine.state['robots']['R01']
+        robot.update({'control_mode': 'MANUAL', 'navigation_state': 'IDLE',
+                      'vx': 0.0, 'vy': 0.0, 'wz': 0.0})
+        runtime.local_map_transitions.add('R01')
+        try:
+            with patch('twin.local_control_views._bridge_request') as bridge:
+                response = self.client.post(
+                    '/api/robots/R01/local/initial-pose',
+                    data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
+                    content_type='application/json')
+            self.assertEqual(response.status_code, 409)
+            bridge.assert_not_called()
+        finally:
+            runtime.local_map_transitions.discard('R01')
 
     def test_runtime_mode_switch_requires_manual_stop_and_queues_supervised_restart(self):
         robots = runtime.engine.state.setdefault('robots', {})

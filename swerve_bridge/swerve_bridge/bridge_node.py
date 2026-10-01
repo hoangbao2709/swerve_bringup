@@ -319,7 +319,7 @@ class SwerveBridge(Node):
         self.map_load_client = self.create_client(
             LoadMap, self._scoped_topic('/map_server/load_map'))
         self.initial_pose_client = self.create_client(
-            SetPose, self._scoped_topic('/ekf_v30e/set_pose'))
+            SetPose, self._scoped_topic('/set_pose'))
         self.slam_pause_client = self.create_client(
             SlamPause, self._scoped_topic('/slam_toolbox/pause_new_measurements'))
         self.slam_save_client = self.create_client(
@@ -508,12 +508,27 @@ class SwerveBridge(Node):
         msg = self.latest_map
         if generation != self.latest_map_generation:
             return
-        if msg is None or generation == self.processed_map_generation:
+        if msg is None:
             return
         origin = msg.info.origin
-        content_signature = occupancy_content_signature(msg.data)
+        if generation == self.processed_map_generation and self.latest_map_signature:
+            # The active map identity can change after /map is received (for
+            # example once LoadMap's raster is validated). Reuse the previous
+            # content hash here instead of hashing a large OccupancyGrid again.
+            content_signature = self.latest_map_signature[7]
+        else:
+            content_signature = occupancy_content_signature(msg.data)
         identity_revision = (self.mapping_session_id if self.runtime_state == 'MAPPING'
                              else self.ros_map_revision)
+        if self.runtime_state == 'MAPPING':
+            map_source = 'SLAM_TOOLBOX'
+            active_map_id = f'SLAM-{self.mapping_session_id}'
+            active_map_revision = content_signature[:12]
+        else:
+            active_identity = self.active_map_identity()
+            map_source = 'LOCAL_MAP' if self.loaded_local_map_id else 'NAV2_MAP'
+            active_map_id = active_identity.get('active_map_id')
+            active_map_revision = active_identity.get('active_map_revision')
         signature = (
             str(msg.header.frame_id or 'map'),
             int(msg.info.width), int(msg.info.height),
@@ -521,7 +536,8 @@ class SwerveBridge(Node):
             round(float(origin.position.x), 6),
             round(float(origin.position.y), 6),
             round(yaw_from_quaternion(origin.orientation), 6),
-            content_signature, identity_revision,
+            content_signature, identity_revision, active_map_id,
+            active_map_revision, map_source,
         )
         if generation != self.latest_map_generation:
             return
@@ -1695,6 +1711,7 @@ class SwerveBridge(Node):
         self.loaded_local_map_id = pending['map_id']
         self.loaded_local_map_revision = pending['map_revision']
         self.last_sent_map_signature = None
+        self.map_snapshot_worker.wake()
         identity = self.active_map_identity()
         self.send({'type': 'LOCAL_MAP_STATUS', 'robot_id': self.robot_id,
                    'loaded': True, 'map_id': self.loaded_local_map_id,
@@ -1738,7 +1755,7 @@ class SwerveBridge(Node):
             if distance <= 0.25 and abs(yaw_error) <= 0.35:
                 self.pending_initial_pose = None
                 self._send_local_control_result(pending['data'], True, {
-                    'message': 'ekf_v30e set-pose accepted and map-frame TF confirmed',
+                    'message': 'authoritative ekf_v30e /set_pose accepted and map-frame TF confirmed',
                     'frame_id': 'map', 'pose': pending['pose'],
                     'active_map_id': pending['active_map_id'],
                     'active_map_revision': pending['active_map_revision'],
@@ -1750,7 +1767,7 @@ class SwerveBridge(Node):
         if time.monotonic() > pending['deadline_monotonic']:
             self.pending_initial_pose = None
             self._send_local_control_result(pending['data'], False,
-                                            error='ekf_v30e accepted the request but map-frame TF did not confirm the initial pose')
+                                            error='ekf_v30e /set_pose accepted the request but map-frame TF did not confirm the initial pose')
 
     def _loaded_nav2_revision(self, nav2_node_present):
         # Revalidating the complete raster on every heartbeat can monopolize
@@ -2306,7 +2323,7 @@ class SwerveBridge(Node):
                                                 error='initial pose request does not match the confirmed active map')
                 return
             if not self.initial_pose_client.service_is_ready():
-                self._send_local_control_result(data, False, error='authoritative ekf_v30e/set_pose service is unavailable')
+                self._send_local_control_result(data, False, error='authoritative /set_pose service is unavailable')
                 return
             request = SetPose.Request()
             pose = PoseWithCovarianceStamped()
@@ -2467,7 +2484,7 @@ class SwerveBridge(Node):
         except Exception as exc:
             self.pending_initial_pose = None
             self._send_local_control_result(data, False,
-                                            error=f'ekf_v30e set-pose service failed: {type(exc).__name__}')
+                                            error=f'ekf_v30e /set_pose service failed: {type(exc).__name__}')
             return
         self._check_initial_pose_confirmation()
 

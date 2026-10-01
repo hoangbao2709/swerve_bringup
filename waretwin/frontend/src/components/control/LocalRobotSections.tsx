@@ -14,6 +14,7 @@ import {
   type LocalRuntimeModeStatus,
   type Vda5050Configuration,
 } from "../../services/api";
+import { wsSetRobotMode } from "../../services/ws";
 import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
 import { occupancyRasters } from "./occupancyRaster";
@@ -48,6 +49,10 @@ function valueText(value: unknown, fallback = "N/A") {
 function valueNumber(value: unknown, digits = 2, suffix = "") {
   const number = Number(value);
   return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : "N/A";
+}
+
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function classForStatus(value: unknown) {
@@ -145,11 +150,75 @@ function MappingPanel({ robotId, robot, mapSnapshot, scan, diagnostics, controlO
     setName(""); setSelected(result.map.id);
     return `SAVE SUCCESS · ${result.map.name} · revision ${result.map.revision}`;
   }, "SAVING");
-  const load = () => void run(() => loadLocalRobotMap(robotId, selected), (raw) => {
-    const result = raw as { active_map: LocalRobotMap; message: string };
-    setActiveLocalMapId(result.active_map.id);
-    return `MAP LOADED · ${result.active_map.name} · ${result.message}`;
-  }, "LOADING");
+  const load = () => {
+    if (!selected) return;
+    setOperationState("LOADING"); setBusy(true); setError(""); setNotice("");
+    void (async () => {
+      const waitForNavigation = async (requestId: string) => {
+        const deadline = Date.now() + 20 * 60 * 1000;
+        while (Date.now() < deadline) {
+          const status = await getLocalRuntimeMode(robotId);
+          setModeTransition(status.transition);
+          if (status.transition.request_id && status.transition.request_id !== requestId) {
+            throw new Error("Runtime mode transition was replaced by another request");
+          }
+          if (["ERROR", "ROLLED_BACK"].includes(status.transition.status)) {
+            throw new Error(status.transition.message || "Navigation runtime failed its readiness gate");
+          }
+          if (status.current_mode === "NAVIGATION"
+              && status.transition.status === "READY"
+              && status.transition.mode?.toLowerCase() === "navigation") return;
+          await wait(2000);
+        }
+        throw new Error("Navigation runtime did not become ready within 20 minutes");
+      };
+
+      const waitForManualStop = async () => {
+        if (!wsSetRobotMode(robotId, "MANUAL")) {
+          throw new Error("Robot control channel is disconnected; Navigation started but map loading is waiting for MANUAL mode");
+        }
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          const status = await getLocalRobotMaps(robotId);
+          if (status.robot_control_mode === "MANUAL" && status.robot_stopped) return;
+          await wait(500);
+        }
+        throw new Error("Navigation started, but the robot did not confirm stopped MANUAL mode for map loading");
+      };
+
+      try {
+        let result = await loadLocalRobotMap(robotId, selected);
+        let manualRequested = false;
+        while (result.status === "TRANSITIONING") {
+          if (!result.request_id) throw new Error("Map load transition did not include its supervisor request ID");
+          setModeTransition(result.transition ?? {
+            robot_id: robotId, request_id: result.request_id,
+            mode: "navigation", status: "REQUESTED", message: result.message,
+          });
+          if (result.mapping_state) setMappingStateValue(result.mapping_state);
+          await waitForNavigation(result.request_id);
+          if (!manualRequested) {
+            await waitForManualStop();
+            manualRequested = true;
+          }
+          result = await loadLocalRobotMap(robotId, selected);
+          if (result.status === "TRANSITIONING") await wait(1000);
+        }
+        if (!result.active_map || result.map_sync_status !== "LOCAL_ONLY") {
+          throw new Error("ROS did not confirm the selected saved map as the active local navigation map");
+        }
+        setActiveLocalMapId(result.active_map.id);
+        setNotice(`MAP LOADED · ${result.active_map.name} · ${result.message}`);
+        await refresh();
+        setOperationState("READY");
+      } catch (caught) {
+        setOperationState("ERROR");
+        setError(caught instanceof Error ? caught.message : "Saved map load failed");
+      } finally {
+        setBusy(false);
+      }
+    })();
+  };
   const changeMapping = (action: "start" | "stop") => void run(
     () => setMappingState(robotId, action),
     (raw) => {
@@ -257,7 +326,7 @@ function MappingPanel({ robotId, robot, mapSnapshot, scan, diagnostics, controlO
         </button>)}
       </div>}
       <div className="local-action-row">
-        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || runtimeState !== "NAVIGATION" || busy || !selected} onClick={load}>LOAD SAVED MAP INTO NAV2</button>
+        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || !["MAPPING", "NAVIGATION"].includes(runtimeState) || busy || !selected} onClick={load}>LOAD SAVED MAP FOR NAVIGATION</button>
         {activeLocalMapId && <Status value="LOCAL_ONLY · LOCAL NAVIGATION ENABLED" />}
       </div>
       <p className="local-help">This loads only the navigation YAML + image into map_server. It does not resume the separately saved SLAM Toolbox pose graph; Fleet missions remain tied to the canonical warehouse map.</p>

@@ -110,6 +110,88 @@ def test_map_payload_is_compressed_once_per_version_and_cached_for_reconnect(mon
     assert compressed.call_count == 1
 
 
+def test_map_identity_change_rebuilds_snapshot_without_an_occupancy_change(monkeypatch):
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.ros_map_revision = 21
+    bridge.loaded_local_map_id = None
+    bridge.loaded_local_map_revision = None
+    bridge.mapping_map_version = 0
+    bridge.latest_map_generation = 1
+    bridge.processed_map_generation = 0
+    bridge.latest_map_signature = None
+    bridge.processed_map_payload_signature = None
+    bridge.latest_map = SimpleNamespace(
+        header=SimpleNamespace(frame_id='map', stamp=SimpleNamespace(sec=3, nanosec=0)),
+        info=SimpleNamespace(width=2, height=1, resolution=0.05,
+            origin=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))),
+        data=[-1, 100],
+    )
+    bridge._confirm_local_map_if_ready = lambda: None
+    bridge.visualization_metrics = {'map_compressions': 0}
+    bridge.latest_map_statistics = None
+    bridge.processed_map = None
+    bridge.processed_map_payload = None
+    bridge.last_sent_map_signature = None
+    bridge.robot_id = 'R01'
+    bridge.send = Mock(return_value=True)
+    compressed = Mock(return_value='encoded')
+    content_signature = Mock(return_value='stable-raster-hash')
+    monkeypatch.setattr(bridge_node, 'compress_occupancy_grid', compressed)
+    monkeypatch.setattr(bridge_node, 'occupancy_content_signature', content_signature)
+    monkeypatch.setattr(bridge_node, 'occupancy_grid_statistics', lambda _cells: {
+        'known_cells': 1, 'occupied_cells': 1, 'free_cells': 0, 'ambiguous_cells': 0,
+    })
+
+    bridge.map_snapshot_timer()
+    canonical_payload = bridge.send.call_args.args[0]['map']
+    assert canonical_payload['active_map_id'] == 'CANONICAL'
+    assert canonical_payload['map_source'] == 'NAV2_MAP'
+
+    bridge.loaded_local_map_id = 'saved-local-map'
+    bridge.loaded_local_map_revision = 'local-revision'
+    bridge.last_sent_map_signature = None
+    bridge.map_snapshot_timer()
+
+    local_payload = bridge.send.call_args.args[0]['map']
+    assert local_payload['active_map_id'] == 'saved-local-map'
+    assert local_payload['active_map_revision'] == 'local-revision'
+    assert local_payload['map_source'] == 'LOCAL_MAP'
+    assert content_signature.call_count == 1
+    assert compressed.call_count == 2
+
+
+def test_confirming_local_map_wakes_snapshot_worker():
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.ros_map_revision = 21
+    bridge.loaded_local_map_id = None
+    bridge.loaded_local_map_revision = None
+    bridge.pending_local_map_load = {
+        'service_confirmed': True, 'baseline_map_count': 0,
+        'yaml_path': '/unused/map.yaml', 'map_id': 'saved-local-map',
+        'map_revision': 'local-revision', 'data': {},
+    }
+    bridge.map_callback_count = 1
+    bridge.latest_map = object()
+    bridge.local_map_load_pending = True
+    bridge.last_sent_map_signature = 'canonical-signature'
+    bridge.robot_id = 'R01'
+    bridge.map_snapshot_worker = SimpleNamespace(wake=Mock())
+    bridge._local_map_matches_yaml = Mock(return_value=True)
+    bridge.now = Mock(return_value=3.0)
+    bridge.send = Mock(return_value=True)
+    bridge._send_local_control_result = Mock()
+
+    bridge._confirm_local_map_if_ready()
+
+    assert bridge.loaded_local_map_id == 'saved-local-map'
+    assert bridge.loaded_local_map_revision == 'local-revision'
+    assert bridge.last_sent_map_signature is None
+    bridge.map_snapshot_worker.wake.assert_called_once_with()
+
+
 def test_mapping_map_identity_is_session_scoped_and_never_canonical():
     bridge = object.__new__(SwerveBridge)
     bridge.runtime_state = 'MAPPING'

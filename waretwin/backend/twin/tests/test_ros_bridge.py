@@ -304,6 +304,36 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         finally:
             registry.consumer = previous
 
+    async def test_local_map_transition_blocks_autonomous_mode_and_manual_motion(self):
+        previous_transitions = runtime.local_map_transitions.copy()
+        runtime.local_map_transitions.add('R01')
+        capture = SimpleNamespace(send_json=AsyncMock())
+        gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+        try:
+            with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
+                    patch.object(runtime, 'robot_bridge_online', return_value=True), \
+                    patch.object(runtime, 'gateway', return_value=gateway):
+                await runtime.handle_message(capture, {
+                    'type': 'ROBOT_MODE', 'robot_id': 'R01', 'mode': 'AUTONOMOUS',
+                }, None)
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'LOCAL_MAP_TRANSITION')
+                capture.send_json.reset_mock()
+
+                await runtime.handle_message(capture, {
+                    'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'FORWARD',
+                }, None)
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'LOCAL_MAP_TRANSITION')
+                gateway.send_command.assert_not_awaited()
+
+                capture.send_json.reset_mock()
+                await runtime.handle_message(capture, {
+                    'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'STOP',
+                }, None)
+                gateway.send_command.assert_awaited_once_with('R01', 'MANUAL_CMD', {'action': 'STOP'})
+        finally:
+            runtime.local_map_transitions.clear()
+            runtime.local_map_transitions.update(previous_transitions)
+
     async def test_manual_control_messages_are_schema_validated(self):
         mode = TypeAdapter(ClientMessage).validate_python({
             'type': 'ROBOT_MODE', 'robot_id': 'R01', 'mode': 'MANUAL',

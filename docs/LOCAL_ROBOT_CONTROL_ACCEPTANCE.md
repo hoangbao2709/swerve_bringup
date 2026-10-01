@@ -1667,4 +1667,106 @@ seconds, wheel drift 0.000149/0.000355 was within limits but chassis yaw drift
 0.002051 exceeded 0.001 rad/s. No motion was commanded. Its finally block
 restored and verified quick/50. This disproves treating the earlier short
 diagnostic window as a reliable fix. No production profile change has been
-integrated; a higher-convergence diagnostic is pending.
+integrated. Motor+quick/300 also failed pre-motion settling after 180.019 wall /
+14.780 sim seconds: wheel drift 0.004779/0.001461 was within limits but chassis
+XY/yaw drift 0.003002/0.007688 was not. No motion was commanded; quick/50 was
+restored and verified. Iteration-only tuning is rejected as a reliable fix.
+
+At selected/drive zero and owner NONE on quick/50, temporarily deactivating
+steering reached the unchanged settling gate after 3.946 wall / 0.800 sim
+seconds: wheel 0.001797/0.004155, chassis XY/yaw 0.00002145/0.00004157. Steering
+was reactivated successfully in finally. A subsequent 3.179-sim observation
+with steering active again also stayed stable (wheel net -0.001402/-0.002919,
+yaw net -0.00001689 rad/s). This does NOT isolate teleporting as the sole
+cause; mode switching can change the contact state. It does localize further
+investigation to solver/actuation state, not any stale motion command.
+
+The matching native write implementation SetPositions steering and assigns
+velocity each step. Gazebo's
+[joint implementation](https://raw.githubusercontent.com/gazebosim/gazebo-classic/gazebo11/gazebo/physics/Joint.cc)
+kinematically moves connected child links for SetPosition. Source-backed
+inference: this can interfere with contact constraints. Next adapter candidate
+keeps native init, resource storage, state exports and measured read, but uses
+ODE motors for ALL four existing resources instead of native write. Steering
+tracks the shortest continuous angle by a one-physics-step desired velocity,
+bounded by the existing 6-rad/s velocity and 100-Nm effort limits. Drives retain
+their original velocity targets and 30-rad/s / 200-Nm bounds. No gain tuning,
+feedback substitution, extra command path, world-profile or physical URDF
+coefficient change. Active actuator motor limits are explicitly changed;
+inactive interfaces restore saved passive fmax. Invalid input/setting failure
+zeros all active motor requests and returns hardware ERROR. This remains an
+uncommitted candidate pending native/source tests and fresh six-direction
+runtime regression; previous direction PASSes cannot establish this actuation
+candidate's gate.
+
+All-resource motor candidate source checks: native 4 cases PASS, 54 targeted
+Python tests PASS, bringup ROS build PASS, shell syntax and git diff check PASS.
+An initial pytest command named a nonexistent teleop test; another lacked
+ros_env/generated GoToTag and had four import failures. The corrected command
+used scripts/ros_env.sh and /usr/bin/python3 and completed all 54 tests. Managed
+production reload reached full READY on domain 0 and logged all four motor
+resources with their original URDF bounds; read-only query confirmed quick/50.
+
+Its focused Rotate Left moved +1.378039 rad Gazebo / +1.432018 rad odom,
+hold 3.005 sim / 18.188 wall seconds, RTF 0.165220, continuous WEB_MANUAL with
+manual/selected zeros 0/0. STOP **FAIL** at 180.000 wall / 30.518 sim seconds:
+wheel drift 0.004786/0.008205 exceeds 0.005 at the rear wheel; chassis XY/yaw
+0.000461/0.000392 is within bounds. Client/manual/selected gaps ms
+190.132/139.273/135.333. Django/bridge ingress gaps are UNVERIFIED for this
+focused run: its managed reload omitted the opt-in WARETWIN_MANUAL_TIMING
+environment, so zero correlated rows must not be reported as zero latency.
+Any six-direction gate run will restore instrumentation at production startup.
+No candidate PASS or Stage B PASS is claimed. A reversible motor-all-resources
++ quick/120 diagnostic is now pending, distinct from the rejected iteration-
+only and drive-only experiments.
+
+All-resource motor+120 focused Rotate Left diagnostic met the unchanged drift
+gate only after 161.228 wall / 21.653 sim seconds (wheel 0.001203/0.004990,
+chassis XY/yaw 0.000172/0.000715). Gazebo/odom yaw +1.654319/+1.724744,
+continuous WEB_MANUAL, zero hold interruptions. This is not a reliable Stage B
+or production-profile proof; quick/50 was restored and verified.
+
+### Rolling collision friction-frame defect (current investigation)
+
+Read-only actual GetEntityState at zero command measured the configured local
+X friction direction's world dot product with the floor normal: front
+-0.923617, rear +0.409893. The wheel Y axle rolls this X vector into/out of the
+floor normal. The installed Gazebo 11.10.2 matching
+[contact assembly](https://raw.githubusercontent.com/gazebosim/gazebo-classic/gazebo11_11.10.2/gazebo/physics/ode/ODEPhysics.cc)
+rotates the configured vector into world coordinates and passes it to ODE.
+Matching [ODE contact code](https://raw.githubusercontent.com/gazebosim/gazebo-classic/gazebo11_11.10.2/deps/opende/src/joints/contact.cpp)
+uses that vector directly in the tangential Jacobian (with a fallback only when
+exactly parallel); it does not generally project it back onto the contact plane.
+Inference backed by the measured frame defect: erroneous normal components in
+friction constraints can drive contact/holding drift and ill-condition solving.
+This is more specific than the rejected iteration/motor hypotheses; live
+regression is still required before claiming root cause resolved.
+
+The motor adapter candidate, its candidate-only tests/build declarations and
+dependencies were removed. Only candidate-created installation/index symlinks
+were moved into an ignored .runtime/rejected-motor-artifacts directory, so the
+old loader export cannot pollute the original GazeboSystem loader. These
+generated artifacts are recoverable; no overnight/user work was deleted.
+Original native hardware, control interfaces and quick/50 profile are restored.
+The new narrow candidate changes only two rolling-wheel fdir1 vectors from
+1 0 0 to 0 0 0, selecting ODE's automatic contact-tangent basis for the existing
+isotropic mu1=mu2=2 surfaces. No mass/inertia, geometry, friction coefficients,
+kp/kd, damping, limits, solver profile or safety gate is retuned. Xacro-to-SDF
+regression verifies the actual collision surface contract before runtime.
+
+Current narrow-fix checks: 54 targeted Python tests PASS, including generated
+Xacro-to-Gazebo SDF surface checks; Python compile PASS, shell syntax PASS,
+swerve_bringup colcon build PASS, git diff --check PASS. CMake/package.xml are
+back to the committed baseline; there is no retained motor adapter or added
+Gazebo native build dependency. The current kernel storage/OOM/panic gate is
+clear. Managed navigation reload now restores WARETWIN_MANUAL_TIMING=1 for
+the required per-direction Django/bridge ingress measurements.
+
+The first friction-frame reload failed before controller-manager creation:
+gazebo_ros2_control's ROS CLI/YAML robot_description parser rejected colon-space
+in the newly added XML comment. A native rclpy parameter-override regression
+reproduced the same RCLInvalidROSArgsError before correction. The comment now
+uses a semicolon; parsing succeeds. YAML folds presentation whitespace, so the
+test compares canonical XML semantics instead of raw byte identity. No spawner,
+Nav lifecycle or bond implementation was reopened. Failed reload was stopped,
+current kernel gate rechecked clean, and a corrected managed reload is pending.

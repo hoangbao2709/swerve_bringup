@@ -564,11 +564,15 @@
     <mu1>0.6</mu1><mu2>0.6</mu2><kp>1000000.0</kp><kd>100.0</kd>
   </gazebo>
   <gazebo reference="wheel_front_drive_link">
-    <mu1>2.0</mu1><mu2>2.0</mu2><fdir1>1 0 0</fdir1><kp>1000000.0</kp><kd>100.0</kd>
+    <!-- Isotropic friction; let ODE choose a contact-tangent basis. A local
+         X direction rotates toward the ground normal as this wheel rolls;
+         Gazebo Classic passes it through without projecting onto the plane. -->
+    <mu1>2.0</mu1><mu2>2.0</mu2><fdir1>0 0 0</fdir1><kp>1000000.0</kp><kd>100.0</kd>
     <maxVel>0.05</maxVel><minDepth>0.0</minDepth>
   </gazebo>
   <gazebo reference="wheel_rear_drive_link">
-    <mu1>2.0</mu1><mu2>2.0</mu2><fdir1>1 0 0</fdir1><kp>1000000.0</kp><kd>100.0</kd>
+    <!-- Same contact-tangent basis contract as the front rolling collision. -->
+    <mu1>2.0</mu1><mu2>2.0</mu2><fdir1>0 0 0</fdir1><kp>1000000.0</kp><kd>100.0</kd>
     <maxVel>0.05</maxVel><minDepth>0.0</minDepth>
   </gazebo>
   <gazebo reference="wheel_front_left_link">

@@ -1521,3 +1521,43 @@ tests PASS, Python compile PASS, swerve_bridge colcon build PASS (only the
 existing setuptools deprecation warning). The first new test attempt failed
 because its synthetic bridge fixture omitted a production state field; that
 fixture was corrected before the passing rerun.
+
+Fresh production reload of commit `0eeb2a7` reached navigation READY on managed
+domain 0 (backend 8001, frontend 5173). The focused Left retest now PASS:
+Gazebo lateral +0.528950 m, odom +0.494847 m; 3.016 sim / 22.238 wall seconds,
+RTF 0.135622. WEB_MANUAL continuous, manual/selected hold-zero counts 0/0.
+STOP settled in 1.544 sim / 11.806 wall seconds with wheel drift
+0.002352/0.002776 rad/s under unchanged 0.005. This supersedes the preceding
+Left failure for current corrected source. Physics remains unchanged.
+Gaps (ms): client starts 202.409 / completions 195.849, Django 292.599,
+bridge 292.024, manual 220.333, selected 240.014. Full raw controller/joint/
+pose/sequence evidence is in ignored `.runtime/resume-pending-ingress-fixed.json`.
+Right retest also PASS: Gazebo lateral -0.733821 m, odom -0.594841 m;
+3.012 sim / 23.672 wall seconds, RTF 0.127242. Continuous WEB_MANUAL,
+manual/selected hold-zero counts 0/0. STOP 2.692 sim / 19.650 wall seconds,
+wheel drift 0.000552/0.000719 rad/s. Gaps (ms): client 197.531, Django
+330.433, bridge 370.803, manual 206.271, selected 196.906. Opposite-direction
+magnitudes are not required to be equal; both independent pose trends agree.
+
+Rotate Left retest: command continuity PASS (manual/selected hold zeros 0/0),
+Gazebo yaw +1.150056 rad / odom +1.186841 rad; hold 3.003 sim / 22.767 wall
+seconds. Gaps ms: client 307.032, Django 316.448, bridge 348.073,
+manual 276.712, selected 277.705. STOP **FAIL** at the unchanged 180.014-wall
+watchdog / 27.711 sim seconds: wheel drift 0.015302/0.001005 rad/s and yaw
+drift 0.001458 rad/s exceed the existing 0.005/0.001 gates. Post-STOP trace
+contains 8630 selected samples all exactly zero, 990 drive targets all zero,
+990 steering targets fixed at pi/2, with measured steering stable. First
+remaining divergence is actual Gazebo wheel/chassis settling, not command I/O.
+Front wheel net drift decreased only from -0.019396 to -0.015448 rad/s over
+the observed STOP period; raw velocities are not used as a settling override.
+Stage B remains FAIL; all safety/navigation phases are still gated.
+
+Read-only `gz topic -w warehouse_generated -r physics_info` confirms the actual
+canonical generated world uses ODE quick / 50 iterations, dt=0.001,
+sor=1.3, cfm=0, erp=0.2. Its SDF contains no explicit physics element; the
+checkout's fallback warehouse has 120 iterations but is not the running world.
+This is a solver-convergence hypothesis, not a proven root cause. Gazebo's
+[official physics documentation](https://get.gazebosim.org/tutorials?cat=physics&tut=physics_params)
+describes quickstep's iteration-dependent accuracy; increasing iterations is
+not guaranteed to fix a particular contact system. Canonical artifacts and
+production physics remain unmodified pending an isolated reversible diagnosis.

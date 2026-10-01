@@ -2328,12 +2328,13 @@ class SwerveBridge(Node):
         except (TypeError, ValueError):
             self.send_nav_status(context, 'FAILED', 'target_tag_id must be an integer')
             return
-        timeout = float(self.get_parameter('navigate_server_timeout').value)
-        if not self.nav_client.wait_for_server(timeout_sec=timeout):
+        # Do not wait for graph discovery inside the shared ROS executor:
+        # safety/control callbacks must remain runnable when Nav is offline.
+        if not self.nav_client.server_is_ready():
             self.nav_state = 'FAILED'
             self.send_nav_status(
                 context, 'FAILED',
-                f'GoToTag action server unavailable after {timeout:.1f}s',
+                'GoToTag action server unavailable',
             )
             return
         goal = GoToTag.Goal()
@@ -2385,10 +2386,9 @@ class SwerveBridge(Node):
         if self.active_goal is not None or self.active_pose_goal is not None or self.goal_request_pending:
             self.send_nav_status(context, 'FAILED', 'another navigation goal is already active')
             return
-        timeout = float(self.get_parameter('navigate_server_timeout').value)
-        if not self.nav_pose_client.wait_for_server(timeout_sec=timeout):
+        if not self.nav_pose_client.server_is_ready():
             self.nav_state = 'FAILED'
-            self.send_nav_status(context, 'FAILED', f'NavigateToPose action server unavailable after {timeout:.1f}s')
+            self.send_nav_status(context, 'FAILED', 'NavigateToPose action server unavailable')
             return
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = context['frame_id']

@@ -1561,3 +1561,20 @@ This is a solver-convergence hypothesis, not a proven root cause. Gazebo's
 describes quickstep's iteration-dependent accuracy; increasing iterations is
 not guaranteed to fix a particular contact system. Canonical artifacts and
 production physics remain unmodified pending an isolated reversible diagnosis.
+
+The zero-command diagnostic with quick/120 also FAILed the unchanged watchdog:
+180.014 wall / 22.263 sim seconds; wheel drift 0.011809/0.006786 rad/s.
+Yaw drift improved to 0.000155 rad/s, but wheel stability did not pass.
+The transport query verified restoration to quick/50 with all other reported
+physics properties unchanged. Increasing iterations alone is **not** a proven
+fix and is not being integrated. An initial diagnostic setup timed out on the
+5-second bridge parameter query before any physics write; the next attempt
+obtained both services without extending their deadline.
+
+The remaining executor audit found two synchronous action-discovery waits
+(GoToTag/NavigateToPose, configured 2 seconds). They now use the existing
+ActionClient.server_is_ready check and fail closed immediately when offline;
+no safety callback waits for Nav discovery. 27 focused transport/teleop tests
+PASS, including unavailable-action-server regression for both goal kinds;
+compile and swerve_bridge build PASS. This source fix awaits managed reload;
+live navigation remains UNVERIFIED and Stage B remains FAIL.

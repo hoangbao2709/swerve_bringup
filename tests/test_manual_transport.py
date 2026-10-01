@@ -12,6 +12,26 @@ from manual_refresh import ManualRefreshWorker
 from swerve_bridge.outbound_mailbox import OutboundMailbox
 
 
+@pytest.mark.parametrize('method,payload', [
+    ('navigate', {'target_tag_id': 1101}),
+    ('navigate_pose', {'x': 1., 'y': 2., 'yaw': 0., 'frame_id': 'map'}),
+])
+def test_offline_nav_server_never_blocks_shared_control_executor(method, payload):
+    from swerve_bridge.bridge_node import SwerveBridge
+    errors = []
+    def forbidden_wait(**kwargs):
+        raise AssertionError('blocking discovery in ROS control executor')
+    client = SimpleNamespace(server_is_ready=lambda: False, wait_for_server=forbidden_wait)
+    node = SimpleNamespace(robot_id='R01', local_map_load_pending=False,
+        loaded_local_map_id=None, emergency_stop_active=False, control_mode='AUTONOMOUS',
+        active_goal=None, active_pose_goal=None, goal_request_pending=False,
+        nav_client=client, nav_pose_client=client,
+        send_nav_status=lambda context, status, reason: errors.append((status, reason)))
+    getattr(SwerveBridge, method)(node, payload)
+    assert errors == [('FAILED', ('GoToTag' if method == 'navigate' else 'NavigateToPose')
+                       + ' action server unavailable')]
+
+
 def test_refresh_is_independent_of_slow_probe_and_stop_is_final():
     sent = []
     sender = ManualRefreshWorker(sent.append, 'R01', .01).start()

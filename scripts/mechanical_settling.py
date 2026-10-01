@@ -7,7 +7,13 @@ class MechanicalSettling:
     def __init__(self, sim_start, wall_start, *, timeout_sim=45.0, timeout_wall=180.0,
                  clock_stall_wall=5.0, window_sim=0.8, body_tolerance=0.02,
                  wheel_position_rate=0.005, body_position_rate=0.001,
-                 steering_span=0.03, data_age_wall=2.0):
+                 steering_span=0.03, data_age_wall=2.0, wheel_radius=None):
+        if wheel_radius is not None:
+            if not math.isfinite(wheel_radius) or wheel_radius <= 0:
+                raise ValueError('measured wheel radius must be positive')
+            # Geometry adds a physical bound and reporting; it must never
+            # relax the established encoder-position settling limit.
+            wheel_position_rate = min(wheel_position_rate, body_position_rate / wheel_radius)
         if not all(math.isfinite(value) and value > 0 for value in (
                 timeout_sim, timeout_wall, clock_stall_wall, window_sim,
                 body_tolerance, wheel_position_rate, body_position_rate,
@@ -20,6 +26,7 @@ class MechanicalSettling:
         self.body_tolerance, self.wheel_position_rate = body_tolerance, wheel_position_rate
         self.body_position_rate, self.steering_span = body_position_rate, steering_span
         self.data_age_wall = data_age_wall
+        self.wheel_radius = wheel_radius
         self.samples = deque(maxlen=2000)
         self.metrics = {}
 
@@ -88,6 +95,10 @@ class MechanicalSettling:
                           math.cos(row['body_pose'][2] - yaw0)) for row in rows]
         yaw_rate = (max(yaw) - min(yaw)) / span
         self.metrics = {'wheel_position_drift_rates': wheel_rates,
+                        'wheel_position_rate_limit': self.wheel_position_rate,
+                        'wheel_rolling_drift_rates': (
+                            [rate * self.wheel_radius for rate in wheel_rates]
+                            if self.wheel_radius is not None else None),
                         'wheel_velocities': list(sample['wheel_velocities']),
                         'body_position_drift_rate': xy_rate, 'body_yaw_drift_rate': yaw_rate,
                         'body_velocity': list(sample['body_velocity']),

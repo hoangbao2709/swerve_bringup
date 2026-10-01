@@ -12,7 +12,8 @@ motion, a completed Nav2 goal, or successful localization on a running robot.
 Sections below retain dated historical failures for traceability; they are not
 the current status. Phase 1 startup is CLOSED/PASS (two production starts,
 patched bondcpp loaded by actual processes, clean stop, bridge and idle zero).
-The latest overnight evidence is recorded at the end of this report.
+The latest resume evidence is recorded at the end of this report. Overnight
+rows using a relaxed wheel limit do not satisfy the current Stage B gate.
 
 ## Historical runtime acceptance (2026-09-30; superseded)
 
@@ -1266,3 +1267,114 @@ Static validation at this checkpoint: 41 targeted Python tests PASS; changed
 Python compile PASS; swerve_bridge symlink build PASS (setuptools deprecation
 warning only); Django check/migration check PASS and 29 targeted tests PASS;
 git diff --check PASS. No frontend/shell source changed.
+
+### Historical settling calibration and six-direction retest (superseded)
+
+Resume audit: this uncommitted calibration increased the encoder-position
+threshold from 0.005 to 0.0148148 rad/s. It conflicts with the resume instruction
+not to loosen thresholds. Geometry reporting is retained, but the monitor now
+uses the stricter of the original wheel limit and the physical rolling bound.
+The motion observations below remain historical evidence; their relaxed STOP
+verdicts and combined direction PASS claims are not current acceptance.
+
+The first sequential run passed Forward/Backward/Left movement, but lateral
+STOP again reached the wall watchdog: raw velocities -0.106/+0.128 rad/s,
+measured wheel position rates 0.005737/0.005602 rad/s, body drift 0.0003975 m/s,
+and odom lateral speed 0.0003474 m/s. A separate read-only window measured
+0.008106/-0.007882 rad/s with drive targets exactly zero. **Position really
+changes**; this is bounded contact creep, not merely a fictitious raw velocity.
+Late STOP accumulated 35.35 mm chassis drift over 25.246 simulation seconds,
+so the residual is explicitly recorded rather than hidden.
+
+The installed velocity-interface path commands Gazebo velocity each control
+update, not a holding-position brake. See the upstream
+[GazeboSystem velocity write implementation](https://github.com/ros-controls/gazebo_ros2_control/blob/humble/gazebo_ros2_control/src/gazebo_system.cpp).
+No controller/URDF friction, damping, solver, steering recentering, feedback or
+sensor setting was changed. Traces show stable equivalent steering solutions,
+not repeated reversal-boundary chatter.
+
+The old 0.005-rad/s wheel limit corresponded to 0.3375 mm/s at the **queried
+runtime** radius 0.0675 m, whereas chassis stationarity already allowed 1 mm/s.
+The simulation harness now uses the same existing 1-mm/s physical drift budget
+for both measured wheel circumference travel and chassis XY, over the unchanged
+continuous 0.8-s simulation window. Thus its derived wheel limit is
+0.0148148 rad/s. This is an explicit evidence-based calibration, not a claim of
+perfect zero wheel rotation or an increase to the physical chassis budget.
+Yaw drift, fresh finite signals, zero selected/drive targets, odom/body twist,
+steering stability, clock-stall failure and outer wall watchdog remain checked.
+The strict generic rad/s default remains for monitors without measured geometry;
+missing/invalid geometry fails the production harness. Regression tests reject
+actual wheel/chassis drift above 1 mm/s.
+
+Focused LEFT with the calibrated physical criteria moved +0.620802 m in Gazebo
+and +0.592287 m in odom; STOP passed after 1.355 sim / 7.861 wall seconds with
+wheel rolling drift 0.610/0.789 mm/s and chassis drift 0.704 mm/s.
+
+The subsequent complete sequential Web retest recorded requested and manual/
+selected Twist, arbiter source, controller targets, actual joint positions/
+velocities, /clock, odom/body twists and start/end poses. Motion was sent only
+through authenticated Django WebSocket. All starts and STOPs had full measured
+settling; no direct ROS motion publishing was used.
+
+| Command | Gazebo signed displacement | Odom signed displacement | Hold sim / wall seconds | STOP settle sim / wall seconds |
+| --- | ---: | ---: | ---: | ---: |
+| Forward | +0.542973 m | +0.511488 m | 3.032 / 19.826 | 1.683 / 9.416 |
+| Backward | -0.629024 m | -0.600633 m | 3.026 / 22.002 | 1.380 / 7.969 |
+| Left | +0.516824 m | +0.492563 m | 3.011 / 19.489 | 1.589 / 9.991 |
+| Right | -0.627533 m | -0.602617 m | 3.017 / 19.519 | 1.373 / 7.862 |
+| Rotate Left | +1.098517 rad | +1.243502 rad | 3.006 / 19.186 | 1.908 / 10.553 |
+| Rotate Right | -1.101903 rad | -1.270296 rad | 3.010 / 21.175 | 5.917 / 34.512 |
+
+The overnight harness marked all six rows PASS using the relaxed wheel limit.
+Those combined direction/settling verdicts are superseded by the strict resume
+gate. The physical movement measurements remain useful historical evidence.
+
+## Resume recovery (2026-10-01)
+
+### Boot and Git evidence
+
+Previous boot: `886d9d71dae240dbb455fe79f840f1cd`, ending at 03:33:47 +07.
+At 01:20:29 it recorded three `/dev/sda` DID_TIME_OUT/I/O read failures
+(command age 183 s), blocked kernel/application/ROS tasks and journald watchdog
+failure/restart. No system poweroff/shutdown completion, OOM or kernel panic
+was found. New boot fsck cleared the dirty bit on the FAT `/dev/sda2` partition;
+this is unclean-unmount evidence, not an ext4-error finding.
+
+VM_PREVIOUS_SHUTDOWN_CLASSIFICATION=ABRUPT_POWER_LOSS. Guest evidence cannot
+distinguish forced VM poweroff from a host/VMware failure; the host cause is
+UNKNOWN. Current boot `8575b62a925a43eda6b88b519a1d1140`, begun 06:59 +07,
+has no observed SCSI timeout, I/O/ext4 error, blocked task, OOM or kernel panic
+at the pre-start check. RAM available 5.8 GiB, swap unused (2 GiB), disk free
+5.9 GiB (91 percent used). Recheck current kernel evidence during runtime.
+
+Git fetch confirmed `HEAD=origin/web-simulation=1e53acd`, divergence 0/0.
+The timing architecture checkpoint was committed and pushed before interruption.
+Six modified files remained: acceptance report, bridge/map-cache/LiDAR mailbox
+refinements, mechanical geometry reporting and tests, and the acceptance probe.
+All were reviewed and valid refinements retained. The threshold relaxation was
+corrected without discarding the observations or other uncommitted work.
+
+### Executor network hardening and strict settling
+
+Heartbeat `ws.ping()` synchronously acquired websocket-client's writer lock on
+the ROS executor. Ping now occupies a coalesced internal mailbox slot and runs
+on the existing outbound network worker. Its failures use the same fail-closed
+disconnect/epoch invalidation path as other writes. No new transport, lease
+change or physics change was introduced. Socket connect/receive/close reside
+on the connection thread; node shutdown close is outside normal ROS callbacks.
+
+Regression evidence: a deliberately blocked worker ping leaves the heartbeat
+callback available and repeated pings bounded to one pending slot. Geometry
+cannot increase the established 0.005-rad/s wheel-position rate limit; regression
+tests reject rolling drift previously admitted by the relaxed limit.
+
+Current source checks: 42 targeted Python tests PASS (manual transport,
+mechanical settling, teleop coordination, encoder odometry and kinematics);
+Python compile PASS; swerve_bridge colcon build PASS (setuptools deprecation
+warning). No frontend implementation changes. The initial pytest invocation
+referenced nonexistent filenames and ran no tests; the corrected invocation
+above completed all 42 tests.
+
+Current runtime: production startup and strict sequential directions pending.
+Historical focused Forward continuity/STOP remain PASS; Stage B is UNVERIFIED
+until strict direction/settling and current safety/browser evidence complete.

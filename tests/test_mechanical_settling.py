@@ -7,6 +7,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from mechanical_settling import MechanicalSettling
 
 
+@pytest.mark.parametrize('rolling_rate,passed', [(0.0003, True), (0.0004, False), (0.0011, False)])
+def test_measured_geometry_never_relaxes_existing_wheel_limit(rolling_rate, passed):
+    radius = .0675
+    monitor = MechanicalSettling(0., 0., timeout_sim=2., wheel_radius=radius)
+    for i in range(22):
+        sim = i * .1
+        result = monitor.update(sim, sim, sample(sim, wheel=sim * rolling_rate / radius,
+                                                 body=sim * rolling_rate))
+        if result is not None:
+            break
+    assert result['passed'] is passed
+    assert result['wheel_position_rate_limit'] == pytest.approx(.005)
+    assert result['wheel_rolling_drift_rates'][0] == pytest.approx(rolling_rate)
+
+
+def test_invalid_geometry_cannot_disable_rotation_checks():
+    with pytest.raises(ValueError):
+        MechanicalSettling(0., 0., wheel_radius=float('nan'))
+
+
+def test_measured_geometry_can_only_tighten_wheel_limit():
+    monitor = MechanicalSettling(0., 0., wheel_radius=1.)
+    assert monitor.wheel_position_rate == pytest.approx(.001)
+
+
 def sample(wall, *, wheel=0.0, body=0.0, steering=0.0, drive=0.0):
     return {'selected': [0., 0., 0.], 'drive': [drive, drive],
             'body_velocity': [0., 0., 0.], 'odom_velocity': [0., 0.007, 0.007],

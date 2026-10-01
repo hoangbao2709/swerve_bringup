@@ -5,6 +5,7 @@ from collections import deque
 
 class OutboundMailbox:
     LATEST = frozenset({
+        '_SOCKET_PING',
         'HEARTBEAT', 'ROBOT_STATE', 'ROS_DIAGNOSTICS', 'SYSTEM_DIAGNOSTICS',
         'COMMAND_DIAGNOSTICS', 'LIDAR_SCAN', 'LIDAR_MAP_2D', 'LIDAR_MAP_3D',
         'LIDAR_STREAM_DIAGNOSTICS', 'MAP_SNAPSHOT', 'NAV_GLOBAL_PATH',
@@ -18,6 +19,7 @@ class OutboundMailbox:
         self.latest = {}
         self.epoch = 0
         self.dropped = 0
+        self.dropped_by_type = {}
 
     def clear(self):
         with self.condition:
@@ -38,6 +40,7 @@ class OutboundMailbox:
             if kind in self.LATEST:
                 if kind in self.latest:
                     self.dropped += 1
+                    self.dropped_by_type[kind] = self.dropped_by_type.get(kind, 0) + 1
                 self.latest[kind] = item
             else:
                 if len(self.critical) >= self.capacity:

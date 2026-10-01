@@ -22,6 +22,7 @@ from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor, await_or_execute
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rcl_interfaces.srv import GetParameters
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
@@ -97,6 +98,7 @@ class MotionProbe(Node):
         self.gazebo_pose_count = 0
         self.gazebo_pose_sample_monotonic = None
         self.joint_state = None
+        self.wheel_radius = None
         self.joint_events: list[tuple[float, dict, dict]] = []
         self.map = None
         self.cmd_events: list[tuple[float, float, float, float]] = []
@@ -265,11 +267,28 @@ class MotionProbe(Node):
         Wheel position range, not a possibly inconsistent instantaneous velocity,
         proves actual rotation. Body pose drift is checked in addition to twists.
         """
+        if hasattr(self, 'wheel_radius') and self.wheel_radius is None:
+            client = self.create_client(GetParameters, '/swerve_controller/get_parameters')
+            try:
+                if not client.wait_for_service(timeout_sec=3.0):
+                    return {'passed': False, 'reason': 'SETTLING_WHEEL_GEOMETRY_UNAVAILABLE'}
+                request = GetParameters.Request()
+                request.names = ['wheel_radius']
+                future = client.call_async(request)
+                if not self.wait_until(future.done, 5.0, ws):
+                    return {'passed': False, 'reason': 'SETTLING_WHEEL_GEOMETRY_TIMEOUT'}
+                radius = future.result().values[0].double_value
+                if not math.isfinite(radius) or radius <= 0:
+                    return {'passed': False, 'reason': 'SETTLING_WHEEL_GEOMETRY_INVALID'}
+                self.wheel_radius = radius
+            finally:
+                self.destroy_client(client)
         monitor = MechanicalSettling(self.sim_time(), time.monotonic(),
             timeout_sim=timeout, timeout_wall=wall_timeout,
             clock_stall_wall=clock_stall_timeout, window_sim=stable_window,
             body_tolerance=body_tolerance, wheel_position_rate=wheel_position_rate,
-            body_position_rate=body_position_rate, steering_span=steering_tolerance)
+            body_position_rate=body_position_rate, steering_span=steering_tolerance,
+            wheel_radius=getattr(self, 'wheel_radius', None))
         while True:
             self.pump(ws, 0.005)
             sample = None

@@ -63,6 +63,50 @@ def test_outbound_is_latest_only_and_critical_is_fifo_priority():
     assert not out.current(epoch) and out.take(.001) is None
 
 
+def test_heartbeat_remains_available_while_network_ping_is_blocked():
+    from swerve_bridge.bridge_node import SwerveBridge
+    entered, release = threading.Event(), threading.Event()
+    stop = threading.Event()
+    mailbox = OutboundMailbox()
+    wire = []
+
+    def ping():
+        entered.set()
+        assert release.wait(2)
+
+    socket = SimpleNamespace(ping=ping, send=wire.append)
+    node = SimpleNamespace(stop_event=stop, outbound=mailbox, ws=socket,
+        ws_lock=threading.Lock(), control_timing={},
+        send=lambda payload: mailbox.offer(payload),
+        robot_id='R01', nav_state='READY', runtime_state='NAVIGATION',
+        applied_mode='MANUAL', slam_paused=False, controller_states=[], gazebo_rtf=.2,
+        now=lambda: 'timestamp', _mapping_elapsed_s=lambda: 0,
+        collect_diagnostics=lambda: {}, detail_errors=lambda diagnostics: [],
+        send_map_revision_status=lambda: None)
+    worker = threading.Thread(target=SwerveBridge.outbound_sender, args=(node,))
+    worker.start()
+    try:
+        mailbox.offer({'type': '_SOCKET_PING'})
+        assert entered.wait(1)
+        callback_done = threading.Event()
+        callback = threading.Thread(target=lambda: (
+            SwerveBridge.heartbeat_timer(node), callback_done.set()))
+        callback.start()
+        assert callback_done.wait(.5), 'ROS heartbeat waited for network ping'
+        callback.join(1)
+        for _ in range(100):
+            mailbox.offer({'type': '_SOCKET_PING'})
+        assert '_SOCKET_PING' in mailbox.latest
+        assert len(mailbox.critical) == 1  # controller status is still preserved
+        assert all('_SOCKET_PING' not in item for item in wire)
+    finally:
+        stop.set()
+        release.set()
+        mailbox.clear()
+        worker.join(2)
+    assert not worker.is_alive()
+
+
 def test_map_validation_cache_invalidates_grid_yaml_and_image(tmp_path):
     from swerve_bridge.bridge_node import SwerveBridge
     yaml = tmp_path / 'map.yaml'

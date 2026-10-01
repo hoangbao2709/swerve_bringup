@@ -327,9 +327,6 @@ class SwerveBridge(Node):
         self.outbound_thread.start()
         self.thread = threading.Thread(target=self.websocket_loop, daemon=True)
         self.thread.start()
-        self.lidar_sender_thread = threading.Thread(
-            target=self.lidar_frame_sender, daemon=True)
-        self.lidar_sender_thread.start()
 
     @staticmethod
     def _normalize_namespace(value) -> str:
@@ -570,6 +567,10 @@ class SwerveBridge(Node):
             if item is None:
                 continue
             epoch, payload = item
+            if payload.get('_latest_frame_signal'):
+                payload = self.lidar_frame_buffer.take(timeout=0)
+                if payload is None:
+                    continue
             with self.ws_lock:
                 ws = self.ws
             if ws is None or not self.outbound.current(epoch):
@@ -579,16 +580,19 @@ class SwerveBridge(Node):
                 continue
             started = time.monotonic()
             try:
+                if payload.get('type') == '_SOCKET_PING':
+                    ws.ping()
+                    continue
                 if payload.get('type') == 'LIDAR_MAP_3D':
                     payload['send_timestamp'] = self.now()
                     now = time.monotonic()
                     if self.last_lidar_send_monotonic is not None:
                         self.lidar_output_intervals.append(now - self.last_lidar_send_monotonic)
                     payload['web_output_fps'] = self._frequency(self.lidar_output_intervals)
-                    payload['dropped_frames'] = self.lidar_frame_buffer.dropped_frames + self.outbound.dropped
+                    payload['dropped_frames'] = self.lidar_frame_buffer.dropped_frames
                 ws.send(json.dumps(payload))
                 if payload.get('type') == 'LIDAR_MAP_3D':
-                    self.last_lidar_send_monotonic = time.monotonic()
+                    self.last_lidar_send_monotonic = started
                     self.last_lidar_output_metadata = {
                         key: payload.get(key) for key in (
                             'source_timestamp', 'send_timestamp', 'frame_id', 'point_count',
@@ -606,17 +610,6 @@ class SwerveBridge(Node):
             finally:
                 self.control_timing['max_sync_ws_send_duration'] = max(
                     self.control_timing.get('max_sync_ws_send_duration', 0), time.monotonic() - started)
-
-    def lidar_frame_sender(self):
-        """Keep WebSocket backpressure out of the ROS callback/executor path."""
-        while not self.stop_event.is_set():
-            payload = self.lidar_frame_buffer.take(timeout=0.25)
-            if payload is None:
-                continue
-            if (self.detail_view != 'LIDAR_3D'
-                    or payload.get('view_epoch') != self.detail_view_epoch):
-                continue
-            self.send(payload)
 
     def send_bridge_status(self, state, error=None):
         self.last_bridge_error = error
@@ -773,13 +766,10 @@ class SwerveBridge(Node):
         }})
         self.send_map_revision_status()
 
-        with self.ws_lock:
-            ws = self.ws
-            if ws is not None:
-                try:
-                    ws.ping()
-                except Exception as exc:
-                    self.get_logger().warning(f'ROS bridge heartbeat ping failed: {exc}')
+        # Ping takes websocket-client's socket write lock and can wait behind
+        # a slow telemetry write. Coalesce it on the same network worker so
+        # ROS manual/control timers never wait for socket I/O or that lock.
+        self.send({'type': '_SOCKET_PING'})
 
     @staticmethod
     def _frequency(intervals):
@@ -1068,6 +1058,8 @@ class SwerveBridge(Node):
             'view_epoch': self.detail_view_epoch,
         }
         self.lidar_frame_buffer.offer(payload)
+        if not self.send({'type': 'LIDAR_MAP_3D', '_latest_frame_signal': True}):
+            self.lidar_frame_buffer.clear()
         self.last_web_cloud_source_stamp = source_stamp
         self.web_cloud_revision = next_revision
 
@@ -1489,11 +1481,13 @@ class SwerveBridge(Node):
         try:
             stat = self.nav2_map_file.stat()
             key = (self.nav2_configured_revision, signature,
-                   stat.st_mtime_ns, stat.st_size)
+                   str(self.nav2_map_file.resolve()), stat.st_ino,
+                   stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
             cached = getattr(self, '_nav2_validation_cache', None)
             if signature is not None and cached and cached['key'] == key:
                 image_stat = cached['image'].stat()
-                if (image_stat.st_mtime_ns, image_stat.st_size) == cached['image_stat']:
+                if (image_stat.st_ino, image_stat.st_mtime_ns, image_stat.st_ctime_ns,
+                        image_stat.st_size) == cached['image_stat']:
                     return cached['revision']
         except OSError:
             return None
@@ -1506,7 +1500,8 @@ class SwerveBridge(Node):
                 image_stat = image.stat()
                 self._nav2_validation_cache = {
                     'key': key, 'image': image,
-                    'image_stat': (image_stat.st_mtime_ns, image_stat.st_size),
+                    'image_stat': (image_stat.st_ino, image_stat.st_mtime_ns,
+                                   image_stat.st_ctime_ns, image_stat.st_size),
                     'revision': result,
                 }
             except (OSError, AttributeError):

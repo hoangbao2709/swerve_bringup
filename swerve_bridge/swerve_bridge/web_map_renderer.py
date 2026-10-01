@@ -7,16 +7,43 @@ browser only receives bounded numeric arrays and frame metadata.
 from __future__ import annotations
 
 import base64
+import hashlib
 import itertools
 import math
 import threading
 import time
 import zlib
+import numpy as np
 from typing import Iterable, Sequence
+
+_OFFSET_CELLS = bytes((value + 1) % 256 for value in range(256))
+_INVALID_CELLS = bytes(0 if value <= 100 or value == 255 else 1 for value in range(256))
+
+
+def occupancy_content_signature(values):
+    try:
+        raw = memoryview(values)
+        if raw.itemsize != 1:
+            raise TypeError('not a byte grid')
+    except TypeError:
+        raw = bytes(int(value) % 256 for value in values)
+    return hashlib.sha256(raw).hexdigest()
 
 
 def compress_occupancy_grid(values: Iterable[int], max_cells: int = 4_000_000) -> str:
     """Return bounded zlib/base64 OccupancyGrid bytes with -1 encoded as 0."""
+    try:
+        cells = memoryview(values)
+        if cells.format != 'b' or cells.itemsize != 1:
+            raise TypeError('not a ROS signed byte grid')
+        raw_cells = cells.tobytes()
+        if len(raw_cells) > max_cells:
+            raise ValueError(f'occupancy grid exceeds {max_cells} cells')
+        if raw_cells.translate(_INVALID_CELLS).count(1):
+            raise ValueError('occupancy cells must be in [-1, 100]')
+        return base64.b64encode(zlib.compress(raw_cells.translate(_OFFSET_CELLS), level=6)).decode('ascii')
+    except TypeError:
+        pass
     raw = bytearray()
     for value in values:
         cell = int(value)
@@ -105,6 +132,34 @@ def point_xyz(point: object) -> tuple[float, float, float]:
     if names and {'x', 'y', 'z'}.issubset(names):
         return float(point['x']), float(point['y']), float(point['z'])
     return float(point[0]), float(point[1]), float(point[2])
+
+
+def bounded_cloud_points(raw, translation, quaternion, *, max_points=4000,
+                         min_range=.15, max_range=25, min_height=-1,
+                         max_height=3, voxel_size=.04, max_input_points=200_000):
+    """Native array transforms/voxel sampling keep long Python loops off GIL.
+
+    Preserve first-point voxel ordering and existing output/input bounds.
+    read_points returns a NumPy structured array in the supported ROS runtime.
+    """
+    rows = raw[:max_input_points]
+    points = np.column_stack([rows[name] for name in ('x', 'y', 'z')]).astype(np.float64, copy=False)
+    q = np.asarray(quaternion[:3], dtype=np.float64)
+    cross = 2 * np.cross(q, points)
+    points = points + float(quaternion[3]) * cross + np.cross(q, cross) + np.asarray(translation)
+    distance2 = np.sum(points * points, axis=1)
+    valid = (np.isfinite(points).all(axis=1) & (distance2 >= min_range ** 2)
+        & (distance2 <= max_range ** 2) & (points[:, 2] >= min_height)
+        & (points[:, 2] <= max_height))
+    points = points[valid]
+    if not len(points):
+        return []
+    keys = np.floor(points / max(.005, float(voxel_size))).astype(np.int64)
+    _, indexes = np.unique(keys, axis=0, return_index=True)
+    points = points[np.sort(indexes)]
+    limit = max(1, int(max_points))
+    stride = max(1, math.ceil(len(points) / limit))
+    return points[::stride][:limit].tolist()
 
 
 def successful_path_result(action_status: int, succeeded_status: int,

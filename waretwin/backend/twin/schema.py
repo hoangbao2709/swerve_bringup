@@ -765,6 +765,8 @@ class CmdRobotDetailView(_Base):
     type: Literal["ROBOT_DETAIL_VIEW"] = "ROBOT_DETAIL_VIEW"
     robot_id: RobotId = Field(min_length=1, max_length=64)
     view: Literal["GLOBAL", "LIDAR_2D", "LIDAR_3D"]
+    request_id: Optional[str] = Field(default=None, max_length=128)
+    delivery_ack: bool = False
 
 
 class CmdWhatIfRun(_Base):

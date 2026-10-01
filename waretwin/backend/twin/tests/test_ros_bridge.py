@@ -15,6 +15,28 @@ from twin.schema import ClientMessage
 
 
 class RosCoordinateTests(IsolatedAsyncioTestCase):
+    async def test_detail_view_request_preserves_correlation_and_receive_timing(self):
+        consumer = SimpleNamespace(send_json=AsyncMock())
+        gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+        with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
+                patch.object(runtime, 'robot_bridge_online', return_value=True), \
+                patch.object(runtime, 'gateway', return_value=gateway):
+            await runtime.handle_message(consumer, {'type': 'ROBOT_DETAIL_VIEW',
+                'robot_id': 'R01', 'view': 'LIDAR_3D', 'request_id': 'view-new',
+                '_view_received_ms': 12345.0}, SimpleNamespace(role='admin'))
+        gateway.send_command.assert_awaited_once_with('R01', 'DETAIL_VIEW', {
+            'view': 'LIDAR_3D', 'request_id': 'view-new', 'django_received_ms': 12345.0})
+        consumer.send_json.assert_not_awaited()
+
+    async def test_detail_view_ack_is_broadcast_without_waiting_for_sensor_frame(self):
+        status = {'type': 'ROBOT_DETAIL_VIEW_STATUS', 'robot_id': 'R01',
+            'requested_view': 'LIDAR_3D', 'applied_view': 'LIDAR_3D',
+            'view_epoch': 2, 'request_id': 'view-new', 'state': 'APPLIED'}
+        with patch.object(runtime, 'broadcast', new_callable=AsyncMock) as broadcast:
+            await runtime.handle_ros_message(status)
+        broadcast.assert_awaited_once_with(status)
+        self.assertIn('ROBOT_DETAIL_VIEW_STATUS', RosBridgeConsumer.database_free_types)
+
     async def test_latest_valid_map_snapshot_is_retained_for_new_control_clients(self):
         previous = runtime.robot_map_snapshots.copy()
         payload = {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from urllib.parse import parse_qs
 
@@ -119,6 +120,7 @@ class RosBridgeConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
         'ROS_DIAGNOSTICS', 'SYSTEM_DIAGNOSTICS', 'MAP_REVISION_STATUS',
         'MAP_SNAPSHOT', 'LIDAR_SCAN', 'LIDAR_MAP_2D', 'LIDAR_MAP_3D',
         'LIDAR_STREAM_DIAGNOSTICS', 'NAV_GLOBAL_PATH', 'NAV_LOCAL_PATH',
+        'ROBOT_DETAIL_VIEW_STATUS',
         'CONTROLLER_STATE', 'LOCAL_CONTROL_RESULT',
     })
 
@@ -197,6 +199,7 @@ class RosBridgeConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
             })
             return
         content = {**content, 'robot_id': self.robot_id}
+        started = time.monotonic()
         try:
             await runtime.handle_ros_message(content)
         except Exception as exc:
@@ -211,3 +214,7 @@ class RosBridgeConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
                 })
             except Exception:
                 log.exception('failed to send ROS bridge message error')
+        finally:
+            elapsed = time.monotonic() - started
+            if os.environ.get('WARETWIN_MANUAL_TIMING') == '1' and elapsed >= .05:
+                log.info('ROS_MESSAGE_TIMING kind=%s wall_ms=%.3f', message_type, elapsed * 1000)

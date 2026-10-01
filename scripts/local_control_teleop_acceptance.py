@@ -21,7 +21,7 @@ from sensor_msgs.msg import JointState
 from rosgraph_msgs.msg import Clock
 from std_msgs.msg import Float64MultiArray, String
 from rcl_interfaces.srv import GetParameters
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy
 assert os.environ.get('ACCEPTANCE_ROS_DOMAIN_ID') is not None, 'managed domain must be supplied'
 assert os.environ.get('ROS_DOMAIN_ID') == os.environ['ACCEPTANCE_ROS_DOMAIN_ID'], 'managed ROS domain mismatch'
 backend=os.environ['BACKEND_URL'];token=a.authenticate(backend)
@@ -36,21 +36,36 @@ def receive():
   except Exception:return
 reader=threading.Thread(target=receive,daemon=True);reader.start()
 rclpy.init();n=Node('web_teleop_trace');data=defaultdict(lambda:deque(maxlen=12000));sim=[0]
+feedback_qos = (QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+ if os.environ.get('ACCEPTANCE_LATEST_FEEDBACK') == '1' else 100)
 def twist(m):return [m.linear.x,m.linear.y,m.angular.z]
 def record(key,value):data[key].append([time.monotonic(),value,sim[0]])
 for topic in ('/cmd_vel_manual','/cmd_vel_selected'):
  n.create_subscription(Twist,topic,lambda m,key=topic:record(key,twist(m)),100)
 for topic in ('/steering_controller/commands','/drive_controller/commands'):
  n.create_subscription(Float64MultiArray,topic,lambda m,key=topic:record(key,list(m.data)),50)
-n.create_subscription(JointState,'/joint_states',lambda m:record('joints',{'positions':dict(zip(m.name,m.position)),'velocities':dict(zip(m.name,m.velocity))}),100)
-n.create_subscription(Odometry,'/odom',lambda m:record('odom',{'pose':a.pose_from_odom(m),'velocity':twist(m.twist.twist)}),100)
+n.create_subscription(JointState,'/joint_states',lambda m:record('joints',{'positions':dict(zip(m.name,m.position)),'velocities':dict(zip(m.name,m.velocity))}),feedback_qos)
+n.create_subscription(Odometry,'/odom',lambda m:record('odom',{'pose':a.pose_from_odom(m),'velocity':twist(m.twist.twist)}),feedback_qos)
 def model(m):
  if 'swerve_base' in m.name:
   i=m.name.index('swerve_base');record('gazebo',{'pose':a.pose_from_pose(m.pose[i]),'velocity':twist(m.twist[i])})
-n.create_subscription(ModelStates,'/model_states',model,100)
+if os.environ.get('ACCEPTANCE_LATEST_FEEDBACK') == '1':
+ # Gazebo's full-world ModelStates is published at the physics rate. Decode
+ # at most 20 wall-Hz in this diagnostic observer; never change the publisher
+ # or sample/drop command topics used for continuity/zero-latency evidence.
+ from rclpy.serialization import deserialize_message
+ model_decoded_wall = [0.]
+ def model_raw(raw):
+  wall = time.monotonic()
+  if wall - model_decoded_wall[0] < .05:return
+  model_decoded_wall[0] = wall
+  model(deserialize_message(raw, ModelStates))
+ n.create_subscription(ModelStates,'/model_states',model_raw,feedback_qos,raw=True)
+else:
+ n.create_subscription(ModelStates,'/model_states',model,feedback_qos)
 n.create_subscription(String,'/command_arbiter/diagnostics',lambda m:record('arbiter',json.loads(m.data)),50)
 n.create_subscription(String,'/command_owner',lambda m:record('owner',m.data),100)
-n.create_subscription(Clock,'/clock',lambda m:sim.__setitem__(0,m.clock.sec+m.clock.nanosec*1e-9),qos_profile_sensor_data)
+n.create_subscription(Clock,'/clock',lambda m:sim.__setitem__(0,m.clock.sec+m.clock.nanosec*1e-9),feedback_qos if os.environ.get('ACCEPTANCE_LATEST_FEEDBACK') == '1' else qos_profile_sensor_data)
 thread=threading.Thread(target=lambda:rclpy.spin(n),daemon=True);thread.start()
 geometry=n.create_client(GetParameters,'/swerve_controller/get_parameters')
 assert geometry.wait_for_service(timeout_sec=5),'wheel geometry unavailable'
@@ -71,7 +86,12 @@ linear,angular=[value.double_value for value in future.result().values]
 requested_twists={'FORWARD':[linear,0.,0.],'BACKWARD':[-linear,0.,0.],
  'LEFT':[0.,linear,0.],'RIGHT':[0.,-linear,0.],
  'ROTATE_LEFT':[0.,0.,angular],'ROTATE_RIGHT':[0.,0.,-angular]}
-sender=ManualRefreshWorker(lambda message:(record('client',message),ws.send(json.dumps(message))), 'R01').start()
+if os.environ.get('ACCEPTANCE_MANUAL_PROCESS') == '1':
+ from manual_refresh_process import ProcessManualRefreshWorker
+ sender=ProcessManualRefreshWorker(backend.replace('http://','ws://')+'/ws?token='+token,
+  'R01', on_message=lambda message:record('client',message)).start()
+else:
+ sender=ManualRefreshWorker(lambda message:(record('client',message),ws.send(json.dumps(message))), 'R01').start()
 def command(action):
  if action=='STOP':sender.stop()
  else:sender.hold(action)

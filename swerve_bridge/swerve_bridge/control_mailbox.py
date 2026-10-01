@@ -11,6 +11,7 @@ class ControlMailbox:
         self.sequence = 0
         self.manual_sequence = 0
         self.manual = None
+        self.detail_view = None
         self.controls = {}
         self.other = queue.Queue()
 
@@ -29,6 +30,8 @@ class ControlMailbox:
                 self.manual_sequence = self.sequence
                 data['_generation'] = self.generation
                 self.manual = data
+            elif kind == 'DETAIL_VIEW':
+                self.detail_view = data
             else:
                 self.other.put(data)
 
@@ -39,6 +42,9 @@ class ControlMailbox:
                 return self.controls.pop(kind)
             if self.manual is not None:
                 data, self.manual = self.manual, None
+                return data
+            if self.detail_view is not None:
+                data, self.detail_view = self.detail_view, None
                 return data
             return self.other.get_nowait()
 

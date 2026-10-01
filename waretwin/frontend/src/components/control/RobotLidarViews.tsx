@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
-import { Grid, Line, OrbitControls } from "@react-three/drei";
+import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Canvas, useThree, useFrame } from "@react-three/fiber";
+import { detailPerformance } from "./detailPerformance";
+import { Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { RobotDetailLidar2D, RobotDetailLidar3D, RobotDetailPathPreview, RobotState } from "../../schema/twin_state";
 import { createWorldTransform, screenToWorld, worldToScreen, type WorldBounds } from "../../layout/coordinates";
 
 type LocalPoint = { x: number; y: number };
 
-export function RobotLidar2DView({ frame, robot, onPick, overlay }: {
+export function RobotLidar2DView({ frame, robot, onPick, overlay, active = true }: {
+  active?: boolean;
   frame: RobotDetailLidar2D | null;
   robot?: RobotState;
   onPick?: (point: LocalPoint) => void;
@@ -38,10 +40,10 @@ export function RobotLidar2DView({ frame, robot, onPick, overlay }: {
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || size.width <= 0 || size.height <= 0) return;
+    if (!active || !canvas || size.width <= 0 || size.height <= 0) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    canvas.width = Math.round(size.width * dpr);
-    canvas.height = Math.round(size.height * dpr);
+    if (canvas.width !== Math.round(size.width * dpr)) canvas.width = Math.round(size.width * dpr);
+    if (canvas.height !== Math.round(size.height * dpr)) canvas.height = Math.round(size.height * dpr);
     canvas.style.width = `${size.width}px`;
     canvas.style.height = `${size.height}px`;
     const context = canvas.getContext("2d");
@@ -90,7 +92,8 @@ export function RobotLidar2DView({ frame, robot, onPick, overlay }: {
     }
     context.fillStyle = "#8aa4bf"; context.font = "10px JetBrains Mono, monospace";
     context.fillText(`BASE FRAME · ${frame?.frame_id ?? "WAITING FOR SCAN"}`, 10, 18);
-  }, [frame, range, size, transform]);
+    detailPerformance("view_render", { view: "LIDAR_2D", useful: Boolean(frame?.point_count), robot_id: frame?.robot_id });
+  }, [active, frame, overlay, range, size, transform]);
 
   const pick = (event: MouseEvent<HTMLCanvasElement>) => {
     if (!onPick) return;
@@ -105,37 +108,70 @@ export function RobotLidar2DView({ frame, robot, onPick, overlay }: {
   </div>;
 }
 
-export function RobotLidar3DView({ frame, overlay }: {
+export const RobotLidar3DView = memo(function RobotLidar3DView({ frame, overlay, active = true, fresh = true }: {
+  active?: boolean;
+  fresh?: boolean;
   frame: RobotDetailLidar3D | null;
   overlay?: { path: Array<[number, number]>; goal: { x: number; y: number; yaw: number } | null } | null;
 }) {
-  const [pointGeometry, setPointGeometry] = useState<THREE.BufferGeometry | null>(null);
+  const [renderActive, setRenderActive] = useState(false);
   useEffect(() => {
-    if (!frame?.points.length) { setPointGeometry(null); return; }
-    const packed = new Float32Array(frame.points.length * 3);
-    frame.points.forEach((point, index) => packed.set(point, index * 3));
+    if (!active || !fresh) { setRenderActive(false); return; }
+    let second = 0;
+    // Reveal the retained framebuffer immediately. Do not spend software-GL
+    // time redrawing an old epoch before the lightweight applied ACK arrives.
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => setRenderActive(true));
+    });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+  }, [active, fresh]);
+  const pointGeometry = useMemo(() => {
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(packed, 3));
-    geometry.computeBoundingSphere();
-    setPointGeometry(geometry);
-    return () => geometry.dispose();
-  }, [frame?.epoch, frame?.revision, frame?.points]);
+    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(4000 * 3), 3));
+    geometry.setDrawRange(0, 0);
+    return geometry;
+  }, []);
+  useEffect(() => {
+    const attribute = pointGeometry.getAttribute("position") as THREE.BufferAttribute;
+    const count = Math.min(frame?.points.length ?? 0, 4000);
+    for (let index = 0; index < count; index++) attribute.setXYZ(index, ...frame!.points[index]);
+    attribute.needsUpdate = true;
+    pointGeometry.setDrawRange(0, count);
+    pointGeometry.computeBoundingSphere();
+  }, [pointGeometry, frame?.epoch, frame?.revision, frame?.points]);
+  useEffect(() => () => pointGeometry.dispose(), [pointGeometry]);
 
   return <div className="robot-lidar-view robot-lidar-3d-view">
-    <Canvas camera={{ position: [7, -7, 6], up: [0, 0, 1], fov: 55, near: 0.05, far: 100 }} dpr={[1, 1.5]}>
+    <Canvas frameloop={active && renderActive ? "demand" : "never"} onCreated={() => detailPerformance("canvas_3d_created")} camera={{ position: [7, -7, 6], up: [0, 0, 1], fov: 55, near: 0.05, far: 100 }} dpr={1}>
       <color attach="background" args={["#06101a"]} />
       <ambientLight intensity={0.8} />
       <axesHelper args={[1.2]} />
-      <Grid args={[30, 30]} position={[0, 0, -0.03]} rotation={[Math.PI / 2, 0, 0]} cellSize={1} sectionSize={5} cellColor="#173146" sectionColor="#31526b" fadeDistance={24} infiniteGrid />
+      {/* Finite line grid avoids a full-screen fragment shader on VM software GL. */}
+      <gridHelper args={[30, 30, "#31526b", "#173146"]} position={[0, 0, -0.03]} rotation={[Math.PI / 2, 0, 0]} />
       {pointGeometry && <points geometry={pointGeometry}><pointsMaterial color="#45e3d4" size={0.045} sizeAttenuation /></points>}
       {(overlay?.path ?? frame?.path ?? []).length > 1 && <Line points={(overlay?.path ?? frame?.path ?? []).map(([x, y]) => [x, y, 0.05])} color="#aa91ff" lineWidth={2} />}
       {(overlay?.goal ?? frame?.goal) && <mesh position={[(overlay?.goal ?? frame?.goal)!.x, (overlay?.goal ?? frame?.goal)!.y, 0.08]}><sphereGeometry args={[0.12, 12, 8]} /><meshBasicMaterial color="#f4cf52" /></mesh>}
-      <mesh position={[0, 0, 0.12]}><boxGeometry args={[0.62, 0.42, 0.24]} /><meshStandardMaterial color="#39d6c7" wireframe /></mesh>
-      <OrbitControls makeDefault enableDamping dampingFactor={0.08} />
+      <mesh position={[0, 0, 0.12]}><boxGeometry args={[0.62, 0.42, 0.24]} /><meshBasicMaterial color="#39d6c7" wireframe /></mesh>
+      <OrbitControls makeDefault enableDamping={false} enabled={active} />
       <CameraFit frame={frame} />
+      <RenderProbe frame={frame} active={active && renderActive} />
     </Canvas>
     <div className="robot-lidar-view-readout"><span>{frame?.point_count ?? 0} PTS</span><span>{frame?.render_fps?.toFixed(1) ?? "0.0"} FPS</span><span>{frame?.source_frame_id ?? "WAITING FOR CLOUD"}</span><span>REV {frame?.revision ?? "—"}</span></div>
   </div>;
+});
+
+function RenderProbe({ frame, active }: { frame: RobotDetailLidar3D | null; active: boolean }) {
+  const last = useRef("");
+  const { invalidate } = useThree();
+  useEffect(() => { if (active) { last.current = ""; invalidate(); } }, [active, frame, invalidate]);
+  useFrame(() => {
+    if (!active) return;
+    const key = `${frame?.epoch}/${frame?.revision}`;
+    if (last.current === key) return;
+    last.current = key;
+    detailPerformance("view_render", { view: "LIDAR_3D", useful: Boolean(frame?.point_count), robot_id: frame?.robot_id });
+  });
+  return null;
 }
 
 function CameraFit({ frame }: { frame: RobotDetailLidar3D | null }) {

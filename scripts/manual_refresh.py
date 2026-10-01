@@ -67,6 +67,7 @@ class ManualRefreshWorker:
             self.wake.clear()
             with self.state_lock:
                 action, generation = self.action, self.generation
+            started = time.monotonic()
             if action is not None:
                 try:
                     self._emit(action, generation)
@@ -74,4 +75,6 @@ class ManualRefreshWorker:
                     self.error = exc
                     with self.state_lock:
                         self.action = None
-            self.wake.wait(self.interval)
+            # Pace starts, not completions: network duration must not be added
+            # to every refresh period. No overdue ticks/commands are queued.
+            self.wake.wait(max(0, started + self.interval - time.monotonic()))

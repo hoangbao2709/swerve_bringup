@@ -12,6 +12,7 @@
  * 若 patch.base_tick 與本地 tick 不符 → 送 RESYNC 要 FULL。
  */
 import type { ServerMessage, ClientMessage, TwinState, HeatmapLayer, RobotState } from "../schema/twin_state";
+import { detailFramePatch, detailViewStatusPatch } from "../components/control/detailViewState";
 import { THRESHOLDS } from "../schema/twin_state";
 import { useStore } from "../state/store";
 
@@ -227,7 +228,12 @@ function open() {
       .catch((e) => console.warn("[layout] initial refresh failed", e));
   };
   ws.onmessage = (ev) => {
-    try { handle(JSON.parse(ev.data) as ServerMessage); }
+    try {
+      const message = JSON.parse(ev.data) as ServerMessage & { visualization_delivery_id?: number };
+      if (typeof message.visualization_delivery_id === "number")
+        wsSend({ type: "ROBOT_DETAIL_FRAME_RECEIVED", delivery_id: message.visualization_delivery_id });
+      handle(message);
+    }
     catch (e) { console.warn("[ws] invalid server message", e); }
   };
   ws.onerror = () => { onStateChange?.("error"); };
@@ -354,10 +360,13 @@ function handle(msg: ServerMessage) {
       st.setRobotDetail(msg.scan.robot_id, { scan: msg.scan });
       break;
     case "LIDAR_MAP_2D":
-      st.setRobotDetail(msg.robot_id, { lidar2d: msg });
+      st.setRobotDetail(msg.robot_id, detailFramePatch(st.robotDetail[msg.robot_id], "LIDAR_2D", msg));
       break;
     case "LIDAR_MAP_3D":
-      st.setRobotDetail(msg.robot_id, { lidar3d: msg });
+      st.setRobotDetail(msg.robot_id, detailFramePatch(st.robotDetail[msg.robot_id], "LIDAR_3D", msg));
+      break;
+    case "ROBOT_DETAIL_VIEW_STATUS":
+      st.setRobotDetail(msg.robot_id, detailViewStatusPatch(st.robotDetail[msg.robot_id], msg));
       break;
     case "MAP_SNAPSHOT":
       st.setRobotDetail(msg.map.robot_id, { map: msg.map });

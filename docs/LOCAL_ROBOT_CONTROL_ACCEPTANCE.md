@@ -1923,3 +1923,125 @@ PASS. A first test invocation without the ROS workspace environment failed
 imports (`swerve_bringup` unavailable); it was rerun in the supported ROS
 environment and passed. No localization/ROS source was modified in this
 resume run, so no ROS rebuild was needed.
+
+### Robot Control visualization performance checkpoint (2026-10-01)
+
+Nav Goal, Mapping, Localization and VDA5050 work is paused for this requested
+visualization fix. The existing production Gazebo session is retained; current
+boot kernel checks contain no new storage/OOM/panic faults.
+
+Instrumentation covers browser click/send, Django receive, bridge receive/apply,
+frame preparation, network send, Django/browser receive, and useful canvas
+render. The initial real browser baseline (two measured switches per direction,
+after warmup) observed max useful content latency: GLOBAL->2D 1500 ms,
+2D->3D 8780 ms, 3D->2D 4009 ms, 2D->GLOBAL 5467 ms. The default simulation-clock
+detail callback ran at about 1.4-1.7 wall seconds between samples. Occupancy
+compression reached 1582 ms; point-cloud preparation reached 460 ms; one
+browser decode/raster build took 1328 ms. Raw evidence is ignored
+`.runtime/view-performance-before.json`.
+
+Historical intermediate traces showed cached render mostly 28-92 ms, but ACKs
+still took 4-7 seconds. A 20-second Django CPU profile identified pure-Python
+Autobahn UTF-8 validation (6.14 s) and WebSocket masking (5.78 s), not sensor
+rendering, as the next transport bottleneck. Installing native `wsaccel` into
+the worktree venv initially did not affect the live server: its copied activate
+script selected the original checkout's venv. `backend/run.sh` now explicitly
+uses this checkout's interpreter; setup/preflight verify the dependency. Native
+UTF-8 validation remains enabled and has a rejection regression test.
+
+Browser CPU profiling subsequently identified React development reconciliation
+and property validation as substantial costs. Production startup now builds
+the production frontend with the selected backend port before launching runtime
+services, then serves those assets; `WARETWIN_FRONTEND_MODE=development` retains
+the editing workflow. The production assets were exercised on the existing
+frontend port. The complete stack was not restarted or Phase 1 reopened.
+
+Current source implementation:
+
+- Dedicated monotonic latest-only visualization worker: 5 wall-Hz 2D and the
+  existing 3 wall-Hz 3D limit, immediate coalesced wake on view change, no cloud
+  FIFO. ROS sensor callbacks store latest references. Cloud transforms/voxel
+  sampling use bounded native arrays; the 4000-point output cap is unchanged.
+- Lightweight correlated REQUESTED/APPLIED/FRESH acknowledgement with robot,
+  request ID, bridge epoch and view epoch. Stale epochs cannot become fresh.
+- Heartbeat socket ping, graph diagnostics and telemetry TF/map-status waits
+  are off the control executor. Telemetry retains its previous cadence;
+  safety/control timers and leases are unchanged.
+- Bounded Django latest-only display outboxes and opt-in browser frame receipts
+  prevent accumulating disposable frames in a slow browser's transport queue.
+  Safety/control acknowledgements retain their separate delivery path.
+- Last-good frames retained per robot, with a waiting indicator. Visualization
+  caches confer no navigation authorization; preview/map checks are unchanged.
+- Occupancy raster LRU limited to four entries / 8M cells; GLOBAL changes do not
+  reset the bridge map signature. Reconnect can resend to a genuinely uncached
+  backend, and late browsers receive Django's retained snapshot.
+- Retained 3D Canvas uses demand rendering when fresh/visible and never renders
+  while hidden. Its geometry buffer is reused. No stale-epoch GPU redraw before
+  the view ACK. Static metric/panel reconciliation is memoized.
+- The acceptance sender reuses `ManualRefreshWorker` in an isolated process so
+  ROS probing cannot contend for its GIL. Non-rendering probe/control sessions
+  use bounded display delivery; only the real browser consumes the full visual
+  stream. All command-topic samples remain recorded, with no dead-man change.
+
+Current source checks: frontend targeted tests **21/21 PASS**, frontend
+TypeScript/Vite production build **PASS** (existing large-bundle warning);
+backend targeted tests **21/21 PASS**, `manage.py check` and
+`makemigrations --check --dry-run` **PASS**; bridge/transport/worker/process
+tests **27/27 PASS**, shell/setup regression tests **9/9 PASS**; ROS bridge
+`colcon build --base-paths swerve_bridge --packages-select swerve_bridge
+--symlink-install` **PASS**, one package actually built. Python compile,
+JavaScript syntax, shell syntax and `git diff --check` **PASS**.
+
+Current real VM / Gazebo / Django / production-browser evidence: 10 measured
+switches for each pair (40 total), after warmup, during authenticated Web
+manual rotation. Values below are wall milliseconds, **median / max**.
+
+| Transition | Cached useful canvas | Applied ACK at browser | Fresh frame at browser |
+| --- | ---: | ---: | ---: |
+| GLOBAL -> 2D | 11.65 / 20.70 | 227.65 / 399.00 | 322.20 / 549.70 |
+| 2D -> 3D | 35.50 / 97.10 | 194.30 / 452.40 | 481.75 / 929.40 |
+| 3D -> 2D | 12.55 / 34.30 | 303.25 / 885.00 | 474.55 / 1094.50 |
+| 2D -> GLOBAL | 12.80 / 61.70 | 246.05 / 513.60 | 246.05 / 513.60 |
+
+GLOBAL fresh means the retained map is useful and its requested view has been
+acknowledged; no new map is required. Fresh LiDAR is the matching epoch/request
+frame received, not a promise of a newer sensor acquisition or completed GPU
+paint. T0-T8 instrumentation separates those events. The 3D render hook marks
+frame submission, not GPU completion. Cached render marks retained canvas
+visibility on requestAnimationFrame, not a hardware presentation timestamp.
+Evidence: ignored `.runtime/view-performance-after.json` and
+`.runtime/view-control-safety.json`; source helpers are reproducible.
+
+All 40 cached switches meet 100 ms. No map messages, raster rebuilds or Canvas
+3D remounts occurred during measured switches. Map compression count remained
+constant at 2 (startup/reconnect only). Maximum cloud output was 2994 points
+(cap 4000); maximum Django display pending count was 2. GC-normalized browser
+heap rose 924920 bytes including bounded tracing over the run; this short test
+does not prove absence of a long-duration leak. Measured browser frame rates
+were 3.96 Hz 2D and 1.47 Hz 3D; source clouds remain simulation/source limited.
+Measured motion RTF was **0.12337** (8.205 simulation seconds / 66.507 wall
+seconds), not the noisier instantaneous diagnostic ratio.
+
+Current safety actions while rapidly switching: explicit STOP and strict
+mechanical settle **PASS** (7.226 wall / 1.107 simulation seconds), applied
+AUTONOMOUS handoff and settle **PASS** (selected-zero latency 60.40 ms), E-STOP
+and settle **PASS** (Web request-to-zero 9.64 ms, ROS receipt-to-zero 12.85 ms;
+different subscriptions have independent receipt timestamps), E-STOP clear
+without old motion resuming **PASS**. During hold there were 1802 observed
+manual samples, zero zero-command samples, and all 328 arbiter samples reported
+WEB_MANUAL. Nevertheless **MAX_CMD_VEL_MANUAL_GAP_MS=226.85**, above the retained
+200 ms continuity gate: overall control timing acceptance remains **FAIL**.
+Earlier intermediate runs had STOP settling watchdog failures; those are
+historical, not the current outcome, and no settling limits were relaxed.
+
+**VIEW_SWITCH_PERFORMANCE=FAIL**: cached switching is now immediate, but the
+250 ms ACK, 500 ms fresh-2D and 200 ms manual-gap gates do not all pass under
+concurrent probing/load. Current correlated ACK traces locate the largest
+remaining tail between Django browser-send and browser receipt (up to 772 ms
+for 2D); bridge receive-to-apply reached 213 ms. Independent client refresh
+also still had scheduling outliers; a VM/host cause is not proven. The earlier
+multi-second sim-clock/cache/Autobahn/React-development issues are corrected,
+but these remaining tails must not be hidden with larger leases, weaker gates,
+synthetic sensor frames or a success-only report. Nav Goal, Mapping,
+Localization and VDA5050 remain paused. This validates Gazebo/ROS/Web only,
+not a physical robot.

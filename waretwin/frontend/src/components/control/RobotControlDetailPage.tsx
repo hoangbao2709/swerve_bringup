@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode, type MouseEvent as ReactMouseEvent } from "react";
+import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode, type MouseEvent as ReactMouseEvent } from "react";
 import { apiFetch, clearEmergencyStop, emergencyStop } from "../../services/api";
 import { wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
 import { useSimulationRunner } from "../../simulation/runner";
@@ -8,7 +8,8 @@ import type { WarehouseLayout } from "../../layout/types";
 import { createWorldTransform, floorBoundary, screenToWorld, worldToScreen, type WorldBounds, type WorldTransform } from "../../layout/coordinates";
 import { LocalRobotSection } from "./LocalRobotSections";
 import { localLidarPointToMap, previewLidarPath, RobotLidar2DView, RobotLidar3DView } from "./RobotLidarViews";
-import { decodeOccupancyGrid } from "./occupancyGrid";
+import { occupancyRasters } from "./occupancyRaster";
+import { detailPerformance } from "./detailPerformance";
 
 type WorldGoal = { x: number; y: number; yaw: number };
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
@@ -107,6 +108,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const navigationStatus = useStore((state) => state.robotDetail[robotId]?.navigationStatus ?? null);
   const lidar2d = useStore((state) => state.robotDetail[robotId]?.lidar2d ?? null);
   const lidar3d = useStore((state) => state.robotDetail[robotId]?.lidar3d ?? null);
+  const viewStatus = useStore((state) => state.robotDetail[robotId]?.viewStatus ?? null);
   const lidarStreamDiagnostics = useStore((state) => state.robotDetail[robotId]?.lidarStreamDiagnostics ?? null);
   const pathPreview = useStore((state) => state.robotDetail[robotId]?.pathPreview ?? null);
   const activeLocalMapId = useStore((state) => state.robotDetail[robotId]?.activeLocalMapId ?? null);
@@ -176,10 +178,23 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, []);
 
   const detailView: "GLOBAL" | "LIDAR_2D" | "LIDAR_3D" = mapSource === "GLOBAL" ? "GLOBAL" : `LIDAR_${lidarDimension}`;
+  const visitedViews = useRef(new Set<string>());
+  visitedViews.current.add(detailView);
+  const viewFresh = viewStatus?.requested_view === detailView && viewStatus.state === "FRESH";
   useEffect(() => {
     if (!robotBridgeOnline || websocketState !== "CONNECTED") return;
-    wsSend({ type: "ROBOT_DETAIL_VIEW", robot_id: robotId, view: detailView });
-  }, [detailView, robotBridgeOnline, robotId, websocketState]);
+    const request_id = `${robotId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setRobotDetail(robotId, { viewStatus: { robot_id: robotId, requested_view: detailView, request_id, state: "REQUESTED" } });
+    wsSend({ type: "ROBOT_DETAIL_VIEW", robot_id: robotId, view: detailView, request_id, delivery_ack: true });
+  }, [detailView, robotBridgeOnline, robotId, websocketState, setRobotDetail]);
+  useLayoutEffect(() => {
+    const cached = detailView === "GLOBAL" ? occupancyRasters.peek(mapSnapshot) : detailView === "LIDAR_2D" ? lidar2d : lidar3d;
+    if (!cached) return;
+    const paint = requestAnimationFrame(() => detailPerformance("view_render", { view: detailView, robot_id: robotId, useful: true, cached: true }));
+    return () => cancelAnimationFrame(paint);
+    // This measures a cached canvas becoming visible, not a newly received frame.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailView, robotId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -340,7 +355,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     if (next) pushRoute(`/robots/${encodeURIComponent(next)}/control`);
   };
 
-  const moveButtonEvents = (action: ManualAction) => ({
+  const moveButtonEvents = useCallback((action: ManualAction) => ({
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
       event.currentTarget.setPointerCapture?.(event.pointerId);
       holdManual(action);
@@ -349,7 +364,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     onPointerLeave: stopManual,
     onPointerCancel: stopManual,
     onLostPointerCapture: stopManual,
-  });
+  }), [holdManual, stopManual]);
 
   return (
     <div className="robot-detail-shell">
@@ -385,12 +400,17 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
 
         <section className="robot-detail-map-panel">
           <div className="robot-map-source-bar">
-            <div role="tablist" aria-label="Primary map source"><button type="button" role="tab" aria-selected={mapSource === "GLOBAL"} className={mapSource === "GLOBAL" ? "is-active" : ""} onClick={() => { setMapSource("GLOBAL"); setRobotDetail(robotId, { lidar2d: null, lidar3d: null }); }}>GLOBAL MAP</button><button type="button" role="tab" aria-selected={mapSource === "LIDAR"} className={mapSource === "LIDAR" ? "is-active" : ""} onClick={() => { setMapSource("LIDAR"); setRobotDetail(robotId, { lidar2d: null, lidar3d: null }); }}>LIDAR MAP</button></div>
-            {mapSource === "LIDAR" && <div role="tablist" aria-label="LiDAR view dimension"><button type="button" role="tab" aria-selected={lidarDimension === "2D"} className={lidarDimension === "2D" ? "is-active" : ""} onClick={() => { setLidarDimension("2D"); setRobotDetail(robotId, { lidar2d: null, lidar3d: null }); }}>2D</button><button type="button" role="tab" aria-selected={lidarDimension === "3D"} className={lidarDimension === "3D" ? "is-active" : ""} onClick={() => { setLidarDimension("3D"); setRobotDetail(robotId, { lidar2d: null, lidar3d: null }); }}>3D</button></div>}
+            <div role="tablist" aria-label="Primary map source"><button type="button" role="tab" aria-selected={mapSource === "GLOBAL"} className={mapSource === "GLOBAL" ? "is-active" : ""} onClick={() => setMapSource("GLOBAL")}>GLOBAL MAP</button><button type="button" role="tab" aria-selected={mapSource === "LIDAR"} className={mapSource === "LIDAR" ? "is-active" : ""} onClick={() => setMapSource("LIDAR")}>LIDAR MAP</button></div>
+            {mapSource === "LIDAR" && <div role="tablist" aria-label="LiDAR view dimension"><button type="button" role="tab" aria-selected={lidarDimension === "2D"} className={lidarDimension === "2D" ? "is-active" : ""} onClick={() => setLidarDimension("2D")}>2D</button><button type="button" role="tab" aria-selected={lidarDimension === "3D"} className={lidarDimension === "3D" ? "is-active" : ""} onClick={() => setLidarDimension("3D")}>3D</button></div>}
+            <span className="map-sync-warning" data-view-state={viewFresh ? "FRESH" : viewStatus?.state ?? "REQUESTED"}>{viewFresh ? "LIVE" : "WAITING FOR FRESH FRAME"}</span>
             <span className={`map-sync-warning ${activeMapReady ? "map-sync-warning-ready" : ""}`}>{activeMapId ? `${activeMapId} · r${activeMapRevision ?? "—"} · ${activeMapStatus}` : `MAP ${activeMapStatus} · LOCAL GOALS BLOCKED`}</span>
             {activeLocalMapId && <span className="map-sync-warning">LOCAL MAP DIFFERS FROM CANONICAL r{mapSync.publishedRevision ?? "—"} · LOCAL NAV ONLY</span>}
           </div>
-          {mapSource === "GLOBAL" ? <DetailMapCanvas robotId={robotId} robot={robot} mapSnapshot={mapSnapshot} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} onGoalPreview={requestPathPreview} localOnly={Boolean(activeLocalMapId)} activeMapStatus={activeMapStatus ?? "UNKNOWN"} /> : lidarDimension === "2D" ? <RobotLidar2DView frame={lidar2d} robot={robot} onPick={robot && activeMapReady ? (local) => requestPathPreview({ ...localLidarPointToMap(local, robot), yaw: robot.heading }) : undefined} overlay={previewLidarPath(approvedPreview, lidar2d)} /> : <RobotLidar3DView frame={lidar3d} overlay={previewLidarPath(approvedPreview, lidar3d)} />}
+          <div className="robot-detail-view-stack" key={robotId}>
+            <div className={`robot-detail-view-layer ${detailView === "GLOBAL" ? "is-active" : ""}`} data-view="GLOBAL" aria-hidden={detailView !== "GLOBAL"}><DetailMapCanvas active={detailView === "GLOBAL"} robotId={robotId} robot={robot} mapSnapshot={mapSnapshot} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} onGoalPreview={requestPathPreview} localOnly={Boolean(activeLocalMapId)} activeMapStatus={activeMapStatus ?? "UNKNOWN"} /></div>
+            {visitedViews.current.has("LIDAR_2D") && <div className={`robot-detail-view-layer ${detailView === "LIDAR_2D" ? "is-active" : ""}`} data-view="LIDAR_2D" aria-hidden={detailView !== "LIDAR_2D"}><RobotLidar2DView active={detailView === "LIDAR_2D"} frame={lidar2d} robot={robot} onPick={viewFresh && robot && activeMapReady ? (local) => requestPathPreview({ ...localLidarPointToMap(local, robot), yaw: robot.heading }) : undefined} overlay={previewLidarPath(approvedPreview, lidar2d)} /></div>}
+            {visitedViews.current.has("LIDAR_3D") && <div className={`robot-detail-view-layer ${detailView === "LIDAR_3D" ? "is-active" : ""}`} data-view="LIDAR_3D" aria-hidden={detailView !== "LIDAR_3D"}><RobotLidar3DView active={detailView === "LIDAR_3D"} fresh={viewFresh} frame={lidar3d} overlay={previewLidarPath(approvedPreview, lidar3d)} /></div>}
+          </div>
           <div className="robot-detail-goal-toolbar">
             <span>{goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination to request a Nav2 path preview"}</span>
             <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview({ ...goalPreview, yaw: goalPreview.yaw - Math.PI / 12 })}>YAW −</button>
@@ -467,7 +487,9 @@ function StatePanel({ robot, localization, diagnostics, controller, navigationSt
   </Panel>;
 }
 
-function SystemPanel({ diagnostics, rosConnected, websocketState, host, runtimeState }: { diagnostics: RobotSystemDiagnostics | null; rosConnected: boolean; websocketState: string; host: HostStatus | null; runtimeState: string }) {
+const SystemPanel = memo(SystemPanelContent);
+
+function SystemPanelContent({ diagnostics, rosConnected, websocketState, host, runtimeState }: { diagnostics: RobotSystemDiagnostics | null; rosConnected: boolean; websocketState: string; host: HostStatus | null; runtimeState: string }) {
   const metrics = diagnostics?.metrics ?? {};
   const cpu = host?.system?.cpu_load_1m;
   const ram = host?.system?.memory?.used_percent;
@@ -487,7 +509,9 @@ function SystemPanel({ diagnostics, rosConnected, websocketState, host, runtimeS
   </Panel>;
 }
 
-function LidarPanel({ robotId, diagnostics }: { robotId: string; diagnostics: RobotSystemDiagnostics | null }) {
+const LidarPanel = memo(LidarPanelContent);
+
+function LidarPanelContent({ robotId, diagnostics }: { robotId: string; diagnostics: RobotSystemDiagnostics | null }) {
   const scan = useStore((state) => state.robotDetail[robotId]?.scan ?? null);
   const age = scan?.timestamp ? (Date.now() - Date.parse(scan.timestamp)) / 1000 : null;
   const lidarStatus = !scan
@@ -507,14 +531,18 @@ function LidarPanel({ robotId, diagnostics }: { robotId: string; diagnostics: Ro
   </Panel>;
 }
 
-function ErrorMessagesPanel({ errors }: { errors: RobotDetailError[] }) {
+const ErrorMessagesPanel = memo(ErrorMessagesPanelContent);
+
+function ErrorMessagesPanelContent({ errors }: { errors: RobotDetailError[] }) {
   return <Panel title="ERROR MESSAGES" className="robot-detail-errors">
     {errors.length === 0 && <div className="robot-detail-no-errors">No errors reported</div>}
     {errors.map((item, index) => <div className={`robot-detail-error-row ${statusClass(item.severity)}`} key={`${item.code ?? item.message}-${index}`}><div><b>{item.severity}</b><span>{item.message}</span></div><small>{item.timestamp ?? "N/A"}</small></div>)}
   </Panel>;
 }
 
-function ManualBar({ controlMode, controlOnline, holdManual, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; holdManual: (action: ManualAction) => void; moveButtonEvents: (action: ManualAction) => Record<string, (event: React.PointerEvent<HTMLButtonElement>) => void>; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
+const ManualBar = memo(ManualBarContent);
+
+function ManualBarContent({ controlMode, controlOnline, holdManual, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; holdManual: (action: ManualAction) => void; moveButtonEvents: (action: ManualAction) => Record<string, (event: React.PointerEvent<HTMLButtonElement>) => void>; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
   return <section className="robot-detail-manual">
     <div className="robot-detail-manual-head"><div><span className="robot-console-kicker">MANUAL CONTROL</span><b>DEAD-MAN ENABLED</b><small>Release key/button → STOP · W/S/A/D · Q/E · arrows · Space STOP</small></div><div className="robot-detail-manual-mode"><button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("MANUAL")}>MANUAL</button><button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button></div></div>
     <div className="robot-detail-manual-pad">{MANUAL_ACTIONS.map((item) => <button type="button" key={item.action} className={`manual-key manual-key-${item.action.toLowerCase()}`} title={item.title} aria-label={item.title} disabled={!controlOnline || controlMode !== "MANUAL"} {...moveButtonEvents(item.action)} onClick={item.action === "STOP" ? () => holdManual("STOP") : undefined}>{item.label}<small>{item.action === "FORWARD" ? "W / ↑" : item.action === "BACKWARD" ? "S / ↓" : item.action === "LEFT" ? "A / ←" : item.action === "RIGHT" ? "D / →" : item.action === "ROTATE_LEFT" ? "Q" : item.action === "ROTATE_RIGHT" ? "E" : "STOP"}</small></button>)}</div>
@@ -525,13 +553,15 @@ function Panel({ title, children, className = "" }: { title: string; children: R
   return <section className={`robot-detail-panel ${className}`}><header>{title}</header><div className="robot-detail-panel-body">{children}</div></section>;
 }
 
-function Metric({ label, value, mono = false, status = false }: { label: string; value: unknown; mono?: boolean; status?: boolean }) {
+const Metric = memo(MetricContent);
+
+function MetricContent({ label, value, mono = false, status = false }: { label: string; value: unknown; mono?: boolean; status?: boolean }) {
   return <div className="robot-detail-metric"><span>{label}</span>{status ? <StatusValue value={value} /> : <b className={mono ? "mono" : ""}>{safeText(value)}</b>}</div>;
 }
 
-type MapCanvasProps = { robotId: string; robot?: RobotState; mapSnapshot: RobotDetailMapSnapshot | null; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; onGoalPreview: (goal: WorldGoal) => void; localOnly: boolean; activeMapStatus: string };
+type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; mapSnapshot: RobotDetailMapSnapshot | null; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; onGoalPreview: (goal: WorldGoal) => void; localOnly: boolean; activeMapStatus: string };
 
-function DetailMapCanvas({ robotId, robot, mapSnapshot, globalPath, localPath, goal, goalPreview, pathPreview, onGoalPreview, localOnly, activeMapStatus }: MapCanvasProps) {
+function DetailMapCanvas({ active = true, robotId, robot, mapSnapshot, globalPath, localPath, goal, goalPreview, pathPreview, onGoalPreview, localOnly, activeMapStatus }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -564,12 +594,12 @@ function DetailMapCanvas({ robotId, robot, mapSnapshot, globalPath, localPath, g
 
   const bounds = useMemo(() => worldBounds(mapSnapshot, layout), [mapSnapshot, layoutRevision]);
   const transform = useMemo(() => makeTransform(size.width, size.height, bounds, zoom, center, follow, robot), [bounds, center, follow, robot, size.height, size.width, zoom]);
-  const [occupancyRaster, setOccupancyRaster] = useState<HTMLCanvasElement | null>(null);
+  const [occupancyRaster, setOccupancyRaster] = useState<HTMLCanvasElement | null>(() => occupancyRasters.peek(mapSnapshot));
 
   useEffect(() => {
     let cancelled = false;
-    setOccupancyRaster(null);
-    void buildOccupancyRaster(mapSnapshot).then((raster) => {
+    setOccupancyRaster(occupancyRasters.peek(mapSnapshot));
+    void occupancyRasters.get(mapSnapshot).then((raster) => {
       if (!cancelled) setOccupancyRaster(raster);
     });
     return () => { cancelled = true; };
@@ -577,17 +607,18 @@ function DetailMapCanvas({ robotId, robot, mapSnapshot, globalPath, localPath, g
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || size.width <= 0 || size.height <= 0) return;
+    if (!active || !canvas || size.width <= 0 || size.height <= 0) return;
     const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-    canvas.width = Math.round(size.width * dpr);
-    canvas.height = Math.round(size.height * dpr);
+    if (canvas.width !== Math.round(size.width * dpr)) canvas.width = Math.round(size.width * dpr);
+    if (canvas.height !== Math.round(size.height * dpr)) canvas.height = Math.round(size.height * dpr);
     canvas.style.width = `${size.width}px`;
     canvas.style.height = `${size.height}px`;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     drawDetailMap(ctx, size.width, size.height, transform, bounds, mapSnapshot, occupancyRaster, scan, robot, globalPath, localPath, goal, goalPreview, pathPreview, { showGrid, showLidar, showPaths, showWarehouse: showWarehouse && !localOnly });
-  }, [bounds, goal, goalPreview, globalPath, localOnly, localPath, mapSnapshot, occupancyRaster, pathPreview, robot, scan, showGrid, showLidar, showPaths, showWarehouse, size.height, size.width, transform]);
+    detailPerformance("view_render", { view: "GLOBAL", useful: Boolean(occupancyRaster), robot_id: robotId });
+  }, [active, bounds, goal, goalPreview, globalPath, localOnly, localPath, mapSnapshot, occupancyRaster, pathPreview, robot, scan, showGrid, showLidar, showPaths, showWarehouse, size.height, size.width, transform]);
 
   const handleMapClick = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -697,35 +728,6 @@ function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: num
   ctx.fillText(`scale ${transform.scale.toFixed(1)} px/m`, 12, height - 12);
 
   function mapLayoutForCanvas() { return layout; }
-}
-
-async function buildOccupancyRaster(mapSnapshot: RobotDetailMapSnapshot | null): Promise<HTMLCanvasElement | null> {
-  if (!mapSnapshot || mapSnapshot.width <= 0 || mapSnapshot.height <= 0 || typeof document === "undefined") return null;
-  const source = await decodeOccupancyGrid(mapSnapshot);
-  if (!source) return null;
-  const canvas = document.createElement("canvas");
-  canvas.width = mapSnapshot.width;
-  canvas.height = mapSnapshot.height;
-  const context = canvas.getContext("2d");
-  if (!context) return null;
-  const image = context.createImageData(mapSnapshot.width, mapSnapshot.height);
-  for (let row = 0; row < mapSnapshot.height; row += 1) {
-    for (let col = 0; col < mapSnapshot.width; col += 1) {
-      const occupancy = source[row * mapSnapshot.width + col];
-      if (occupancy < 0) continue;
-      const alpha = Math.max(0.08, Math.min(0.9, occupancy / 100));
-      const index = ((mapSnapshot.height - row - 1) * mapSnapshot.width + col) * 4;
-      if (occupancy > 65) {
-        image.data[index] = 232; image.data[index + 1] = 92; image.data[index + 2] = 92;
-        image.data[index + 3] = Math.round(alpha * 255);
-      } else {
-        image.data[index] = 24; image.data[index + 1] = 54; image.data[index + 2] = 77;
-        image.data[index + 3] = Math.round((0.18 + alpha * 0.35) * 255);
-      }
-    }
-  }
-  context.putImageData(image, 0, 0);
-  return canvas;
 }
 
 function drawOccupancy(ctx: CanvasRenderingContext2D, mapSnapshot: RobotDetailMapSnapshot, raster: HTMLCanvasElement, worldToCanvas: MapTransform["toCanvas"], scale: number) {

@@ -6,6 +6,7 @@ from collections import deque
 class OutboundMailbox:
     LATEST = frozenset({
         '_SOCKET_PING',
+        'ROBOT_DETAIL_VIEW_STATUS',
         'HEARTBEAT', 'ROBOT_STATE', 'ROS_DIAGNOSTICS', 'SYSTEM_DIAGNOSTICS',
         'COMMAND_DIAGNOSTICS', 'LIDAR_SCAN', 'LIDAR_MAP_2D', 'LIDAR_MAP_3D',
         'LIDAR_STREAM_DIAGNOSTICS', 'MAP_SNAPSHOT', 'NAV_GLOBAL_PATH',
@@ -54,7 +55,8 @@ class OutboundMailbox:
             if self.critical:
                 return self.critical.popleft()
             if self.latest:
-                kind = next(iter(self.latest))
+                kind = ('ROBOT_DETAIL_VIEW_STATUS' if 'ROBOT_DETAIL_VIEW_STATUS' in self.latest
+                    else next(iter(self.latest)))
                 return self.latest.pop(kind)
             return None
 

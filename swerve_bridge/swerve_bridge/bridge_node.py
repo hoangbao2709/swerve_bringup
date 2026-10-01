@@ -6,6 +6,7 @@ import math
 import queue
 from .control_mailbox import ControlMailbox
 from .outbound_mailbox import OutboundMailbox
+from .visualization_worker import VisualizationWorker
 import threading
 import os
 import re
@@ -42,9 +43,10 @@ from .qos import canonical_map_qos_profile, gazebo_clock_qos_profile
 from .coordinates import (is_small_future_tf_skew, pose_from_transform,
                           quaternion_yaw, rotate_translate_xy)
 from .web_map_renderer import (
-    LatestFrameBuffer, bounded_voxel_points, compress_occupancy_grid,
-    laser_scan_xy, path_length, point_xyz, successful_path_result,
+    LatestFrameBuffer, bounded_cloud_points, compress_occupancy_grid,
+    laser_scan_xy, path_length, successful_path_result,
     transform_points_xyz,
+    occupancy_content_signature,
 )
 
 
@@ -161,6 +163,10 @@ class SwerveBridge(Node):
         self.lidar_frame_buffer = LatestFrameBuffer()
         self.detail_view = 'GLOBAL'
         self.detail_view_epoch = 0
+        self.view_timing = {}
+        self.last_detail_callback_wall = None
+        self.detail_callback_intervals = deque(maxlen=30)
+        self.visualization_metrics = {'map_compressions': 0}
         self.last_lidar_send_monotonic = None
         self.lidar_output_intervals = deque(maxlen=30)
         self.last_lidar_output_metadata = {}
@@ -314,8 +320,19 @@ class SwerveBridge(Node):
             self.command_diagnostics_cb, 10)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.create_timer(1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)), self.profile_callback(self.detail_timer))
-        self.create_timer(self.telemetry_period, self.profile_callback(self.telemetry_timer))
+        # Visualization has its own monotonic wall-clock worker. Sensor ROS
+        # callbacks only replace the latest references; control keeps its ROS
+        # executor and never waits for cloud transforms/map compression.
+        self.visualization_worker = VisualizationWorker(self.detail_timer,
+            lambda: 1.0 / max(.1, float(self.get_parameter(
+                'lidar_web_3d_hz' if self.detail_view == 'LIDAR_3D' else 'lidar_ui_hz').value)),
+            lambda exc: self.get_logger().warning(f'visualization preparation failed: {type(exc).__name__}'))
+        self.diagnostics_worker = VisualizationWorker(self.diagnostics_timer,
+            lambda: 1.0 / max(.1, float(self.get_parameter('heartbeat_rate').value)),
+            lambda exc: self.get_logger().warning(f'diagnostics preparation failed: {type(exc).__name__}'),
+            name='web-diagnostics')
+        self.telemetry_pending = threading.Event()
+        self.create_timer(self.telemetry_period, self.request_telemetry)
         self.create_timer(0.1, self.poll_local_control_confirmations,
                           clock=self._wall_clock)
         self.create_timer(
@@ -325,6 +342,8 @@ class SwerveBridge(Node):
         self.create_timer(0.05, self.process_commands, clock=self._wall_clock)
         self.outbound_thread = threading.Thread(target=self.outbound_sender, daemon=True)
         self.outbound_thread.start()
+        self.visualization_worker.start()
+        self.diagnostics_worker.start()
         self.thread = threading.Thread(target=self.websocket_loop, daemon=True)
         self.thread.start()
 
@@ -448,13 +467,16 @@ class SwerveBridge(Node):
             round(float(origin.position.x), 6),
             round(float(origin.position.y), 6),
             round(yaw_from_quaternion(origin.orientation), 6),
-            hash(bytes((int(value) + 1) % 256 for value in msg.data)),
+            occupancy_content_signature(msg.data),
             self.ros_map_revision,
         )
+        changed = signature != self.latest_map_signature
         self.latest_map = msg
         self.latest_map_signature = signature
         self.map_callback_count += 1
         self._confirm_local_map_if_ready()
+        if changed:
+            self.visualization_worker.wake()
 
     def command_diagnostics_cb(self, msg):
         try:
@@ -496,16 +518,11 @@ class SwerveBridge(Node):
             'canonical_map_revision': revision,
         }
 
-    def set_detail_view(self, view):
+    def set_detail_view(self, view, request=None):
         view = str(view or '').upper()
         if view not in ('GLOBAL', 'LIDAR_2D', 'LIDAR_3D'):
             return False
-        if view == 'GLOBAL':
-            # The occupancy grid is content-addressed and otherwise sent only
-            # when it changes. Re-send the cached map on a new Global Map view
-            # so late-joining browser clients receive the current map.
-            self.last_sent_map_signature = None
-        if view != self.detail_view:
+        if view != self.detail_view or request is not None:
             self.detail_view = view
             self.detail_view_epoch += 1
             self.lidar_frame_buffer.clear()
@@ -513,6 +530,18 @@ class SwerveBridge(Node):
             self.last_web_cloud_source_stamp = None
             self.last_scan_publish_monotonic = 0.0
             self.last_cloud_publish_monotonic = 0.0
+        request = request or {}
+        self.view_timing = {'request_id': request.get('request_id'),
+            'django_received_ms': request.get('django_received_ms'),
+            'bridge_received_ms': request.get('_bridge_received_ms'),
+            'bridge_applied_ms': time.time() * 1000}
+        self.send({'type': 'ROBOT_DETAIL_VIEW_STATUS', 'robot_id': self.robot_id,
+            'requested_view': view, 'applied_view': self.detail_view,
+            'view_epoch': self.detail_view_epoch, 'state': 'APPLIED',
+            'request_id': request.get('request_id'), 'timestamp': self.now(),
+            'bridge_epoch': self.web_cloud_epoch,
+            'view_timing': dict(self.view_timing)})
+        self.visualization_worker.wake()
         return True
 
     def global_path_cb(self, msg):
@@ -541,6 +570,12 @@ class SwerveBridge(Node):
     def send(self, payload):
         if not isinstance(payload, dict):
             return False
+        if payload.get('type') in ('LIDAR_MAP_2D', 'LIDAR_MAP_3D', 'MAP_SNAPSHOT', 'LIDAR_SCAN') and not payload.get('_latest_frame_signal'):
+            payload = {**payload, 'view_timing': {**payload.get('view_timing', self.view_timing),
+                'frame_prepared_ms': time.time() * 1000,
+                'detail_interval_wall_ms': (self.detail_callback_intervals[-1] * 1000
+                    if self.detail_callback_intervals else None),
+                **self.visualization_metrics}}
         with self.ws_lock:
             if self.ws is None:
                 return False
@@ -575,14 +610,16 @@ class SwerveBridge(Node):
                 ws = self.ws
             if ws is None or not self.outbound.current(epoch):
                 continue
-            if payload.get('type') == 'LIDAR_MAP_3D' and (
-                    self.detail_view != 'LIDAR_3D' or payload.get('view_epoch') != self.detail_view_epoch):
+            if payload.get('type') in ('LIDAR_MAP_2D', 'LIDAR_MAP_3D') and (
+                    self.detail_view != payload.get('view') or payload.get('view_epoch') != self.detail_view_epoch):
                 continue
             started = time.monotonic()
             try:
                 if payload.get('type') == '_SOCKET_PING':
                     ws.ping()
                     continue
+                if isinstance(payload.get('view_timing'), dict):
+                    payload['view_timing']['sender_send_ms'] = time.time() * 1000
                 if payload.get('type') == 'LIDAR_MAP_3D':
                     payload['send_timestamp'] = self.now()
                     now = time.monotonic()
@@ -642,6 +679,10 @@ class SwerveBridge(Node):
                 with self.ws_lock:
                     self.ws = ws
                 self.last_web_cloud_source_stamp = None
+                # A reconnect may follow a Django restart which lost its cache.
+                # This is a genuinely uncached consumer, not a tab transition.
+                self.last_sent_map_signature = None
+                self.visualization_worker.wake()
                 backoff = 1.0
                 self.send_bridge_status('CONNECTED')
                 self.send_map_revision_status()
@@ -658,6 +699,8 @@ class SwerveBridge(Node):
                         if raw:
                             data = json.loads(raw)
                             if isinstance(data, dict):
+                                if data.get('type') == 'DETAIL_VIEW':
+                                    data['_bridge_received_ms'] = time.time() * 1000
                                 if '_timing' in data:
                                     data['_timing']['T4'] = time.monotonic()
                                 self.incoming.put(data)
@@ -689,6 +732,12 @@ class SwerveBridge(Node):
 
     def now(self):
         return datetime.now(timezone.utc).isoformat()
+
+    def request_telemetry(self):
+        # Preserve the existing telemetry cadence, but TF waits and map-status
+        # work must not occupy the executor shared with manual/E-STOP callbacks.
+        self.telemetry_pending.set()
+        self.visualization_worker.wake()
 
     def telemetry_timer(self):
         msg = self.latest_odom
@@ -764,6 +813,11 @@ class SwerveBridge(Node):
                    'mapping_state': ('PAUSED' if self.slam_paused else 'MAPPING') if self.runtime_state == 'MAPPING' else 'INACTIVE',
                    'mapping_elapsed_s': self._mapping_elapsed_s(),
                    'timestamp': self.now()})
+        # Do not let graph discovery / map validation delay manual/control
+        # servicing. Diagnostics have the same cadence on a bounded worker.
+        self.send({'type': '_SOCKET_PING'})
+
+    def diagnostics_timer(self):
         diagnostics = self.collect_diagnostics()
         self.send({'type': 'ROS_DIAGNOSTICS', 'robot_id': self.robot_id,
                    'diagnostics': diagnostics, 'timestamp': self.now()})
@@ -776,10 +830,6 @@ class SwerveBridge(Node):
         }})
         self.send_map_revision_status()
 
-        # Ping takes websocket-client's socket write lock and can wait behind
-        # a slow telemetry write. Coalesce it on the same network worker so
-        # ROS manual/control timers never wait for socket I/O or that lock.
-        self.send({'type': '_SOCKET_PING'})
 
     @staticmethod
     def _frequency(intervals):
@@ -947,12 +997,19 @@ class SwerveBridge(Node):
         msg = self.latest_global_path
         if msg is None:
             return []
-        result = []
-        stamp = Time()
-        for item in msg.poses:
-            x, y, _yaw = self._map_to_base(
-                item.pose.position.x, item.pose.position.y, stamp)
-            result.append([x, y])
+        target = str(self.get_parameter('base_footprint_frame').value or 'base_footprint')
+        source = str(msg.header.frame_id or self.get_parameter('map_frame').value or 'map')
+        transform = self.tf_buffer.lookup_transform(target, source, Time(), timeout=Duration(seconds=.05))
+        t, q = transform.transform.translation, transform.transform.rotation
+        values = (t.x, t.y, t.z, q.x, q.y, q.z, q.w)
+        key = (id(msg), tuple(round(float(value), 3) for value in values))
+        cache = getattr(self, '_local_path_cache', None)
+        if cache is not None and cache[0] == key:
+            return cache[2]
+        points = transform_points_xyz(((item.pose.position.x, item.pose.position.y, 0)
+            for item in msg.poses), values[:3], values[3:])
+        result = [[x, y] for x, y, _z in points]
+        self._local_path_cache = (key, msg, result)
         return result
 
     def _local_goal(self):
@@ -970,6 +1027,7 @@ class SwerveBridge(Node):
         return {'x': x, 'y': y, 'yaw': math.atan2(math.sin(yaw), math.cos(yaw))}
 
     def _render_lidar_2d(self):
+        view_epoch, view_timing = self.detail_view_epoch, dict(self.view_timing)
         if self.latest_scan is None:
             return
         target = str(self.get_parameter('base_footprint_frame').value or 'base_footprint')
@@ -979,6 +1037,8 @@ class SwerveBridge(Node):
             goal = self._local_goal()
         except TransformException:
             route, goal = [], None
+        if view_epoch != self.detail_view_epoch or self.detail_view != 'LIDAR_2D':
+            return
         self.send({
             'type': 'LIDAR_MAP_2D', 'robot_id': self.robot_id,
             'timestamp': scan['timestamp'], 'source_stamp': scan['stamp'],
@@ -990,6 +1050,9 @@ class SwerveBridge(Node):
             'web_output_fps': self._frequency(self.scan_intervals),
             'dropped_frames': 0,
             'render_fps': self._frequency(self.scan_intervals),
+            'view': 'LIDAR_2D', 'view_epoch': view_epoch,
+            'bridge_epoch': self.web_cloud_epoch, 'request_id': view_timing.get('request_id'),
+            'view_timing': view_timing,
         })
         self.send({'type': 'LIDAR_STREAM_DIAGNOSTICS', 'robot_id': self.robot_id,
                    'source_timestamp': scan['stamp'], 'send_timestamp': self.now(),
@@ -999,6 +1062,8 @@ class SwerveBridge(Node):
                    'dropped_frames': 0, 'view': 'LIDAR_2D'})
 
     def _render_lidar_3d(self):
+        render_started = time.monotonic()
+        view_epoch, view_timing = self.detail_view_epoch, dict(self.view_timing)
         filtered_is_fresh = (self.latest_filtered_cloud is not None
                              and self.latest_filtered_cloud_monotonic is not None
                              and time.monotonic() - self.latest_filtered_cloud_monotonic <= 1.0)
@@ -1026,10 +1091,8 @@ class SwerveBridge(Node):
             quaternion = (float(q.x), float(q.y), float(q.z), float(q.w))
 
         raw = point_cloud2.read_points(source, field_names=('x', 'y', 'z'), skip_nans=True)
-        transformed = transform_points_xyz(
-            (point_xyz(item) for item in raw), translation, quaternion)
-        values = bounded_voxel_points(
-            transformed,
+        values = bounded_cloud_points(
+            raw, translation, quaternion,
             max_points=int(self.get_parameter('lidar_max_3d_points').value),
             min_range=float(self.get_parameter('lidar_3d_min_range').value),
             max_range=float(self.get_parameter('lidar_3d_max_range').value),
@@ -1065,8 +1128,17 @@ class SwerveBridge(Node):
             'render_fps': self._frequency(self.lidar_output_intervals),
             'epoch': self.web_cloud_epoch, 'revision': next_revision,
             'path': route, 'goal': goal, 'view': 'LIDAR_3D',
-            'view_epoch': self.detail_view_epoch,
+            'view_epoch': view_epoch, 'bridge_epoch': self.web_cloud_epoch,
+            'request_id': view_timing.get('request_id'),
         }
+        self.visualization_metrics['cloud_render_ms'] = (time.monotonic() - render_started) * 1000
+        payload['view_timing'] = {**view_timing, **self.visualization_metrics,
+            'frame_prepared_ms': time.time() * 1000,
+            'detail_interval_wall_ms': (self.detail_callback_intervals[-1] * 1000
+                if self.detail_callback_intervals else None)}
+        if view_epoch != self.detail_view_epoch or self.detail_view != 'LIDAR_3D':
+            self.visualization_metrics['stale_preparations_dropped'] = self.visualization_metrics.get('stale_preparations_dropped', 0) + 1
+            return
         self.lidar_frame_buffer.offer(payload)
         if not self.send({'type': 'LIDAR_MAP_3D', '_latest_frame_signal': True}):
             self.lidar_frame_buffer.clear()
@@ -1075,6 +1147,14 @@ class SwerveBridge(Node):
 
     def detail_timer(self):
         """Publish bounded, robot-scoped detail snapshots to Django."""
+        wall = time.monotonic()
+        view_epoch = self.detail_view_epoch
+        if self.telemetry_pending.is_set():
+            self.telemetry_pending.clear()
+            self.profile_callback(self.telemetry_timer)()
+        if self.last_detail_callback_wall is not None:
+            self.detail_callback_intervals.append(wall - self.last_detail_callback_wall)
+        self.last_detail_callback_wall = wall
         scan_view = self.detail_view in ('GLOBAL', 'LIDAR_2D')
         if (scan_view and self.latest_scan is not None
                 and time.monotonic() - self.last_scan_publish_monotonic
@@ -1085,7 +1165,8 @@ class SwerveBridge(Node):
                     self.send({'type': 'LIDAR_SCAN', 'scan': payload})
                 else:
                     self._render_lidar_2d()
-                self.last_scan_publish_monotonic = time.monotonic()
+                if view_epoch == self.detail_view_epoch:
+                    self.last_scan_publish_monotonic = wall
                 self.last_tf_error = None
             except (TransformException, ValueError, TypeError) as exc:
                 self.last_tf_error = str(exc)[:300]
@@ -1096,7 +1177,8 @@ class SwerveBridge(Node):
                 and time.monotonic() - self.last_cloud_publish_monotonic >= 1.0 / cloud_hz):
             try:
                 self._render_lidar_3d()
-                self.last_cloud_publish_monotonic = time.monotonic()
+                if view_epoch == self.detail_view_epoch:
+                    self.last_cloud_publish_monotonic = wall
                 self.last_tf_error = None
             except (TransformException, ValueError, TypeError, KeyError, IndexError) as exc:
                 self.last_tf_error = str(exc)[:300]
@@ -1105,6 +1187,10 @@ class SwerveBridge(Node):
             msg = self.latest_map
             origin = msg.info.origin
             stamp = msg.header.stamp
+            compression_started = time.monotonic()
+            compressed = compress_occupancy_grid(msg.data)
+            self.visualization_metrics['map_compression_ms'] = (time.monotonic() - compression_started) * 1000
+            self.visualization_metrics['map_compressions'] += 1
             sent = self.send({'type': 'MAP_SNAPSHOT', 'map': {
                 'robot_id': self.robot_id, 'frame_id': str(msg.header.frame_id or ''),
                 'map_revision': self.ros_map_revision,
@@ -1115,7 +1201,7 @@ class SwerveBridge(Node):
                 'resolution': float(msg.info.resolution),
                 'origin': {'x': float(origin.position.x), 'y': float(origin.position.y), 'yaw': yaw_from_quaternion(origin.orientation)},
                 'data_encoding': 'zlib-base64-offset1',
-                'data_zlib_base64': compress_occupancy_grid(msg.data),
+                'data_zlib_base64': compressed,
             }})
             if sent:
                 self.last_sent_map_signature = self.latest_map_signature
@@ -1723,7 +1809,7 @@ class SwerveBridge(Node):
                     self.local_control(data)
                 elif kind == 'DETAIL_VIEW':
                     view = data.get('view')
-                    if not self.set_detail_view(view):
+                    if not self.set_detail_view(view, data):
                         self.send({'type': 'BRIDGE_ERROR', 'robot_id': self.robot_id,
                                    'code': 'INVALID_DETAIL_VIEW', 'message': 'unsupported robot detail view'})
                 elif kind == 'VDA5050_ORDER':
@@ -2176,7 +2262,7 @@ class SwerveBridge(Node):
         self.manual_deadline = 0.0
         self.send_nav_status({'robot_id': self.robot_id}, 'IDLE', 'emergency stop cleared')
 
-    def send_control_status(self, accepted: bool, reason=None):
+    def send_control_status(self, accepted: bool, reason=None, manual_refresh=False):
         payload = {
             'type': 'ROBOT_CONTROL_STATUS', 'robot_id': self.robot_id,
             'mode': self.applied_mode, 'accepted': bool(accepted),
@@ -2187,6 +2273,17 @@ class SwerveBridge(Node):
         }
         if reason:
             payload['reason'] = str(reason)[:300]
+        if manual_refresh:
+            # A hold republishes real ROS commands at the unchanged cadence;
+            # its mode ACK has no per-command fields and is identical. Avoid
+            # flooding every Web client with duplicate mode acknowledgements.
+            signature = tuple(payload[key] for key in ('accepted', 'requested_mode',
+                'applied_mode', 'mode_transition_state', 'request_id'))
+            previous = getattr(self, '_manual_status_sent', None)
+            wall = time.monotonic()
+            if previous and previous[0] == signature and wall - previous[1] < 1:
+                return
+            self._manual_status_sent = (signature, wall)
         self.send(payload)
 
     def set_control_mode(self, data):
@@ -2283,7 +2380,7 @@ class SwerveBridge(Node):
                 'sequence_id': data.get('sequence_id'), 'generation': data.get('_generation'),
                 'action': action, **timing, **self.control_timing}))
         self.nav_state = 'MANUAL' if action != 'STOP' else 'IDLE'
-        self.send_control_status(True)
+        self.send_control_status(True, manual_refresh=action != 'STOP')
 
     def trace_control_callback(self, name):
         if not getattr(self, 'manual_timing_enabled', False):
@@ -2758,9 +2855,12 @@ class SwerveBridge(Node):
 
     def destroy_node(self):
         self.stop_event.set()
+        self.visualization_worker.close()
+        self.diagnostics_worker.close()
         self.outbound.clear()
         self.lidar_frame_buffer.clear()
-        self.cmd_pub.publish(Twist())
+        if self.context.ok():
+            self.cmd_pub.publish(Twist())
         with self.ws_lock:
             if self.ws is not None:
                 self.ws.close()

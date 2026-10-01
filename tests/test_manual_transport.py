@@ -47,6 +47,23 @@ def test_refresh_is_independent_of_slow_probe_and_stop_is_final():
     assert not sender.thread.is_alive()
 
 
+def test_refresh_period_does_not_add_network_duration_or_queue_old_ticks():
+    starts = []
+    def send(message):
+        if message['action'] != 'STOP':
+            starts.append(time.monotonic())
+            time.sleep(.03)
+    sender = ManualRefreshWorker(send, 'R01', .06).start()
+    try:
+        sender.hold('FORWARD')
+        time.sleep(.28)
+        sender.stop()
+    finally:
+        sender.close()
+    assert len(starts) >= 4
+    assert max(b - a for a, b in zip(starts, starts[1:])) < .085
+
+
 def test_stop_invalidates_blocked_old_send_before_wire_stop():
     entered, release = threading.Event(), threading.Event()
     sent = []
@@ -95,13 +112,15 @@ def test_heartbeat_remains_available_while_network_ping_is_blocked():
         assert release.wait(2)
 
     socket = SimpleNamespace(ping=ping, send=wire.append)
+    def forbidden_diagnostics():
+        raise AssertionError('heavy graph diagnostics ran inside the ROS heartbeat callback')
     node = SimpleNamespace(stop_event=stop, outbound=mailbox, ws=socket,
         ws_lock=threading.Lock(), control_timing={},
         send=lambda payload: mailbox.offer(payload),
         robot_id='R01', nav_state='READY', runtime_state='NAVIGATION',
         applied_mode='MANUAL', slam_paused=False, controller_states=[], gazebo_rtf=.2,
         now=lambda: 'timestamp', _mapping_elapsed_s=lambda: 0,
-        collect_diagnostics=lambda: {}, detail_errors=lambda diagnostics: [],
+        collect_diagnostics=forbidden_diagnostics, detail_errors=lambda diagnostics: [],
         send_map_revision_status=lambda: None)
     worker = threading.Thread(target=SwerveBridge.outbound_sender, args=(node,))
     worker.start()
@@ -117,7 +136,7 @@ def test_heartbeat_remains_available_while_network_ping_is_blocked():
         for _ in range(100):
             mailbox.offer({'type': '_SOCKET_PING'})
         assert '_SOCKET_PING' in mailbox.latest
-        assert len(mailbox.critical) == 1  # controller status is still preserved
+        assert len(mailbox.critical) == 0  # diagnostics are off the ROS callback
         assert all('_SOCKET_PING' not in item for item in wire)
     finally:
         stop.set()

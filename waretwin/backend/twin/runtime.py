@@ -127,6 +127,7 @@ class TwinRuntime:
         self.map_sync_error: str | None = None
         self.robot_map_sync: dict[str, dict[str, Any]] = {}
         self.robot_map_snapshots: dict[str, dict[str, Any]] = {}
+        self.visualization_clients = set()
         self.local_map_overrides: dict[str, str] = {}
         self.local_map_revisions: dict[str, str] = {}
         self.local_map_status: dict[str, dict[str, Any]] = {}
@@ -350,6 +351,13 @@ class TwinRuntime:
                 await self.broadcast({'type': 'HEATMAP', 'layer': self.heatmap_layer('CONGESTION', values, floor)})
                 await self.broadcast({'type': 'HEATMAP', 'layer': self.heatmap_layer('TRAFFIC', self.engine.traffic_short[floor], floor)})
     async def broadcast(self, payload: dict[str, Any]) -> None:
+        from .visualization_outbox import VISUALIZATION_TYPES
+        if payload.get('type') in VISUALIZATION_TYPES:
+            # Avoid Channels' deep-copy/FIFO backlog for disposable clouds.
+            # Each authenticated consumer owns one bounded latest-only lane.
+            for client in tuple(self.visualization_clients):
+                client.visualization_outbox.offer(payload)
+            return
         if self.channel_layer is None:
             self.channel_layer = get_channel_layer()
         if self.channel_layer is not None:
@@ -661,11 +669,9 @@ class TwinRuntime:
         self.bridge_status = 'CONNECTED'
         self.ros_diagnostics['ros'] = True
         self.last_telemetry_iso = now_iso
-        if self.client_count:
-            patch = self.make_patch()
-            await self.broadcast({'type': 'PATCH', 'base_tick': self.last_sent_tick,
-                                  'tick': self.engine.state['sim']['tick'], 'patch': patch, 'events': []})
-            self.last_sent_tick = self.engine.state['sim']['tick']
+        # The wall-clock runtime tick publishes coalesced state deltas. Never
+        # await browser group delivery on the ROS ingress path: a slow browser
+        # must not hold subsequent heartbeats, view ACKs or control status.
 
     @staticmethod
     def _fsm_from_nav(nav: str) -> str:
@@ -848,7 +854,11 @@ class TwinRuntime:
                 pass
             await self.broadcast(data)
         elif kind in ('LIDAR_SCAN', 'LIDAR_MAP_2D', 'LIDAR_MAP_3D',
+                      'ROBOT_DETAIL_VIEW_STATUS',
                       'NAV_GLOBAL_PATH', 'NAV_LOCAL_PATH', 'NAV_GOAL', 'CONTROLLER_STATE'):
+            if isinstance(data.get('view_timing'), dict):
+                data = {**data, 'view_timing': {**data['view_timing'],
+                    'django_frame_received_ms': time.time() * 1000}}
             await self.broadcast(data)
         elif kind == 'LOCAL_CONTROL_RESULT':
             from .ros_bridge_consumer import registry
@@ -1172,7 +1182,8 @@ class TwinRuntime:
     async def handle_message(self, consumer, data: dict[str, Any], user) -> None:
         route_monotonic = time.monotonic()
         consumer_monotonic = data.get('_consumer_monotonic')
-        data = {key: value for key, value in data.items() if key != '_consumer_monotonic'}
+        view_received_ms = data.get('_view_received_ms')
+        data = {key: value for key, value in data.items() if key not in ('_consumer_monotonic', '_view_received_ms')}
         try:
             msg = client_adapter.validate_python(data)
         except ValidationError as exc:
@@ -1322,15 +1333,23 @@ class TwinRuntime:
                     'message': 'ROS bridge is offline; manual command was not sent',
                 })
         elif t == 'ROBOT_DETAIL_VIEW':
+            log.info('DETAIL_VIEW_TIMING request=%s view=%s received_ms=%.3f online=%s',
+                msg.request_id, msg.view, view_received_ms or time.time() * 1000,
+                self.robot_bridge_online(msg.robot_id))
             if self.is_external and self.robot_bridge_online(msg.robot_id):
                 result = await self.gateway().send_command(msg.robot_id, 'DETAIL_VIEW', {
                     'view': msg.view,
+                    'request_id': msg.request_id,
+                    'django_received_ms': view_received_ms or time.time() * 1000,
                 })
                 if not result.get('ok'):
                     await consumer.send_json({
                         'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
                         'message': 'robot detail visualization mode was not sent to the ROS bridge',
                     })
+            else:
+                await consumer.send_json({'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'robot detail visualization requires an online ROS bridge'})
         elif t == 'PATH_PREVIEW_REQUEST':
             now = time.monotonic()
             request_id = str(getattr(msg, 'request_id', '') or '')

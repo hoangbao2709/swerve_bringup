@@ -41,7 +41,7 @@ vi.mock("../src/components/control/RobotLidarViews", async () => {
     localLidarPointToMap: (point: { x: number; y: number }) => point,
     previewLidarPath: () => null,
     RobotLidar2DView: () => React.createElement("div", { className: "robot-lidar-view", "data-testid": "lidar-2d" }),
-    RobotLidar3DView: () => React.createElement("div", { className: "robot-lidar-view robot-lidar-3d-view", "data-testid": "lidar-3d" }),
+    RobotLidar3DView: ({ fresh }: { fresh?: boolean }) => React.createElement("div", { className: "robot-lidar-view robot-lidar-3d-view", "data-testid": "lidar-3d", "data-fresh": String(fresh) }),
   };
 });
 vi.mock("../src/simulation/runner", () => ({ useSimulationRunner: () => undefined }));
@@ -240,6 +240,35 @@ describe("robot detail route stability", () => {
     expect(container.querySelector(".robot-lidar-view")).toBeTruthy();
     act(() => buttonNamed("3D")?.click());
     expect(container.querySelector("[data-testid='lidar-3d']")).toBeTruthy();
+  });
+
+  it("switches views immediately without clearing the selected robot's cached frames", () => {
+    setOnlineRobot();
+    const frame2d = { robot_id: "R01", frame_id: "base_footprint", source_frame_id: "laser", point_count: 1, points: [[1, 0]] as [number, number][], path: [], goal: null };
+    const frame3d = { ...frame2d, points: [[1, 0, 0]] as [number, number, number][], bounds: null, epoch: "bridge", revision: 1 };
+    useStore.getState().setRobotDetail("R01", { lidar2d: frame2d, lidar3d: frame3d });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    for (const name of ["LIDAR MAP", "3D", "2D", "GLOBAL MAP"]) act(() => buttonNamed(name)?.click());
+    expect(useStore.getState().robotDetail.R01.lidar2d).toBe(frame2d);
+    expect(useStore.getState().robotDetail.R01.lidar3d).toBe(frame3d);
+    expect(useStore.getState().robotDetail.R02).toBeUndefined();
+    expect(container.textContent).toContain("WAITING FOR FRESH FRAME");
+  });
+
+  it("keeps cached 3D pixels until the matching view becomes fresh", () => {
+    setOnlineRobot();
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    act(() => buttonNamed("LIDAR MAP")?.click());
+    act(() => buttonNamed("3D")?.click());
+    expect(container.querySelector('[data-testid="lidar-3d"]')?.getAttribute("data-fresh")).toBe("false");
+    const requested = useStore.getState().robotDetail.R01.viewStatus!;
+    act(() => useStore.getState().setRobotDetail("R01", { viewStatus: { ...requested, state: "APPLIED" } }));
+    expect(container.querySelector('[data-testid="lidar-3d"]')?.getAttribute("data-fresh")).toBe("false");
+    act(() => useStore.getState().setRobotDetail("R01", { viewStatus: { ...requested, state: "FRESH" } }));
+    expect(container.querySelector('[data-testid="lidar-3d"]')?.getAttribute("data-fresh")).toBe("true");
+    act(() => buttonNamed("2D")?.click());
+    act(() => buttonNamed("3D")?.click());
+    expect(container.querySelector('[data-testid="lidar-3d"]')?.getAttribute("data-fresh")).toBe("false");
   });
 
   it("requests a Nav2 preview from the map click and gates Send Goal on the matching current approval", async () => {

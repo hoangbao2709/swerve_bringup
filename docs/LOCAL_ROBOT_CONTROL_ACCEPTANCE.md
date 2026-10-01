@@ -1769,4 +1769,59 @@ reproduced the same RCLInvalidROSArgsError before correction. The comment now
 uses a semicolon; parsing succeeds. YAML folds presentation whitespace, so the
 test compares canonical XML semantics instead of raw byte identity. No spawner,
 Nav lifecycle or bond implementation was reopened. Failed reload was stopped,
-current kernel gate rechecked clean, and a corrected managed reload is pending.
+current kernel gate rechecked clean, and the corrected managed reload reached
+full navigation READY on domain 0. All three controllers, original resources,
+arbiter, odom/LiDAR/TF, all six Nav2 lifecycle nodes and R01 fresh heartbeat
+were confirmed. 55 current source tests PASS including the native parameter-
+override regression. Fix checkpoint d52cb53 was pushed to origin/web-simulation.
+Fresh six-direction regression is now running because the contact-basis fix
+affects all directions; closed Phase 1 acceptance is not being rerun.
+
+### Fresh native-hardware/contact-tangent directions
+
+Ignored raw evidence: .runtime/resume-tangent-directions.json. All holds used
+real authenticated Django /ws, original velocity/steering interfaces and
+quick/50. Every observed hold had continuous WEB_MANUAL ownership, correct
+manual/selected Twist and zero manual/selected interruption samples.
+
+| Direction | Requested (vx,vy,wz) | Gazebo / odom signed movement | Hold wall / sim | RTF | STOP wall / sim | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| Forward | .25,0,0 | +.672699 / +.635541 m | 20.259 / 3.000 | .148082 | 10.048 / 1.584 | PASS |
+| Backward | -.25,0,0 | -.642050 / -.606202 m | 20.005 / 3.013 | .150611 | 10.701 / 1.445 | PASS |
+| Left | 0,.25,0 | +.501233 / +.472844 m | 18.582 / 3.014 | .162199 | 7.999 / 1.413 | PASS |
+| Right | 0,-.25,0 | -.632898 / -.597070 m | 17.977 / 3.026 | .168326 | 8.343 / 1.459 | PASS |
+| Rotate Left | 0,0,.6 | +1.352417 / +1.152341 rad | 19.366 / 3.027 | .156304 | 180.026 / 28.714 | FAIL STOP |
+| Rotate Right | 0,0,-.6 | not run after failed prerequisite | - | - | - | UNVERIFIED |
+
+Rotate Left STOP wheel drift 0.016432/0.018042 exceeded 0.005 rad/s and chassis
+XY drift 0.001178 exceeded 0.001 m/s; yaw drift 0.000233 was within limit.
+Thus correcting the invalid contact frame is not sufficient to close Stage B.
+Selected/drive zero did not produce adequate physical holding. No Nav/Mapping
+was run. The gate still FAILs and no relaxed threshold/lease is used.
+
+| Direction | Client gap ms | Django gap ms | Bridge gap ms | Manual gap ms | Selected gap ms |
+| --- | --- | --- | --- | --- | --- |
+| Forward | 194.764 | 571.101 | 649.796 | 177.063 | 169.805 |
+| Backward | 225.209 | 286.051 | 336.255 | 179.975 | 158.161 |
+| Left | 216.111 | 333.360 | 363.459 | 205.598 | 212.025 |
+| Right | 161.976 | 231.933 | 242.556 | 162.310 | 150.233 |
+| Rotate Left | 174.155 | 446.734 | 484.059 | 163.687 | 162.989 |
+
+The raw ingress calculation includes all frames SENT during a hold, even when
+received afterward. Forward's largest gap is the last in-flight nonzero frame:
+seq163 T4=9809.231096, seq164 T0=9809.378108/T1=9809.794837/T4=9809.880892,
+hold ended at 9809.463920. STOP seq165 T0=9809.464110/T1=9809.892799/
+T4=9810.023548. These endpoint delays are retained, not clipped from reported
+maxima. Actual within-hold topic continuity passed; subsequent safety acceptance
+must independently measure STOP/timeout behavior.
+
+Next candidate restores ONLY the earlier drive motor adapter, now paired with
+the corrected contact-tangent basis. Native steering/write/read, original
+resource storage, URDF bounds and world solver remain unchanged. Actively
+claimed drive interfaces get effort-bounded ODE vel/fmax constraints throughout
+contact solving; this changes active actuation holding force explicitly (not
+passive coefficients or safety thresholds). All active drives get zero on any
+invalid target or motor-setting failure; inactive interfaces restore saved
+passive fmax. Per-step targets are preallocated. No steering motor servo or
+solver tuning is reintroduced. Runtime regression is pending; no candidate
+Stage B PASS is claimed.

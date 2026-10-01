@@ -21,7 +21,7 @@ def test_isotropic_drive_friction_uses_automatic_contact_tangents():
         assert joint.find('limit').attrib == {'effort': '200.0', 'velocity': '30.0'}
         assert joint.find('dynamics').attrib == {'friction': '0.05', 'damping': '0.10'}
     hardware = root.find('.//ros2_control/hardware')
-    assert hardware.findtext('plugin') == 'gazebo_ros2_control/GazeboSystem'
+    assert hardware.findtext('plugin') == 'swerve_bringup/GazeboMotorSystem'
     assert not hardware.findall('param')  # no solver or motor-adapter override
 
 

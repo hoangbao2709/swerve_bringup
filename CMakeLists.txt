@@ -4,6 +4,25 @@ project(swerve_bringup)
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
+find_package(gazebo REQUIRED)
+find_package(gazebo_ros2_control REQUIRED)
+find_package(hardware_interface REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
+add_library(swerve_gazebo_motor_system SHARED ros_compat/gazebo_motor_system.cpp)
+target_compile_features(swerve_gazebo_motor_system PUBLIC cxx_std_17)
+target_include_directories(swerve_gazebo_motor_system PRIVATE ${GAZEBO_INCLUDE_DIRS})
+target_link_libraries(swerve_gazebo_motor_system ${GAZEBO_LIBRARIES})
+ament_target_dependencies(swerve_gazebo_motor_system gazebo_ros2_control hardware_interface pluginlib
+  rclcpp rclcpp_lifecycle)
+pluginlib_export_plugin_description_file(gazebo_ros2_control config/gazebo_motor_plugin.xml)
+install(TARGETS swerve_gazebo_motor_system LIBRARY DESTINATION lib)
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_motor_constraint tests/test_motor_constraint.cpp)
+endif()
+
 # Humble bondcpp 3.0.2 polls its FSM without locking while Nav2's bond
 # callbacks transition it. Keep its exact ABI/source and backport synchronized
 # wait methods inside this workspace. Newer system versions need no override.

@@ -1,0 +1,6 @@
+<library path="swerve_gazebo_motor_system">
+  <class name="swerve_bringup/GazeboMotorSystem" type="swerve_bringup::GazeboMotorSystem"
+         base_class_type="gazebo_ros2_control::GazeboSystemInterface">
+    <description>Native Gazebo steering/read with URDF-effort-bounded ODE drive motors.</description>
+  </class>
+</library>

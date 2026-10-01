@@ -25,7 +25,10 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
   <exec_depend>gazebo_plugins</exec_depend>
-  <exec_depend>gazebo_ros2_control</exec_depend>
+  <depend>gazebo_ros2_control</depend>
+  <depend>gazebo_dev</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>controller_manager_msgs</exec_depend>
   <depend>bondcpp</depend>

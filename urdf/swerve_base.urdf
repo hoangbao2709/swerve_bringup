@@ -668,7 +668,7 @@
   <xacro:if value="$(arg enable_gazebo_ros2_control)">
   <ros2_control name="GazeboSystem" type="system">
     <hardware>
-      <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+      <plugin>swerve_bringup/GazeboMotorSystem</plugin>
     </hardware>
 
     <joint name="steer_front_joint">

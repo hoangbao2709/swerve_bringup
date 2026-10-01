@@ -1576,5 +1576,95 @@ The remaining executor audit found two synchronous action-discovery waits
 ActionClient.server_is_ready check and fail closed immediately when offline;
 no safety callback waits for Nav discovery. 27 focused transport/teleop tests
 PASS, including unavailable-action-server regression for both goal kinds;
-compile and swerve_bridge build PASS. This source fix awaits managed reload;
-live navigation remains UNVERIFIED and Stage B remains FAIL.
+compile and swerve_bridge build PASS. This source fix is loaded after the
+subsequent managed reload; live navigation remains UNVERIFIED and Stage B
+remains FAIL.
+
+Additional zero-command physics diagnoses (all restored to verified quick/50,
+sor=1.3, cfm=0 afterward; no canonical artifacts edited): direct ODE world
+solver met drift gate in 15.238 wall / 1.798 sim seconds but produced thousands
+of LCP errors. World with cfm=1e-9 still produced 1395 new LCP errors despite
+meeting drift gate. Both are rejected as production fixes. Quick/120/sor=1
+met drift gate only after 169.019 wall / 16.001 sim seconds (wheel
+0.004982/0.001840 rad/s, no new LCP errors); no fresh motion/STOP was proven
+on that profile, and it is not integrated. None is Stage B acceptance evidence.
+
+The installed gazebo_ros2_control package is 0.4.10. Its matching
+[upstream source](https://raw.githubusercontent.com/ros-controls/gazebo_ros2_control/0.4.10/gazebo_ros2_control/src/gazebo_system.cpp)
+uses instantaneous SetVelocity for unconfigured velocity interfaces, versus
+torque feedback for its existing velocity PID mode. Its write runs each physics
+step. Source-backed inference: contact integration after a velocity assignment
+can leave wheel drift without a holding motor; this is not yet a proven fix.
+A narrow drive-servo candidate supplies vel_kp=1, ki=kd=0, zero integral
+limits on both existing velocity command interfaces. No steering/controller
+topology, mass/inertia/friction/damping, map or world physics settings changed.
+Its source checks passed but the focused production trial failed, as recorded
+below; the candidate has been removed. Any retained change affecting drive
+actuation requires fresh six-direction regression before Stage B.
+
+Frontend current-source targeted Control route/workflow tests: 19 PASS.
+TypeScript/Vite build subsequently PASSed. Current kernel storage/OOM/panic gate
+remains clear. Stack was stopped cleanly for the candidate actuation reload.
+Candidate source checks now PASS: 52 targeted Python tests, swerve_bringup
+colcon build, git diff --check. Current frontend tsc --noEmit and Vite build
+PASS (existing large-chunk warning; no frontend source change).
+
+The PID candidate loaded both gains in actual Gazebo and startup remained READY
+with original velocity resource claims and unchanged quick/50 physics. Rotate
+Left moved +0.978718 rad Gazebo / +0.908535 rad odom with no manual/selected
+hold zeros. STOP FAILed after 180.027 wall / 27.108 sim seconds: wheel drift
+0.017756/0.001374 rad/s. Candidate gain additions and their candidate-only unit
+fixture were removed; no PID tuning is being retained. Raw wheel velocity is
+the previously diagnosed numerical feedback and should not drive blind gain
+tuning. The focused trace remains in ignored `.runtime/resume-drive-servo-rotate-left.json`.
+
+Next narrow candidate: an ODE effort-limited joint motor constraint on the
+original velocity interface storage. The adapter delegates init/state/steering/
+read/write to the ORIGINAL installed GazeboSystem via pluginlib, retaining a
+read-only view of original command storage; no second writer, ROS topic, manual
+path or feedback substitution. Only actively claimed drive velocity interfaces
+receive SetParam(vel/fmax); bounds come from the existing URDF effort/velocity
+limits, and inactive interfaces restore their original passive motor force.
+Nonfinite/out-of-limit targets and parameter-setting failures report ERROR
+with zero requested, rather than relaxing limits. Upstream's default class has
+an incomplete private implementation in its public header, so delegation keeps
+its ABI instead of cloning or replacing its whole implementation.
+Gazebo's [official velocity tutorial](https://get.gazebosim.org/tutorials?tut=set_velocity)
+describes instantaneous velocity assignment versus force-driven ODE joint
+motors. This is an actuation correction candidate, not an acceptance PASS.
+Native motor-bound/failure tests and actual production motion were exercised
+below; source world profiles, canonical artifacts, steering and settling gates
+remain unchanged. Active motor force is an explicit actuation change, not a
+claim that every effective physics parameter is unchanged.
+Initial adapter build found a missing exported transitive PID header dependency
+when attempting concrete inheritance; using the public interface and delegation
+avoids that private/PID implementation dependency. No system packages installed.
+Adapter source checks: 53 targeted Python tests PASS, swerve_bringup ROS build
+PASS, native motor constraint gtest target PASS (signed target/limits/failure
+cases), git diff --check PASS. The managed production reload reached READY and
+loaded the adapter. Gazebo joint info confirms fmax=200 on both actively claimed
+drive joints (existing URDF effort bound); inactive restoration uses the saved
+original passive fmax=0.05. The quick/50 profile was unchanged.
+
+Focused adapter Rotate Left: Gazebo yaw +1.400853 rad / odom +1.404662 rad,
+hold 3.034 sim / 22.974 wall seconds, RTF 0.132064, continuous WEB_MANUAL,
+manual/selected hold zeros 0/0. STOP **FAIL** at 180.019 wall / 24.427 sim
+seconds: wheel drift 0.005072524/0.004685038 rad/s. The first wheel is still
+above 0.005; rounding must not convert this result to PASS. Body XY/yaw drift
+0.0003473/0.0002542 satisfy their unchanged gates. Gaps ms: client 193.656,
+Django 268.916, bridge 359.305, manual 202.415, selected 205.754. No LCP errors
+observed in this trial. Candidate remains uncommitted and is not Stage B PASS.
+
+Subsequent zero-command diagnostic measured quick/50 net wheel drift
+-0.007702/-0.010342 rad/s over 1.596 sim seconds. With only iterations changed
+to 120, net drift was -0.002673/-0.002177 over 1.586 sim seconds and the strict
+settling monitor passed after 5.964 wall / 0.811 sim seconds (window wheel
+drift 0.003121/0.003944). This is diagnostic evidence, not a fresh motion/STOP
+acceptance. The finally block restored quick/50 and verified all reported
+physics properties. A fresh Rotate Left/STOP diagnostic on motor+120 was
+blocked by its pre-motion settling gate: after 180.014 wall / 22.922 sim
+seconds, wheel drift 0.000149/0.000355 was within limits but chassis yaw drift
+0.002051 exceeded 0.001 rad/s. No motion was commanded. Its finally block
+restored and verified quick/50. This disproves treating the earlier short
+diagnostic window as a reliable fix. No production profile change has been
+integrated; a higher-convergence diagnostic is pending.

@@ -1378,3 +1378,27 @@ above completed all 42 tests.
 Current runtime: production startup and strict sequential directions pending.
 Historical focused Forward continuity/STOP remain PASS; Stage B is UNVERIFIED
 until strict direction/settling and current safety/browser evidence complete.
+
+### Fresh READY and idle ownership regression
+
+The production navigation start reached full READY on domain 0, backend 8001
+(8000 occupied by an unrelated service), frontend 5173. All three controllers,
+claimed interfaces, arbiter/selected subscriber, odom, both LiDAR paths, local
+and global TF, all six active Nav2 lifecycle nodes and R01 heartbeat passed.
+No closed Phase 1 implementation was changed. Current kernel gate remained
+clear of storage/OOM/panic errors before and after startup.
+
+The strict resume harness passed initial mechanical settling (wheel drift
+0.000125/0.000134 rad/s), then blocked **before motion** because idle owner was
+not NONE. Source review proved the bridge's generation-mismatch timer branch
+republished zero indefinitely without consuming that invalidation. This kept
+a fresh zero WEB_MANUAL source. The timer now consumes the generation after
+its safety zero, clears the old Twist/deadline, and allows owner NONE after
+the unchanged lease. A new command remains required for motion. Regression
+coverage checks one final zero followed by source expiry, with no resumption.
+
+Backend source checks at this checkpoint: manage.py check PASS, migrations
+check PASS (no changes), 32 targeted ROS bridge/control-handshake/local-control
+tests PASS. The new resume-only observer reuses the existing refresh worker
+and mechanical monitor, sends motion only via authenticated Django /ws, and
+persists per-direction ROS/Gazebo/controller/timing evidence in ignored .runtime.

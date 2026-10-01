@@ -92,6 +92,30 @@ def test_mode_confirmation_requires_matching_arbiter_request():
     assert bridge.mode_transition_state=='APPLIED' and sent==[True]
 
 
+def test_generation_invalidation_emits_final_zero_then_releases_idle_source():
+    from swerve_bridge.bridge_node import SwerveBridge
+    from geometry_msgs.msg import Twist
+    from command_ownership import choose_command
+    mailbox = ControlMailbox()
+    mailbox.put({'type': 'MANUAL_DISCONNECT'})
+    old = Twist()
+    old.linear.x = .25
+    sent = []
+    bridge = SimpleNamespace(incoming=mailbox, manual_generation=0,
+        mode_transition_state='APPLIED', manual_twist=old, manual_deadline=999.,
+        emergency_stop_active=False, control_mode='MANUAL',
+        trace_control_callback=lambda _: None,
+        cmd_pub=SimpleNamespace(publish=sent.append))
+    for _ in range(20):
+        SwerveBridge.manual_timer(bridge)
+    assert len(sent) == 1
+    assert sent[0].linear.x == 0 and bridge.manual_deadline == 0
+    assert bridge.manual_generation == mailbox.generation
+    owner, values = choose_command(now=1., timeout=.5, mode='MANUAL',
+        sources={'WEB_MANUAL': ((0., 0., 0.), 0.)})
+    assert owner == 'NONE' and values == (0., 0., 0.)
+
+
 @pytest.mark.parametrize('wheel_drift,passed', [(0.001, True), (0.20, False)])
 def test_mechanical_settling_requires_actual_wheel_position_stability(monkeypatch, wheel_drift, passed):
     sys.path.insert(0, str(ROOT / 'scripts'))

@@ -726,6 +726,10 @@ class SwerveBridge(Node):
                 or self.mode_transition_state != 'APPLIED'):
             self.manual_twist = Twist()
             self.manual_deadline = 0.0
+            # Consume the invalidation after publishing its safety zero. Once
+            # the mode is applied, idle output must expire to owner NONE;
+            # continually publishing zero would retain a fresh manual source.
+            self.manual_generation = self.incoming.generation
             self.cmd_pub.publish(self.manual_twist)
             return
         if self.emergency_stop_active or self.control_mode != 'MANUAL':

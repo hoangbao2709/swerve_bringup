@@ -23,6 +23,7 @@ from .sim.navgrid import load_layout
 from .sim.whatif import run_whatif
 from .conveyor_plc import PLCSimulator
 from .coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin
+from .control_timing import profile_async, profile_sync
 
 log = logging.getLogger(__name__)
 TICK_S = SIM['TICK_S']
@@ -289,6 +290,7 @@ class TwinRuntime:
                 acc = 0.0
                 await asyncio.sleep(0.25)
 
+    @profile_async
     async def after_ticks(self) -> None:
         S = self.engine.state
         S['sim']['speed'] = self.speed
@@ -1046,6 +1048,7 @@ class TwinRuntime:
             prev_sent[rid] = cur
         return out
 
+    @profile_sync
     def make_patch(self) -> dict[str, Any]:
         S = self.engine.state
         patch: dict[str, Any] = {'sim': S['sim'], 'robots': self._robot_patch()}
@@ -1070,6 +1073,7 @@ class TwinRuntime:
             patch['recent_decisions'] = S['recent_decisions'][:20]
         return patch
 
+    @profile_sync
     def heatmap_layer(self, kind: str, src: list[float], floor: int = 1) -> dict[str, Any]:
         g = self.engine.grid
         stride = 2

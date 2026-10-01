@@ -49,6 +49,7 @@ def model(m):
   i=m.name.index('swerve_base');record('gazebo',{'pose':a.pose_from_pose(m.pose[i]),'velocity':twist(m.twist[i])})
 n.create_subscription(ModelStates,'/model_states',model,100)
 n.create_subscription(String,'/command_arbiter/diagnostics',lambda m:record('arbiter',json.loads(m.data)),50)
+n.create_subscription(String,'/command_owner',lambda m:record('owner',m.data),100)
 n.create_subscription(Clock,'/clock',lambda m:sim.__setitem__(0,m.clock.sec+m.clock.nanosec*1e-9),qos_profile_sensor_data)
 thread=threading.Thread(target=lambda:rclpy.spin(n),daemon=True);thread.start()
 geometry=n.create_client(GetParameters,'/swerve_controller/get_parameters')
@@ -60,6 +61,16 @@ assert future.done(),'wheel geometry timed out'
 wheel_radius=future.result().values[0].double_value
 assert math.isfinite(wheel_radius) and wheel_radius>0
 print('MEASURED_WHEEL_RADIUS='+str(wheel_radius),flush=True)
+bridge_parameters=n.create_client(GetParameters,'/swerve_bridge/get_parameters')
+assert bridge_parameters.wait_for_service(timeout_sec=5), 'manual speed parameters unavailable'
+query=GetParameters.Request();query.names=['manual_linear_velocity','manual_angular_velocity']
+future=bridge_parameters.call_async(query);deadline=time.monotonic()+5
+while not future.done() and time.monotonic()<deadline:time.sleep(.01)
+assert future.done(), 'manual speed parameters timed out'
+linear,angular=[value.double_value for value in future.result().values]
+requested_twists={'FORWARD':[linear,0.,0.],'BACKWARD':[-linear,0.,0.],
+ 'LEFT':[0.,linear,0.],'RIGHT':[0.,-linear,0.],
+ 'ROTATE_LEFT':[0.,0.,angular],'ROTATE_RIGHT':[0.,0.,-angular]}
 sender=ManualRefreshWorker(lambda message:(record('client',message),ws.send(json.dumps(message))), 'R01').start()
 def command(action):
  if action=='STOP':sender.stop()
@@ -87,7 +98,7 @@ results={'directions':{}, 'source':'authenticated Django /ws -> R01 -> real ROS/
  'wheel_position_rate_limit':.005}
 def gap(rows):
  stamps=sorted(set(rows))
- return 1000*max((b-a for a,b in zip(stamps,stamps[1:])),default=0)
+ return 1000*max(b-a for a,b in zip(stamps,stamps[1:])) if len(stamps)>1 else None
 def ingress(start,stop):
  records=[]
  for line in Path('logs/ros.log').read_text(errors='replace').splitlines():
@@ -130,9 +141,14 @@ try:
   component='forward_m' if action in ('FORWARD','BACKWARD') else 'lateral_m' if action in ('LEFT','RIGHT') else 'dyaw_rad'
   sign=-1 if action in ('BACKWARD','RIGHT','ROTATE_RIGHT') else 1
   result['movement_passed']=(sign*result['gazebo_delta'][component]>.05 and sign*result['odom_delta'][component]>.025)
-  owner_rows=[r for r in rows['arbiter'] if start<=r[0]<stop]
-  acquisition=next((r[0] for r in owner_rows if r[1]['active_command_source']=='WEB_MANUAL'),None)
-  result['ownership_continuous']=bool(acquisition is not None and all(r[1]['active_command_source']=='WEB_MANUAL' for r in owner_rows if acquisition<=r[0]<stop))
+  owner_rows=[r for r in rows['owner'] if start<=r[0]<stop]
+  acquisition=next((r[0] for r in owner_rows if r[1]=='WEB_MANUAL'),None)
+  result['ownership_continuous']=bool(acquisition is not None and all(r[1]=='WEB_MANUAL' for r in owner_rows if acquisition<=r[0]<stop))
+  result['requested_twist']=requested_twists[action]
+  result['manual_sequence_ids']=[r['sequence_id'] for r in list(sender.events) if r['action']==action and start<=r['T0']<stop]
+  result['directional_topics']=all(any(start<=r[0]<stop and all(abs(v-w)<1e-6 for v,w in zip(r[1],requested_twists[action])) for r in rows[key]) for key in ('/cmd_vel_manual','/cmd_vel_selected'))
+  result['hold_zero_samples']={key:len([r for r in rows[key] if acquisition is not None and acquisition<=r[0]<stop and all(abs(v)<1e-6 for v in r[1])]) for key in ('/cmd_vel_manual','/cmd_vel_selected')}
+  result['command_continuity']=bool(result['ownership_continuous'] and not any(result['hold_zero_samples'].values()))
   result['timing']={**ingress(start,stop),
     'MAX_CLIENT_SEND_GAP_MS':gap([r['T0'] for r in list(sender.events) if r['action']==action and start<=r['T0']<stop]),
     'MAX_CMD_VEL_MANUAL_GAP_MS':gap([r[0] for r in rows['/cmd_vel_manual'] if start<=r[0]<stop]),
@@ -140,7 +156,7 @@ try:
   result['hold_wall_seconds']=stop-start
   result['hold_sim_seconds']=stop_sim-s0
   result['hold_rtf']=(stop_sim-s0)/(stop-start)
-  result['passed']=bool(rest['passed'] and end_rest['passed'] and result['movement_passed'] and result['ownership_continuous'])
+  result['passed']=bool(rest['passed'] and end_rest['passed'] and result['movement_passed'] and result['command_continuity'] and result['directional_topics'])
   results['directions'][action]=result;save();print('MOTION_'+action+'='+json.dumps({k:v for k,v in result.items() if k not in ('trace','statuses')}),flush=True)
   if not result['passed']:break
 finally:

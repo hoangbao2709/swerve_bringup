@@ -5,6 +5,7 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from .auth import user_from_token
 from .runtime import runtime
+from .control_timing import profile_async
 
 log = logging.getLogger(__name__)
 
@@ -67,5 +68,6 @@ class TwinConsumer(AsyncJsonWebsocketConsumer):
             log.exception('frontend WebSocket message failed', extra={'message_type': str(content.get('type') or 'UNKNOWN')})
             await self.send_json({'type': 'ERROR', 'code': 'INTERNAL_ERROR', 'message': f'command failed: {type(exc).__name__}'})
 
+    @profile_async
     async def twin_message(self, event):
         await self.send_json(event['payload'])

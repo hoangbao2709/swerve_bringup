@@ -1402,3 +1402,48 @@ check PASS (no changes), 32 targeted ROS bridge/control-handshake/local-control
 tests PASS. The new resume-only observer reuses the existing refresh worker
 and mechanical monitor, sends motion only via authenticated Django /ws, and
 persists per-direction ROS/Gazebo/controller/timing evidence in ignored .runtime.
+
+### Strict directions: physical motion and settling complete; continuity failure
+
+After the idle-source fix, a normal production reload again reached READY.
+All six movements had the correct Gazebo/odom trend and passed unchanged
+mechanical settling. Physics was unchanged. Each hold used the real Web path
+at 0.25 m/s translation or 0.6 rad/s rotation, for approximately 3 sim seconds.
+
+| Direction | Gazebo signed motion | Odom signed motion | STOP wall / sim seconds | Manual / selected zero samples during hold |
+| --- | ---: | ---: | ---: | ---: |
+| Forward | +0.621928 m | +0.592094 m | 8.429 / 1.497 | 1 / 2 |
+| Backward | -0.627436 m | -0.597850 m | 10.135 / 1.426 | 0 / 0 |
+| Left | +0.475061 m | +0.452220 m | 127.443 / 20.007 | 3 / 2 |
+| Right | -0.648616 m | -0.613257 m | 9.795 / 1.590 | 1 / 6 |
+| Rotate Left | +1.247507 rad | +1.251055 rad | 93.112 / 15.394 | 4 / 16 |
+| Rotate Right | -1.194221 rad | -1.239034 rad | 7.367 / 1.374 | 0 / 0 |
+
+All owner observations after acquisition were WEB_MANUAL, but this alone was
+insufficient: expiry publishes a final zero that remains a fresh manual source
+until the arbiter lease expires. Post-trace review found the zero samples above
+before explicit STOP. Therefore Forward/Left/Right/Rotate Left continuity FAIL;
+Backward and Rotate Right PASS. The earlier harness's combined PASS flags are
+superseded by this stricter interpretation. The harness now explicitly rejects
+manual or selected zero samples during hold after acquisition. Stage B FAIL;
+safety and navigation were not run. Long lateral/angular settling windows are
+recorded rather than hidden by a relaxed threshold or extended watchdog.
+
+Worst gaps across these six holds (milliseconds): client=381.862,
+Django receive=777.753, bridge receive=723.755, manual topic=451.264,
+selected topic=451.153. Timing is correlated on the same VM monotonic clock.
+Forward sequence 159: T0=1705.104799, T1=1705.518815, T4=1705.547247;
+previous receive T1=1705.042458/T4=1705.074138. Sender gap was 108.921 ms,
+but Django receive gap 476.357 ms and bridge receive gap 473.110 ms.
+The first observed delay on that refresh was before Django receive, not
+expensive map validation in the bridge. Backend callback/encoding timings are
+being added under the existing opt-in timing flag to determine the actual
+blocking callback before changing its behavior. No lease was increased.
+
+The stack stopped cleanly after the complete trace. Current kernel storage/
+OOM/panic gate remains clear. One earlier status CLI probe overlapped startup
+and reported stale controller failures; it is not current startup evidence.
+Runtime evidence is preserved in ignored `.runtime/resume-strict-directions.json`.
+19 transport/teleop tests and bridge rebuild passed after correcting a missing
+method binding in the new regression test fixture. Initial source checks above
+remain valid; diagnostic wrappers are pending their own checks/runtime evidence.

@@ -106,6 +106,7 @@ def test_generation_invalidation_emits_final_zero_then_releases_idle_source():
         emergency_stop_active=False, control_mode='MANUAL',
         trace_control_callback=lambda _: None,
         cmd_pub=SimpleNamespace(publish=sent.append))
+    bridge._manual_timer = lambda: SwerveBridge._manual_timer(bridge)
     for _ in range(20):
         SwerveBridge.manual_timer(bridge)
     assert len(sent) == 1

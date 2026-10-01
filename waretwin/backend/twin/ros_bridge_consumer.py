@@ -9,6 +9,7 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.conf import settings
 
 from .runtime import runtime
+from .control_timing import profile_async
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class RosBridgeRegistry:
         robot_id = str(getattr(value, 'robot_id', None) or 'R01')
         self.consumers[robot_id] = value
 
+    @profile_async
     async def send(self, payload: dict) -> bool:
         robot_id = str(payload.get('robot_id') or '').strip()
         if robot_id:
@@ -111,6 +113,11 @@ registry = RosBridgeRegistry()
 
 
 class RosBridgeConsumer(AsyncJsonWebsocketConsumer):
+    @classmethod
+    @profile_async
+    async def decode_json(cls, text_data):
+        return await super().decode_json(text_data)
+
     async def connect(self):
         query = parse_qs(self.scope.get('query_string', b'').decode())
         token = (query.get('token') or [None])[0]
@@ -153,6 +160,7 @@ class RosBridgeConsumer(AsyncJsonWebsocketConsumer):
                 log.exception('ROS bridge disconnect cleanup failed')
             log.info('ROS bridge disconnected', extra={'close_code': close_code})
 
+    @profile_async
     async def receive_json(self, content, **kwargs):
         if not isinstance(content, dict):
             log.warning('ROS bridge sent a non-object message')

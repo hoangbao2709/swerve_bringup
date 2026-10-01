@@ -2158,3 +2158,43 @@ worker-backed teleop and production-bundle checks remain unverified; the map
 and save portions passed. Do not start Gazebo again until current kernel
 storage health is clear. Map Load, SLAM resume, Nav Goal, Localization, and
 VDA5050 remain outside this mapping checkpoint.
+
+## 2026-10-01: mapping checkpoint recovered and closed
+
+This section supersedes the incomplete checkpoint outcome above. The VMware
+disk was expanded and the filesystem resize completed in this boot. Before
+runtime work, `/` was `/dev/sda3` (ext4), 98 GB total with 40 GB free (58%
+used); the current-boot kernel scan contained no `DID_TIME_OUT`, I/O, EXT4,
+blocked-journal, OOM, or panic matches. The same gate remained clear after the
+Mapping regression. The project stack stopped cleanly, and no owned Gazebo,
+ROS launch, bridge, backend, or frontend process remained afterward.
+
+Checkpoint source was `web-simulation` at `7684d0b`, matching
+`origin/web-simulation` before the run. The relevant checks were:
+
+- Frontend `robot_control_workflow.test.tsx`: 19/19 passed.
+- Backend `test_local_control`, `test_ros_bridge`, and `test_map_sync`: 42/42
+  passed; Django system check reported no issues.
+- ROS `test_mapping_snapshot_handoff.py`, `test_web_map_renderer.py`, and
+  `test_navigation_readiness.py`: 30/30 passed.
+- `npm run build`: TypeScript and Vite production build passed. Vite retained
+  the existing large-chunk warning. Production `start_stack.sh mapping` also
+  completed its own frontend build and passed the Mapping readiness gate.
+
+The bounded live teleop regression used the production Mapping stack, managed
+ROS domain 0, the authenticated Django WebSocket path, and the process-backed
+manual refresh worker. SLAM Toolbox remained the sole `/map` and `map -> odom`
+owner. `/scan`, `/odom`, map TF, controllers, R01 bridge heartbeat, and the
+accumulated `/map` were live before movement. A single 1.502 simulated-second
+FORWARD hold produced 0.375 m of Gazebo displacement and 0.354 m of odometry
+displacement. `WEB_MANUAL` ownership stayed continuous, the manual and selected
+Twist streams had no zero samples during the hold, their maximum observed
+sample gaps were 169.5 ms and 169.0 ms, and STOP settled within 1.184 simulated
+seconds. The map observer measured 4,969 known cells at 420 x 597 before the
+probe and 20,377 at 425 x 598 afterward, at 0.05 m/cell.
+
+`FRONTEND_BUILD=PASS`, `TELEOP_DURING_MAPPING=PASS`, and
+`MAPPING_GATE=PASS`. The preserved production map/save evidence above remains
+valid; this regression did not save or promote a new map. Map Load, localization
+initialization, saved-map path preview/navigation, SLAM session resume, and
+larger-route loop closure remain unverified and are the next phase.

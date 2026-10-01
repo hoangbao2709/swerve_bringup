@@ -26,12 +26,17 @@ class TwinConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
             await self.close(code=4401)
             return
         self.scope['waretwin_user'] = user
-        await self.channel_layer.group_add('twin_clients', self.channel_name)
-        await self.accept()
-        self.visualization_outbox = VisualizationOutbox(self.send)
-        runtime.visualization_clients.add(self)
+        self.control_only = (query.get('control_only') or ['0'])[0] == '1'
         self._message_window_started = time.monotonic()
         self._message_window_count = 0
+        if not self.control_only:
+            await self.channel_layer.group_add('twin_clients', self.channel_name)
+        await self.accept()
+        if self.control_only:
+            await self.send_json({'type': 'ROBOT_MANUAL_CHANNEL_READY'})
+            return
+        self.visualization_outbox = VisualizationOutbox(self.send)
+        runtime.visualization_clients.add(self)
         runtime.client_count += 1
         await runtime.ensure_started()
         await self.send_json(runtime.full_message())
@@ -48,16 +53,22 @@ class TwinConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
                 if owner == self.channel_name:
                     owners.pop(robot_id, None)
                     await runtime.gateway().send_command(robot_id, 'MANUAL_DISCONNECT', {})
-            await self.channel_layer.group_discard('twin_clients', self.channel_name)
+            if not getattr(self, 'control_only', False):
+                await self.channel_layer.group_discard('twin_clients', self.channel_name)
         finally:
-            runtime.visualization_clients.discard(self)
-            if hasattr(self, 'visualization_outbox'):
-                await self.visualization_outbox.close()
-            runtime.client_count = max(0, runtime.client_count - 1)
+            if not getattr(self, 'control_only', False):
+                runtime.visualization_clients.discard(self)
+                if hasattr(self, 'visualization_outbox'):
+                    await self.visualization_outbox.close()
+                runtime.client_count = max(0, runtime.client_count - 1)
 
     async def receive_json(self, content, **kwargs):
         if not isinstance(content, dict):
             await self.send_json({'type': 'ERROR', 'code': 'BAD_MESSAGE', 'message': 'message must be a JSON object'})
+            return
+        if getattr(self, 'control_only', False) and content.get('type') != 'ROBOT_MANUAL':
+            await self.send_json({'type': 'ERROR', 'code': 'CONTROL_CHANNEL_RESTRICTED',
+                                  'message': 'manual-only channel accepts ROBOT_MANUAL frames'})
             return
         now = time.monotonic()
         if now - self._message_window_started >= 1.0:

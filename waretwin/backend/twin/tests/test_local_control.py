@@ -46,13 +46,15 @@ class LocalMapRegistryTests(TestCase):
         prefix = map_output_prefix('R01', 'floor_1')
         prefix.with_suffix('.pgm').write_bytes(b'P5\n1 1\n255\n\x00')
         prefix.with_suffix('.yaml').write_text(
-            'image: floor_1.pgm\nresolution: 0.05\norigin: [1.0, 2.0, 0.0]\n',
+            'image: floor_1.pgm\nresolution: 0.05\norigin: [1.0, 2.0, 0.0]\n'
+            'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n',
             encoding='utf-8',
         )
 
         record = register_saved_map('R01', 'floor_1', prefix.with_suffix('.yaml'))
         self.assertEqual(record['robot_id'], 'R01')
         self.assertEqual(record['origin'], [1.0, 2.0, 0.0])
+        self.assertEqual(record['map_id'], record['id'])
         self.assertNotIn('yaml_path', record)
         self.assertEqual(list_robot_maps('R01'), [record])
         _stored, yaml_path, image_path = get_robot_map('R01', record['id'])
@@ -65,10 +67,57 @@ class LocalMapRegistryTests(TestCase):
         prefix = map_output_prefix('R01', 'same')
         prefix.with_suffix('.pgm').write_bytes(b'P5\n1 1\n255\n\x00')
         prefix.with_suffix('.yaml').write_text(
-            'image: same.pgm\nresolution: 0.1\norigin: [0, 0, 0]\n', encoding='utf-8')
+            'image: same.pgm\nresolution: 0.1\norigin: [0, 0, 0]\n'
+            'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
         register_saved_map('R01', 'same', prefix.with_suffix('.yaml'))
         with self.assertRaises(FileExistsError):
             register_saved_map('R01', 'same', prefix.with_suffix('.yaml'))
+
+    def test_registry_requires_valid_nav2_occupancy_metadata(self):
+        prefix = map_output_prefix('R01', 'bad_thresholds')
+        prefix.with_suffix('.pgm').write_bytes(b'P5\n1 1\n255\n\x00')
+        prefix.with_suffix('.yaml').write_text(
+            'image: bad_thresholds.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n'
+            'negate: 0\noccupied_thresh: 0.2\nfree_thresh: 0.3\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'occupancy thresholds'):
+            register_saved_map('R01', 'bad_thresholds', prefix.with_suffix('.yaml'))
+
+    def test_registry_keeps_navigation_map_and_resumable_slam_session_as_separate_local_products(self):
+        prefix = map_output_prefix('R01', 'warehouse')
+        prefix.with_suffix('.pgm').write_bytes(b'P5\n1 1\n255\n\x00')
+        prefix.with_suffix('.yaml').write_text(
+            'image: warehouse.pgm\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n'
+            'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
+        posegraph = prefix.parent / 'warehouse_slam_session.posegraph'
+        session_data = prefix.parent / 'warehouse_slam_session.data'
+        posegraph.write_bytes(b'pose graph')
+        session_data.write_bytes(b'sensor data')
+        record = register_saved_map(
+            'R01', 'warehouse', prefix.with_suffix('.yaml'),
+            mapping_metadata={
+                'width': 1, 'height': 1, 'resolution': 0.05,
+                'known_cells': 1, 'unknown_cells': 0, 'free_cells': 1,
+                'occupied_cells': 0, 'explored_area_m2': 0.0025,
+                'mapping_session_id': 'session-1', 'map_version': 3,
+            },
+            slam_session={
+                'engine': 'SLAM_TOOLBOX', 'status': 'AVAILABLE',
+                'posegraph_path': str(posegraph), 'data_path': str(session_data),
+            },
+        )
+        self.assertEqual(record['map_kind'], 'SAVED_LOCAL_MAP')
+        self.assertFalse(record['canonical_map_promoted'])
+        self.assertEqual(record['navigation_artifacts'], {'yaml': True, 'image': True, 'image_format': '.pgm'})
+        self.assertEqual(record['slam_session_state']['status'], 'AVAILABLE')
+        self.assertEqual(record['known_cells'], 1)
+        self.assertEqual(record['explored_area_m2'], 0.0025)
+        self.assertNotIn('yaml_path', record)
+        self.assertNotIn('posegraph_path', record)
+        self.assertEqual(list_robot_maps('R01'), [record])
+        session_data.unlink()
+        rows = list_robot_maps('R01')
+        self.assertEqual(rows[0]['slam_session_state']['status'], 'MISSING')
+        self.assertTrue(get_robot_map('R01', record['id'])[1].is_file())
 
 
 class Vda5050ConfigurationTests(TestCase):
@@ -164,8 +213,18 @@ class LocalControlApiTests(TestCase):
         }
         self.old_runtime_mode = runtime.runtime_mode
         self.old_operation_mode = runtime.operation_mode
+        self.old_map_snapshots = runtime.robot_map_snapshots.copy()
+        self.old_mapping_sessions = runtime.robot_mapping_sessions.copy()
         runtime.runtime_mode = 'GAZEBO_ROS'
         runtime.operation_mode = 'MAPPING'
+        runtime.robot_mapping_sessions['R01'] = 'unit-session'
+        runtime.robot_map_snapshots['R01'] = {'map': {
+            'robot_id': 'R01', 'map_source': 'SLAM_TOOLBOX',
+            'mapping_session_id': 'unit-session', 'map_version': 3,
+            'width': 1, 'height': 1, 'resolution': 0.05,
+            'known_cells': 1, 'unknown_cells': 0, 'free_cells': 1,
+            'occupied_cells': 0, 'explored_area_m2': 0.0025,
+        }}
         self.bridge_patch = patch.object(runtime, 'robot_bridge_online', return_value=True)
         self.bridge_patch.start()
 
@@ -173,6 +232,8 @@ class LocalControlApiTests(TestCase):
         self.bridge_patch.stop()
         runtime.runtime_mode = self.old_runtime_mode
         runtime.operation_mode = self.old_operation_mode
+        runtime.robot_map_snapshots.clear(); runtime.robot_map_snapshots.update(self.old_map_snapshots)
+        runtime.robot_mapping_sessions.clear(); runtime.robot_mapping_sessions.update(self.old_mapping_sessions)
         runtime.local_map_overrides.clear()
         runtime.local_map_transitions.clear()
         runtime.robot_mapping_state.clear()
@@ -197,23 +258,60 @@ class LocalControlApiTests(TestCase):
         with tempfile.TemporaryDirectory() as tempdir, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tempdir)):
             def save_result(robot_id, operation, payload, timeout):
                 prefix = Path(payload['output_prefix'])
+                session_prefix = Path(payload['session_output_prefix'])
                 prefix.with_suffix('.pgm').write_bytes(b'P5\n1 1\n255\n\x00')
                 prefix.with_suffix('.yaml').write_text(
-                    f'image: {prefix.name}.pgm\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n', encoding='utf-8')
-                return {'ok': True, 'result': {'yaml_path': str(prefix.with_suffix('.yaml'))}}
+                    f'image: {prefix.name}.pgm\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n'
+                    'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
+                session_prefix.with_suffix('.posegraph').write_bytes(b'pose graph')
+                session_prefix.with_suffix('.data').write_bytes(b'sensor data')
+                return {'ok': True, 'result': {
+                    'yaml_path': str(prefix.with_suffix('.yaml')),
+                    'slam_session': {
+                        'engine': 'SLAM_TOOLBOX', 'status': 'AVAILABLE',
+                        'posegraph_path': str(session_prefix.with_suffix('.posegraph')),
+                        'data_path': str(session_prefix.with_suffix('.data')),
+                    },
+                }}
+            runtime.robot_mapping_state['R01'] = 'PAUSED'
             with patch('twin.local_control_views._bridge_request', side_effect=save_result) as request:
                 response = self.client.post('/api/robots/R01/local/maps/save',
                                             data=json.dumps({'name': 'floor_1'}), content_type='application/json')
                 self.assertEqual(response.status_code, 200, response.content)
                 self.assertTrue(Path(request.call_args.args[2]['output_prefix'] + '.yaml').is_file())
                 self.assertEqual(response.json()['map']['name'], 'floor_1')
+                self.assertEqual(response.json()['map']['slam_session_state']['status'], 'AVAILABLE')
+                self.assertFalse(response.json()['map']['canonical_map_promoted'])
+
+    def test_map_save_requires_stopped_mapping_and_current_session_map(self):
+        runtime.robot_mapping_state['R01'] = 'MAPPING'
+        with patch('twin.local_control_views._bridge_request') as request:
+            active = self.client.post('/api/robots/R01/local/maps/save',
+                                      data=json.dumps({'name': 'moving'}), content_type='application/json')
+        self.assertEqual(active.status_code, 409)
+        self.assertIn('stop mapping before saving', active.json()['detail'].lower())
+        request.assert_not_called()
+
+        runtime.robot_mapping_state['R01'] = 'PAUSED'
+        runtime.robot_map_snapshots['R01'] = {'map': {
+            'robot_id': 'R01', 'map_source': 'NAV2_MAP',
+            'mapping_session_id': 'stale-session', 'known_cells': 10,
+        }}
+        with patch('twin.local_control_views._bridge_request') as request:
+            stale = self.client.post('/api/robots/R01/local/maps/save',
+                                     data=json.dumps({'name': 'stale'}), content_type='application/json')
+        self.assertEqual(stale.status_code, 409)
+        self.assertIn('current slam toolbox session', stale.json()['detail'].lower())
+        request.assert_not_called()
 
     def test_load_map_and_initial_pose_route_to_the_robot_bridge(self):
         self.old_operation_mode = runtime.operation_mode
         with tempfile.TemporaryDirectory() as tempdir, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tempdir)):
             prefix = map_output_prefix('R01', 'floor')
             prefix.with_suffix('.pgm').write_bytes(b'P5\n100 100\n255\n' + bytes(10_000))
-            prefix.with_suffix('.yaml').write_text('image: floor.pgm\nresolution: 0.1\norigin: [-5, -5, 0]\n', encoding='utf-8')
+            prefix.with_suffix('.yaml').write_text(
+                'image: floor.pgm\nresolution: 0.1\norigin: [-5, -5, 0]\n'
+                'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
             map_record = register_saved_map('R01', 'floor', prefix.with_suffix('.yaml'))
             runtime.operation_mode = 'NAVIGATION'
             with patch('twin.local_control_views._bridge_request', side_effect=lambda _robot, _operation, payload, **_kwargs: {

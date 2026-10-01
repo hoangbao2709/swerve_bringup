@@ -50,6 +50,16 @@ export type LocalRobotMap = {
   width?: number;
   height?: number;
   image_sha256?: string;
+  map_id?: string;
+  map_kind?: "SAVED_LOCAL_MAP" | string;
+  canonical_map_promoted?: boolean;
+  known_cells?: number | null;
+  unknown_cells?: number | null;
+  free_cells?: number | null;
+  occupied_cells?: number | null;
+  explored_area_m2?: number | null;
+  slam_session_state?: { status: string; engine?: string; artifact_id?: string | null };
+  navigation_artifacts?: { yaml: boolean; image: boolean; image_format?: string };
 };
 
 export type LocalRuntimeModeStatus = {

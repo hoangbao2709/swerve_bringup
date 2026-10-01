@@ -362,16 +362,36 @@ def save_robot_map(request, robot_id: str):
         return problem
     if runtime.operation_mode != 'MAPPING':
         return _error('map save requires the active SLAM mapping runtime', 409)
+    if str(getattr(runtime, 'robot_mapping_state', {}).get(robot_id) or '').upper() != 'PAUSED':
+        return _error('stop mapping before saving so the accumulated map and serialized pose graph are consistent', 409)
     try:
         name = validate_map_name(_body(request).get('name'))
         prefix = map_output_prefix(robot_id, name)
     except ValueError as exc:
         return _error(str(exc))
-    if any(row.get('name') == name for row in list_robot_maps(robot_id)) or prefix.with_suffix('.yaml').exists():
+    session_prefix = prefix.parent / f'{prefix.name}_slam_session'
+    output_files = (
+        prefix.with_suffix('.yaml'), prefix.with_suffix('.pgm'),
+        session_prefix.with_suffix('.posegraph'), session_prefix.with_suffix('.data'),
+    )
+    if (any(row.get('name') == name for row in list_robot_maps(robot_id))
+            or any(path.exists() for path in output_files)):
         return _error('a map with this name already exists for this robot', 409)
+    saved_map = getattr(runtime, 'robot_map_snapshots', {}).get(robot_id, {})
+    mapping = saved_map.get('map') if isinstance(saved_map, dict) else None
+    session_id = str(getattr(runtime, 'robot_mapping_sessions', {}).get(robot_id) or '')
+    try:
+        known_cells = int((mapping or {}).get('known_cells') or 0)
+    except (TypeError, ValueError, OverflowError):
+        known_cells = 0
+    if (not isinstance(mapping, dict) or mapping.get('map_source') != 'SLAM_TOOLBOX'
+            or not session_id or mapping.get('mapping_session_id') != session_id
+            or known_cells <= 0):
+        return _error('save requires a live accumulated /map from the current SLAM Toolbox session', 409)
     try:
         result = _bridge_request(robot_id, 'MAP_SAVE', {
             'name': name, 'output_prefix': str(prefix),
+            'session_output_prefix': str(session_prefix),
         }, timeout=45.0)
     except Exception as exc:
         return _error(f'map saver request failed: {type(exc).__name__}', 502)
@@ -379,7 +399,12 @@ def save_robot_map(request, robot_id: str):
     if failure:
         return failure
     try:
-        record = register_saved_map(robot_id, name, prefix.with_suffix('.yaml'))
+        bridge_result = result.get('result') if isinstance(result.get('result'), dict) else {}
+        record = register_saved_map(
+            robot_id, name, prefix.with_suffix('.yaml'),
+            mapping_metadata=mapping,
+            slam_session=bridge_result.get('slam_session'),
+        )
     except FileExistsError as exc:
         return _error(str(exc), 409)
     except (OSError, ValueError) as exc:

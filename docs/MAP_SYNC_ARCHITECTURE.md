@@ -34,12 +34,13 @@
    `nav2_revision`, `tag_map_revision` or TF health participates in SYNCED.
 8. Map publish creates the artifact bundle atomically, but does not produce a
    Nav2 map or coordinate a runtime reload/acknowledgement sequence.
-9. Simulator encoder odometry starts in a local `odom` frame at `(0, 0, 0)`,
-   while the entity is spawned at its canonical warehouse pose. A live mapping
-   run showed SLAM scan matching could then shift `map -> odom`; the resulting
-   TF was not a trustworthy absolute warehouse pose. The simulation contract
-   now keeps SLAM's exploratory map on `/slam/map` and uses the canonical tag
-   localization pipeline as the sole `map -> odom` publisher.
+9. Historical simulated mapping combined a canonical spawn and local-origin
+   odometry, with V30E owning `map -> odom`; an exploratory SLAM grid was not
+   the `/map` consumed by the UI. The current `web-simulation` source instead
+   starts SLAM Toolbox as the mapping-mode `/map` and `map -> odom` authority,
+   while omitting the canonical map server and V30E/tag localization nodes.
+   Its sensor/TF contract is source- and readiness-tested; the resumed live
+   exploration/accumulation workflow still requires runtime acceptance.
 10. The V30E simulator and readiness gate depend on Gazebo's
     `/get_entity_state`, but generated worlds did not load the Gazebo ROS state
     plugin. Mapping startup therefore failed before it could prove a global
@@ -121,11 +122,30 @@ acknowledged loading. Missions are blocked otherwise; Emergency Stop is not.
   measurements correct the global estimator, whose initial map prior is the
   same revision's selected robot spawn. This avoids both zero-origin rejection
   and an assumption that raw odometry is already in `map`.
-- In simulated mapping, the canonical Nav2 map server owns `/map`; SLAM's
-  exploratory occupancy output is isolated on `/slam/map` with TF publishing
-  disabled. The V30E/global EKF is the sole simulation `map -> odom` publisher.
-  On a physical mapping setup, SLAM remains the owner of `/map` and
-  `map -> odom`.
+- In mapping mode, `slam.launch.py` starts `async_slam_toolbox_node` with
+  `/scan`, `map`/`odom`/`base_footprint`, 0.05 m resolution, scan matching and
+  loop closure enabled; its accumulated OccupancyGrid and `map -> odom` are
+  exposed as `/map` and TF. `system.launch.py` excludes map_server, V30E and
+  tag localization from both simulated mapping and the SLAM owner path. In
+  navigation mode, the saved/canonical map and selected localization owner
+  remain separate from SLAM mapping.
+- `/scan` is a display-only current-sensor overlay: the bridge samples valid
+  ranges and transforms them with tf2 to `map` at the scan timestamp. It never
+  adds scan points to the OccupancyGrid. Robot pose comes from TF `map ->
+  base_footprint`; the UI's bounded trajectory is likewise a visualization
+  layer. All four layers use one map/world-to-screen transform.
+- Map content hashing, statistics, zlib encoding, and Web payload preparation
+  run on an isolated bounded map worker. Only changed grid geometry/content
+  advances `map_version`; a cached compressed snapshot is available to a newly
+  connected Django consumer. The browser retains the prior same-session raster
+  while a new version is decoding and shares the bounded occupancy raster LRU.
+- Saving a stopped mapping session produces two separate local products: a
+  Nav2 YAML + image, and (for SLAM Toolbox) `/slam_toolbox/serialize_map`
+  pose-graph + sensor-data artifacts. Registry metadata reports those states
+  and exploration counts while withholding filesystem paths. The existing
+  `LOAD SAVED MAP INTO NAV2` action loads only the navigation artifact; it does
+  not claim to resume the separately serialized SLAM session. Canonical map
+  promotion remains separate.
 - The ROS bridge sends absolute robot position only after a fresh TF lookup of
   `map -> base_footprint`, falling back to `map -> base_link` only when the
   preferred frame cannot be looked up. `/odometry/filtered` contributes twist
@@ -183,12 +203,12 @@ be selected explicitly with `--allow-dev-world` (or
 `WARETWIN_ALLOW_DEV_WORLD=true`); explicit `--world`/`--map` are also treated
 as development assets and require that opt-in.
 
-Simulated mapping runs the canonical `map_server` to own `/map` and the tag
-localization nodes that own `map -> odom`; it does not run the Nav2 planner /
-navigation lifecycle. The occupancy map and tag inputs are still revision
-checked in mapping mode. Navigation additionally requires the active planner,
-controller, behavior-tree and waypoint lifecycle servers for navigation
-readiness.
+Mapping startup runs the SLAM point-cloud-to-scan pipeline and SLAM Toolbox;
+the live `/map` must be published by SLAM Toolbox alone, with no mapping-mode
+map_server or V30E/tag `map -> odom` owner. The readiness gate verifies actual
+SLAM parameters, `/map` ownership, scan/filtered-odometry frames and timestamped
+TF. Navigation additionally requires its selected map/localization and active
+planner, controller, behavior-tree and waypoint lifecycle servers.
 
 ## Troubleshooting
 

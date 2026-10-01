@@ -12,6 +12,7 @@ from swerve_bridge.web_map_renderer import (
     bounded_voxel_points,
     compress_occupancy_grid,
     laser_scan_xy,
+    occupancy_grid_statistics,
     path_length,
     point_xyz,
     quaternion_rotate_xyz,
@@ -33,6 +34,15 @@ def test_compressed_occupancy_grid_rejects_invalid_or_unbounded_data():
         compress_occupancy_grid([-2])
     with pytest.raises(ValueError, match='exceeds'):
         compress_occupancy_grid([0, 0, 0], max_cells=2)
+
+
+def test_occupancy_grid_statistics_separate_unknown_free_occupied_and_ambiguous():
+    assert occupancy_grid_statistics([-1, 0, 24, 25, 64, 65, 100]) == {
+        'known_cells': 6,
+        'occupied_cells': 2,
+        'free_cells': 2,
+        'ambiguous_cells': 2,
+    }
 
 
 def test_latest_frame_buffer_replaces_stale_unsent_frames_and_tracks_drops():

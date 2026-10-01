@@ -53,12 +53,12 @@ def generate_launch_description():
         "'false' if '", defer_nav2_start, "' == 'true' else 'true'"])
     mapping_mode = IfCondition(PythonExpression(["'", mode, "' == 'mapping'"]))
     navigation_mode = IfCondition(PythonExpression(["'", mode, "' == 'navigation'"]))
-    simulated_mapping_mode = IfCondition(PythonExpression([
-        "'", use_sim, "' == 'true' and '", mode, "' == 'mapping'"]))
+    simulated_navigation_mode = IfCondition(PythonExpression([
+        "'", use_sim, "' == 'true' and '", mode, "' == 'navigation'"]))
     require_canonical_map = ParameterValue(PythonExpression([
-        "'", use_sim, "' == 'true' or '", mode, "' == 'navigation'"]), value_type=bool)
+        "'", mode, "' == 'navigation'"]), value_type=bool)
     require_tag_map = ParameterValue(PythonExpression([
-        "'", use_sim, "' == 'true' or '", mode, "' == 'navigation'"]), value_type=bool)
+        "'", mode, "' == 'navigation'"]), value_type=bool)
     lidar_topic = LaunchConfiguration('real_lidar_topic')
     imu_topic = LaunchConfiguration('real_imu_topic')
     odom_topic = LaunchConfiguration('real_odom_topic')
@@ -242,10 +242,8 @@ def generate_launch_description():
                                    launch_arguments={
                                        'use_sim_time': use_sim_time, 'input_topic': lidar_topic,
                                        'start_slam': 'true',
-                                       'map_topic': PythonExpression([
-                                           "'/slam/map' if '", use_sim, "' == 'true' else '/map'"]),
-                                       'transform_publish_period': PythonExpression([
-                                           "'0.0' if '", use_sim, "' == 'true' else '0.02'"]),
+                                       'map_topic': '/map',
+                                       'transform_publish_period': '0.02',
                                    }.items(),
                                    condition=mapping_mode)
     # The point-cloud preprocessor and 2D projection are needed by Nav2 too.
@@ -268,10 +266,7 @@ def generate_launch_description():
                                'robot_id': robot_id,
                                'namespace': namespace,
                                'runtime_state': mode,
-                               'map_topic': PythonExpression([
-                                   "'/slam/map' if '", use_sim, "' == 'true' and '", mode,
-                                   "' == 'mapping' else '/map'",
-                               ]),
+                               'map_topic': '/map',
                                'django_token': LaunchConfiguration('bridge_token'),
                                'django_ws_url': LaunchConfiguration('bridge_ws_url'),
                                'artifact_root': artifact_root,
@@ -283,18 +278,6 @@ def generate_launch_description():
                                'map_sync_request_file': map_sync_request_file,
                                'require_nav2_map': require_canonical_map,
                                'require_tag_map': require_tag_map}])
-    mapping_map_server = Node(
-        package='nav2_map_server', executable='map_server', name='map_server', output='screen',
-        parameters=[{'use_sim_time': use_sim_time, 'yaml_filename': map_file}],
-        condition=simulated_mapping_mode,
-    )
-    mapping_map_lifecycle = Node(
-        package='nav2_lifecycle_manager', executable='lifecycle_manager',
-        name='lifecycle_manager_mapping_map', output='screen',
-        parameters=[{'use_sim_time': use_sim_time, 'autostart': True,
-                     'node_names': ['map_server']}],
-        condition=simulated_mapping_mode,
-    )
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2', output='screen',
         arguments=['-d', LaunchConfiguration('rviz_config')],
@@ -309,7 +292,7 @@ def generate_launch_description():
                           'initial_x': LaunchConfiguration('v30e_initial_x'),
                           'initial_y': LaunchConfiguration('v30e_initial_y'),
                           'initial_yaw': LaunchConfiguration('v30e_initial_yaw')}.items(),
-        condition=IfCondition(use_sim))
+        condition=simulated_navigation_mode)
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim', default_value='true', description='true=Gazebo, false=physical robot drivers'),
@@ -323,7 +306,7 @@ def generate_launch_description():
         DeclareLaunchArgument('v30e_initial_yaw', default_value='0.0'),
         DeclareLaunchArgument('use_sim_time', default_value='true', description='Use Gazebo clock; set false for real robot'),
         DeclareLaunchArgument('mode', default_value='mapping',
-                              description='Sim mapping uses canonical map + tag localization; real mapping uses SLAM; navigation uses canonical map + tag localization.'),
+                              description='Mapping uses SLAM Toolbox as the map->odom owner and publishes the accumulated map on /map. Navigation uses the selected saved/canonical map and simulation tag localization.'),
         DeclareLaunchArgument(
             'map_file',
             default_value=os.path.join(pkg, 'swerve_navigation', 'maps', 'warehouse.yaml'),
@@ -368,6 +351,6 @@ def generate_launch_description():
         DeclareLaunchArgument('tag_graph_file', default_value=os.path.join(pkg, 'config', 'tag_graph.yaml'),
                               description='Published tag graph YAML; package config is the development fallback'),
         mode_guard, map_guard, sim, real_driver, real_state_publisher, ekf,
-        v30e, slam, navigation_lidar, nav, mapping_map_server, mapping_map_lifecycle,
+        v30e, slam, navigation_lidar, nav,
         bridge, rviz,
     ])

@@ -78,6 +78,50 @@ def test_command_arbiter_readiness_requires_selected_topic_endpoints_and_owner_s
     assert not probe._command_arbiter_graph_ready()
 
 
+def test_mapping_authority_requires_slam_as_the_only_map_publisher(readiness_module):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.get_node_names_and_namespaces = lambda: [
+        ('slam_toolbox', '/'), ('ekf_filter_node', '/'), ('swerve_bridge', '/'),
+    ]
+    probe.get_publishers_info_by_topic = lambda topic: (
+        [SimpleNamespace(node_name='slam_toolbox')] if topic == '/map' else
+        [SimpleNamespace(node_name='slam_toolbox'), SimpleNamespace(node_name='ekf_filter_node')]
+    )
+    ok, detail = probe._mapping_runtime_authority()
+    assert ok
+    assert 'map=/map publisher=slam_toolbox' in detail
+
+    probe.get_node_names_and_namespaces = lambda: [
+        ('slam_toolbox', '/'), ('ekf_v30e', '/'),
+    ]
+    ok, detail = probe._mapping_runtime_authority()
+    assert not ok
+    assert 'ekf_v30e' in detail
+
+
+def test_mapping_readiness_sensor_rate_requires_real_receive_samples(readiness_module):
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    assert probe._sample_hz([1.0]) is None
+    assert probe._sample_hz([1.0, 1.1, 1.2]) == pytest.approx(10.0)
+
+
+def test_simulated_mapping_launch_uses_slam_map_and_disables_v30e_map_owner():
+    launch = ROOT / 'launch' / 'system.launch.py'
+    tree = ast.parse(launch.read_text(encoding='utf-8'))
+    source = launch.read_text(encoding='utf-8')
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+
+    assert 'simulated_navigation_mode' in names
+    assert 'simulated_mapping_mode' not in names
+    assert "'map_topic': '/map'" in source
+    assert "'transform_publish_period': '0.02'" in source
+    assert 'condition=simulated_navigation_mode' in source
+    assert 'mapping_map_server' not in names
+    assert 'mapping_map_lifecycle' not in names
+
+
 def test_controller_readiness_queries_only_after_launch_chain_and_at_low_rate(
     readiness_module, monkeypatch, capsys,
 ):

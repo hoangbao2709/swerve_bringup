@@ -62,6 +62,38 @@ class RealtimeDispatchTests(IsolatedAsyncioTestCase):
         cleanup.assert_awaited_once()
         consumer.connect.assert_awaited_once()
 
+    async def test_manual_only_connection_skips_visualization_registration(self):
+        from unittest.mock import AsyncMock, patch
+        consumer = TwinConsumer()
+        consumer.scope = {'query_string': b'token=valid&control_only=1'}
+        consumer.accept = AsyncMock()
+        consumer.send_json = AsyncMock()
+        with patch('twin.consumers.resolve_user', new_callable=AsyncMock,
+                   return_value=object()):
+            await consumer.connect()
+        self.assertTrue(consumer.control_only)
+        consumer.accept.assert_awaited_once()
+        consumer.send_json.assert_awaited_once_with({'type': 'ROBOT_MANUAL_CHANNEL_READY'})
+        self.assertFalse(hasattr(consumer, 'visualization_outbox'))
+
+    async def test_manual_only_connection_rejects_non_manual_frames(self):
+        from unittest.mock import AsyncMock, patch
+        consumer = TwinConsumer()
+        consumer.control_only = True
+        consumer.scope = {'waretwin_user': object()}
+        consumer._message_window_started = 0.
+        consumer._message_window_count = 0
+        consumer.send_json = AsyncMock()
+        with patch('twin.consumers.runtime.handle_message', new_callable=AsyncMock) as route:
+            await consumer.receive_json({'type': 'ROBOT_MODE', 'robot_id': 'R01', 'mode': 'MANUAL'})
+            consumer.send_json.assert_awaited_once_with({
+                'type': 'ERROR', 'code': 'CONTROL_CHANNEL_RESTRICTED',
+                'message': 'manual-only channel accepts ROBOT_MANUAL frames',
+            })
+            route.assert_not_awaited()
+            await consumer.receive_json({'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'STOP'})
+            route.assert_awaited_once()
+
     async def test_manual_frame_keeps_original_receive_validation(self):
         from unittest.mock import AsyncMock, patch
         consumer = TwinConsumer()

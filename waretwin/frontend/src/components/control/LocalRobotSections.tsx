@@ -14,9 +14,9 @@ import {
   type LocalRuntimeModeStatus,
   type Vda5050Configuration,
 } from "../../services/api";
-import type { RobotDetailError, RobotDetailMapSnapshot, RobotLidarStreamDiagnostics, RobotSystemDiagnostics, RobotState } from "../../schema/twin_state";
+import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
-import { decodeOccupancyGrid } from "./occupancyGrid";
+import { occupancyRasters } from "./occupancyRaster";
 
 type SectionName = "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type Pose = { x: number; y: number; yaw: number };
@@ -25,6 +25,7 @@ type Props = {
   robotId: string;
   robot?: RobotState;
   mapSnapshot: RobotDetailMapSnapshot | null;
+  scan: RobotDetailScan | null;
   diagnostics: RobotSystemDiagnostics | null;
   errors: RobotDetailError[];
   controlOnline: boolean;
@@ -36,6 +37,7 @@ type Props = {
   activeLocalMapId: string | null;
   activeLocalMapRevision: string | null;
   localMapSyncStatus: string | null;
+  mappingSessionId?: string | null;
   lidarStreamDiagnostics: RobotLidarStreamDiagnostics | null;
 };
 
@@ -79,7 +81,7 @@ export function LocalRobotSection(props: Props) {
   return <DiagnosticsPanel {...props} />;
 }
 
-function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode, runtimeState }: Props) {
+function MappingPanel({ robotId, robot, mapSnapshot, scan, diagnostics, controlOnline, controlMode, runtimeState, mappingSessionId }: Props) {
   const [maps, setMaps] = useState<LocalRobotMap[]>([]);
   const [selected, setSelected] = useState("");
   const [name, setName] = useState("");
@@ -91,6 +93,14 @@ function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode,
   const [notice, setNotice] = useState("");
   const [operationState, setOperationState] = useState("READY");
   const [modeTransition, setModeTransition] = useState<LocalRuntimeModeStatus | null>(null);
+  const [trajectory, setTrajectory] = useState<RobotWorldPoint[]>([]);
+  const [layers, setLayers] = useState({ robot: true, scan: true, trajectory: true, grid: false });
+  const trajectoryRef = useRef<{ mapId: string; points: RobotWorldPoint[]; lastAt: number }>({ mapId: "", points: [], lastAt: 0 });
+
+  const slamMap = runtimeState === "MAPPING" && mapSnapshot?.robot_id === robotId
+    && mapSnapshot?.map_source === "SLAM_TOOLBOX"
+    && (!mappingSessionId || mapSnapshot.mapping_session_id === mappingSessionId) ? mapSnapshot : null;
+  const mapping = diagnostics?.mapping;
 
   const refresh = useCallback(async () => {
     const result = await getLocalRobotMaps(robotId);
@@ -150,7 +160,7 @@ function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode,
   );
 
   const switchRuntimeMode = async () => {
-    const target = runtimeState === "MAPPING" ? "NAVIGATION" : "MAPPING";
+    const target = "NAVIGATION";
     if (!window.confirm(`Switch ${robotId} to ${target}? The selected runtime adapter will transition SLAM/Nav2 after a stopped MANUAL handoff.`)) return;
     setBusy(true); setError(""); setNotice("");
     try {
@@ -163,52 +173,110 @@ function MappingPanel({ robotId, robot, mapSnapshot, controlOnline, controlMode,
 
   const isMapping = runtimeState === "MAPPING";
   const paused = mappingState === "PAUSED";
+  const startMapping = async () => {
+    if (isMapping) {
+      changeMapping("start");
+      return;
+    }
+    if (!window.confirm(`Start a fresh SLAM Toolbox mapping session for ${robotId}? The runtime supervisor will switch modes after the MANUAL handoff.`)) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const result = await requestLocalRuntimeMode(robotId, "MAPPING");
+      setModeTransition({ robot_id: robotId, request_id: result.request_id, mode: "MAPPING", status: result.status, message: result.message });
+      setNotice("MAPPING START REQUESTED · waiting for SLAM Toolbox and mapping readiness");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Mapping runtime was not accepted"); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => {
+    const mapId = `${robotId}:${slamMap?.active_map_id ?? "waiting"}`;
+    if (trajectoryRef.current.mapId === mapId) return;
+    trajectoryRef.current = { mapId, points: [], lastAt: 0 };
+    setTrajectory([]);
+  }, [robotId, slamMap?.active_map_id]);
+  useEffect(() => {
+    if (!slamMap || !robot || !isMapping || paused || !mapping?.tf_valid) return;
+    const x = Number(robot.position?.[0]);
+    const y = Number(robot.position?.[2]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const current = trajectoryRef.current;
+    const previous = current.points[current.points.length - 1];
+    const now = Date.now();
+    if (previous && Math.hypot(x - previous[0], y - previous[1]) < 0.10 && now - current.lastAt < 2000) return;
+    const points = [...current.points, [x, y] as RobotWorldPoint].slice(-500);
+    trajectoryRef.current = { ...current, points, lastAt: now };
+    setTrajectory(points);
+  }, [isMapping, mapping?.tf_valid, paused, robot?.position?.[0], robot?.position?.[2], slamMap?.active_map_id]);
   return <SectionFrame>
     <SectionPanel title="MAPPING SESSION" className="local-mapping-state">
       <div className="local-status-grid">
         <Metric label="ROBOT" value={robotId} mono />
         <Metric label="RUNTIME MODE" value={runtimeState} />
         <Metric label="MAPPING STATE" value={isMapping ? mappingState : "INACTIVE · NAVIGATION MODE"} />
+        <Metric label="SLAM TOOLBOX" value={mapping?.slam_state ?? "UNKNOWN"} />
+        <Metric label="LIVE LIDAR · /scan" value={mapping?.scan_live ? `LIVE · ${valueNumber(mapping.scan_hz, 2, " Hz")} · ${mapping.scan_frame ?? "frame unknown"}` : "WAITING"} />
+        <Metric label="ODOMETRY" value={mapping?.odom_live ? `LIVE · ${valueNumber(mapping.odom_hz, 2, " Hz")} · ${mapping.odom_frame ?? "?"} → ${mapping.base_frame ?? "?"}` : "WAITING"} />
+        <Metric label="TF · map ← lidar" value={mapping?.tf_lidar_to_map_valid ? "OK" : mapping?.tf_error ?? "WAITING / INVALID"} />
+        <Metric label="ACCUMULATED /map" value={mapping?.map_live && slamMap ? "LIVE · SLAM TOOLBOX" : "WAITING FOR SLAM MAP"} />
+        <Metric label="MAP UPDATE RATE" value={mapping?.map_live ? `${valueNumber(mapping.map_hz, 2, " Hz")} · v${slamMap?.map_version ?? mapping.map_version ?? "—"}` : "WAITING"} />
+        <Metric label="MAP → ODOM OWNER" value={mapping?.map_odom_owner ?? "UNVERIFIED"} />
         <Metric label="WORKFLOW STATE" value={operationState} mono />
         <Metric label="SESSION DURATION" value={`${valueNumber(mappingDuration, 1, " s")}${isMapping && !paused ? " · LIVE" : ""}`} mono />
-        <Metric label="MAP SIZE" value={mapSnapshot ? `${mapSnapshot.width} × ${mapSnapshot.height} cells` : "WAITING FOR MAP"} mono />
-        <Metric label="RESOLUTION" value={valueNumber(mapSnapshot?.resolution, 3, " m/cell")} mono />
-        <Metric label="ACTIVE LOCAL MAP" value={activeLocalMapId ? `${activeLocalMapId} · r${mapSnapshot?.active_map_revision ?? "—"}` : "CANONICAL"} mono />
+        <Metric label="MAP SIZE" value={slamMap ? `${slamMap.width} × ${slamMap.height} cells` : "WAITING FOR SLAM MAP"} mono />
+        <Metric label="RESOLUTION" value={valueNumber(slamMap?.resolution, 3, " m/cell")} mono />
+        <Metric label="MAP ORIGIN" value={slamMap ? `${valueNumber(slamMap.origin.x, 2)}, ${valueNumber(slamMap.origin.y, 2)} m` : "—"} mono />
+        <Metric label="KNOWN / EXPLORED CELLS" value={slamMap?.known_cells ?? "—"} mono />
+        <Metric label="UNKNOWN CELLS" value={slamMap?.unknown_cells ?? "—"} mono />
+        <Metric label="OCCUPIED CELLS" value={slamMap?.occupied_cells ?? "—"} mono />
+        <Metric label="FREE CELLS" value={slamMap?.free_cells ?? "—"} mono />
+        <Metric label="EXPLORED AREA" value={valueNumber(slamMap?.explored_area_m2, 2, " m²")} mono />
+        <Metric label="ROBOT POSE · TF map → base" value={robot ? `${valueNumber(robot.position[0], 2)}, ${valueNumber(robot.position[2], 2)} m · ${valueNumber(robot.heading, 2)} rad` : "WAITING"} mono />
+        <Metric label="ACTIVE MAP" value={activeLocalMapId ? `${activeLocalMapId} · r${slamMap?.active_map_revision ?? "—"}` : isMapping ? `${slamMap?.active_map_id ?? "SLAM SESSION WAITING"} · LOCAL ONLY` : "CANONICAL"} mono />
+        <Metric label="TRAJECTORY SAMPLES" value={trajectory.length} mono />
         <Metric label="AVAILABLE MAPS" value={maps.length} mono />
       </div>
       <div className="local-action-row">
-        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !["READY", "ROLLED_BACK", "ERROR"].includes(modeTransition?.status ?? "")} onClick={() => void switchRuntimeMode()}>{runtimeState === "MAPPING" ? "SWITCH TO NAVIGATION" : "START MAPPING MODE"}</button>
-        <button type="button" className="robot-console-primary" disabled={!controlOnline || !isMapping || busy || mappingState === "MAPPING"} onClick={() => changeMapping("start")}>{paused ? "RESUME MAPPING" : "START MAPPING"}</button>
+        {isMapping && <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !["READY", "ROLLED_BACK", "ERROR"].includes(modeTransition?.status ?? "")} onClick={() => void switchRuntimeMode()}>SWITCH TO NAVIGATION</button>}
+        <button type="button" className="robot-console-primary" disabled={!controlOnline || controlMode !== "MANUAL" || busy || (isMapping && mappingState === "MAPPING")} onClick={() => void startMapping()}>{isMapping && mappingState === "MAPPING" ? "MAPPING ACTIVE" : paused ? "RESUME MAPPING" : "START MAPPING"}</button>
         <button type="button" disabled={!controlOnline || !isMapping || busy || paused} onClick={() => changeMapping("stop")}>STOP MAPPING</button>
         <span className="local-help">The runtime adapter owns SLAM/Nav2 transitions. Confirmed runtime state is shown only after backend/ROS acknowledgement.</span>
       </div>
       {modeTransition && modeTransition.status !== "READY" && <div className={`local-feedback ${["ERROR", "ROLLED_BACK"].includes(modeTransition.status) ? "error" : "warning"}`} role="status">MODE TRANSITION · {modeTransition.status} · {modeTransition.message ?? "waiting for runtime readiness"}</div>}
     </SectionPanel>
-    <SectionPanel title="SAVE NAV2 MAP">
+    <SectionPanel title="SAVE NAVIGATION MAP + SLAM SESSION">
       <div className="local-form-row">
         <label className="local-field local-field-grow"><span>MAP NAME</span><input value={name} maxLength={64} onChange={(event) => setName(event.target.value)} placeholder="warehouse_floor_1" /></label>
-        <button type="button" className="robot-console-primary" disabled={!controlOnline || !isMapping || busy || !name.trim()} onClick={save}>SAVE MAP</button>
+        <button type="button" className="robot-console-primary" disabled={!controlOnline || !isMapping || !paused || !slamMap || busy || !name.trim()} onClick={save}>SAVE MAP</button>
       </div>
-      <p className="local-help">SLAM Toolbox saves the live occupancy grid. The backend registers the map only after its YAML and image files exist.</p>
+      <p className="local-help">Stop Mapping first. Save creates Nav2 YAML + PGM and SLAM Toolbox pose-graph + sensor-data files as separate products. The registry exposes opaque IDs, not disk paths. This remains a local saved map and never promotes or overwrites the canonical Fleet map.</p>
     </SectionPanel>
     <SectionPanel title="AVAILABLE MAPS · THIS ROBOT">
       {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list">
         {maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
-          <span><b>{map.name}</b><small>{map.created_at} · {map.resolution.toFixed(3)} m/cell</small></span>
+          <span><b>{map.name}</b><small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
           <small>r{map.revision}</small>
         </button>)}
       </div>}
       <div className="local-action-row">
-        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || runtimeState !== "NAVIGATION" || busy || !selected} onClick={load}>LOAD MAP INTO NAV2</button>
+        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || runtimeState !== "NAVIGATION" || busy || !selected} onClick={load}>LOAD SAVED MAP INTO NAV2</button>
         {activeLocalMapId && <Status value="LOCAL_ONLY · LOCAL NAVIGATION ENABLED" />}
       </div>
-      <p className="local-help">Loading changes this robot’s live Nav2 map. Local navigation may use it immediately after /map confirmation; Fleet missions remain tied to the canonical warehouse map.</p>
+      <p className="local-help">This loads only the navigation YAML + image into map_server. It does not resume the separately saved SLAM Toolbox pose graph; Fleet missions remain tied to the canonical warehouse map.</p>
     </SectionPanel>
-    <SectionPanel title="LIVE MAP PREVIEW">
-      {mapSnapshot ? <PosePickerMap map={mapSnapshot} robot={robot} pose={{
+    <SectionPanel title="ACCUMULATED SLAM MAP · /map + CURRENT /scan">
+      <div className="local-map-toggles" role="group" aria-label="Mapping map layers">
+        {(["robot", "scan", "trajectory", "grid"] as const).map((layer) => <button
+          key={layer} type="button" aria-pressed={layers[layer]} className={layers[layer] ? "is-active" : ""}
+          onClick={() => setLayers((current) => ({ ...current, [layer]: !current[layer] }))}>
+          {layers[layer] ? "✓ " : "□ "}{layer.toUpperCase()}
+        </button>)}
+      </div>
+      {slamMap ? <PosePickerMap map={slamMap} robot={robot}
+        scan={scan?.robot_id === robotId && scan.mapping_session_id === slamMap.mapping_session_id ? scan : null}
+        showRobot={layers.robot} showScan={layers.scan} showGrid={layers.grid} showPose={false}
+        trajectory={layers.trajectory ? trajectory : []} pose={{
         x: Number(robot?.position?.[0] ?? 0), y: Number(robot?.position?.[2] ?? 0),
         yaw: Number(robot?.heading ?? 0),
-      }} active={false} onPick={() => undefined} /> : <div className="local-empty">Waiting for the selected robot’s ROS occupancy grid.</div>}
+      }} active={false} onPick={() => undefined} /> : <div className="local-empty">Waiting for a fresh accumulated SLAM Toolbox /map. Live LiDAR frames are sensor views and are not the warehouse map.</div>}
     </SectionPanel>
     {error && <div className="local-feedback error" role="alert">{error}</div>}
     {notice && <div className="local-feedback ok" role="status">{notice}</div>}
@@ -271,40 +339,28 @@ function LocalizationPanel({ robotId, robot, mapSnapshot, controlOnline, localiz
   </SectionFrame>;
 }
 
-type MapProps = { map: RobotDetailMapSnapshot; robot?: RobotState; pose: Pose; active: boolean; onPick: (point: Pick<Pose, "x" | "y">) => void };
-function PosePickerMap({ map, robot, pose, active, onPick }: MapProps) {
+type MapProps = { map: RobotDetailMapSnapshot; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; pose: Pose; active: boolean; onPick: (point: Pick<Pose, "x" | "y">) => void };
+function PosePickerMap({ map, robot, scan = null, trajectory = [], showRobot = true, showScan = true, showGrid = false, showPose = true, pose, active, onPick }: MapProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [occupancy, setOccupancy] = useState<Int8Array | null>(null);
+  const [rasterState, setRasterState] = useState<{ map: RobotDetailMapSnapshot; raster: HTMLCanvasElement } | null>(() => {
+    const raster = occupancyRasters.peek(map);
+    return raster ? { map, raster } : null;
+  });
   useEffect(() => {
     let cancelled = false;
-    setOccupancy(null);
-    void decodeOccupancyGrid(map).then((values) => {
-      if (!cancelled) setOccupancy(values);
+    const cached = occupancyRasters.peek(map);
+    if (cached) setRasterState({ map, raster: cached });
+    else setRasterState((previous) => previous?.map.robot_id === map.robot_id
+      && previous.map.active_map_id === map.active_map_id ? previous : null);
+    void occupancyRasters.get(map).then((raster) => {
+      if (!cancelled && raster) setRasterState({ map, raster });
     });
     return () => { cancelled = true; };
   }, [map]);
-  const raster = useMemo(() => {
-    if (typeof document === "undefined" || !occupancy) return null;
-    const canvas = document.createElement("canvas");
-    canvas.width = map.width; canvas.height = map.height;
-    const context = canvas.getContext("2d");
-    if (!context) return null;
-    const image = context.createImageData(map.width, map.height);
-    for (let row = 0; row < map.height; row += 1) for (let column = 0; column < map.width; column += 1) {
-      const value = occupancy[row * map.width + column];
-      const index = ((map.height - row - 1) * map.width + column) * 4;
-      if (value < 0) { image.data[index + 3] = 0; continue; }
-      const wall = value >= 65;
-      image.data[index] = wall ? 226 : 35;
-      image.data[index + 1] = wall ? 92 : 75;
-      image.data[index + 2] = wall ? 92 : 99;
-      image.data[index + 3] = wall ? 230 : 105;
-    }
-    context.putImageData(image, 0, 0);
-    return canvas;
-  }, [map, occupancy]);
+  const raster = rasterState?.raster ?? null;
+  const rasterMap = rasterState?.map ?? map;
   const bounds = useMemo<WorldBounds>(() => {
     const yaw = map.origin.yaw;
     const width = map.width * map.resolution, height = map.height * map.resolution;
@@ -333,23 +389,59 @@ function PosePickerMap({ map, robot, pose, active, onPick }: MapProps) {
     const context = canvas.getContext("2d"); if (!context) return;
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.fillStyle = "#07101c"; context.fillRect(0, 0, size.width, size.height);
+    if (showGrid) drawMappingGrid(context, size.width, size.height, transform, bounds);
     if (raster) {
-      const origin = worldToScreen({ x: map.origin.x, y: map.origin.y }, transform);
-      context.save(); context.translate(origin.x, origin.y); context.rotate(-map.origin.yaw);
-      context.scale(transform.scale * map.resolution, -transform.scale * map.resolution);
-      context.imageSmoothingEnabled = false; context.drawImage(raster, 0, -map.height); context.restore();
+      const origin = worldToScreen({ x: rasterMap.origin.x, y: rasterMap.origin.y }, transform);
+      context.save(); context.translate(origin.x, origin.y); context.rotate(-rasterMap.origin.yaw);
+      context.scale(transform.scale * rasterMap.resolution, -transform.scale * rasterMap.resolution);
+      context.imageSmoothingEnabled = false; context.drawImage(raster, 0, -rasterMap.height); context.restore();
     }
-    if (robot) drawPose(context, transform, robot.position[0], robot.position[2], robot.heading, "#42dfd2");
-    drawPose(context, transform, pose.x, pose.y, pose.yaw, "#f6cf4f");
+    if (trajectory.length > 1) {
+      context.beginPath();
+      trajectory.forEach(([x, y], index) => {
+        const point = worldToScreen({ x, y }, transform);
+        if (index === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
+      });
+      context.strokeStyle = "#f5a64a"; context.lineWidth = 2; context.globalAlpha = 0.85; context.stroke(); context.globalAlpha = 1;
+    }
+    const currentRobot = robot?.id === map.robot_id ? robot : undefined;
+    if (showScan && scan?.frame_id === map.frame_id) {
+      const origin = scan.sensor_pose ?? (currentRobot ? { x: currentRobot.position[0], y: currentRobot.position[2], yaw: currentRobot.heading } : null);
+      context.fillStyle = "#27e0d0"; context.strokeStyle = "rgba(39,224,208,.16)"; context.lineWidth = 1;
+      if (origin) {
+        const center = worldToScreen({ x: origin.x, y: origin.y }, transform);
+        context.beginPath();
+        for (const [x, y] of scan.points) { const p = worldToScreen({ x, y }, transform); context.moveTo(center.x, center.y); context.lineTo(p.x, p.y); }
+        context.stroke();
+      }
+      for (const [x, y] of scan.points) { const p = worldToScreen({ x, y }, transform); context.fillRect(p.x - 1.5, p.y - 1.5, 3, 3); }
+    }
+    if (showRobot && currentRobot) drawPose(context, transform, currentRobot.position[0], currentRobot.position[2], currentRobot.heading, "#42dfd2");
+    if (showPose) drawPose(context, transform, pose.x, pose.y, pose.yaw, "#f6cf4f");
     context.fillStyle = "#8aa4bf"; context.font = "10px JetBrains Mono, monospace";
     context.fillText(active ? "CLICK TO SET XY · YAW CONTROLS BELOW" : "MAP FRAME · METRES", 10, size.height - 10);
-  }, [active, map, pose, raster, robot, size, transform]);
+  }, [active, bounds, map, pose, raster, rasterMap, robot, scan, showGrid, showPose, showRobot, showScan, size, trajectory, transform]);
   const click = (event: MouseEvent<HTMLCanvasElement>) => {
     if (!active) return;
     const rect = event.currentTarget.getBoundingClientRect();
     onPick(screenToWorld({ x: event.clientX - rect.left, y: event.clientY - rect.top }, transform));
   };
   return <div ref={hostRef} className={`local-pose-map ${active ? "is-picking" : ""}`}><canvas ref={canvasRef} onClick={click} aria-label="Select map frame initial robot position" /></div>;
+}
+
+function drawMappingGrid(context: CanvasRenderingContext2D, width: number, height: number, transform: ReturnType<typeof createWorldTransform>, bounds: WorldBounds) {
+  context.save(); context.strokeStyle = "rgba(83,125,158,.24)"; context.lineWidth = 1;
+  const step = 1;
+  for (let x = Math.ceil(bounds.minX / step) * step; x <= bounds.maxX; x += step) {
+    const a = worldToScreen({ x, y: bounds.minY }, transform), b = worldToScreen({ x, y: bounds.maxY }, transform);
+    context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
+  }
+  for (let y = Math.ceil(bounds.minY / step) * step; y <= bounds.maxY; y += step) {
+    const a = worldToScreen({ x: bounds.minX, y }, transform), b = worldToScreen({ x: bounds.maxX, y }, transform);
+    context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
+  }
+  context.fillStyle = "#6b89a5"; context.font = "9px JetBrains Mono, monospace";
+  context.fillText("GRID · 1 m", 10, height - 10); context.restore(); void width;
 }
 
 function drawPose(context: CanvasRenderingContext2D, transform: ReturnType<typeof createWorldTransform>, x: number, y: number, yaw: number, color: string) {

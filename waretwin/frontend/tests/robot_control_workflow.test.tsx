@@ -33,6 +33,7 @@ vi.mock("../src/services/api", () => ({
   testVda5050Connection: vi.fn(() => Promise.resolve({ ok: true, latency_ms: 12, broker: "broker.local:1883" })),
 }));
 vi.mock("../src/services/ws", () => ({
+  WS_URL: "ws://127.0.0.1:8001/ws",
   wsSend: vi.fn(() => true), wsManualCommand: vi.fn(() => true), wsSetRobotMode: vi.fn(() => true),
 }));
 vi.mock("../src/components/control/RobotLidarViews", async () => {
@@ -173,6 +174,39 @@ describe("robot detail route stability", () => {
       expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
     }
   });
+  it("routes manual hold refresh through the dedicated worker and stops it on release", async () => {
+    const postMessage = vi.fn();
+    const terminate = vi.fn();
+    const constructWorker = vi.fn();
+    class FakeWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: ErrorEvent) => void) | null = null;
+      postMessage = postMessage;
+      terminate = terminate;
+      constructor(url: URL, options: WorkerOptions) { constructWorker(url, options); }
+    }
+    vi.stubGlobal("Worker", FakeWorker);
+    useStore.setState({ authToken: "test-access-token" });
+    setOnlineRobot();
+    vi.mocked(wsManualCommand).mockClear();
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { await settleUi(); });
+    expect(constructWorker).toHaveBeenCalledWith(expect.any(URL), { type: "module" });
+    expect(postMessage).toHaveBeenCalledWith({ type: "CONNECT", url: "ws://127.0.0.1:8001/ws", token: "test-access-token" });
+
+    const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
+    const down = new Event("pointerdown", { bubbles: true });
+    Object.defineProperty(down, "pointerId", { value: 42 });
+    act(() => forward.dispatchEvent(down));
+    expect(postMessage).toHaveBeenCalledWith({ type: "HOLD", robot_id: "R01", action: "FORWARD" });
+    act(() => forward.dispatchEvent(new Event("pointerup", { bubbles: true })));
+    expect(postMessage).toHaveBeenCalledWith({ type: "STOP", robot_id: "R01" });
+    expect(wsManualCommand).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(postMessage).toHaveBeenCalledWith({ type: "DISCONNECT", robot_id: "R01" });
+  });
   it("renders the direct URL with null map/scan and disables manual motion while disconnected", () => {
     useStore.setState({ twin: null as never, rosDiagnostics: null, rosConnected: false, websocketState: "DISCONNECTED", robotDetail: {} });
     renderNode(<RobotControlDetailPage robotId="R01" />);
@@ -221,7 +255,7 @@ describe("robot detail route stability", () => {
     const mappingTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.textContent === "MAPPING");
     await act(async () => { (mappingTab as HTMLElement).click(); });
     expect(container.textContent).toContain("MAPPING SESSION");
-    expect(container.textContent).toContain("SAVE NAV2 MAP");
+    expect(container.textContent).toContain("SAVE NAVIGATION MAP + SLAM SESSION");
     const vdaTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.textContent === "VDA5050");
     await act(async () => { (vdaTab as HTMLElement).click(); });
     expect(container.textContent).toContain("VDA5050 CONFIGURATION");
@@ -312,6 +346,12 @@ describe("robot detail route stability", () => {
 
   it("runs the mapping lifecycle and routes save/list/load to robot-scoped APIs", async () => {
     setOnlineRobot("MAPPING");
+    useStore.getState().setRobotDetail("R01", { map: {
+      robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX",
+      mapping_session_id: "session-ui", active_map_id: "SLAM-session-ui",
+      active_map_revision: "revision-1", width: 10, height: 10, resolution: 0.05,
+      origin: { x: 0, y: 0, yaw: 0 }, data: Array(100).fill(-1), known_cells: 1,
+    } });
     let mappingState = "MAPPING";
     let maps: LocalRobotMap[] = [];
     const savedMap: LocalRobotMap = {
@@ -344,9 +384,6 @@ describe("robot detail route stability", () => {
     await act(async () => { buttonNamed("STOP MAPPING")?.click(); await settleUi(); });
     expect(api.setMappingState).toHaveBeenCalledWith("R01", "stop");
     expect(container.textContent).toContain("MAPPING PAUSED");
-    await act(async () => { buttonNamed("RESUME MAPPING")?.click(); await settleUi(); });
-    expect(api.setMappingState).toHaveBeenCalledWith("R01", "start");
-
     const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="warehouse_floor_1"]');
     expect(nameInput).toBeTruthy();
     await act(async () => {
@@ -357,13 +394,16 @@ describe("robot detail route stability", () => {
     expect(container.textContent).toContain("floor_1");
     expect(container.querySelector(".local-map-row")?.textContent).toContain("floor_1");
 
+    await act(async () => { buttonNamed("RESUME MAPPING")?.click(); await settleUi(); });
+    expect(api.setMappingState).toHaveBeenCalledWith("R01", "start");
+
     act(() => useStore.setState({ runtimeState: "NAVIGATION" }));
     let finishLoad!: (value: Awaited<ReturnType<typeof api.loadLocalRobotMap>>) => void;
     const pendingLoad = new Promise<Awaited<ReturnType<typeof api.loadLocalRobotMap>>>((resolve) => {
       finishLoad = resolve;
     });
     vi.mocked(api.loadLocalRobotMap).mockReturnValueOnce(pendingLoad);
-    await act(async () => { buttonNamed("LOAD MAP INTO NAV2")?.click(); await settleUi(); });
+    await act(async () => { buttonNamed("LOAD SAVED MAP INTO NAV2")?.click(); await settleUi(); });
     expect(api.loadLocalRobotMap).toHaveBeenCalledWith("R01", "local-map-1");
     expect(container.textContent).toContain("LOADING");
     await act(async () => {
@@ -377,9 +417,78 @@ describe("robot detail route stability", () => {
     expect(container.textContent).toContain("MAP LOADED");
 
     vi.mocked(api.loadLocalRobotMap).mockRejectedValueOnce(new Error("map_server rejected map"));
-    await act(async () => { buttonNamed("LOAD MAP INTO NAV2")?.click(); await settleUi(); });
+    await act(async () => { buttonNamed("LOAD SAVED MAP INTO NAV2")?.click(); await settleUi(); });
     expect(container.textContent).toContain("map_server rejected map");
     expect(container.textContent).toContain("ERROR");
+  });
+
+  it("does not present a cached Nav2/canonical grid as the accumulated SLAM map", async () => {
+    setOnlineRobot("MAPPING");
+    useStore.getState().setRobotDetail("R01", { map: {
+      robot_id: "R01", frame_id: "map", map_source: "NAV2_MAP",
+      width: 1, height: 1, resolution: 0.05, origin: { x: 0, y: 0, yaw: 0 }, data: [100],
+    } });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { buttonNamed("MAPPING")?.click(); await Promise.resolve(); });
+
+    expect(container.textContent).toContain("Waiting for a fresh accumulated SLAM Toolbox /map");
+    expect(container.querySelector('[aria-label="Select map frame initial robot position"]')).toBeNull();
+  });
+
+  it("shows separate accumulated SLAM, transformed scan, TF robot and bounded trajectory layers", async () => {
+    setOnlineRobot("MAPPING");
+    useStore.getState().setRobotDetail("R01", {
+      map: {
+        robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX",
+        mapping_session_id: "session-1", active_map_id: "SLAM-session-1",
+        active_map_revision: "rev-1", map_version: 1,
+        width: 2, height: 2, resolution: 0.05, origin: { x: -1, y: -1, yaw: 0 },
+        known_cells: 2, unknown_cells: 2, free_cells: 1, occupied_cells: 1,
+        explored_area_m2: 0.005, data: [-1, 0, 100, -1],
+      },
+      scan: {
+        robot_id: "R01", topic: "/scan", source_frame_id: "lidar_link", frame_id: "map",
+        mapping_session_id: "session-1",
+        sensor_pose: { x: 0.1, y: 0.2, yaw: 0.3 }, timestamp: new Date().toISOString(),
+        angle_min: 0, angle_max: 1, angle_increment: 0.5,
+        range_min: 0.1, range_max: 10, point_count: 1, points: [[1, 2]],
+      },
+      diagnostics: { robot_id: "R01", mapping: {
+        slam_state: "ACTIVE", mapping_session_id: "session-1", scan_live: true, scan_hz: 5, scan_frame: "lidar_link",
+        odom_live: true, odom_hz: 10, odom_frame: "odom", base_frame: "base_footprint",
+        tf_valid: true, tf_lidar_to_map_valid: true, map_live: true, map_hz: 0.5,
+        map_width_cells: 2, map_height_cells: 2, map_version: 1,
+      } },
+    });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { buttonNamed("MAPPING")?.click(); await settleUi(); });
+
+    expect(container.textContent).toContain("ACCUMULATED SLAM MAP · /map + CURRENT /scan");
+    expect(container.textContent).toContain("EXPLORED AREA");
+    expect(container.textContent).toContain("TF · map ← lidar");
+    const toggles = container.querySelectorAll(".local-map-toggles button");
+    expect(toggles).toHaveLength(4);
+    expect(Array.from(toggles).map((button) => button.textContent?.trim())).toEqual([
+      "✓ ROBOT", "✓ SCAN", "✓ TRAJECTORY", "□ GRID",
+    ]);
+    expect(Array.from(toggles).slice(0, 3).every((button) => button.getAttribute("aria-pressed") === "true")).toBe(true);
+  });
+
+  it("does not show a cached SLAM map from a previous mapping session", async () => {
+    setOnlineRobot("MAPPING");
+    useStore.getState().setRobotDetail("R01", {
+      mappingSessionId: "session-current",
+      map: {
+        robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX",
+        mapping_session_id: "session-old", active_map_id: "SLAM-session-old",
+        width: 1, height: 1, resolution: 0.05, origin: { x: 0, y: 0, yaw: 0 }, data: [100],
+      },
+    });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { buttonNamed("MAPPING")?.click(); await settleUi(); });
+
+    expect(container.textContent).toContain("Waiting for a fresh accumulated SLAM Toolbox /map");
+    expect(container.querySelector('[aria-label="Select map frame initial robot position"]')).toBeNull();
   });
 
   it("picks and adjusts an initial pose, then reports localization apply failure", async () => {

@@ -58,6 +58,76 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             runtime.robot_map_snapshots.clear()
             runtime.robot_map_snapshots.update(previous)
 
+    async def test_mapping_health_diagnostics_are_retained_for_mapping_ui(self):
+        previous = runtime.ros_diagnostics.get('mapping')
+        measured = {
+            'slam_state': 'ACTIVE', 'scan_live': True, 'scan_hz': 8.5,
+            'scan_frame': 'lidar_link', 'odom_live': True, 'odom_hz': 42.0,
+            'odom_frame': 'odom', 'base_frame': 'base_footprint',
+            'tf_valid': True, 'map_live': True, 'map_odom_owner': 'SLAM_TOOLBOX',
+        }
+        try:
+            with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
+                await runtime.handle_ros_diagnostics({'diagnostics': {'mapping': measured}})
+            self.assertEqual(runtime.ros_diagnostics['mapping'], measured)
+        finally:
+            if previous is None:
+                runtime.ros_diagnostics.pop('mapping', None)
+            else:
+                runtime.ros_diagnostics['mapping'] = previous
+
+    async def test_runtime_status_exposes_robot_mapping_session_identity(self):
+        old_connected = set(runtime.connected_robot_ids)
+        old_sessions = dict(runtime.robot_mapping_sessions)
+        try:
+            runtime.connected_robot_ids.add('R01')
+            runtime.robot_mapping_sessions['R01'] = 'session-current'
+            status = runtime.runtime_status_message()
+            self.assertEqual(status['robot_mapping_sessions']['R01'], 'session-current')
+        finally:
+            runtime.connected_robot_ids = old_connected
+            runtime.robot_mapping_sessions.clear()
+            runtime.robot_mapping_sessions.update(old_sessions)
+
+    async def test_mapping_heartbeat_invalidates_old_map_but_keeps_same_session_snapshot(self):
+        snapshots = runtime.robot_map_snapshots.copy()
+        geometry = runtime.robot_map_geometry.copy()
+        modes = runtime.robot_runtime_modes.copy()
+        sessions = runtime.robot_mapping_sessions.copy()
+        old_mode = runtime.operation_mode
+        old_connected = set(runtime.connected_robot_ids)
+        old_heartbeats = dict(runtime.robot_bridge_heartbeats)
+        try:
+            runtime.operation_mode = 'NAVIGATION'
+            runtime.connected_robot_ids.add('R01')
+            runtime.robot_runtime_modes['R01'] = 'NAVIGATION'
+            runtime.robot_map_snapshots['R01'] = {'map': {'map_source': 'NAV2_MAP'}}
+            runtime.robot_map_geometry['R01'] = {'width': 3}
+            with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
+                await runtime.handle_ros_message({
+                    'type': 'HEARTBEAT', 'robot_id': 'R01', 'runtime_state': 'MAPPING',
+                    'mapping_state': 'MAPPING', 'mapping_session_id': 'session-1',
+                })
+            self.assertNotIn('R01', runtime.robot_map_snapshots)
+            self.assertNotIn('R01', runtime.robot_map_geometry)
+
+            current = {'map': {'map_source': 'SLAM_TOOLBOX', 'mapping_session_id': 'session-1'}}
+            runtime.robot_map_snapshots['R01'] = current
+            with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
+                await runtime.handle_ros_message({
+                    'type': 'HEARTBEAT', 'robot_id': 'R01', 'runtime_state': 'MAPPING',
+                    'mapping_state': 'MAPPING', 'mapping_session_id': 'session-1',
+                })
+            self.assertIs(runtime.robot_map_snapshots['R01'], current)
+        finally:
+            runtime.robot_map_snapshots.clear(); runtime.robot_map_snapshots.update(snapshots)
+            runtime.robot_map_geometry.clear(); runtime.robot_map_geometry.update(geometry)
+            runtime.robot_runtime_modes.clear(); runtime.robot_runtime_modes.update(modes)
+            runtime.robot_mapping_sessions.clear(); runtime.robot_mapping_sessions.update(sessions)
+            runtime.operation_mode = old_mode
+            runtime.connected_robot_ids = old_connected
+            runtime.robot_bridge_heartbeats = old_heartbeats
+
     async def test_ros_pose_uses_single_waretwin_adapter(self):
         pose = ros_pose_to_waretwin(1.2, 3.4, 0.5, 1.57)
         self.assertEqual(pose['position'], [1.2, 0.5, 3.4])
@@ -310,6 +380,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
 class RosTelemetryTests(IsolatedAsyncioTestCase):
     async def test_external_robot_state_merges_pose_twist_and_metadata(self):
         old_mode = runtime.runtime_mode
+        old_operation_mode = runtime.operation_mode
         old_robots = deepcopy(runtime.engine.state['robots'])
         old_connected = set(runtime.connected_robot_ids)
         old_heartbeats = dict(runtime.robot_bridge_heartbeats)
@@ -324,6 +395,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
         old_robot_map_sync = deepcopy(runtime.robot_map_sync)
         try:
             runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.operation_mode = 'NAVIGATION'
             runtime.connected_robot_ids.add('R01')
             runtime.robot_bridge_heartbeats['R01'] = time.monotonic()
             runtime.ros_bridge_connected = True
@@ -357,6 +429,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             self.assertEqual(runtime.last_telemetry_iso, '2026-09-22T00:00:00+00:00')
         finally:
             runtime.runtime_mode = old_mode
+            runtime.operation_mode = old_operation_mode
             runtime.engine.state['robots'] = old_robots
             runtime.connected_robot_ids = old_connected
             runtime.robot_bridge_heartbeats = old_heartbeats
@@ -372,6 +445,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
 
     async def test_external_pose_rejects_odometry_frame_and_wrong_revision(self):
         old_mode = runtime.runtime_mode
+        old_operation_mode = runtime.operation_mode
         old_published = runtime.published_map_revision
         old_error = runtime.map_sync_error
         old_connected = set(runtime.connected_robot_ids)
@@ -382,6 +456,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
         old_robot = deepcopy(robots.get('R01'))
         try:
             runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.operation_mode = 'NAVIGATION'
             runtime.connected_robot_ids.add('R01')
             runtime.robot_bridge_heartbeats['R01'] = time.monotonic()
             runtime.ros_bridge_connected = True
@@ -408,6 +483,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             self.assertIn('does not match published revision', runtime.map_sync_error)
         finally:
             runtime.runtime_mode = old_mode
+            runtime.operation_mode = old_operation_mode
             runtime.published_map_revision = old_published
             runtime.map_sync_error = old_error
             runtime.connected_robot_ids = old_connected
@@ -418,6 +494,44 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
                 runtime.engine.state['robots'].pop('R01', None)
             else:
                 runtime.engine.state['robots']['R01'] = old_robot
+
+    async def test_mapping_pose_requires_current_authenticated_slam_session(self):
+        old_mode = runtime.runtime_mode
+        old_operation_mode = runtime.operation_mode
+        old_connected = set(runtime.connected_robot_ids)
+        old_heartbeats = dict(runtime.robot_bridge_heartbeats)
+        old_sessions = runtime.robot_mapping_sessions.copy()
+        robots = runtime.engine.state.setdefault('robots', {})
+        old_robot = deepcopy(robots.get('R01'))
+        try:
+            runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.operation_mode = 'MAPPING'
+            runtime.connected_robot_ids.add('R01')
+            runtime.robot_mapping_sessions['R01'] = 'session-current'
+            await runtime.update_external_robot_state({
+                'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 21,
+                'active_map_id': 'SLAM-session-current', 'active_map_revision': 'grid-abc',
+                'mapping_session_id': 'session-current',
+                'x': 1.2, 'y': 2.3, 'yaw': 0.4, 'vx': 0, 'vy': 0, 'wz': 0,
+            })
+            self.assertEqual(runtime.engine.state['robots']['R01']['position'], [1.2, 0.0, 2.3])
+            await runtime.update_external_robot_state({
+                'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 21,
+                'active_map_id': 'SLAM-session-current', 'active_map_revision': 'grid-abc',
+                'mapping_session_id': 'session-stale',
+                'x': 99, 'y': 99, 'yaw': 0, 'vx': 0, 'vy': 0, 'wz': 0,
+            })
+            self.assertEqual(runtime.engine.state['robots']['R01']['position'], [1.2, 0.0, 2.3])
+        finally:
+            runtime.runtime_mode = old_mode
+            runtime.operation_mode = old_operation_mode
+            runtime.connected_robot_ids = old_connected
+            runtime.robot_bridge_heartbeats = old_heartbeats
+            runtime.robot_mapping_sessions.clear(); runtime.robot_mapping_sessions.update(old_sessions)
+            if old_robot is None:
+                robots.pop('R01', None)
+            else:
+                robots['R01'] = old_robot
 
     async def test_unconnected_heartbeat_cannot_create_a_false_robot_connection(self):
         old_mode = runtime.runtime_mode

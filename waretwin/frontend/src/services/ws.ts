@@ -323,6 +323,9 @@ function handle(msg: ServerMessage) {
           localMapSyncStatus: state.map_sync_status ?? null,
         });
       }
+      for (const [robotId, mappingSessionId] of Object.entries(msg.robot_mapping_sessions ?? {})) {
+        st.setRobotDetail(robotId, { mappingSessionId });
+      }
       break;
     case "ROBOT_CONTROL_STATUS":
       if (msg.mode_transition_state === "APPLIED") {

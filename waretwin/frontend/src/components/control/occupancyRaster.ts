@@ -13,7 +13,7 @@ export function occupancyRasterKey(map: RobotDetailMapSnapshot): string {
     payload = `raw:${map.data?.length}:${hash}`;
   }
   const key = JSON.stringify([map.robot_id, map.active_map_id, map.active_map_revision,
-    map.map_revision, map.frame_id, map.width, map.height, map.resolution, map.origin, payload]);
+    map.map_revision, map.map_version, map.frame_id, map.width, map.height, map.resolution, map.origin, payload]);
   rasterKeys.set(map, key);
   return key;
 }

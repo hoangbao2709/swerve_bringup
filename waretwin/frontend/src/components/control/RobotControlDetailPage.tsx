@@ -1,6 +1,6 @@
 import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode, type MouseEvent as ReactMouseEvent } from "react";
 import { apiFetch, clearEmergencyStop, emergencyStop } from "../../services/api";
-import { wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
+import { WS_URL, wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
 import { useSimulationRunner } from "../../simulation/runner";
 import { layout, useStore } from "../../state/store";
 import type { RobotDetailError, RobotDetailGoal, RobotDetailMapSnapshot, RobotDetailPath, RobotDetailPathPreview, RobotDetailScan, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
@@ -105,6 +105,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const globalPath = useStore((state) => state.robotDetail[robotId]?.globalPath ?? null);
   const localPath = useStore((state) => state.robotDetail[robotId]?.localPath ?? null);
   const goal = useStore((state) => state.robotDetail[robotId]?.goal ?? null);
+  const mappingScan = useStore((state) => state.robotDetail[robotId]?.scan ?? null);
+  const mappingSessionId = useStore((state) => state.robotDetail[robotId]?.mappingSessionId ?? null);
   const navigationStatus = useStore((state) => state.robotDetail[robotId]?.navigationStatus ?? null);
   const lidar2d = useStore((state) => state.robotDetail[robotId]?.lidar2d ?? null);
   const lidar3d = useStore((state) => state.robotDetail[robotId]?.lidar3d ?? null);
@@ -115,6 +117,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const activeLocalMapRevision = useStore((state) => state.robotDetail[robotId]?.activeLocalMapRevision ?? null);
   const localMapSyncStatus = useStore((state) => state.robotDetail[robotId]?.localMapSyncStatus ?? null);
   const setRobotDetail = useStore((state) => state.setRobotDetail);
+  const authToken = useStore((state) => state.authToken);
   const appliedMode = useStore((state) => state.robotDetail[robotId]?.appliedMode);
   const requestedMode = useStore((state) => state.robotDetail[robotId]?.requestedMode);
   const modeTransitionState = useStore((state) => state.robotDetail[robotId]?.modeTransitionState);
@@ -133,6 +136,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const [clockNow, setClockNow] = useState(() => Date.now());
   const manualTimer = useRef<number | null>(null);
   const manualActive = useRef(false);
+  const manualWorker = useRef<Worker | null>(null);
 
   const robotBridgeOnline = connectedRobotIds.includes(robotId);
   const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && (runtimeMode === "LOCAL_SIM" || (robotBridgeOnline && rosConnected && websocketState === "CONNECTED")));
@@ -218,11 +222,53 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       window.clearInterval(manualTimer.current);
       manualTimer.current = null;
     }
-    if (manualActive.current && controlOnline) wsManualCommand(robotId, "STOP");
+    if (manualActive.current && controlOnline) {
+      if (manualWorker.current) manualWorker.current.postMessage({ type: "STOP", robot_id: robotId });
+      else wsManualCommand(robotId, "STOP");
+    }
     manualActive.current = false;
   }, [controlOnline, robotId]);
 
   useEffect(() => () => stopManual(), [stopManual]);
+
+  useEffect(() => {
+    if (!controlOnline || !authToken || typeof Worker === "undefined") return;
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("../../services/manualCommand.worker.ts", import.meta.url), { type: "module" });
+    } catch {
+      // Keep the existing WebSocket path as the compatibility fallback.
+      return;
+    }
+    manualWorker.current = worker;
+    worker.onmessage = (event: MessageEvent<{ type?: string; message?: string }>) => {
+      if (event.data?.type !== "ERROR") return;
+      if (manualTimer.current !== null) {
+        window.clearInterval(manualTimer.current);
+        manualTimer.current = null;
+      }
+      manualActive.current = false;
+      setError(event.data.message || "Manual command refresh stopped safely");
+    };
+    worker.onerror = () => {
+      if (manualWorker.current === worker) manualWorker.current = null;
+      if (manualActive.current) wsManualCommand(robotId, "STOP");
+      manualActive.current = false;
+      setError("Manual refresh worker failed; the dead-man stop is active");
+    };
+    worker.postMessage({ type: "CONNECT", url: WS_URL, token: authToken });
+    return () => {
+      if (manualWorker.current === worker) manualWorker.current = null;
+      worker.postMessage({ type: "DISCONNECT", robot_id: robotId });
+      window.setTimeout(() => worker.terminate(), 150);
+    };
+  }, [authToken, controlOnline, robotId]);
+
+  const estopActive = Boolean(detailDiagnostics?.command_ownership?.estop_active
+    ?? diagnostics?.command_ownership?.estop_active);
+  useEffect(() => {
+    if (estopActive) stopManual();
+  }, [estopActive, stopManual]);
 
   const runAction = useCallback(async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -248,11 +294,19 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     if (action === "STOP") {
       const wasActive = manualActive.current;
       stopManual();
-      if (!wasActive && controlOnline) wsManualCommand(robotId, "STOP");
+      if (!wasActive && controlOnline) {
+        if (manualWorker.current) manualWorker.current.postMessage({ type: "STOP", robot_id: robotId });
+        else wsManualCommand(robotId, "STOP");
+      }
       return;
     }
     if (controlMode !== "MANUAL" || modeTransitionState === "REQUESTED" || modeTransitionState === "FAILED") { setError("Wait for applied MANUAL mode before driving"); return; }
     if (!controlOnline) { setError("Manual control is disabled while ROS bridge is disconnected"); return; }
+    if (manualWorker.current) {
+      manualWorker.current.postMessage({ type: "HOLD", robot_id: robotId, action });
+      manualActive.current = true;
+      return;
+    }
     if (!wsManualCommand(robotId, action)) { setError("Manual command was not sent"); return; }
     if (manualTimer.current !== null) window.clearInterval(manualTimer.current);
     manualActive.current = true;
@@ -382,7 +436,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
           <label className="robot-detail-robot-select"><span>ROBOT</span><select aria-label="Select robot" value={robotId} onChange={(event) => changeRobot(event.target.value)}><option value="">Select robot</option>{robotIds.map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
           <button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline || busy} onClick={() => setMode("MANUAL")}>MANUAL</button>
           <button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline || busy} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button>
-          <button type="button" className="robot-console-danger" disabled={busy || !robotId} onClick={() => void runAction(() => emergencyStop(robotId))}>EMERGENCY STOP</button>
+          <button type="button" className="robot-console-danger" disabled={busy || !robotId} onClick={() => { stopManual(); void runAction(() => emergencyStop(robotId)); }}>EMERGENCY STOP</button>
         </div>
       </header>
 
@@ -391,7 +445,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       </nav>
 
       {activeTab !== "CONTROL" ? <main className="robot-detail-section-main">
-        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} mapSnapshot={mapSnapshot} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeState={runtimeState} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} />
+        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} mapSnapshot={mapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeState={runtimeState} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} />
       </main> : <main className="robot-detail-main">
         <aside className="robot-detail-column robot-detail-left">
           <SystemInputsPanel robotId={robotId} robot={robot} controlMode={controlMode} runtimeMode={runtimeMode} goal={goalPreview ?? goal} mission={tagMission?.robot_id === robotId ? tagMission : null} />

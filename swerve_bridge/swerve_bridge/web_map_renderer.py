@@ -55,6 +55,27 @@ def compress_occupancy_grid(values: Iterable[int], max_cells: int = 4_000_000) -
     return base64.b64encode(zlib.compress(raw, level=6)).decode('ascii')
 
 
+def occupancy_grid_statistics(values: Iterable[int], max_cells: int = 4_000_000) -> dict[str, int]:
+    """Count cells off the ROS executor using Nav2's default map thresholds."""
+    try:
+        cells = np.frombuffer(values, dtype=np.int8)
+    except (TypeError, ValueError):
+        cells = np.asarray(values, dtype=np.int16)
+    if cells.size > max_cells:
+        raise ValueError(f'occupancy grid exceeds {max_cells} cells')
+    if np.any((cells < -1) | (cells > 100)):
+        raise ValueError('occupancy cells must be in [-1, 100]')
+    known = cells >= 0
+    occupied = cells >= 65
+    free = known & (cells < 25)
+    return {
+        'known_cells': int(np.count_nonzero(known)),
+        'occupied_cells': int(np.count_nonzero(occupied)),
+        'free_cells': int(np.count_nonzero(free)),
+        'ambiguous_cells': int(np.count_nonzero(known) - np.count_nonzero(occupied) - np.count_nonzero(free)),
+    }
+
+
 class LatestFrameBuffer:
     """A one-slot handoff for visualization frames.
 

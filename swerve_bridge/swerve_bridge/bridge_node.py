@@ -37,7 +37,8 @@ from std_msgs.msg import Bool, String
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from tf2_ros import Buffer, TransformException, TransformListener
 from robot_localization.srv import SetPose
-from slam_toolbox.srv import Pause as SlamPause, SaveMap as SlamSaveMap
+from slam_toolbox.srv import (Pause as SlamPause, SaveMap as SlamSaveMap,
+                              SerializePoseGraph as SlamSerializePoseGraph)
 
 from .qos import canonical_map_qos_profile, gazebo_clock_qos_profile
 from .coordinates import (is_small_future_tf_skew, pose_from_transform,
@@ -47,6 +48,7 @@ from .web_map_renderer import (
     laser_scan_xy, path_length, successful_path_result,
     transform_points_xyz,
     occupancy_content_signature,
+    occupancy_grid_statistics,
 )
 
 
@@ -136,6 +138,10 @@ class SwerveBridge(Node):
         self.allow_unpublished_fallback = bool(self.get_parameter('allow_unpublished_fallback').value)
         self.telemetry_period = 1.0 / max(0.1, float(self.get_parameter('telemetry_rate').value))
         self.latest_odom = None
+        self.last_odom_monotonic = None
+        self.last_odom_frame_id = None
+        self.last_odom_child_frame_id = None
+        self.odom_intervals = deque(maxlen=30)
         self.last_joint_state = None
         self.last_lidar_monotonic = None
         self.last_lidar_frame_id = None
@@ -143,8 +149,13 @@ class SwerveBridge(Node):
         self.lidar_intervals = deque(maxlen=20)
         self.scan_intervals = deque(maxlen=20)
         self.scan_sim_intervals = deque(maxlen=20)
+        self.map_intervals = deque(maxlen=30)
         self.last_scan_monotonic = None
         self.last_scan_stamp = None
+        self.last_scan_frame_id = None
+        self.last_map_monotonic = None
+        self.last_scan_map_tf_valid = False
+        self.last_scan_map_tf_error = 'waiting for map <- scan transform'
         self.latest_scan = None
         self.latest_cloud = None
         self.latest_filtered_cloud = None
@@ -173,6 +184,16 @@ class SwerveBridge(Node):
         self.web_cloud_epoch = f'{self.robot_id}-{time.time_ns()}'
         self.latest_map = None
         self.latest_map_signature = None
+        self.latest_map_generation = 0
+        self.processed_map_generation = 0
+        self.processed_map = None
+        self.processed_map_payload = None
+        self.processed_map_payload_signature = None
+        self.latest_map_received_monotonic = None
+        self.mapping_session_id = uuid.uuid4().hex[:12]
+        self.mapping_map_revision = None
+        self.mapping_map_version = 0
+        self.latest_map_statistics = None
         self.latest_global_path = None
         self.latest_local_path = None
         self.latest_goal_pose = None
@@ -303,6 +324,8 @@ class SwerveBridge(Node):
             SlamPause, self._scoped_topic('/slam_toolbox/pause_new_measurements'))
         self.slam_save_client = self.create_client(
             SlamSaveMap, self._scoped_topic('/slam_toolbox/save_map'))
+        self.slam_serialize_client = self.create_client(
+            SlamSerializePoseGraph, self._scoped_topic('/slam_toolbox/serialize_map'))
         scan_topic = self._scoped_topic(self.get_parameter('scan_topic').value)
         map_topic = self._scoped_topic(self.get_parameter('map_topic').value)
         global_path_topic = self._scoped_topic(self.get_parameter('global_path_topic').value)
@@ -327,12 +350,17 @@ class SwerveBridge(Node):
             lambda: 1.0 / max(.1, float(self.get_parameter(
                 'lidar_web_3d_hz' if self.detail_view == 'LIDAR_3D' else 'lidar_ui_hz').value)),
             lambda exc: self.get_logger().warning(f'visualization preparation failed: {type(exc).__name__}'))
+        self.map_snapshot_worker = VisualizationWorker(self.map_snapshot_timer,
+            lambda: 3600.0,
+            lambda exc: self.get_logger().warning(f'map snapshot preparation failed: {type(exc).__name__}'),
+            name='web-map-snapshot')
         self.diagnostics_worker = VisualizationWorker(self.diagnostics_timer,
             lambda: 1.0 / max(.1, float(self.get_parameter('heartbeat_rate').value)),
             lambda exc: self.get_logger().warning(f'diagnostics preparation failed: {type(exc).__name__}'),
             name='web-diagnostics')
         self.telemetry_pending = threading.Event()
-        self.create_timer(self.telemetry_period, self.request_telemetry)
+        self.create_timer(self.telemetry_period, self.request_telemetry,
+                          clock=self._wall_clock)
         self.create_timer(0.1, self.poll_local_control_confirmations,
                           clock=self._wall_clock)
         self.create_timer(
@@ -343,6 +371,7 @@ class SwerveBridge(Node):
         self.outbound_thread = threading.Thread(target=self.outbound_sender, daemon=True)
         self.outbound_thread.start()
         self.visualization_worker.start()
+        self.map_snapshot_worker.start()
         self.diagnostics_worker.start()
         self.thread = threading.Thread(target=self.websocket_loop, daemon=True)
         self.thread.start()
@@ -402,6 +431,12 @@ class SwerveBridge(Node):
         return None
 
     def odom_cb(self, msg):
+        now = time.monotonic()
+        if self.last_odom_monotonic is not None and now > self.last_odom_monotonic:
+            self.odom_intervals.append(now - self.last_odom_monotonic)
+        self.last_odom_monotonic = now
+        self.last_odom_frame_id = str(msg.header.frame_id or '')
+        self.last_odom_child_frame_id = str(msg.child_frame_id or '')
         self.latest_odom = msg
 
     def joint_cb(self, msg):
@@ -448,35 +483,56 @@ class SwerveBridge(Node):
                 self.scan_sim_intervals.append(interval)
         self.last_scan_monotonic = now
         self.last_scan_stamp = stamp_value
+        self.last_scan_frame_id = str(msg.header.frame_id or '')
         self.latest_scan = msg
         self.last_lidar_monotonic = now
         self.last_lidar_frame_id = str(msg.header.frame_id or '')
         self.last_lidar_stamp = stamp_value
 
     def map_cb(self, msg):
-        # Header timestamps can advance even when the occupancy content is
-        # unchanged.  Keep the snapshot cache content-addressed so a map
-        # publisher running at 10 Hz does not push the same full grid over the
-        # bridge on every callback.
+        # Keep the executor callback O(1): hashing, map validation, statistics,
+        # compression and WebSocket serialization run on the isolated bounded
+        # map worker, never alongside manual/E-STOP servicing.
+        now = time.monotonic()
+        if self.last_map_monotonic is not None and now > self.last_map_monotonic:
+            self.map_intervals.append(now - self.last_map_monotonic)
+        self.last_map_monotonic = now
+        self.latest_map = msg
+        self.latest_map_received_monotonic = now
+        self.latest_map_generation += 1
+        self.map_callback_count += 1
+        self.map_snapshot_worker.wake()
+
+    def _update_latest_map_signature(self):
+        generation = self.latest_map_generation
+        msg = self.latest_map
+        if generation != self.latest_map_generation:
+            return
+        if msg is None or generation == self.processed_map_generation:
+            return
         origin = msg.info.origin
+        content_signature = occupancy_content_signature(msg.data)
+        identity_revision = (self.mapping_session_id if self.runtime_state == 'MAPPING'
+                             else self.ros_map_revision)
         signature = (
             str(msg.header.frame_id or 'map'),
-            msg.info.width,
-            msg.info.height,
+            int(msg.info.width), int(msg.info.height),
             float(msg.info.resolution),
             round(float(origin.position.x), 6),
             round(float(origin.position.y), 6),
             round(yaw_from_quaternion(origin.orientation), 6),
-            occupancy_content_signature(msg.data),
-            self.ros_map_revision,
+            content_signature, identity_revision,
         )
-        changed = signature != self.latest_map_signature
-        self.latest_map = msg
+        if generation != self.latest_map_generation:
+            return
+        if signature != self.latest_map_signature:
+            self.mapping_map_version += 1
         self.latest_map_signature = signature
-        self.map_callback_count += 1
+        self.processed_map = msg
+        self.processed_map_generation = generation
+        if self.runtime_state == 'MAPPING':
+            self.mapping_map_revision = content_signature[:12]
         self._confirm_local_map_if_ready()
-        if changed:
-            self.visualization_worker.wake()
 
     def command_diagnostics_cb(self, msg):
         try:
@@ -504,6 +560,13 @@ class SwerveBridge(Node):
             self.send_control_status(True)
 
     def active_map_identity(self):
+        if self.runtime_state == 'MAPPING':
+            return {
+                'active_map_id': f'SLAM-{self.mapping_session_id}',
+                'active_map_revision': self.mapping_map_revision,
+                'canonical_map_revision': (str(self.ros_map_revision)
+                                           if self.ros_map_revision is not None else None),
+            }
         if self.loaded_local_map_id:
             return {
                 'active_map_id': self.loaded_local_map_id,
@@ -682,7 +745,7 @@ class SwerveBridge(Node):
                 # A reconnect may follow a Django restart which lost its cache.
                 # This is a genuinely uncached consumer, not a tab transition.
                 self.last_sent_map_signature = None
-                self.visualization_worker.wake()
+                self.map_snapshot_worker.wake()
                 backoff = 1.0
                 self.send_bridge_status('CONNECTED')
                 self.send_map_revision_status()
@@ -752,6 +815,7 @@ class SwerveBridge(Node):
                        'frame_id': str(self.get_parameter('map_frame').value),
                        'map_revision': self.ros_map_revision,
                        **self.active_map_identity(),
+                       'mapping_session_id': self.mapping_session_id if self.runtime_state == 'MAPPING' else None,
                        'base_frame_id': base_frame, **pose,
                        'vx': t.linear.x, 'vy': t.linear.y, 'wz': t.angular.z,
                        'navigation_state': self.nav_state,
@@ -811,6 +875,7 @@ class SwerveBridge(Node):
                    'nav2_state': self.nav_state, 'bridge_state': 'CONNECTED',
                    'runtime_state': self.runtime_state, 'control_mode': self.applied_mode,
                    'mapping_state': ('PAUSED' if self.slam_paused else 'MAPPING') if self.runtime_state == 'MAPPING' else 'INACTIVE',
+                   'mapping_session_id': self.mapping_session_id if self.runtime_state == 'MAPPING' else None,
                    'mapping_elapsed_s': self._mapping_elapsed_s(),
                    'timestamp': self.now()})
         # Do not let graph discovery / map validation delay manual/control
@@ -961,11 +1026,18 @@ class SwerveBridge(Node):
         transformed = transform_points_xyz(
             ((x, y, 0.0) for x, y in local_points), translation, quaternion)
         sampled = [[x, y] for x, y, _z in transformed]
+        sensor_pose = {
+            'x': translation[0], 'y': translation[1],
+            'yaw': yaw_from_quaternion(quaternion),
+        }
         return {
             'robot_id': self.robot_id,
             'topic': self.scan_topic_name,
             'frame_id': target_frame,
             'source_frame_id': source_frame,
+            'mapping_session_id': (self.mapping_session_id
+                                   if self.runtime_state == 'MAPPING' else None),
+            'sensor_pose': sensor_pose,
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'stamp': self.last_scan_stamp,
             'angle_min': float(scan.angle_min), 'angle_max': float(scan.angle_max),
@@ -1145,6 +1217,52 @@ class SwerveBridge(Node):
         self.last_web_cloud_source_stamp = source_stamp
         self.web_cloud_revision = next_revision
 
+    def map_snapshot_timer(self):
+        """Hash/compress only changed /map content on its isolated worker."""
+        self._update_latest_map_signature()
+        signature = self.latest_map_signature
+        if (self.processed_map is None or signature is None
+                or self.processed_map_generation != self.latest_map_generation):
+            return
+        if self.processed_map_payload_signature != signature:
+            msg = self.processed_map
+            generation = self.processed_map_generation
+            origin = msg.info.origin
+            stamp = msg.header.stamp
+            started = time.monotonic()
+            statistics = occupancy_grid_statistics(msg.data)
+            total_cells = int(msg.info.width) * int(msg.info.height)
+            compressed = compress_occupancy_grid(msg.data)
+            if generation != self.latest_map_generation:
+                return
+            self.visualization_metrics['map_compression_ms'] = (time.monotonic() - started) * 1000
+            self.visualization_metrics['map_compressions'] += 1
+            self.latest_map_statistics = statistics
+            self.processed_map_payload = {'type': 'MAP_SNAPSHOT', 'map': {
+                'robot_id': self.robot_id, 'frame_id': str(msg.header.frame_id or ''),
+                'map_source': ('SLAM_TOOLBOX' if self.runtime_state == 'MAPPING'
+                               else 'LOCAL_MAP' if self.loaded_local_map_id else 'NAV2_MAP'),
+                'mapping_session_id': self.mapping_session_id if self.runtime_state == 'MAPPING' else None,
+                'map_revision': self.ros_map_revision,
+                **self.active_map_identity(),
+                'map_version': self.mapping_map_version,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+                'width': int(msg.info.width), 'height': int(msg.info.height),
+                'resolution': float(msg.info.resolution),
+                'unknown_cells': total_cells - statistics['known_cells'],
+                'explored_area_m2': statistics['known_cells'] * float(msg.info.resolution) ** 2,
+                **statistics,
+                'origin': {'x': float(origin.position.x), 'y': float(origin.position.y),
+                           'yaw': yaw_from_quaternion(origin.orientation)},
+                'data_encoding': 'zlib-base64-offset1',
+                'data_zlib_base64': compressed,
+            }}
+            self.processed_map_payload_signature = signature
+        if self.last_sent_map_signature != signature and self.processed_map_payload is not None:
+            if self.send(self.processed_map_payload):
+                self.last_sent_map_signature = signature
+
     def detail_timer(self):
         """Publish bounded, robot-scoped detail snapshots to Django."""
         wall = time.monotonic()
@@ -1155,10 +1273,26 @@ class SwerveBridge(Node):
         if self.last_detail_callback_wall is not None:
             self.detail_callback_intervals.append(wall - self.last_detail_callback_wall)
         self.last_detail_callback_wall = wall
+        mapping_view = self.runtime_state == 'MAPPING'
         scan_view = self.detail_view in ('GLOBAL', 'LIDAR_2D')
-        if (scan_view and self.latest_scan is not None
-                and time.monotonic() - self.last_scan_publish_monotonic
-                >= 1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value))):
+        scan_due = (self.latest_scan is not None
+                    and time.monotonic() - self.last_scan_publish_monotonic
+                    >= 1.0 / max(0.1, float(self.get_parameter('lidar_ui_hz').value)))
+        if mapping_view and scan_due:
+            try:
+                payload = self._transform_scan(
+                    self.latest_scan,
+                    str(self.get_parameter('map_frame').value or 'map'))
+                self.send({'type': 'LIDAR_SCAN', 'scan': payload})
+                self.last_scan_map_tf_valid = True
+                self.last_scan_map_tf_error = None
+                self.last_scan_publish_monotonic = wall
+                self.last_tf_error = None
+            except (TransformException, ValueError, TypeError) as exc:
+                self.last_scan_map_tf_valid = False
+                self.last_scan_map_tf_error = str(exc)[:300]
+                self.last_tf_error = str(exc)[:300]
+        elif scan_view and scan_due and self.latest_scan is not None:
             try:
                 if self.detail_view == 'GLOBAL':
                     payload = self._transform_scan(self.latest_scan)
@@ -1168,6 +1302,14 @@ class SwerveBridge(Node):
                 if view_epoch == self.detail_view_epoch:
                     self.last_scan_publish_monotonic = wall
                 self.last_tf_error = None
+            except (TransformException, ValueError, TypeError) as exc:
+                self.last_tf_error = str(exc)[:300]
+
+        # Keep the detailed 2D sensor view alive as well as the independent
+        # map-frame scan overlay used by the Mapping canvas.
+        if mapping_view and self.detail_view == 'LIDAR_2D' and self.latest_scan is not None:
+            try:
+                self._render_lidar_2d()
             except (TransformException, ValueError, TypeError) as exc:
                 self.last_tf_error = str(exc)[:300]
 
@@ -1182,29 +1324,6 @@ class SwerveBridge(Node):
                 self.last_tf_error = None
             except (TransformException, ValueError, TypeError, KeyError, IndexError) as exc:
                 self.last_tf_error = str(exc)[:300]
-
-        if self.latest_map is not None and self.latest_map_signature != self.last_sent_map_signature:
-            msg = self.latest_map
-            origin = msg.info.origin
-            stamp = msg.header.stamp
-            compression_started = time.monotonic()
-            compressed = compress_occupancy_grid(msg.data)
-            self.visualization_metrics['map_compression_ms'] = (time.monotonic() - compression_started) * 1000
-            self.visualization_metrics['map_compressions'] += 1
-            sent = self.send({'type': 'MAP_SNAPSHOT', 'map': {
-                'robot_id': self.robot_id, 'frame_id': str(msg.header.frame_id or ''),
-                'map_revision': self.ros_map_revision,
-                **self.active_map_identity(),
-                'timestamp': datetime.now(timezone.utc).isoformat(),
-                'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
-                'width': int(msg.info.width), 'height': int(msg.info.height),
-                'resolution': float(msg.info.resolution),
-                'origin': {'x': float(origin.position.x), 'y': float(origin.position.y), 'yaw': yaw_from_quaternion(origin.orientation)},
-                'data_encoding': 'zlib-base64-offset1',
-                'data_zlib_base64': compressed,
-            }})
-            if sent:
-                self.last_sent_map_signature = self.latest_map_signature
 
         for attr, kind in (("latest_global_path", "NAV_GLOBAL_PATH"), ("latest_local_path", "NAV_LOCAL_PATH")):
             msg = getattr(self, attr)
@@ -1284,10 +1403,17 @@ class SwerveBridge(Node):
                     self.get_logger().warning(f'controller list request failed: {exc}')
                     self.controller_list_future = None
 
+        now_monotonic = time.monotonic()
+        scan_age = (None if self.last_scan_monotonic is None else
+                    max(0.0, now_monotonic - self.last_scan_monotonic))
+        odom_age = (None if self.last_odom_monotonic is None else
+                    max(0.0, now_monotonic - self.last_odom_monotonic))
+        map_age = (None if self.latest_map_received_monotonic is None else
+                   max(0.0, now_monotonic - self.latest_map_received_monotonic))
         lidar_age = None
         lidar_frequency = self._frequency(self.scan_intervals) or self._frequency(self.lidar_intervals)
         if self.last_lidar_monotonic is not None:
-            lidar_age = max(0.0, time.monotonic() - self.last_lidar_monotonic)
+            lidar_age = max(0.0, now_monotonic - self.last_lidar_monotonic)
         gazebo = (
             any('gazebo' in name.lower() for name in node_names)
             or (self.last_clock_monotonic is not None and time.monotonic() - self.last_clock_monotonic <= 3.0)
@@ -1306,6 +1432,54 @@ class SwerveBridge(Node):
         self._refresh_map_sync_status()
         tf = self.tf_status and self._scoped_topic('/tf') in topic_names
         lidar = lidar_age is not None and lidar_age <= 3.0
+        slam_state = ('PAUSED' if self.slam_paused else
+                      'ACTIVE' if self.runtime_state == 'MAPPING' and slam else
+                      'INACTIVE')
+        map_grid = self.processed_map
+        map_statistics = self.latest_map_statistics or {}
+        mapping_tf_valid = bool(tf and self.last_scan_map_tf_valid)
+        mapping_status = {
+            'slam_state': slam_state,
+            'mapping_session_id': (self.mapping_session_id
+                                   if self.runtime_state == 'MAPPING' else None),
+            'scan_live': scan_age is not None and scan_age <= 3.0,
+            'scan_hz': self._frequency(self.scan_intervals),
+            'scan_frame': self.last_scan_frame_id,
+            'scan_age_s': scan_age,
+            'odom_live': odom_age is not None and odom_age <= 3.0,
+            'odom_hz': self._frequency(self.odom_intervals),
+            'odom_frame': self.last_odom_frame_id,
+            'base_frame': self.last_odom_child_frame_id,
+            'tf_valid': mapping_tf_valid,
+            'tf_lidar_to_map_valid': self.last_scan_map_tf_valid,
+            'tf_error': (None if mapping_tf_valid else
+                         self.last_scan_map_tf_error if not self.last_scan_map_tf_valid
+                         else self.tf_error),
+            'map_live': (map_grid is not None and slam and map_age is not None
+                         and map_age <= 5.0),
+            'map_hz': self._frequency(self.map_intervals),
+            'map_width_cells': int(map_grid.info.width) if map_grid is not None else None,
+            'map_height_cells': int(map_grid.info.height) if map_grid is not None else None,
+            'resolution_m_per_cell': float(map_grid.info.resolution) if map_grid is not None else None,
+            'origin_x': float(map_grid.info.origin.position.x) if map_grid is not None else None,
+            'origin_y': float(map_grid.info.origin.position.y) if map_grid is not None else None,
+            'map_version': self.mapping_map_version,
+            **map_statistics,
+            'unknown_cells': (int(map_grid.info.width) * int(map_grid.info.height)
+                              - int(map_statistics.get('known_cells', 0))
+                              if map_grid is not None else None),
+            'explored_area_m2': (int(map_statistics.get('known_cells', 0))
+                                 * float(map_grid.info.resolution) ** 2
+                                 if map_grid is not None else None),
+            'map_age_s': map_age,
+            'map_odom_owner': ('SLAM_TOOLBOX' if self.runtime_state == 'MAPPING' and slam
+                               and not any(name.rstrip('/').endswith('/ekf_v30e')
+                                           or name.rstrip('/') == 'ekf_v30e'
+                                           or name.rstrip('/').endswith('/map_server')
+                                           or name.rstrip('/') == 'map_server'
+                                           for name in node_names)
+                               else None),
+        }
         return {
             'ros': bool(node_names),
             'gazebo': gazebo,
@@ -1322,8 +1496,10 @@ class SwerveBridge(Node):
                 'local_active_map_id': self.loaded_local_map_id,
                 'local_active_map_revision': self.loaded_local_map_revision,
                 'canonical_map_revision': self.ros_map_revision,
-                'map_sync_status': 'LOCAL_ONLY' if self.loaded_local_map_id else self.map_sync_status,
+                'map_sync_status': ('LOCAL_ONLY' if self.runtime_state == 'MAPPING'
+                                    or self.loaded_local_map_id else self.map_sync_status),
             },
+            'mapping': mapping_status,
             'command_ownership': dict(self.command_diagnostics),
             'lidar_stream': dict(self.last_lidar_output_metadata),
             'simulation_time': self.simulation_time,
@@ -1332,6 +1508,11 @@ class SwerveBridge(Node):
             'metrics': {
                 'lidar_age_s': lidar_age,
                 'lidar_frequency_hz': lidar_frequency,
+                'scan_age_s': scan_age,
+                'scan_frequency_wall_hz': self._frequency(self.scan_intervals),
+                'odom_age_s': odom_age,
+                'odom_frequency_wall_hz': self._frequency(self.odom_intervals),
+                'map_age_s': map_age,
                 'scan_frequency_sim_hz': self._frequency(self.scan_sim_intervals),
                 'lidar_frame_id': self.last_lidar_frame_id,
                 'lidar_stamp': self.last_lidar_stamp,
@@ -1361,6 +1542,10 @@ class SwerveBridge(Node):
         })
 
     def _refresh_map_sync_status(self):
+        if self.runtime_state == 'MAPPING':
+            self.map_sync_status = 'LOCAL_ONLY'
+            self.map_sync_error = None
+            return
         if self.active_map_revision is None:
             return
         nav2_required = self.require_nav2_map
@@ -2038,14 +2223,29 @@ class SwerveBridge(Node):
             if not self.slam_save_client.service_is_ready():
                 self._send_local_control_result(data, False, error='SLAM Toolbox save_map service is unavailable')
                 return
+            if not self.slam_serialize_client.service_is_ready():
+                self._send_local_control_result(data, False,
+                    error='SLAM Toolbox serialize_map service is unavailable; resumable session state was not saved')
+                return
             prefix = Path(str(data.get('output_prefix') or '')).expanduser().resolve()
-            if not prefix.parent.is_dir() or prefix.name in ('', '.', '..'):
+            session_prefix = Path(str(data.get('session_output_prefix') or '')).expanduser().resolve()
+            if (not prefix.parent.is_dir() or prefix.parent != self.local_map_root
+                    or prefix.name in ('', '.', '..')
+                    or session_prefix.parent != self.local_map_root
+                    or session_prefix.name in ('', '.', '..')):
                 self._send_local_control_result(data, False, error='map save location is invalid')
+                return
+            if any(path.exists() for path in (
+                    prefix.with_suffix('.yaml'), prefix.with_suffix('.pgm'),
+                    session_prefix.with_suffix('.posegraph'), session_prefix.with_suffix('.data'))):
+                self._send_local_control_result(data, False,
+                    error='map save artifact target already exists; choose a new map name')
                 return
             request = SlamSaveMap.Request()
             request.name.data = str(prefix)
             future = self.slam_save_client.call_async(request)
-            future.add_done_callback(lambda completed: self.map_save_result(completed, data, prefix))
+            future.add_done_callback(lambda completed: self.map_save_result(
+                completed, data, prefix, session_prefix))
             return
         if operation == 'MAP_LOAD':
             if self.runtime_state != 'NAVIGATION':
@@ -2164,7 +2364,7 @@ class SwerveBridge(Node):
             elapsed += max(0.0, time.monotonic() - self.slam_mapping_started_monotonic)
         return round(elapsed, 1)
 
-    def map_save_result(self, future, data, prefix):
+    def map_save_result(self, future, data, prefix, session_prefix):
         try:
             response = future.result()
             success = int(response.result) == int(SlamSaveMap.Response.RESULT_SUCCESS)
@@ -2173,6 +2373,7 @@ class SwerveBridge(Node):
             return
         yaml_path = prefix.with_suffix('.yaml')
         if not success or not yaml_path.is_file():
+            self._cleanup_failed_map_save(yaml_path, prefix.with_suffix('.pgm'), session_prefix)
             self._send_local_control_result(data, False, error='SLAM Toolbox did not persist a map YAML file')
             return
         try:
@@ -2183,12 +2384,60 @@ class SwerveBridge(Node):
                 image = yaml_path.parent / image
             image = image.resolve(strict=True)
         except Exception as exc:
+            self._cleanup_failed_map_save(yaml_path, prefix.with_suffix('.pgm'), session_prefix)
             self._send_local_control_result(data, False, error=f'map saver output is incomplete: {type(exc).__name__}')
+            return
+        request = SlamSerializePoseGraph.Request()
+        request.filename = str(session_prefix)
+        try:
+            session_future = self.slam_serialize_client.call_async(request)
+        except Exception as exc:
+            self._cleanup_failed_map_save(yaml_path, image, session_prefix)
+            self._send_local_control_result(data, False,
+                error=f'SLAM Toolbox pose-graph serialization request failed: {type(exc).__name__}')
+            return
+        session_future.add_done_callback(lambda completed: self.map_serialize_result(
+            completed, data, yaml_path, image, session_prefix))
+
+    def map_serialize_result(self, future, data, yaml_path, image, session_prefix):
+        try:
+            response = future.result()
+            success = int(response.result) == int(SlamSerializePoseGraph.Response.RESULT_SUCCESS)
+        except Exception as exc:
+            self._cleanup_failed_map_save(yaml_path, image, session_prefix)
+            self._send_local_control_result(data, False,
+                error=f'SLAM Toolbox pose-graph serialization failed: {type(exc).__name__}')
+            return
+        posegraph_path = session_prefix.with_suffix('.posegraph')
+        serialized_data_path = session_prefix.with_suffix('.data')
+        if (not success or not posegraph_path.is_file() or not serialized_data_path.is_file()
+                or posegraph_path.stat().st_size <= 0 or serialized_data_path.stat().st_size <= 0):
+            self._cleanup_failed_map_save(yaml_path, image, session_prefix)
+            self._send_local_control_result(data, False,
+                error='SLAM Toolbox did not persist both non-empty posegraph and data session artifacts')
             return
         self._send_local_control_result(data, True, {
             'name': str(data.get('name') or ''), 'yaml_path': str(yaml_path),
             'image_path': str(image),
+            'slam_session': {
+                'engine': 'SLAM_TOOLBOX', 'status': 'AVAILABLE',
+                'posegraph_path': str(posegraph_path),
+                'data_path': str(serialized_data_path),
+            },
         })
+
+    def _cleanup_failed_map_save(self, yaml_path, image_path, session_prefix):
+        """Remove only this failed request's outputs below the robot map root."""
+        allowed = (Path(yaml_path), Path(image_path),
+                   Path(session_prefix).with_suffix('.posegraph'),
+                   Path(session_prefix).with_suffix('.data'))
+        for path in allowed:
+            try:
+                resolved = path.resolve()
+                if resolved.is_relative_to(self.local_map_root) and resolved.is_file():
+                    resolved.unlink()
+            except OSError as exc:
+                self.get_logger().warning(f'failed map-save cleanup for {path.name}: {type(exc).__name__}')
 
     def map_load_result(self, future, data):
         try:
@@ -2856,6 +3105,7 @@ class SwerveBridge(Node):
     def destroy_node(self):
         self.stop_event.set()
         self.visualization_worker.close()
+        self.map_snapshot_worker.close()
         self.diagnostics_worker.close()
         self.outbound.clear()
         self.lidar_frame_buffer.clear()

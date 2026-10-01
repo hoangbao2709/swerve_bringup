@@ -1884,6 +1884,9 @@ table.dt.full td { white-space: normal; }
 .local-feedback.ok { border-color: #285344; }
 .local-pose-map { position: relative; min-height: 280px; margin: 10px 0; border: 1px solid #20394f; background: #06101a; }
 .local-pose-map canvas { width: 100%; height: 280px; display: block; }.local-pose-map.is-picking canvas { cursor: crosshair; }
+.local-map-toggles { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.local-map-toggles button { padding: 5px 9px; border: 1px solid #29445b; background: #091723; color: #8da9bf; font: 700 9px var(--mono); }
+.local-map-toggles button.is-active { border-color: #32818a; color: #50d9cc; background: #0a252c; }
 .local-pose-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .local-vda-panel { grid-column: 1 / -1; }
 .local-form-grid { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)); align-items: stretch; gap: 8px; }

@@ -132,7 +132,26 @@ def list_robot_maps(robot_id: str) -> list[dict[str, Any]]:
             continue
         if not yaml_path.is_file() or not image_path.is_file():
             continue
-        result.append({key: value for key, value in row.items() if not key.startswith('_')})
+        public = {key: value for key, value in row.items() if not key.startswith('_')}
+        state = row.get('slam_session_state')
+        if isinstance(state, dict) and state.get('status') == 'AVAILABLE':
+            posegraph = (robot_map_dir(robot_id) / str(row.get('_slam_posegraph', ''))).resolve()
+            session_data = (robot_map_dir(robot_id) / str(row.get('_slam_data', ''))).resolve()
+            root = robot_map_dir(robot_id).resolve()
+            try:
+                session_files_valid = (
+                    posegraph.is_relative_to(root) and session_data.is_relative_to(root)
+                    and posegraph.is_file() and session_data.is_file()
+                    and posegraph.stat().st_size > 0 and session_data.stat().st_size > 0
+                )
+            except OSError:
+                session_files_valid = False
+            if not session_files_valid:
+                public['slam_session_state'] = {
+                    'status': 'MISSING', 'engine': 'SLAM_TOOLBOX',
+                    'artifact_id': state.get('artifact_id'),
+                }
+        result.append(public)
     return result
 
 
@@ -153,7 +172,9 @@ def get_robot_map(robot_id: str, map_id: str) -> tuple[dict[str, Any], Path, Pat
     raise FileNotFoundError('map not found for this robot')
 
 
-def register_saved_map(robot_id: str, name: str, yaml_path: Path) -> dict[str, Any]:
+def register_saved_map(robot_id: str, name: str, yaml_path: Path, *,
+                       mapping_metadata: dict[str, Any] | None = None,
+                       slam_session: dict[str, Any] | None = None) -> dict[str, Any]:
     """Register a map saver result only after the YAML and image exist."""
     name = validate_map_name(name)
     directory = robot_map_dir(robot_id).resolve()
@@ -162,11 +183,17 @@ def register_saved_map(robot_id: str, name: str, yaml_path: Path) -> dict[str, A
         raise ValueError('map saver YAML path is outside the robot map store')
     try:
         import yaml
+    except ImportError as exc:
+        raise ValueError('map saver output has invalid metadata') from exc
+    try:
         document = yaml.safe_load(yaml_path.read_text(encoding='utf-8')) or {}
         image_name = str(document['image'])
         resolution = float(document['resolution'])
         origin = [float(item) for item in document['origin']]
-    except (ImportError, OSError, KeyError, TypeError, ValueError) as exc:
+        negate = int(document['negate'])
+        occupied_thresh = float(document['occupied_thresh'])
+        free_thresh = float(document['free_thresh'])
+    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
         raise ValueError('map saver output has invalid metadata') from exc
     image_path = Path(image_name)
     if not image_path.is_absolute():
@@ -175,21 +202,88 @@ def register_saved_map(robot_id: str, name: str, yaml_path: Path) -> dict[str, A
     if not image_path.is_relative_to(directory) or not image_path.is_file():
         raise ValueError('map saver image is outside the robot map store')
     if (not math.isfinite(resolution) or resolution <= 0 or len(origin) != 3
-            or not all(math.isfinite(item) for item in origin)):
-        raise ValueError('map saver output has invalid resolution or origin')
+            or not all(math.isfinite(item) for item in origin)
+            or negate not in (0, 1)
+            or not math.isfinite(occupied_thresh) or not math.isfinite(free_thresh)
+            or not 0.0 <= free_thresh < occupied_thresh <= 1.0):
+        raise ValueError('map saver output has invalid resolution, origin, or occupancy thresholds')
     if image_path.suffix.lower() != '.pgm':
         raise ValueError('map saver image must be a supported PGM file')
     width, height = _pgm_dimensions(image_path)
+    if mapping_metadata:
+        try:
+            map_width = int(mapping_metadata['width'])
+            map_height = int(mapping_metadata['height'])
+            map_resolution = float(mapping_metadata['resolution'])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError('saved map metadata does not match the current SLAM map') from exc
+        if (map_width != width or map_height != height or not math.isfinite(map_resolution)
+                or not math.isclose(map_resolution, resolution, rel_tol=0.0, abs_tol=1e-6)):
+            raise ValueError('saved map artifacts do not match the current SLAM map geometry')
     now = datetime.now(timezone.utc).isoformat()
     map_id = uuid.uuid4().hex
+    mapping_metadata = mapping_metadata if isinstance(mapping_metadata, dict) else {}
+    total_cells = width * height
+
+    def cell_count(field):
+        value = mapping_metadata.get(field)
+        try:
+            value = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return value if 0 <= value <= total_cells else None
+
+    known_cells = cell_count('known_cells')
+    unknown_cells = cell_count('unknown_cells')
+    free_cells = cell_count('free_cells')
+    occupied_cells = cell_count('occupied_cells')
+    if known_cells is not None and unknown_cells is None:
+        unknown_cells = total_cells - known_cells
+    try:
+        resolution_for_area = float(mapping_metadata.get('resolution', resolution))
+        explored_area = (float(mapping_metadata.get('explored_area_m2'))
+                         if mapping_metadata.get('explored_area_m2') is not None
+                         else known_cells * resolution_for_area ** 2
+                         if known_cells is not None else None)
+    except (TypeError, ValueError, OverflowError):
+        explored_area = None
+    if explored_area is not None and (not math.isfinite(explored_area) or explored_area < 0):
+        explored_area = None
+
+    session_posegraph = session_data = None
+    session_metadata = {'status': 'NOT_SAVED', 'engine': 'SLAM_TOOLBOX', 'artifact_id': None}
+    if slam_session is not None:
+        if str(slam_session.get('engine') or '').upper() != 'SLAM_TOOLBOX' or str(slam_session.get('status') or '').upper() != 'AVAILABLE':
+            raise ValueError('SLAM Toolbox session state was not confirmed')
+        session_posegraph = Path(str(slam_session.get('posegraph_path') or '')).resolve(strict=True)
+        session_data = Path(str(slam_session.get('data_path') or '')).resolve(strict=True)
+        if (not session_posegraph.is_relative_to(directory) or not session_data.is_relative_to(directory)
+                or session_posegraph.suffix != '.posegraph' or session_data.suffix != '.data'
+                or not session_posegraph.is_file() or not session_data.is_file()
+                or session_posegraph.stat().st_size <= 0 or session_data.stat().st_size <= 0):
+            raise ValueError('SLAM Toolbox session artifacts are invalid or outside the local map store')
+        artifact_id = uuid.uuid4().hex
+        session_metadata = {'status': 'AVAILABLE', 'engine': 'SLAM_TOOLBOX', 'artifact_id': artifact_id}
+
     row = {
-        'id': map_id, 'name': name, 'robot_id': robot_id,
+        'id': map_id, 'map_id': map_id, 'name': name, 'robot_id': robot_id,
         'created_at': now, 'resolution': resolution, 'origin': origin,
         'revision': map_id[:12], 'frame_id': 'map', 'width': width, 'height': height,
+        'map_kind': 'SAVED_LOCAL_MAP', 'canonical_map_promoted': False,
+        'known_cells': known_cells, 'unknown_cells': unknown_cells,
+        'free_cells': free_cells, 'occupied_cells': occupied_cells,
+        'explored_area_m2': explored_area,
+        'source_mapping_session_id': str(mapping_metadata.get('mapping_session_id') or '') or None,
+        'source_map_version': mapping_metadata.get('map_version'),
+        'navigation_artifacts': {'yaml': True, 'image': True, 'image_format': image_path.suffix.lower()},
+        'slam_session_state': session_metadata,
         'image_sha256': hashlib.sha256(image_path.read_bytes()).hexdigest(),
         '_yaml': yaml_path.relative_to(directory).as_posix(),
         '_image': image_path.relative_to(directory).as_posix(),
     }
+    if session_posegraph is not None and session_data is not None:
+        row['_slam_posegraph'] = session_posegraph.relative_to(directory).as_posix()
+        row['_slam_data'] = session_data.relative_to(directory).as_posix()
     registry_path = _registry_path(robot_id)
     with _registry_lock:
         try:

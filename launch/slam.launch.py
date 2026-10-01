@@ -55,7 +55,7 @@ def generate_launch_description():
         DeclareLaunchArgument('input_topic', default_value='/lidar/points',
                               description='Raw 3D cloud topic, normalized for sim or real driver'),
         DeclareLaunchArgument('start_slam', default_value='true',
-                              description='Start SLAM map->odom owner; disable when V30E EKF owns map->odom'),
+                              description='Start SLAM map->odom owner for mapping; disable when a navigation localization stack owns map->odom.'),
         DeclareLaunchArgument('map_topic', default_value='/map',
                               description='SLAM occupancy topic; simulation separates it from canonical /map.'),
         DeclareLaunchArgument('transform_publish_period', default_value='0.02',

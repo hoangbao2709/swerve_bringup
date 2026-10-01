@@ -135,6 +135,8 @@ class TwinRuntime:
         self.local_map_transitions: set[str] = set()
         self.robot_mapping_state: dict[str, str] = {}
         self.robot_mapping_elapsed_s: dict[str, float] = {}
+        self.robot_mapping_sessions: dict[str, str] = {}
+        self.robot_runtime_modes: dict[str, str] = {}
         self.path_preview_requests: dict[tuple[str, str], dict[str, Any]] = {}
         self.approved_path_previews: dict[tuple[str, str], dict[str, Any]] = {}
         self.path_preview_results: dict[tuple[str, str], dict[str, Any]] = {}
@@ -405,6 +407,10 @@ class TwinRuntime:
                 rid: self.active_map_state(rid)
                 for rid in sorted(self.connected_robot_ids | set(self.local_map_overrides))
             },
+            'robot_mapping_sessions': {
+                rid: self.robot_mapping_sessions.get(rid)
+                for rid in sorted(self.connected_robot_ids)
+            },
             'map_sync_status': map_sync_status(
                 published_revision=self.published_map_revision,
                 ros_revision=self.ros_map_revision,
@@ -619,7 +625,17 @@ class TwinRuntime:
         active = self.active_map_state(rid)
         reported_map_id = str(data.get('active_map_id') or 'CANONICAL')
         reported_active_revision = str(data.get('active_map_revision') or '')
-        if active.get('local_active_map_id'):
+        if self.operation_mode == 'MAPPING':
+            # Mapping poses are display-only in the live SLAM frame. They are
+            # accepted only from the authenticated bridge's SLAM session and
+            # never treated as canonical-map or navigation authorization.
+            mapping_session = str(self.robot_mapping_sessions.get(rid) or '')
+            if (not mapping_session
+                    or str(data.get('mapping_session_id') or '') != mapping_session
+                    or reported_map_id != f'SLAM-{mapping_session}'
+                    or not reported_active_revision):
+                return
+        elif active.get('local_active_map_id'):
             if (reported_map_id != active.get('active_map_id')
                     or reported_active_revision != active.get('active_map_revision')):
                 return
@@ -716,7 +732,33 @@ class TwinRuntime:
             self.ros_bridge_connected = bool(self.connected_robot_ids)
             self.bridge_status = str(data.get('bridge_state') or 'CONNECTED').upper()
             self.nav2_state = str(data.get('nav2_state') or 'CONNECTED')
-            self.operation_mode = str(data.get('runtime_state') or self.operation_mode).upper()
+            previous_mode = self.robot_runtime_modes.get(robot_id)
+            incoming_mode = str(data.get('runtime_state') or self.operation_mode).upper()
+            mapping_session = str(data.get('mapping_session_id') or '')
+            previous_mapping_session = self.robot_mapping_sessions.get(robot_id)
+            cached_snapshot = self.robot_map_snapshots.get(robot_id, {})
+            cached_map = cached_snapshot.get('map') if isinstance(cached_snapshot, dict) else {}
+            current_session_snapshot = (
+                incoming_mode == 'MAPPING'
+                and isinstance(cached_map, dict)
+                and cached_map.get('map_source') == 'SLAM_TOOLBOX'
+                and mapping_session
+                and cached_map.get('mapping_session_id') == mapping_session
+            )
+            if (previous_mode != incoming_mode
+                    or (incoming_mode == 'MAPPING'
+                        and mapping_session and mapping_session != previous_mapping_session)) \
+                    and not current_session_snapshot:
+                # Never replay a map snapshot from the previous runtime/map
+                # source into a new mapping or navigation session.
+                self.robot_map_snapshots.pop(robot_id, None)
+                self.robot_map_geometry.pop(robot_id, None)
+            self.robot_runtime_modes[robot_id] = incoming_mode
+            if incoming_mode == 'MAPPING' and mapping_session:
+                self.robot_mapping_sessions[robot_id] = mapping_session
+            elif incoming_mode != 'MAPPING':
+                self.robot_mapping_sessions.pop(robot_id, None)
+            self.operation_mode = incoming_mode
             if data.get('mapping_state'):
                 self.robot_mapping_state[robot_id] = str(data['mapping_state']).upper()
             try:
@@ -949,6 +991,8 @@ class TwinRuntime:
                 self.ros_diagnostics[key] = values[key][:200]
         if isinstance(values.get('metrics'), dict):
             self.ros_diagnostics['metrics'] = dict(values['metrics'])
+        if isinstance(values.get('mapping'), dict):
+            self.ros_diagnostics['mapping'] = dict(values['mapping'])
         if isinstance(values.get('errors'), list):
             self.ros_diagnostics['errors'] = values['errors'][:100]
         if values.get('simulation_time') is not None:

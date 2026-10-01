@@ -541,6 +541,38 @@ export type RosDiagnostics = {
   nodes: string[]; topics: string[]; controllers: Array<{ name: string; state: string }>;
   simulation_time: number | null; last_update_at: string | null;
   metrics?: Record<string, number | string | null>;
+  mapping?: RobotMappingDiagnostics;
+};
+export type RobotMappingDiagnostics = {
+  slam_state?: string | null;
+  mapping_session_id?: string | null;
+  scan_live?: boolean;
+  scan_hz?: number | null;
+  scan_frame?: string | null;
+  scan_age_s?: number | null;
+  odom_live?: boolean;
+  odom_hz?: number | null;
+  odom_frame?: string | null;
+  base_frame?: string | null;
+  tf_valid?: boolean;
+  tf_lidar_to_map_valid?: boolean;
+  tf_error?: string | null;
+  map_live?: boolean;
+  map_hz?: number | null;
+  map_width_cells?: number | null;
+  map_height_cells?: number | null;
+  resolution_m_per_cell?: number | null;
+  origin_x?: number | null;
+  origin_y?: number | null;
+  map_version?: number | null;
+  known_cells?: number | null;
+  unknown_cells?: number | null;
+  free_cells?: number | null;
+  occupied_cells?: number | null;
+  ambiguous_cells?: number | null;
+  explored_area_m2?: number | null;
+  map_age_s?: number | null;
+  map_odom_owner?: string | null;
 };
 
 export type DetailSeverity = "INFO" | "WARNING" | "ERROR" | "CRITICAL";
@@ -555,7 +587,9 @@ export type RobotDetailScan = {
   robot_id: RobotId;
   topic?: string;
   source_frame_id?: string;
+  mapping_session_id?: string | null;
   frame_id: string;
+  sensor_pose?: { x: number; y: number; yaw: number };
   timestamp?: string | null;
   stamp?: number | null;
   angle_min: number;
@@ -573,7 +607,10 @@ export type RobotDetailScan = {
 export type RobotDetailMapSnapshot = {
   robot_id: RobotId;
   frame_id: string;
+  map_source?: "SLAM_TOOLBOX" | "LOCAL_MAP" | "NAV2_MAP";
+  mapping_session_id?: string | null;
   map_revision?: number | null;
+  map_version?: number | null;
   active_map_id?: string | null;
   active_map_revision?: string | null;
   canonical_map_revision?: string | number | null;
@@ -582,6 +619,12 @@ export type RobotDetailMapSnapshot = {
   width: number;
   height: number;
   resolution: number;
+  known_cells?: number;
+  unknown_cells?: number;
+  occupied_cells?: number;
+  free_cells?: number;
+  ambiguous_cells?: number;
+  explored_area_m2?: number;
   origin: { x: number; y: number; yaw: number };
   data?: number[];
   data_encoding?: "zlib-base64-offset1";
@@ -681,6 +724,7 @@ export type RobotSystemDiagnostics = RosDiagnostics & {
   websocket_latency_ms?: number | null;
   command_ownership?: RobotCommandDiagnostics | null;
   map_state?: RobotLocalMapDiagnostics | null;
+  mapping?: RobotMappingDiagnostics | null;
   instant_actions_supported?: boolean;
   errors?: RobotDetailError[];
 };
@@ -729,6 +773,7 @@ export type RobotDetailState = {
   remainingDistanceM: number | null;
   pathPreview: RobotDetailPathPreview | null;
   mappingState: string | null;
+  mappingSessionId?: string | null;
   activeLocalMapId: string | null;
   activeLocalMapRevision: string | null;
   localMapSyncStatus: string | null;
@@ -750,7 +795,7 @@ export type ServerMessage =
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
   | { type: "map.published"; warehouse_id: number | string; revision: number; published_version: number; map_revision: number; artifact_manifest?: unknown }
   | { type: "SCHEDULE_UPDATED"; source: string }
-  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }>; local_active_maps?: Record<string, RobotLocalMapDiagnostics & { active_map_id?: string | null; active_map_revision?: string | null }> }
+  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }>; local_active_maps?: Record<string, RobotLocalMapDiagnostics & { active_map_id?: string | null; active_map_revision?: string | null }>; robot_mapping_sessions?: Record<string, string | null> }
   | { type: "ROBOT_CONTROL_STATUS"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS"; accepted: boolean; requested_mode?: "MANUAL" | "AUTONOMOUS"; applied_mode?: "MANUAL" | "AUTONOMOUS"; mode_transition_state?: "REQUESTED" | "APPLIED" | "FAILED"; request_id?: string | null; reason?: string | null; timestamp?: string }
   | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
   | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }

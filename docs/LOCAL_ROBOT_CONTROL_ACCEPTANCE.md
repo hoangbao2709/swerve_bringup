@@ -2054,3 +2054,107 @@ scoped ownership checks and `stop_stack.sh` cover this optional separate group
 so it cannot be left behind on the next stack stop. Normal ROS launch ownership
 is unchanged. No full startup/stop acceptance was repeated for this utility
 change; targeted ownership/shell regression tests passed.
+
+## 2026-10-01: accumulated LiDAR SLAM mapping and local map save
+
+The Mapping workflow now runs in the production `mapping` runtime with SLAM
+Toolbox as the only `map -> odom` owner. Mapping mode no longer starts the
+simulation's V30E localization owner or a canonical-map server. The bridge
+publishes content-versioned `/map` snapshots from a bounded worker, transforms
+current `/scan` into `map`, and reports TF-derived robot pose and a bounded
+trajectory. React renders the accumulated occupancy raster, current scan,
+robot, trajectory, and optional one-metre grid on a shared world transform;
+scan points are not accumulated in the browser.
+
+### Live mapping evidence
+
+From the production Mapping UI and ROS observer, `/scan` was live in
+`lidar_link`, `/odom` was live as `odom -> base_footprint`, and `map <- lidar`
+TF was `OK`. The Mapping status panel reported SLAM Toolbox active, accumulated
+`/map` live, and `MAP -> ODOM OWNER = SLAM_TOOLBOX`. Browser status during the
+real teleop mapping run measured scan at 1.18-1.23 Hz and odometry at 4.66 Hz;
+these are the VMware simulation's observed rates, not source-rate targets.
+
+The same SLAM session produced these observed map snapshots at 0.05 m/cell:
+
+| Snapshot | Dimensions | Known | Free | Occupied |
+| --- | ---: | ---: | ---: | ---: |
+| Initial ROS observation | 426 x 598 | 20,302 | 19,882 | 420 |
+| Next ROS observation | 431 x 598 | 45,231 | 44,555 | 676 |
+| Browser before movement, v3 | 431 x 598 | 45,231 | — | — |
+| Browser after Web forward, v4 | 440 x 598 | 60,875 | 59,945 | 930 |
+| Final paused UI, v5 | 446 x 598 | 71,741 | 70,636 | 1,105 |
+
+On the first ROS comparison, 7,976 of 8,093 previously known coarse-grid cells
+remained represented (98.6%). During the authenticated browser run, 73 Web
+manual forward refreshes moved the TF pose from about `(0.60, 0.20)` m to
+`(0.82, 0.32)` m; known cells increased from 45,231 to 60,875 and trajectory
+samples increased from 1 to 7, then 9 after STOP. The same session delivered
+45 current scan frames during the hold, each with 624 points in `map`, sourced
+from `lidar_link`; the transformed sensor pose changed with the robot. The UI
+showed the accumulated map and scan concurrently with ROBOT, SCAN, and
+TRAJECTORY enabled. This proves map growth and persistence over the exercised
+route, but not full-warehouse coverage or loop-closure quality.
+
+`MAPPING_START=PASS`, `MAPPING_LIVE_MAP=PASS`, `MAP_ACCUMULATION=PASS`,
+`WEB_MAPPING_DISPLAY=PASS`, and `MAPPING_STOP=PASS` for that production run.
+STOP was acknowledged by SLAM Toolbox and the UI reported PAUSED before Save.
+
+### Save and canonical-map evidence
+
+The real UI Save action created navigation and resumable SLAM products under
+the robot-scoped local map store. For `slam_accumulated_20261001_01`, the YAML
+was 146 bytes, PGM 263,135 bytes, pose graph 18,123,813 bytes, and SLAM data
+111,527 bytes. The PGM header was `440 x 598`; the YAML resolved its image and
+contained resolution `0.05`, origin `[-5.46, -14.9, 0]`, negate `0`, occupied
+threshold `0.65`, and free threshold `0.25`. The authenticated map API returned
+an opaque map ID and metadata including `SAVED_LOCAL_MAP`, resolution, origin,
+dimensions, cell counts, source session/version, and
+`slam_session_state=AVAILABLE`; it did not expose filesystem paths. The final
+UI listed three robot-local saves, each with an available SLAM Toolbox
+session. No resume operation or Map Load acceptance was run in this phase.
+
+The canonical revision-21 YAML and PGM hashes were recorded before Save and
+matched after it:
+
+```text
+warehouse_1.yaml  47626f718be173195e33e26e1676ab5bc797526f7c1b6254d20065a506fc0230
+warehouse_1.pgm   cc1050c62b6cf55edb4180329be803ca103ec9fcdb4845960a544805c6b7c897
+```
+
+`MAP_SAVE=PASS`, `MAP_FILES_VALID=PASS`, `MAP_REGISTRY=PASS`, and
+`CANONICAL_MAP_UNCHANGED=PASS` for these saved local maps.
+
+### Manual refresh worker and final runtime gate
+
+An earlier real Mapping UI hold had a 750 ms main-thread refresh gap. The
+unchanged 400 ms dead-man lease correctly released manual ownership for about
+191 ms before a later refresh reacquired it. The refresh loop has since moved
+to a dedicated control-only WebSocket worker; the lease was not lengthened.
+Targeted worker/channel regressions passed: frontend workflow 19/19 and Django
+dispatch/local-control/bridge tests 48/48. The ROS bridge/readiness mapping
+tests had passed 30/30, and the relevant ROS packages had built successfully.
+`manage.py check`, migration check, and Python compile checks also passed.
+
+The worker-backed production retest and final frontend bundle did not complete.
+TypeScript had completed, but Vite was still building when the session ended;
+there is no successful bundle exit status. `TELEOP_DURING_MAPPING` therefore
+remains `UNVERIFIED` after the worker change, despite earlier scan/map UI and
+Save acceptance.
+
+The previous boot ended without a clean shutdown record (`last -x` reports
+`crash`); its cause cannot be isolated, and its journal already contains
+virtual-disk I/O failures. During the current boot, at 2026-10-01 19:54 local,
+the kernel reported repeated `/dev/sda` `DID_TIME_OUT` and `I/O error` events,
+blocked `jbd2`/`kswapd` tasks, and journald watchdog failures. The project
+stack was stopped successfully with `./scripts/stop_stack.sh`; no project
+Gazebo, ROS launch, Django, or frontend process remains. No more build or live
+acceptance work was started after the storage fault.
+
+`VM_STORAGE_GATE=FAIL`; `TELEOP_DURING_MAPPING=UNVERIFIED`;
+`FRONTEND_BUNDLE=UNVERIFIED`; `COMMIT_PUSH=UNVERIFIED` (the mapping changes
+remain uncommitted in `web-simulation`). `MAPPING_GATE=FAIL` because required
+worker-backed teleop and production-bundle checks remain unverified; the map
+and save portions passed. Do not start Gazebo again until current kernel
+storage health is clear. Map Load, SLAM resume, Nav Goal, Localization, and
+VDA5050 remain outside this mapping checkpoint.

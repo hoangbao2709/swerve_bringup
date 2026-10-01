@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -251,6 +252,17 @@ class Readiness(Node):
         self.filtered_odom_seen = False
         self.scan_seen = False
         self.map_seen = False
+        self.sensor_receive_times = {
+            'scan': deque(maxlen=30),
+            'filtered_odom': deque(maxlen=30),
+        }
+        self.scan_frame_id = None
+        self.scan_stamp = None
+        self.scan_stamp_message = None
+        self.filtered_odom_frame_id = None
+        self.filtered_odom_child_frame_id = None
+        self.filtered_odom_stamp = None
+        self.mapping_tf_error = None
         self.points_seen = False
         self.filtered_points_seen = False
         self.command_owner_seen = False
@@ -299,6 +311,8 @@ class Readiness(Node):
             self.create_client(GetParameters, '/lifecycle_manager_navigation/get_parameters')
             if self.mode == 'navigation' else None)
         self.map_parameters = self.create_client(GetParameters, '/map_server/get_parameters')
+        self.slam_parameters = (self.create_client(GetParameters, '/slam_toolbox/get_parameters')
+                                if self.mode == 'mapping' else None)
         self.bridge_parameters = self.create_client(GetParameters, '/swerve_bridge/get_parameters')
         self.action = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.tf = Buffer()
@@ -457,7 +471,12 @@ class Readiness(Node):
             setattr(self, name, True)
             timeline_name = 'T11_ODOM_READY' if name == 'odom_seen' else 'FILTERED_ODOM_READY'
             self._record_timeline(timeline_name, detail='valid odometry sample')
-            self._stop_monitoring('odom' if name == 'odom_seen' else 'filtered_odom')
+            if name == 'filtered_odom_seen':
+                self.sensor_receive_times['filtered_odom'].append(time.monotonic())
+                self.filtered_odom_frame_id = str(msg.header.frame_id or '')
+                self.filtered_odom_child_frame_id = str(msg.child_frame_id or '')
+                stamp = msg.header.stamp
+                self.filtered_odom_stamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
     def _cloud_cb(self, name, msg):
         if msg.width > 0 and msg.height > 0 and msg.data:
@@ -472,8 +491,33 @@ class Readiness(Node):
             math.isfinite(value) and msg.range_min <= value <= msg.range_max
             for value in msg.ranges)
         if self.scan_seen:
+            self.sensor_receive_times['scan'].append(time.monotonic())
+            self.scan_frame_id = str(msg.header.frame_id or '')
+            stamp = msg.header.stamp
+            self.scan_stamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+            self.scan_stamp_message = stamp
             self._record_timeline('T14_SCAN_READY', detail='valid LaserScan sample')
-            self._stop_monitoring('scan')
+
+    @staticmethod
+    def _sample_hz(receive_times):
+        if len(receive_times) < 2:
+            return None
+        elapsed = receive_times[-1] - receive_times[0]
+        return (len(receive_times) - 1) / elapsed if elapsed > 0.0 else None
+
+    def _print_mapping_sensor_inputs(self):
+        scan_hz = self._sample_hz(self.sensor_receive_times['scan'])
+        odom_hz = self._sample_hz(self.sensor_receive_times['filtered_odom'])
+        print(f'SCAN_HZ_WALL={scan_hz:.3f}' if scan_hz is not None else
+              'SCAN_HZ_WALL=UNVERIFIED reason=need_two_scan_samples', flush=True)
+        print(f'SCAN_FRAME={self.scan_frame_id or "UNKNOWN"} SCAN_STAMP={self.scan_stamp}', flush=True)
+        print(f'ODOM_HZ_WALL={odom_hz:.3f}' if odom_hz is not None else
+              'ODOM_HZ_WALL=UNVERIFIED reason=need_two_filtered_odom_samples', flush=True)
+        print(f'ODOM_FRAME={self.filtered_odom_frame_id or "UNKNOWN"} '
+              f'BASE_FRAME={self.filtered_odom_child_frame_id or "UNKNOWN"} '
+              f'ODOM_STAMP={self.filtered_odom_stamp} '
+              f'SCAN_ODOM_STAMP_SKEW={abs(self.scan_stamp - self.filtered_odom_stamp) if self.scan_stamp is not None and self.filtered_odom_stamp is not None else "UNVERIFIED"}',
+              flush=True)
 
     def _map_cb(self, msg):
         self.map_seen = (
@@ -555,6 +599,115 @@ class Readiness(Node):
             return any(name.lstrip('/') == wanted or name.endswith('/' + wanted)
                        for name, _ in self.get_node_names_and_namespaces())
         except Exception:
+            return False
+
+    def _mapping_runtime_authority(self):
+        try:
+            names = {name.lstrip('/') for name, _namespace in self.get_node_names_and_namespaces()}
+            map_publishers = self.get_publishers_info_by_topic('/map')
+            tf_publishers = self.get_publishers_info_by_topic('/tf')
+        except Exception as exc:
+            return False, f'ros_graph_query_failed:{type(exc).__name__}'
+        conflicts = sorted(names.intersection({
+            'map_server', 'lifecycle_manager_mapping_map', 'ekf_v30e',
+            'v30e_sim_node', 'tag_route_planner',
+        }))
+        map_nodes = {str(row.node_name).lstrip('/') for row in map_publishers}
+        tf_nodes = {str(row.node_name).lstrip('/') for row in tf_publishers}
+        if 'slam_toolbox' not in names:
+            return False, 'slam_toolbox_node_missing'
+        if conflicts:
+            return False, f'incompatible_mapping_nodes_present:{",".join(conflicts)}'
+        if map_nodes != {'slam_toolbox'}:
+            return False, f'/map_publishers_must_be_slam_toolbox_only:{sorted(map_nodes)}'
+        if 'slam_toolbox' not in tf_nodes:
+            return False, f'slam_toolbox_not_publishing_tf:{sorted(tf_nodes)}'
+        return True, 'map=/map publisher=slam_toolbox; /tf publisher=slam_toolbox; no V30E/localization owner'
+
+    def _mapping_slam_parameters(self, deadline):
+        names = [
+            'mode', 'map_frame', 'odom_frame', 'base_frame', 'scan_topic', 'map_name',
+            'resolution', 'map_update_interval', 'minimum_travel_distance',
+            'minimum_travel_heading', 'transform_publish_period',
+            'use_scan_matching', 'do_loop_closing',
+        ]
+        response = self._service_call(
+            self.slam_parameters, min(deadline, time.monotonic() + 3.0),
+            lambda request: setattr(request, 'names', names),
+        )
+        if response is None or len(response.values) != len(names):
+            return False, self.last_service_error or 'slam_toolbox parameters unavailable'
+        values = dict(zip(names, response.values))
+
+        def string(name):
+            value = values[name]
+            return value.string_value if value.type == ParameterType.PARAMETER_STRING else None
+
+        def number(name):
+            value = values[name]
+            if value.type == ParameterType.PARAMETER_DOUBLE:
+                return float(value.double_value)
+            if value.type == ParameterType.PARAMETER_INTEGER:
+                return float(value.integer_value)
+            return None
+
+        def boolean(name):
+            value = values[name]
+            return bool(value.bool_value) if value.type == ParameterType.PARAMETER_BOOL else None
+
+        actual = {
+            'mode': string('mode'), 'map_frame': string('map_frame'),
+            'odom_frame': string('odom_frame'), 'base_frame': string('base_frame'),
+            'scan_topic': string('scan_topic'), 'map_name': string('map_name'),
+            'resolution': number('resolution'),
+            'map_update_interval': number('map_update_interval'),
+            'minimum_travel_distance': number('minimum_travel_distance'),
+            'minimum_travel_heading': number('minimum_travel_heading'),
+            'transform_publish_period': number('transform_publish_period'),
+            'use_scan_matching': boolean('use_scan_matching'),
+            'do_loop_closing': boolean('do_loop_closing'),
+        }
+        expected = {
+            'mode': 'mapping', 'map_frame': 'map', 'odom_frame': 'odom',
+            'base_frame': 'base_footprint', 'scan_topic': '/scan', 'map_name': '/map',
+            'resolution': 0.05, 'map_update_interval': 2.0,
+            'minimum_travel_distance': 0.15, 'minimum_travel_heading': 0.15,
+            'transform_publish_period': 0.02,
+            'use_scan_matching': True, 'do_loop_closing': True,
+        }
+        mismatches = []
+        for name, wanted in expected.items():
+            got = actual[name]
+            if isinstance(wanted, float):
+                valid = got is not None and math.isclose(got, wanted, rel_tol=0.0, abs_tol=1e-6)
+            else:
+                valid = got == wanted
+            if not valid:
+                mismatches.append(f'{name}={got!r}(expected {wanted!r})')
+        detail = json.dumps(actual, sort_keys=True)
+        return not mismatches, ('; '.join(mismatches) if mismatches else detail)
+
+    def _mapping_input_frames_valid(self):
+        if not self.scan_frame_id:
+            self.mapping_tf_error = 'scan_frame_id_empty'
+            return False
+        if self.filtered_odom_frame_id != 'odom':
+            self.mapping_tf_error = f'filtered_odom_frame_mismatch:{self.filtered_odom_frame_id!r}:expected_odom'
+            return False
+        if self.filtered_odom_child_frame_id != 'base_footprint':
+            self.mapping_tf_error = f'filtered_odom_child_frame_mismatch:{self.filtered_odom_child_frame_id!r}:expected_base_footprint'
+            return False
+        if self.scan_stamp_message is None:
+            self.mapping_tf_error = 'scan_stamp_unavailable'
+            return False
+        try:
+            scan_time = rclpy.time.Time.from_msg(self.scan_stamp_message)
+            self.tf.lookup_transform('base_footprint', self.scan_frame_id, scan_time)
+            self.tf.lookup_transform('map', 'odom', scan_time)
+            self.mapping_tf_error = None
+            return True
+        except (TransformException, RuntimeError, TypeError, ValueError) as exc:
+            self.mapping_tf_error = f'{type(exc).__name__}:{str(exc)[:240]}'
             return False
 
     def _report_stage(self, result, name, ok, failure_reason=None,
@@ -1421,6 +1574,26 @@ class Readiness(Node):
                                   'SLAM Toolbox', 'node_missing:/slam_toolbox')
             if not slam_ok:
                 return self._finish(result, 'SLAM Toolbox is not running')
+            owner_ok, owner_detail = self._mapping_runtime_authority()
+            if not self._report_stage(
+                    result, 'SLAM_MAP_ODOM_AUTHORITY', owner_ok,
+                    owner_detail, success_detail=f' detail={owner_detail}'):
+                return self._finish(result, f'SLAM mapping authority invalid: {owner_detail}')
+            parameters_ok, parameters_detail = self._mapping_slam_parameters(deadline)
+            if not self._report_stage(
+                    result, 'SLAM_PARAMETERS_READY', parameters_ok,
+                    parameters_detail, success_detail=f' parameters={parameters_detail}'):
+                return self._finish(result, f'SLAM Toolbox mapping parameters invalid: {parameters_detail}')
+            input_tf_ok = self._spin_until(self._mapping_input_frames_valid, deadline)
+            if not self._report_stage(
+                    result, 'MAPPING_TF_READY', input_tf_ok,
+                    self.mapping_tf_error or 'scan/odom timestamps or frames are not transform-compatible',
+                    success_detail=(f' scan_frame={self.scan_frame_id} odom_frame={self.filtered_odom_frame_id} '
+                                    f'base_frame={self.filtered_odom_child_frame_id} '
+                                    'TF=map->odom->base_footprint->scan_frame at scan stamp')):
+                self._print_mapping_sensor_inputs()
+                return self._finish(result, f'mapping TF invalid: {self.mapping_tf_error}')
+            self._print_mapping_sensor_inputs()
         else:
             # The V30E simulation owns map->odom in navigation mode. Wait for
             # that live transform and the local odom chain before activating

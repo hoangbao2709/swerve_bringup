@@ -1825,3 +1825,49 @@ invalid target or motor-setting failure; inactive interfaces restore saved
 passive fmax. Per-step targets are preallocated. No steering motor servo or
 solver tuning is reintroduced. Runtime regression is pending; no candidate
 Stage B PASS is claimed.
+
+### Current drive constraint candidate regression (2026-10-01)
+
+The drive-only ODE motor constraint was reintroduced with the corrected
+isotropic contact tangent basis. Production navigation reached READY on
+managed ROS domain 0, with all controllers active, Nav2 active, and R01 bridge
+heartbeat fresh. ODE logged the existing drive URDF bounds (effort 200,
+velocity 30); quick/50 remained selected. A focused Rotate Left run and all six
+directions then passed through authenticated Django `/ws`, R01, the manual
+bridge, arbiter, selected command, controllers, and Gazebo. Every hold had
+continuous WEB_MANUAL ownership, no zero samples on manual or selected command,
+correct signed Gazebo displacement, and matching signed odom trend. All STOP
+settling checks passed the unchanged position-derived limits.
+
+| Direction | Gazebo signed displacement | Odom signed displacement | Hold wall / sim s | RTF | STOP wall / sim s | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Forward | +0.756689 m | +0.715041 m | 22.860 / 3.032 | .132635 | 9.610 / 1.236 | PASS |
+| Backward | -0.757228 m | -0.713933 m | 22.538 / 3.033 | .134571 | 8.000 / 1.267 | PASS |
+| Left | +0.621801 m | +0.588873 m | 21.676 / 3.017 | .139183 | 9.578 / 1.231 | PASS |
+| Right | -0.751240 m | -0.708949 m | 22.419 / 3.036 | .135423 | 7.957 / 1.222 | PASS |
+| Rotate Left | +2.066364 rad | +1.735106 rad | 20.351 / 3.021 | .148443 | 7.714 / 1.106 | PASS |
+| Rotate Right | -2.060904 rad | -1.699095 rad | 21.695 / 3.013 | .138881 | 7.681 / 1.161 | PASS |
+
+Position-derived wheel rates at STOP were all at most 0.000805 rad/s across the
+focused Rotate Left and six-direction run (strict limit 0.005); chassis
+position/yaw drift also passed the existing 0.001 m/s
+and rad/s limits. Numeric joint velocity feedback remains classified
+NUMERICAL_FEEDBACK and did not replace position-based acceptance. Per-direction
+maximum client-send, Django receive, bridge receive, manual topic and selected
+topic gaps are preserved in ignored raw trace
+`.runtime/resume-tangent-drive-motor-six.json`; ingress maxima include delayed
+frames correlated to sends during each hold. Largest observed values across
+the six holds were 249.046, 304.288, 290.675, 195.511 and 197.034 ms,
+respectively. Command continuity passed, including for ingress timing samples
+received after a hold boundary.
+
+Safety acceptance on the same source then passed explicit STOP, lease timeout,
+WebSocket disconnect, MANUAL to AUTONOMOUS, E-STOP, clear-without-resume and
+real browser pointer release. Selected zero latencies from each trigger were
+171, 571, 98, 307, 427, 30 and 192 ms, respectively. E-STOP selected output
+became zero 14.5 ms after ROS bridge receipt (the full Web API-to-zero time was
+427 ms); arbiter owner was ESTOP until clear, and no old motion resumed.
+PointerUp emitted the actual wire STOP and produced no browser errors. The
+safety runner's current-source Stage B safety gate is PASS. Along with the six
+fresh direction and per-motion STOP results above, STAGE_B_GATE=PASS. This is
+Gazebo/ROS/Web validation only, not physical robot validation.

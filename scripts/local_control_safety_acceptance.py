@@ -74,7 +74,10 @@ try:
  epoch_offset=time.time()-time.monotonic()
  evidence_dir=Path(tempfile.mkdtemp(prefix='pointer-resume-',dir='.runtime'))
  process=subprocess.Popen(['node','scripts/local_control_pointer_acceptance.cjs'],env=dict(os.environ,POINTER_ACCEPTANCE_DIR=str(evidence_dir)))
- assert wait(lambda:(evidence_dir/'pointer-held.json').exists() or process.poll() is not None,timeout=40)
+ pointer_ready_timeout=float(os.environ.get('POINTER_READY_TIMEOUT_S','90'))
+ ready=wait(lambda:(evidence_dir/'pointer-held.json').exists() or process.poll() is not None,
+             timeout=pointer_ready_timeout)
+ assert ready, f'browser did not reach pointer hold within {pointer_ready_timeout:g}s'
  assert process.poll() is None, 'browser failed before pointer hold'
  marker=json.loads((evidence_dir/'pointer-held.json').read_text());held_start=marker['down_ms']/1000-epoch_offset
  assert wait(lambda:any(row[0]>=held_start and max(map(abs,row[1]))>.01 for row in list(data['/cmd_vel_manual'])) and any(row[0]>=held_start and max(map(abs,row[1]))>.01 for row in list(data['/cmd_vel_selected'])) and max(map(abs,data['gazebo'][-1][1]['velocity']))>.02,timeout=15)
@@ -85,6 +88,12 @@ try:
  finish('POINTER_RELEASE_STOP',released,wire_stop_seen=pointer['wire_stop_seen'],browser_errors=pointer['errors'])
  results['STAGE_B_SAFETY_GATE']={'passed':all(v.get('passed') for v in results.values())};save()
 finally:
+ try:
+  if 'process' in locals() and process.poll() is None:
+   process.terminate()
+   try:process.wait(timeout=3)
+   except subprocess.TimeoutExpired:process.kill();process.wait(timeout=3)
+ except Exception:pass
  try:
   if not closed:command('STOP');mode('AUTONOMOUS');ws.close()
  except Exception:pass

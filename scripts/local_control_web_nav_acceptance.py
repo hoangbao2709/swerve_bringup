@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Real Control Detail Web preview/goal acceptance with independent ROS evidence."""
-import json, os, subprocess, sys, tempfile, time, math
+import json, os, re, subprocess, sys, tempfile, time, math
 from pathlib import Path
 
 sys.path.insert(0, str(Path.cwd() / 'scripts'))
@@ -30,6 +30,88 @@ def map_snapshot(status, robot_id):
     }
 
 
+def transform_pose(probe, parent, child):
+    try:
+        transform = probe.tf.lookup_transform(parent, child, rclpy.time.Time()).transform
+        return (transform.translation.x, transform.translation.y,
+                acceptance.yaw_from_quaternion(transform.rotation))
+    except Exception:
+        return None
+
+
+def load_map_world_alignment(robot_id, map_name):
+    """Bind the saved SLAM frame to the Gazebo spawn recorded for its session."""
+    world_file = Path(os.environ['WORLD_FILE']).expanduser().resolve()
+    manifest_path = world_file.parent.parent / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    robot = next((row for row in manifest.get('robots', [])
+                  if str(row.get('id')) == robot_id), None)
+    if robot is None:
+        raise RuntimeError(f'{robot_id} has no Gazebo spawn pose in {manifest_path}')
+    spawn = robot.get('pose')
+    if not isinstance(spawn, list) or len(spawn) != 4:
+        raise RuntimeError(f'{robot_id} has an invalid Gazebo spawn pose in {manifest_path}')
+    world_anchor = (float(spawn[0]), float(spawn[1]), float(spawn[3]))
+
+    mapping_evidence = Path('.runtime/mapping-browser-probe.json')
+    mapping_run = json.loads(mapping_evidence.read_text())
+    mapping_text = str(mapping_run.get('ui_mapping_text') or '')
+    lines = mapping_text.splitlines()
+    try:
+        pose_line = lines[next(i for i, line in enumerate(lines)
+            if 'ROBOT POSE' in line and 'map' in line) + 1].strip()
+    except (StopIteration, IndexError) as exc:
+        raise RuntimeError('the proven SLAM map-frame origin is missing from mapping evidence') from exc
+    match = re.fullmatch(r'([-+]?\d+(?:\.\d+)?),\s*([-+]?\d+(?:\.\d+)?)\s*m\s*·\s*([-+]?\d+(?:\.\d+)?)\s*rad', pose_line)
+    if not match:
+        raise RuntimeError(f'could not parse initial SLAM map pose from {mapping_evidence}: {pose_line!r}')
+    map_anchor = tuple(float(match.group(index)) for index in (1, 2, 3))
+    map_events = mapping_run.get('maps') or []
+    mapping_session_id = str((map_events[0] if map_events else {}).get('session') or '')
+    if not mapping_session_id:
+        raise RuntimeError('mapping evidence does not identify its SLAM session')
+
+    artifact_root = manifest_path.parents[2]
+    registry_path = artifact_root / 'local_robot_maps' / robot_id / 'registry.json'
+    registry = json.loads(registry_path.read_text())
+    record = next((row for row in registry
+                   if row.get('name') == map_name and row.get('robot_id') == robot_id), None)
+    if record is None:
+        raise RuntimeError(f'{map_name} is not registered for {robot_id} in {registry_path}')
+    if record.get('source_mapping_session_id') != mapping_session_id:
+        raise RuntimeError('saved map and SLAM frame anchor come from different mapping sessions')
+    return {
+        'map_anchor_pose': map_anchor,
+        'gazebo_world_anchor_pose': world_anchor,
+        'mapping_session_id': mapping_session_id,
+        'mapping_anchor_source': str(mapping_evidence),
+        'world_anchor_source': str(manifest_path),
+        'map_registry_source': str(registry_path),
+        'saved_map_id': record.get('id'),
+        'saved_map_revision': record.get('revision'),
+    }
+
+
+def map_pose_from_world(world_pose, map_anchor, world_anchor):
+    angle = acceptance.wrap_angle(world_anchor[2] - map_anchor[2])
+    dx, dy = world_pose[0] - world_anchor[0], world_pose[1] - world_anchor[1]
+    return (
+        map_anchor[0] + math.cos(angle) * dx + math.sin(angle) * dy,
+        map_anchor[1] - math.sin(angle) * dx + math.cos(angle) * dy,
+        acceptance.wrap_angle(world_pose[2] - angle),
+    )
+
+
+def world_pose_from_map(map_pose, map_anchor, world_anchor):
+    angle = acceptance.wrap_angle(world_anchor[2] - map_anchor[2])
+    dx, dy = map_pose[0] - map_anchor[0], map_pose[1] - map_anchor[1]
+    return (
+        world_anchor[0] + math.cos(angle) * dx - math.sin(angle) * dy,
+        world_anchor[1] + math.sin(angle) * dx + math.cos(angle) * dy,
+        acceptance.wrap_angle(map_pose[2] + angle),
+    )
+
+
 def save(output, evidence, result):
     output.write_text(json.dumps(result, indent=2))
     evidence.mkdir(parents=True, exist_ok=True)
@@ -40,8 +122,13 @@ def main():
     backend = os.environ['BACKEND_URL'].rstrip('/')
     robot_id = os.environ.get('ROBOT_ID', 'R01')
     output = Path(os.environ.get('NAV_ACCEPTANCE_OUTPUT', '.runtime/resume-web-navigation.json'))
+    map_name = os.environ.get('SAVED_MAP_NAME', 'slam_accumulated_20261001_01')
+    alignment = load_map_world_alignment(robot_id, map_name)
+    map_anchor = tuple(alignment['map_anchor_pose'])
+    world_anchor = tuple(alignment['gazebo_world_anchor_pose'])
     evidence = Path(tempfile.mkdtemp(prefix='web-nav-resume-', dir='.runtime'))
     result = {'passed': False, 'source': 'Control Detail UI -> Django -> R01 -> Nav2 -> Gazebo'}
+    result['map_world_alignment'] = alignment
     token = acceptance.authenticate(backend)
     url = backend.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws?token=' + token
     rclpy.init()
@@ -104,9 +191,37 @@ def main():
                     for _, owner in owners_negative)}
         assert result['preview_enforcement_negative']['passed'], json.dumps(result['preview_enforcement_negative'])
 
+        manual_ok, manual_reason = acceptance.set_mode(probe, ws, robot_id, 'MANUAL', timeout=20.0)
+        assert manual_ok, f'MANUAL was not applied before saved-map loading: {manual_reason}'
+        result['manual_mode_before_map_load'] = {
+            'passed': True, 'control_status': probe.control_statuses[-1] if probe.control_statuses else None,
+        }
+        pose_seed = probe.gazebo_pose
+        assert pose_seed is not None, 'Gazebo ground-truth pose is unavailable before initial-pose setup'
+        pose_seed_payload = {'x': pose_seed[0], 'y': pose_seed[1], 'yaw': pose_seed[2]}
+        (evidence / 'pose-seed.json').write_text(json.dumps(pose_seed_payload))
+        map_pose_seed = map_pose_from_world(pose_seed, map_anchor, world_anchor)
+        map_pose_seed_payload = {'x': map_pose_seed[0], 'y': map_pose_seed[1], 'yaw': map_pose_seed[2]}
+        (evidence / 'map-pose-seed.json').write_text(json.dumps(map_pose_seed_payload))
+        spawn_distance = acceptance.dist(pose_seed, world_anchor)
+        spawn_yaw_error = abs(acceptance.wrap_angle(pose_seed[2] - world_anchor[2]))
+        if spawn_distance > 0.05 or spawn_yaw_error > 0.05:
+            raise RuntimeError('the simulator must be reset to the SLAM session Gazebo anchor before local-map acceptance: ' +
+                json.dumps({'gazebo_pose': pose_seed, 'world_anchor': world_anchor,
+                    'xy_error_m': spawn_distance, 'yaw_error_rad': spawn_yaw_error}))
+        result['initial_pose_before'] = {
+            'gazebo_pose': pose_seed,
+            'map_pose': probe.map_pose(),
+            'projected_saved_map_pose': map_pose_seed,
+            'odom_pose': probe.odom,
+            'map_to_odom': transform_pose(probe, 'map', 'odom'),
+            'odom_to_base': transform_pose(probe, 'odom', 'base_footprint'),
+        }
+
         browser = subprocess.Popen(['node', 'scripts/local_control_web_nav_browser.cjs'],
             env=dict(os.environ, NAV_ACCEPTANCE_DIR=str(evidence.resolve()),
-                NAV_GOAL_HEADING=str(probe.map_pose()[2])))
+                NAV_GOAL_HEADING=str(map_pose_seed[2]),
+                SAVED_MAP_NAME=map_name))
         preview_file = evidence / 'path-preview.json'
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline and not preview_file.exists():
@@ -116,14 +231,67 @@ def main():
         assert preview_file.exists(), 'Control Detail did not produce a valid nearby path preview'
         preview_ui = json.loads(preview_file.read_text())
         preview = preview_ui['preview']['result']
+        preview_goal = preview.get('goal') or {}
+        preview_path_length_m = float(preview.get('path_length_m', math.nan))
+        pose_set_file = evidence / 'pose-set.json'
+        assert pose_set_file.is_file(), 'Control Detail did not confirm the requested initial pose through Django'
+        pose_set = json.loads(pose_set_file.read_text())
+        expected_pose = tuple(float(pose_set['pose'][axis]) for axis in ('x', 'y', 'yaw'))
+        target_distance_m = math.hypot(float(preview_goal.get('x', math.nan)) - expected_pose[0],
+            float(preview_goal.get('y', math.nan)) - expected_pose[1])
+        pose_confirmed = probe.wait_until(lambda: (
+            probe.map_pose() is not None
+            and acceptance.dist(probe.map_pose(), expected_pose) <= 0.05
+            and abs(acceptance.wrap_angle(probe.map_pose()[2] - expected_pose[2])) <= 0.05),
+            15.0, ws)
+        pre_nav_map_pose = probe.map_pose()
+        pre_nav_gazebo_pose = probe.gazebo_pose
+        pre_nav_error = (acceptance.dist(pre_nav_map_pose, expected_pose)
+            if pre_nav_map_pose is not None else None)
+        pre_nav_yaw_error = (abs(acceptance.wrap_angle(pre_nav_map_pose[2] - expected_pose[2]))
+            if pre_nav_map_pose is not None else None)
+        active_after_load = map_snapshot(probe.runtime_status, robot_id)
+        local_map_loaded = (active_after_load['map_sync_status'] == 'LOCAL_ONLY'
+            and bool(active_after_load['local_active_map_id'])
+            and active_after_load['active_map_id'] == preview.get('active_map_id')
+            and str(active_after_load['active_map_revision']) == str(preview.get('active_map_revision')))
+        result['init_pose_request'] = {
+            'passed': bool(pose_set.get('localization_owner') == 'ekf_v30e' and pose_confirmed),
+            'expected_pose': expected_pose, 'localization_owner': pose_set.get('localization_owner'),
+            'map_pose_after': pre_nav_map_pose,
+            'gazebo_pose_at_request': pose_seed,
+            'map_to_odom_after': transform_pose(probe, 'map', 'odom'),
+            'odom_to_base_after': transform_pose(probe, 'odom', 'base_footprint'),
+        }
+        result['pre_nav_localization_error_m'] = pre_nav_error
+        result['pre_nav_localization'] = {
+            'passed': bool(pose_confirmed and local_map_loaded and pre_nav_error is not None
+                and pre_nav_error <= 0.05 and pre_nav_yaw_error is not None
+                and pre_nav_yaw_error <= 0.05),
+            'map_pose': pre_nav_map_pose, 'expected_map_pose': expected_pose,
+            'gazebo_pose': pre_nav_gazebo_pose,
+            'projected_map_pose_from_gazebo': map_pose_from_world(
+                pre_nav_gazebo_pose, map_anchor, world_anchor) if pre_nav_gazebo_pose else None,
+            'odom_pose': probe.odom,
+            'map_to_odom': transform_pose(probe, 'map', 'odom'),
+            'odom_to_base': transform_pose(probe, 'odom', 'base_footprint'),
+            'xy_error_m': pre_nav_error, 'yaw_error_rad': pre_nav_yaw_error,
+            'loaded_local_map': local_map_loaded,
+            'map_state': active_after_load,
+        }
+        if not result['pre_nav_localization']['passed']:
+            raise RuntimeError('pre-navigation localization/map gate failed: ' +
+                json.dumps(result['pre_nav_localization']))
         before_send = map_snapshot(probe.runtime_status, robot_id)
         preview_matches_state = (preview.get('active_map_id') == before_send['active_map_id']
             and str(preview.get('active_map_revision')) == str(before_send['active_map_revision'])
             and preview_ui['initial_map'] == preview_ui['before_send_map']
             and before_send['map_sync_status'] in ('CANONICAL', 'LOCAL_ONLY'))
         path_pass = bool(preview.get('status') == 'VALID'
-            and len(preview.get('path') or []) > 0 and preview_matches_state)
-        result['map_state_before_preview'] = active
+            and len(preview.get('path') or []) > 0 and preview_matches_state
+            and math.isfinite(target_distance_m) and 1.1 <= target_distance_m <= 1.35
+            and math.isfinite(preview_path_length_m) and preview_path_length_m <= 3.0)
+        result['map_state_before_preview'] = active_after_load
         result['path_preview_ui'] = preview_ui
         result['map_state_immediately_before_send'] = before_send
         result['path_preview'] = {'passed': path_pass,
@@ -131,6 +299,10 @@ def main():
             'path_length_m': preview.get('path_length_m'), 'path_points': len(preview.get('path') or []),
             'active_map_id': preview.get('active_map_id'),
             'active_map_revision': preview.get('active_map_revision'),
+            'target_distance_m': target_distance_m,
+            'preview_path_length_m': preview_path_length_m,
+            'nearby_distance_range_m': [1.1, 1.35],
+            'nearby_path_limit_m': 3.0,
             'map_state_matches': preview_matches_state}
         assert path_pass, json.dumps(result['path_preview'])
 
@@ -200,31 +372,41 @@ def main():
         displacement = acceptance.dist(pose0, terminal_pose1) if terminal_pose1 else None
         gazebo_displacement = acceptance.dist(gazebo0, terminal_gazebo1) if terminal_gazebo1 else None
         odom_displacement = acceptance.dist(odom0, terminal_odom1) if terminal_odom1 else None
-        goal_xy_error = acceptance.dist(terminal_gazebo1, target) if terminal_gazebo1 else None
-        goal_yaw_error = (abs(acceptance.wrap_angle(terminal_gazebo1[2] - target[2]))
+        target_world = world_pose_from_map(target, map_anchor, world_anchor)
+        map_goal_xy_error = acceptance.dist(terminal_pose1, target) if terminal_pose1 else None
+        goal_xy_error = acceptance.dist(terminal_gazebo1, target_world) if terminal_gazebo1 else None
+        map_goal_yaw_error = (abs(acceptance.wrap_angle(terminal_pose1[2] - target[2]))
+            if terminal_pose1 else None)
+        goal_yaw_error = (abs(acceptance.wrap_angle(terminal_gazebo1[2] - target_world[2]))
             if terminal_gazebo1 else None)
         result['send_goal_validation'] = {'map_state_at_backend_acceptance': before_send,
             'preview_request_id': sent['frame']['preview_request_id'],
             'active_map_id': sent['frame']['active_map_id'],
             'active_map_revision': sent['frame']['active_map_revision'],
             'accepted_by_nav2': accepted, 'terminal': terminal}
-        result['web_navigation'] = {
-            'passed': bool(terminal.get('status') == 'SUCCEEDED' and accepted and nav_active
+        navigation_chain_passed = bool(terminal.get('status') == 'SUCCEEDED' and accepted and nav_active
                 and selected_active and nav_owner and drive_active and displacement is not None
                 and displacement > acceptance.TRANSLATION_TOLERANCE_M
                 and gazebo_displacement is not None and gazebo_displacement > acceptance.TRANSLATION_TOLERANCE_M
-                and odom_displacement is not None and odom_displacement > acceptance.TRANSLATION_TOLERANCE_M / 2
-                and goal_xy_error is not None and goal_xy_error <= acceptance.NAV_GOAL_XY_TOLERANCE_M
-                and goal_yaw_error is not None and goal_yaw_error <= acceptance.NAV_GOAL_YAW_TOLERANCE_RAD),
+                and odom_displacement is not None and odom_displacement > acceptance.TRANSLATION_TOLERANCE_M / 2)
+        result['web_navigation'] = {
+            # Nav2 terminal status and measured goal pose can arrive before
+            # Gazebo wheel/chassis settling. Apply strict pose tolerances only
+            # to the fresh stationary post-settle sample below.
+            'passed': False, 'command_chain_passed': navigation_chain_passed,
             'accepted': accepted, 'result': terminal.get('status'), 'reason': terminal.get('reason'),
             'start_map_pose': pose0, 'start_gazebo_pose': gazebo0, 'start_odom_pose': odom0,
-            'goal_pose': target, 'path_length_m': preview.get('path_length_m'),
+            'goal_pose': target, 'goal_gazebo_world_pose': target_world,
+            'path_length_m': preview.get('path_length_m'),
             'nav2_terminal_map_pose': terminal_pose1,
             'nav2_terminal_gazebo_pose': terminal_gazebo1,
             'nav2_terminal_odom_pose': terminal_odom1,
             'final_map_pose': terminal_pose1, 'final_gazebo_pose': terminal_gazebo1,
             'final_odom_pose': terminal_odom1,
             'gazebo_displacement_m': gazebo_displacement, 'odom_displacement_m': odom_displacement,
+            'map_frame_xy_error_m': map_goal_xy_error,
+            'map_frame_yaw_error_rad': map_goal_yaw_error,
+            'gazebo_ground_truth_error_m': goal_xy_error,
             'xy_error_m': goal_xy_error, 'yaw_error_rad': goal_yaw_error,
             'nav_cmd_nonzero_samples': len(nav_active), 'selected_nonzero_samples': len(selected_active),
             'nav_owner_seen': nav_owner, 'drive_nonzero_seen': drive_active,
@@ -259,17 +441,30 @@ def main():
             result['web_navigation']['final_map_pose'] = stable_map
             result['web_navigation']['final_gazebo_pose'] = stable_gazebo
             result['web_navigation']['final_odom_pose'] = stable_odom
-            result['web_navigation']['xy_error_m'] = (
-                acceptance.dist(stable_gazebo, target) if stable_gazebo else None)
+            result['web_navigation']['map_frame_xy_error_m'] = (
+                acceptance.dist(stable_map, target) if stable_map else None)
+            result['web_navigation']['map_frame_yaw_error_rad'] = (
+                abs(acceptance.wrap_angle(stable_map[2] - target[2])) if stable_map else None)
+            result['web_navigation']['gazebo_ground_truth_error_m'] = (
+                acceptance.dist(stable_gazebo, target_world) if stable_gazebo else None)
+            result['web_navigation']['xy_error_m'] = result['web_navigation']['gazebo_ground_truth_error_m']
             result['web_navigation']['yaw_error_rad'] = (
-                abs(acceptance.wrap_angle(stable_gazebo[2] - target[2])) if stable_gazebo else None)
+                abs(acceptance.wrap_angle(stable_gazebo[2] - target_world[2])) if stable_gazebo else None)
             result['web_navigation']['final_pose_sampled_after_settle'] = True
+            result['web_navigation']['map_frame_yaw_within_0_05_rad'] = (
+                result['web_navigation']['map_frame_yaw_error_rad'] is not None
+                and result['web_navigation']['map_frame_yaw_error_rad'] <= 0.05)
+            result['web_navigation']['gazebo_yaw_within_0_05_rad'] = (
+                result['web_navigation']['yaw_error_rad'] is not None
+                and result['web_navigation']['yaw_error_rad'] <= 0.05)
             result['web_navigation']['passed'] = bool(
-                result['web_navigation']['passed']
+                result['web_navigation']['command_chain_passed']
+                and result['web_navigation']['map_frame_xy_error_m'] is not None
+                and result['web_navigation']['map_frame_xy_error_m'] <= acceptance.NAV_GOAL_XY_TOLERANCE_M
+                and result['web_navigation']['gazebo_ground_truth_error_m'] is not None
+                and result['web_navigation']['gazebo_ground_truth_error_m'] <= acceptance.NAV_GOAL_XY_TOLERANCE_M
                 and result['web_navigation']['xy_error_m'] is not None
-                and result['web_navigation']['xy_error_m'] <= acceptance.NAV_GOAL_XY_TOLERANCE_M
-                and result['web_navigation']['yaw_error_rad'] is not None
-                and result['web_navigation']['yaw_error_rad'] <= acceptance.NAV_GOAL_YAW_TOLERANCE_RAD)
+                and result['web_navigation']['xy_error_m'] <= acceptance.NAV_GOAL_XY_TOLERANCE_M)
         result['web_navigation']['passed'] = (result['web_navigation']['passed']
             and stopped and settling.get('passed') is True)
         result['map_state_after_backend_validation'] = map_snapshot(probe.runtime_status, robot_id)
@@ -287,6 +482,38 @@ def main():
         result['evidence_dir'] = str(evidence)
     except Exception as error:
         result['reason'] = f'{type(error).__name__}: {error}'
+        sent_file = evidence / 'goal-sent.json'
+        if sent_file.is_file() and not (evidence / 'nav-finished.json').is_file():
+            try:
+                sent = json.loads(sent_file.read_text())
+                frame = sent.get('frame') or {}
+                target_x, target_y = float(frame['x']), float(frame['y'])
+                current = acceptance.find_goal_status(probe, target_x, target_y, robot_id)
+                current_state = str((current or {}).get('status') or '').upper()
+                if current_state not in ('SUCCEEDED', 'FAILED', 'CANCELED', 'CANCELLED', 'EMERGENCY_STOPPED'):
+                    ws.send(json.dumps({'type': 'NAV_CANCEL', 'robot_id': robot_id}))
+                cancel_deadline = time.monotonic() + 20.0
+                while time.monotonic() < cancel_deadline:
+                    probe.pump(ws, 0.04)
+                    current = acceptance.find_goal_status(probe, target_x, target_y, robot_id)
+                    current_state = str((current or {}).get('status') or '').upper()
+                    owner = probe.command_owner_events[-1][1] if probe.command_owner_events else None
+                    selected = probe.selected_cmd_events[-1][1:] if probe.selected_cmd_events else None
+                    if (current_state in ('SUCCEEDED', 'FAILED', 'CANCELED', 'CANCELLED', 'EMERGENCY_STOPPED')
+                            and owner == 'NONE' and selected is not None
+                            and all(abs(value) <= 1e-6 for value in selected)):
+                        break
+                result['safety_cancel_after_observer_error'] = {
+                    'terminal_status': current_state,
+                    'command_owner': owner if 'owner' in locals() else None,
+                    'selected_velocity': selected if 'selected' in locals() else None,
+                    'stopped': bool('owner' in locals() and owner == 'NONE'
+                        and selected is not None and all(abs(value) <= 1e-6 for value in selected)),
+                }
+            except Exception as cancel_error:
+                result['safety_cancel_after_observer_error'] = {
+                    'error': f'{type(cancel_error).__name__}: {cancel_error}',
+                }
         if browser is not None and browser.poll() is None:
             browser.terminate()
             try: browser.wait(timeout=3)

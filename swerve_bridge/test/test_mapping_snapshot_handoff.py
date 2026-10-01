@@ -192,6 +192,32 @@ def test_confirming_local_map_wakes_snapshot_worker():
     bridge.map_snapshot_worker.wake.assert_called_once_with()
 
 
+def test_requesting_global_view_replays_cached_map_for_late_client():
+    bridge = object.__new__(SwerveBridge)
+    bridge.detail_view = 'LIDAR_2D'
+    bridge.detail_view_epoch = 2
+    bridge.lidar_frame_buffer = SimpleNamespace(clear=Mock())
+    bridge.outbound = SimpleNamespace(discard_views=Mock())
+    bridge.last_web_cloud_source_stamp = 'old-cloud'
+    bridge.last_scan_publish_monotonic = 4.0
+    bridge.last_cloud_publish_monotonic = 5.0
+    bridge.view_timing = {}
+    bridge.web_cloud_epoch = 'bridge-epoch'
+    bridge.robot_id = 'R01'
+    bridge.now = Mock(return_value=10.0)
+    bridge.send = Mock(return_value=True)
+    bridge.visualization_worker = SimpleNamespace(wake=Mock())
+    bridge.map_snapshot_worker = SimpleNamespace(wake=Mock())
+    bridge.last_sent_map_signature = 'already-sent-to-another-client'
+
+    assert bridge.set_detail_view('GLOBAL', {'request_id': 'new-client-view'}) is True
+
+    assert bridge.last_sent_map_signature is None
+    bridge.map_snapshot_worker.wake.assert_called_once_with()
+    bridge.visualization_worker.wake.assert_called_once_with()
+    assert bridge.send.call_args.args[0]['type'] == 'ROBOT_DETAIL_VIEW_STATUS'
+
+
 def test_mapping_map_identity_is_session_scoped_and_never_canonical():
     bridge = object.__new__(SwerveBridge)
     bridge.runtime_state = 'MAPPING'

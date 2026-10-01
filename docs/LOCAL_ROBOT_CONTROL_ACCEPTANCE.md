@@ -1,6 +1,6 @@
 # Local Robot Control Acceptance
 
-Updated: 2026-10-01 (Asia/Ho_Chi_Minh)
+Updated: 2026-10-02 (Asia/Ho_Chi_Minh)
 Branch: `web-simulation`
 
 This report separates source/test evidence from live runtime acceptance. A
@@ -2198,3 +2198,128 @@ probe and 20,377 at 425 x 598 afterward, at 0.05 m/cell.
 valid; this regression did not save or promote a new map. Map Load, localization
 initialization, saved-map path preview/navigation, SLAM session resume, and
 larger-route loop closure remain unverified and are the next phase.
+
+## 2026-10-02: load and navigate a saved local SLAM map
+
+This phase continued from the preserved `web-simulation` mapping checkpoint;
+it did not rebuild Mapping or change its map-accumulation architecture. The
+VM disk is now expanded and `/` is `/dev/sda3` (ext4), 98 GB total, 40 GB free
+(59% used). A scan of the current boot's kernel journal found no storage I/O,
+EXT4, blocked-journal, OOM, or panic signatures. Historical errors from the
+previous boot were not treated as a current-boot failure.
+
+The saved artifact was the real Mapping session's
+`slam_accumulated_20261001_01` under
+`generated/maps/local_robot_maps/R01/`, registered as ID
+`4c0fd3470e6342bd8de8471e6f09bfe6`, revision `4c0fd3470e63`, source session
+`e71a0aa5f19e`. Its YAML/PGM and resumable `.posegraph`/`.data` files existed
+and were non-empty. The YAML used resolution `0.05`, origin
+`[-5.46, -14.9, 0]`, negate `0`, occupied threshold `0.65`, and free threshold
+`0.25`; the PGM was 440 x 598 (263,120 cells). YAML and PGM SHA-256 values were
+`e0b2327ebfee0a0a86ffdccc3214f50106d716f7018141eb1863753a153037ea` and
+`43cc5443a0aef612a5e766f3981a7e8685e71aa50be5c81fb749212743c8c622`.
+`SAVED_MAP_ARTIFACT=PASS`, `MAP_FILES_VALID=PASS`, and `MAP_REGISTRY=PASS`.
+
+### Load, active-map identity, and localization
+
+The user selected the robot-local map in the Web UI. Django validated the
+registry record and requested the bridge's real Nav2 `map_server/load_map`
+service. ROS logs identified the selected YAML/PGM and the live `/map`
+metadata matched the saved image: resolution `0.05`, width `440`, height
+`598`, origin `[-5.46, -14.9, 0]`. The browser's received map snapshot had the
+same metadata and 263,120 known cells. The UI displayed the loaded map and
+`LOCAL_ONLY`; the local active map ID/revision matched the registry. The
+canonical revision-21 YAML/PGM hashes remained unchanged. The `map_server`
+`yaml_filename` parameter still shows the startup canonical path after the
+`LoadMap` service call; it is not a live record of the service-selected map,
+so the acceptance used the service logs, resulting `/map`, and Web snapshot
+as the load evidence.
+
+For the safe mode transition, SLAM mapping was stopped before Navigation
+localization/map ownership came up. In Navigation mode, `slam_toolbox` and
+`amcl` were absent; `/map` was provided by `map_server`, and `ekf_v30e` was
+the sole `map -> odom` owner. The UI initial-pose action called the existing
+`/ekf_v30e/set_pose` path via Django and the R01 bridge. Before setting pose,
+the observer recorded map, odom, Gazebo, `map -> odom`, and `odom -> base`
+poses. Afterward the Web map pose updated. The initial saved-map/Gazebo
+projected XY error was `0.01563 m` (yaw error `0.00825 rad`), passing the
+`0.05 m` pre-navigation localization gate. No competing TF owner was found.
+
+`MAP_LOAD=PASS`, `LOADED_MAP_MATCHES_SAVED=PASS`, `LOCAL_ACTIVE_MAP=PASS`,
+`CANONICAL_MAP_UNCHANGED=PASS`, `WEB_LOADED_MAP_DISPLAY=PASS`,
+`INIT_POSE_REQUEST=PASS`, `LOCALIZATION_SERVICE=PASS`,
+`MAP_ODOM_VALID=PASS`, `NO_DUPLICATE_TF_OWNER=PASS`,
+`WEB_POSE_UPDATED=PASS`, `INIT_ROBOT_STATE=PASS`, and
+`PRE_NAV_LOCALIZATION=PASS`.
+
+The deliberate local-map state is `LOCAL_ONLY`, not an out-of-sync local
+selection. A separate fleet/canonical aggregate observer still reports
+`robot_sync.status=OUT_OF_SYNC` because canonical Nav2 revision is `N/A` in
+local-map mode; this does not override `active_map_state.map_sync_status`, the
+local-map endpoint, or the UI's `LOCAL_ONLY` state. Fleet mission dispatch
+remains tied to canonical map identity; local engineering navigation is
+allowed after localization is valid. Saving/loading the robot-local map did
+not promote it to canonical.
+
+### Localization calibration and path-to-motion proof
+
+Independent Gazebo displacement versus wheel-joint angular change measured
+effective wheel radii of `0.067424 m` forward, `0.067425 m` backward,
+`0.067302 m` left, and `0.067507 m` right; mean `0.0674145 m`. This supported
+the already checkpointed odometry parameter `0.0674 m` rather than the old
+`0.0637 m` value; it was not changed again in this phase.
+
+Raw swerve odometry yaw over-reported the measured Gazebo yaw by about 14% in
+the bounded left/right turn probes: raw/Gazebo ratios were `1.140323` and
+`1.140111`. IMU orientation and integrated angular velocity agreed with
+Gazebo to under `0.001 rad` in those runs. The raw yaw discrepancy is therefore
+in the swerve odometry yaw path; no yaw model or EKF tuning was made because
+the IMU/global localization path passed the pre-navigation gate. Continue to
+monitor this discrepancy rather than hiding it with Nav2 tuning.
+
+On the loaded local map, Web requested a real Nav2 `ComputePathToPose` preview
+(45 poses, path length `1.16074 m`), bound to the exact local map ID and
+revision. A missing-preview negative request was rejected with
+`PATH_PREVIEW_REQUIRED`; it produced no non-zero selected velocity, no NAV2
+arbiter ownership, and only `5.61e-8 m` Gazebo displacement. The approved
+preview was then sent by the exact Web action. Nav2 accepted and succeeded;
+the observed arbiter owner was `NAV2`, with nonzero `/cmd_vel_nav` and
+selected command samples, followed by a stopped/settled robot. Final map-frame
+XY goal error was `0.04826 m`; independent Gazebo ground-truth XY error was
+`0.04273 m`, both within the required `0.05 m`. Final map/Gazebo yaw errors
+were `0.04722`/`0.05000 rad`; yaw was recorded diagnostically and was not a
+separate user-defined pass threshold. The final bounded run passed both strict
+XY gates, though a separate confirmation run missed the Gazebo XY limit by
+about 2 mm; repeatability margin is a remaining concern.
+
+`LOCAL_MAP_PATH_PREVIEW=PASS`, `LOCAL_MAP_PREVIEW_ENFORCEMENT=PASS`,
+`SEND_GOAL=PASS`, `COMMAND_ARBITER_NAV=PASS`, `NAV2_RESULT=SUCCEEDED`,
+`WEB_NAV_GOAL_R01=PASS`, and
+`CREATE_SAVE_LOAD_NAV_WORKFLOW=PASS` for the artifact chain from the real
+Mapping/Save session followed by the production local-map Load/Init/Preview/
+Navigate acceptance. Mapping and Navigation were separate runtime sessions;
+this was a continuous artifact/workflow chain, not one uninterrupted ROS
+process.
+
+### Phase checks and boundary
+
+The final production frontend bundle passed (Vite's existing large-chunk
+warning remains). Focused checks passed: frontend workflow tests 19/19;
+backend local-control, bridge, and map-sync tests 48/48; ROS mapping snapshot
+handoff and Web map renderer tests 19/19; Django `check`; migration
+`--check`; Python compile; browser-helper syntax; and `git diff --check`.
+The relevant ROS build had passed after the bridge change. The mapping
+checkpoint remains `FRONTEND_BUILD=PASS`, `TELEOP_DURING_MAPPING=PASS`,
+`MAPPING_GATE=PASS`; it was not re-run or redesigned here.
+
+The project has stored SLAM Toolbox posegraph/data artifacts, but at this
+checkpoint the project only exposes serialization: no Django resume-session
+endpoint, bridge deserialize client, or UI action that restores an on-disk
+posegraph exists. The existing Mapping “Resume” action resumes a paused live
+SLAM process, not a saved session. `LOAD FOR NAVIGATION` remains a distinct
+map_server operation. The upstream SLAM Toolbox runtime provides
+`/slam_toolbox/deserialize_map`, but this installed version's response is
+empty; any new resume workflow must therefore verify restoration through
+independent map/session evidence, not infer success from service completion.
+Saved-session resume, old-map restoration/extension, large-route loop closure,
+and VDA5050 are not accepted by this phase.

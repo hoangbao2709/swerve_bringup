@@ -1987,7 +1987,7 @@ Current source checks: frontend targeted tests **21/21 PASS**, frontend
 TypeScript/Vite production build **PASS** (existing large-bundle warning);
 backend targeted tests **21/21 PASS**, `manage.py check` and
 `makemigrations --check --dry-run` **PASS**; bridge/transport/worker/process
-tests **27/27 PASS**, shell/setup regression tests **9/9 PASS**; ROS bridge
+tests **27/27 PASS**, shell/setup regression tests **10/10 PASS**; ROS bridge
 `colcon build --base-paths swerve_bridge --packages-select swerve_bridge
 --symlink-install` **PASS**, one package actually built. Python compile,
 JavaScript syntax, shell syntax and `git diff --check` **PASS**.
@@ -2045,3 +2045,12 @@ but these remaining tails must not be hidden with larger leases, weaker gates,
 synthetic sensor frames or a success-only report. Nav Goal, Mapping,
 Localization and VDA5050 remain paused. This validates Gazebo/ROS/Web only,
 not a physical robot.
+
+Handoff health: fresh direct ROS subscription confirms selected Twist zero,
+owner NONE and applied AUTONOMOUS. A typed echo succeeded after an untyped CLI
+graph query failed to discover the topic; that was not a missing publisher.
+The bridge-only reload is registered in ignored `.runtime/ros_bridge.pid`;
+scoped ownership checks and `stop_stack.sh` cover this optional separate group
+so it cannot be left behind on the next stack stop. Normal ROS launch ownership
+is unchanged. No full startup/stop acceptance was repeated for this utility
+change; targeted ownership/shell regression tests passed.

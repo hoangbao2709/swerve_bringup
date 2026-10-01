@@ -158,6 +158,7 @@ stack_owned_pid() {
     backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py runserver"* || "$cmd" == *"$STACK_ROOT/waretwin/backend/run.sh"* ]] ;;
     frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* ]] ;;
     ros) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"ros_stack_supervisor.py"* || "$cmd" == *"system.launch.py"* || "$cmd" == *"ros2 launch swerve_bringup"* ]] ;;
+    ros_bridge) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"$STACK_ROOT/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node"* ]] ;;
     *) return 1 ;;
   esac
 }
@@ -182,6 +183,7 @@ stack_owned_group() {
       backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py"* || "$cmd" == *"run.sh"* ]] && return 0 ;;
       frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* ]] && return 0 ;;
       ros) [[ "$cwd" == "$STACK_ROOT" || "$cmd" == *"$STACK_ROOT/install/"* ]] && [[ "$cmd" == *"ros_stack_supervisor.py"* || "$cmd" == *"gzserver"* || "$cmd" == *"gzclient"* || "$cmd" == *"rviz2"* || "$cmd" == *"ros2 launch swerve_bringup"* || "$cmd" == *"system.launch.py"* || "$cmd" == *"swerve_bridge"* || "$cmd" == *"slam_toolbox"* || "$cmd" == *"nav2_"* ]] && return 0 ;;
+      ros_bridge) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"$STACK_ROOT/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node"* ]] && return 0 ;;
     esac
   done < <(ps -eo pid=,pgid= 2>/dev/null | awk -v group="$pgid" '$2 == group { print $1 }')
   return 1

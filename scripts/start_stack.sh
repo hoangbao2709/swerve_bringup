@@ -92,11 +92,11 @@ if ! stack_valid_ros_domain "$ROS_DOMAIN_ID_SELECTED"; then
   exit 2
 fi
 
-if stack_owned_pid backend || stack_owned_pid frontend || stack_owned_pid ros; then
+if stack_owned_pid backend || stack_owned_pid frontend || stack_owned_pid ros || stack_owned_pid ros_bridge; then
   echo 'A WareTwin stack process is already running. Use status_stack.sh or stop_stack.sh first.' >&2
   exit 1
 fi
-if stack_owned_group backend || stack_owned_group frontend || stack_owned_group ros; then
+if stack_owned_group backend || stack_owned_group frontend || stack_owned_group ros || stack_owned_group ros_bridge; then
   echo 'A WareTwin stack process group is already running. Use stop_stack.sh first.' >&2
   exit 1
 fi

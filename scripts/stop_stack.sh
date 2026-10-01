@@ -6,7 +6,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/scripts/stack_common.sh"
 
 stop_failures=0
-for component in ros frontend backend; do
+# A bridge-only hot reload may have a separately registered process group.
+# Normal production launch still owns its bridge inside the ROS group.
+for component in ros_bridge ros frontend backend; do
   if stack_owned_pid "$component" || stack_owned_group "$component"; then
     pgid="$(stack_pgid "$component" 2>/dev/null || true)"
     echo "Stopping $component"

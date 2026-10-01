@@ -81,3 +81,21 @@ def test_backend_uses_worktree_python_not_copied_activate_path():
     assert 'source .venv/bin/activate' not in source
     assert 'pydantic, wsaccel' in source
     assert '"$BACKEND_PYTHON_PATH" manage.py runserver' in source
+
+
+def test_bridge_hot_reload_registration_checks_worktree_and_real_executable():
+    output = _run_bash('''
+source scripts/stack_common.sh
+stack_pid() { echo "$$"; }
+stack_cmdline() { echo "python3 $STACK_ROOT/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node"; }
+stack_owned_pid ros_bridge && echo owned
+stack_cmdline() { echo "python3 /other/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node"; }
+if stack_owned_pid ros_bridge; then exit 1; fi
+echo unrelated-preserved
+''')
+    assert output.splitlines() == ['owned', 'unrelated-preserved']
+    stop = (ROOT / 'scripts/stop_stack.sh').read_text()
+    assert 'for component in ros_bridge ros frontend backend;' in stop
+    start = (ROOT / 'scripts/start_stack.sh').read_text()
+    assert 'stack_owned_pid ros_bridge' in start
+    assert 'stack_owned_group ros_bridge' in start

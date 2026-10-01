@@ -1871,3 +1871,55 @@ PointerUp emitted the actual wire STOP and produced no browser errors. The
 safety runner's current-source Stage B safety gate is PASS. Along with the six
 fresh direction and per-motion STOP results above, STAGE_B_GATE=PASS. This is
 Gazebo/ROS/Web validation only, not physical robot validation.
+
+### Current Web Nav resume attempt (2026-10-01)
+
+The production stack remained READY on managed domain 0 with a fresh R01
+heartbeat. Map state was sampled at READY, before preview, after preview,
+immediately before Send Goal, and at backend acceptance. Every sample was
+canonical map `CANONICAL`, revision 21; ROS, Gazebo, Nav2, and tag-map
+revisions were all 21, TF health was true, and sync was `SYNCED`. No map
+identity/revision transition or TF-health error occurred. Thus the prior
+`MAP_OUT_OF_SYNC` behavior did not recur in this run.
+
+The real Control Detail browser produced a valid 30-point, 0.768130 m path on
+revision 21 and sent its bound preview request through Django/R01. A negative
+missing-preview request was rejected as `PATH_PREVIEW_REQUIRED`; selected
+nonzero samples and NAV2 ownership were both zero, with only 0.000010 m
+Gazebo displacement. PATH_PREVIEW and PATH_PREVIEW_ENFORCEMENT therefore
+PASS.
+
+Nav2 accepted the browser goal and returned SUCCEEDED. NAV2 command, selected
+command, NAV2 ownership, drive output, Gazebo movement, and odom movement were
+all observed. Goal yaw error was 0.00918 rad. However the latched Gazebo XY
+error was 0.10297 m, over the unchanged 0.05 m acceptance limit. A separate
+stationary post-settle observation measured map pose `(14.66157, 7.37550)` and
+Gazebo pose `(14.63450, 7.51117)` for goal `(14.63418, 7.39909)`: the map-frame
+pose was about 0.036 m from the goal while Gazebo's world pose remained about
+0.112 m away. The same map-vs-Gazebo Y offset was already about 0.103 m before
+Send Goal (map Y 6.81844, Gazebo Y 6.92100). Wheel-position settling passed;
+this is not residual motion.
+
+Source audit identifies `ekf_v30e` as the sole map->odom TF owner, using
+`/tag_navigation/global_measurement` for absolute V30E corrections and wheel
+velocity/IMU between them. No competing TF publisher or map revision mismatch
+was found. The exact localization cause of the observed map/Gazebo divergence
+is not yet proven; do not infer canonical map validity from map-sync metadata
+alone. No thresholds were changed. `SEND_GOAL` and `COMMAND_ARBITER_NAV` are
+observed PASS, but `WEB_NAV_GOAL_R01=FAIL` for final Gazebo XY tolerance, so
+the Phase 3 gate is FAIL and Mapping/Map Save/Load/Init Pose/VDA5050 remain
+NOT RUN. Raw browser screenshots and traces are retained under ignored
+`.runtime/web-nav-resume-*` and `.runtime/resume-web-navigation.json`.
+
+The ROS heartbeat callback now enqueues `_SOCKET_PING`; `ws.ping()` executes
+on the existing outbound WebSocket worker. Regression coverage is in
+`tests/test_manual_transport.py` and is included in the source-test results
+recorded at the end of this resume run.
+
+Current resume-run source checks: `tests/test_manual_transport.py` 7/7 PASS
+after sourcing `scripts/ros_env.sh`; navigation acceptance Python
+`py_compile` PASS; Playwright helper `node --check` PASS; `git diff --check`
+PASS. A first test invocation without the ROS workspace environment failed
+imports (`swerve_bringup` unavailable); it was rerun in the supported ROS
+environment and passed. No localization/ROS source was modified in this
+resume run, so no ROS rebuild was needed.

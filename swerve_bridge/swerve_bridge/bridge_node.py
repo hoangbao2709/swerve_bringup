@@ -715,6 +715,12 @@ class SwerveBridge(Node):
     def manual_timer(self):
         self.trace_control_callback('manual_timer')
         with self.incoming.lock:
+            # Ingress may already be fresh while the separate command timer
+            # has not run. Apply through the same validator before deciding
+            # the old lease expired; pending safety barriers take precedence.
+            pending = self.incoming.take_pending_manual()
+            if pending is not None:
+                self._apply_manual_command(pending)
             self._manual_timer()
 
     def _manual_timer(self):

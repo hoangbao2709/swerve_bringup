@@ -45,3 +45,11 @@ class ControlMailbox:
     def current(self, data):
         return (data.get('_generation') == self.generation
                 and data.get('_sequence') == self.manual_sequence)
+
+    def take_pending_manual(self):
+        """Allow the lease timer to use fresh ingress without passing a barrier."""
+        with self.lock:
+            if self.controls:
+                return None
+            data, self.manual = self.manual, None
+            return data

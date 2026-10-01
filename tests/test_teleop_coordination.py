@@ -103,7 +103,7 @@ def test_generation_invalidation_emits_final_zero_then_releases_idle_source():
     sent = []
     bridge = SimpleNamespace(incoming=mailbox, manual_generation=0,
         mode_transition_state='APPLIED', manual_twist=old, manual_deadline=999.,
-        emergency_stop_active=False, control_mode='MANUAL',
+        emergency_stop_active=False, control_mode='MANUAL', local_map_load_pending=False,
         trace_control_callback=lambda _: None,
         cmd_pub=SimpleNamespace(publish=sent.append))
     bridge._manual_timer = lambda: SwerveBridge._manual_timer(bridge)
@@ -115,6 +115,41 @@ def test_generation_invalidation_emits_final_zero_then_releases_idle_source():
     owner, values = choose_command(now=1., timeout=.5, mode='MANUAL',
         sources={'WEB_MANUAL': ((0., 0., 0.), 0.)})
     assert owner == 'NONE' and values == (0., 0., 0.)
+
+
+def test_lease_timer_applies_fresh_pending_ingress_before_old_expiry(monkeypatch):
+    from swerve_bridge.bridge_node import SwerveBridge
+    from geometry_msgs.msg import Twist
+    import time
+    mailbox = ControlMailbox()
+    mailbox.put({'type': 'MANUAL_CMD', 'action': 'FORWARD'})
+    mailbox.manual['_received_monotonic'] = .39
+    monkeypatch.setattr(time, 'monotonic', lambda: .41)
+    sent = []
+    bridge = SimpleNamespace(incoming=mailbox, manual_generation=0,
+        mode_transition_state='APPLIED', manual_twist=Twist(), manual_deadline=.4,
+        emergency_stop_active=False, control_mode='MANUAL', local_map_load_pending=False,
+        get_parameter=lambda name: SimpleNamespace(value=(.4 if name=='manual_command_timeout' else .25)),
+        trace_control_callback=lambda _: None, send_control_status=lambda _: None,
+        cmd_pub=SimpleNamespace(publish=sent.append))
+    bridge._manual_timer = lambda: SwerveBridge._manual_timer(bridge)
+    bridge._apply_manual_command = lambda data: SwerveBridge._apply_manual_command(bridge, data)
+    SwerveBridge.manual_timer(bridge)
+    assert sent and all(message.linear.x == .25 for message in sent)
+    assert bridge.manual_deadline == pytest.approx(.79)
+    assert mailbox.manual is None
+
+
+@pytest.mark.parametrize('barrier', [
+    {'type':'MANUAL_CMD','action':'STOP'}, {'type':'CONTROL_MODE','mode':'AUTONOMOUS'},
+    {'type':'EMERGENCY_STOP'}, {'type':'CLEAR_EMERGENCY_STOP'}, {'type':'MANUAL_DISCONNECT'},
+])
+def test_lease_timer_cannot_consume_motion_ahead_of_pending_barrier(barrier):
+    mailbox = ControlMailbox()
+    mailbox.put(barrier)
+    mailbox.put({'type': 'MANUAL_CMD', 'action': 'FORWARD'})
+    assert mailbox.take_pending_manual() is None
+    assert mailbox.get_nowait()['type'] == barrier['type']
 
 
 @pytest.mark.parametrize('wheel_drift,passed', [(0.001, True), (0.20, False)])

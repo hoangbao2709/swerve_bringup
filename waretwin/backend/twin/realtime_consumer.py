@@ -15,7 +15,8 @@ class RealtimeDispatchMixin(DispatchTimingMixin):
             except (ValueError, TypeError):
                 # Preserve the framework's error and connection handling.
                 return await super().dispatch(message)
-            if isinstance(content, dict) and content.get('type') in self.database_free_types:
+            kind = content.get('type') if isinstance(content, dict) else None
+            if isinstance(kind, str) and kind in self.database_free_types:
                 # Run the normal rate, schema, authorization, ownership and
                 # map/safety validation. Only the unused ORM cleanup wait is
                 # omitted. Connect/auth and DB-using messages retain cleanup.

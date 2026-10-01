@@ -1488,3 +1488,36 @@ manual topic gap=167.811 ms, selected topic gap=168.023 ms.
 WEB_MANUAL_FORWARD=PASS on this focused current-source run. Backward/Rotate Right
 verified evidence is retained; Left/Right/Rotate Left require the focused
 continuity retest, followed by the complete current-source safety gate.
+
+### Remaining Left retest: lease application race and strict settling failure
+
+After the Django dispatch fix, focused Left moved +0.471200 m in Gazebo and
++0.447410 m in odom over 3 sim / 22.777 wall seconds. WEB_MANUAL ownership
+remained continuous, but one manual-zero sample occurred (no selected-zero
+sample). Gaps in ms: client starts 187.173 / completions 167.659, Django
+358.483, bridge 392.220, manual 311.238, selected 311.638. Fresh ingress can
+arrive within the unchanged 400-ms lease while the separate command timer
+has not applied it before the old deadline expires. The existing manual timer
+now consumes the latest fresh mailbox packet through the same application
+validator before testing expiry. Pending STOP/mode/E-STOP/disconnect barriers
+always prevent that consumption; generation and received-time checks remain.
+This correction does not extend the lease or introduce another command path.
+
+Left STOP did not meet the strict wheel drift gate within the unchanged
+180-wall-second watchdog (24.830 sim seconds). Wheel-position-derived drift
+was 0.006465 / 0.006326 rad/s, above 0.005; chassis drift was 0.459 mm/s.
+Selected/drive targets were zero. This is a real acceptance failure, not
+permission to relax the threshold. Left is FAIL until a fresh corrected
+runtime retest proves both continuity and settling. Right/Rotate Left have
+not yet been rerun in this focused attempt. Stage B remains FAIL; later
+runtime phases remain gated.
+
+Backend validation after malformed-message dispatch hardening: 36 targeted
+tests PASS, manage.py check PASS, migrations check PASS (no changes).
+Current boot storage/OOM/panic gate remains clear; managed stack was stopped
+cleanly to rebuild/reload the manual-timer correction. Physics is unchanged.
+Source validation: 49 targeted transport/teleop/settling/odometry/kinematics
+tests PASS, Python compile PASS, swerve_bridge colcon build PASS (only the
+existing setuptools deprecation warning). The first new test attempt failed
+because its synthetic bridge fixture omitted a production state field; that
+fixture was corrected before the passing rerun.

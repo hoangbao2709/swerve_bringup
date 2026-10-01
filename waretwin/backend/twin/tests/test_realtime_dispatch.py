@@ -74,3 +74,14 @@ class RealtimeDispatchTests(IsolatedAsyncioTestCase):
         route.assert_awaited_once()
         self.assertEqual(route.await_args.args[1]['action'], 'STOP')
         self.assertIn('_consumer_monotonic', route.await_args.args[1])
+
+    async def test_malformed_type_reaches_existing_error_validation(self):
+        from unittest.mock import AsyncMock, patch
+        consumer = TwinConsumer()
+        consumer.scope = {'waretwin_user': object()}
+        consumer._message_window_started = 0.
+        consumer._message_window_count = 0
+        consumer.send_json = AsyncMock()
+        with patch('twin.consumers.runtime.handle_message', new_callable=AsyncMock) as route:
+            await consumer.dispatch({'type': 'websocket.receive', 'text': '{"type": []}'})
+        route.assert_awaited_once()

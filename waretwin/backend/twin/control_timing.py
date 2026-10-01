@@ -44,3 +44,19 @@ def profile_async(function):
         finally:
             report(function.__qualname__, started)
     return timed
+
+
+class DispatchTimingMixin:
+    """Measure framework DB cleanup separately from the application handler."""
+    async def dispatch(self, message):
+        if os.environ.get('WARETWIN_MANUAL_TIMING') != '1':
+            return await super().dispatch(message)
+        from channels.consumer import get_handler_name
+        from channels.db import aclose_old_connections
+        handler = getattr(self, get_handler_name(message), None)
+        if handler is None:
+            return await super().dispatch(message)
+        started = sample()
+        await aclose_old_connections()
+        report(type(self).__name__ + '.database_cleanup', started)
+        await handler(message)

@@ -146,18 +146,21 @@ try:
   result['ownership_continuous']=bool(acquisition is not None and all(r[1]=='WEB_MANUAL' for r in owner_rows if acquisition<=r[0]<stop))
   result['requested_twist']=requested_twists[action]
   result['manual_sequence_ids']=[r['sequence_id'] for r in list(sender.events) if r['action']==action and start<=r['T0']<stop]
+  result['manual_send_events']=[dict(r) for r in list(sender.events) if r['action']==action and start<=r['T0']<stop]
   result['directional_topics']=all(any(start<=r[0]<stop and all(abs(v-w)<1e-6 for v,w in zip(r[1],requested_twists[action])) for r in rows[key]) for key in ('/cmd_vel_manual','/cmd_vel_selected'))
   result['hold_zero_samples']={key:len([r for r in rows[key] if acquisition is not None and acquisition<=r[0]<stop and all(abs(v)<1e-6 for v in r[1])]) for key in ('/cmd_vel_manual','/cmd_vel_selected')}
   result['command_continuity']=bool(result['ownership_continuous'] and not any(result['hold_zero_samples'].values()))
   result['timing']={**ingress(start,stop),
     'MAX_CLIENT_SEND_GAP_MS':gap([r['T0'] for r in list(sender.events) if r['action']==action and start<=r['T0']<stop]),
+    'MAX_CLIENT_SEND_COMPLETED_GAP_MS':gap([r['send_completed'] for r in list(sender.events) if r['action']==action and start<=r['T0']<stop]),
+    'MAX_CLIENT_SEND_DURATION_MS':1000*max((r['send_completed']-r['T0'] for r in list(sender.events) if r['action']==action and start<=r['T0']<stop),default=0),
     'MAX_CMD_VEL_MANUAL_GAP_MS':gap([r[0] for r in rows['/cmd_vel_manual'] if start<=r[0]<stop]),
     'MAX_SELECTED_CMD_GAP_MS':gap([r[0] for r in rows['/cmd_vel_selected'] if start<=r[0]<stop])}
   result['hold_wall_seconds']=stop-start
   result['hold_sim_seconds']=stop_sim-s0
   result['hold_rtf']=(stop_sim-s0)/(stop-start)
   result['passed']=bool(rest['passed'] and end_rest['passed'] and result['movement_passed'] and result['command_continuity'] and result['directional_topics'])
-  results['directions'][action]=result;save();print('MOTION_'+action+'='+json.dumps({k:v for k,v in result.items() if k not in ('trace','statuses')}),flush=True)
+  results['directions'][action]=result;save();print('MOTION_'+action+'='+json.dumps({k:v for k,v in result.items() if k not in ('trace','statuses','manual_send_events','manual_sequence_ids')}),flush=True)
   if not result['passed']:break
 finally:
  try:

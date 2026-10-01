@@ -6,6 +6,7 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from .auth import user_from_token
 from .runtime import runtime
 from .control_timing import profile_async
+from .realtime_consumer import RealtimeDispatchMixin
 
 log = logging.getLogger(__name__)
 
@@ -13,7 +14,9 @@ log = logging.getLogger(__name__)
 def resolve_user(token: str | None):
     return user_from_token(token)
 
-class TwinConsumer(AsyncJsonWebsocketConsumer):
+class TwinConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
+    database_free_types = frozenset({'ROBOT_MANUAL', 'ROBOT_MODE', 'ROBOT_DETAIL_VIEW'})
+
     async def connect(self):
         query = parse_qs(self.scope.get('query_string', b'').decode())
         token = (query.get('token') or [None])[0]

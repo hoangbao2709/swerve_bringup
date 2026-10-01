@@ -10,6 +10,7 @@ from django.conf import settings
 
 from .runtime import runtime
 from .control_timing import profile_async
+from .realtime_consumer import RealtimeDispatchMixin
 
 log = logging.getLogger(__name__)
 
@@ -112,7 +113,15 @@ def _resolve_future(future: asyncio.Future, value: dict) -> None:
 registry = RosBridgeRegistry()
 
 
-class RosBridgeConsumer(AsyncJsonWebsocketConsumer):
+class RosBridgeConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
+    database_free_types = frozenset({
+        'HEARTBEAT', 'ROBOT_STATE', 'ROBOT_CONTROL_STATUS', 'COMMAND_DIAGNOSTICS',
+        'ROS_DIAGNOSTICS', 'SYSTEM_DIAGNOSTICS', 'MAP_REVISION_STATUS',
+        'MAP_SNAPSHOT', 'LIDAR_SCAN', 'LIDAR_MAP_2D', 'LIDAR_MAP_3D',
+        'LIDAR_STREAM_DIAGNOSTICS', 'NAV_GLOBAL_PATH', 'NAV_LOCAL_PATH',
+        'CONTROLLER_STATE', 'LOCAL_CONTROL_RESULT',
+    })
+
     @classmethod
     @profile_async
     async def decode_json(cls, text_data):

@@ -1447,3 +1447,44 @@ Runtime evidence is preserved in ignored `.runtime/resume-strict-directions.json
 19 transport/teleop tests and bridge rebuild passed after correcting a missing
 method binding in the new regression test fixture. Initial source checks above
 remain valid; diagnostic wrappers are pending their own checks/runtime evidence.
+
+### Django receive starvation: measured framework cleanup and narrow correction
+
+Two focused Forward traces reproduced the hold interruption despite physical
+movement and strict STOP settling. The first measured a 596.109-ms Django
+receive gap and 600.980-ms bridge ingress gap; client send duration peaked at
+57.793 ms. Sequence 64 was sent in 0.665 ms but reached Django receive after
+436.086 ms. Sender/network write time did not account for that delay.
+
+The installed Channels AsyncConsumer awaits `aclose_old_connections()` before
+every dispatched event, including database-free control and outgoing telemetry.
+That cleanup uses the same thread-sensitive executor as the scheduler ORM work.
+Separate framework profiling measured RosBridgeConsumer cleanup at 396.825 ms
+and TwinConsumer cleanup at 191.132 ms. Async CPU timings include other work
+on the same loop while awaiting; they must not be interpreted as that function's
+exclusive CPU use. The cleanup wall wait itself occurs before command handling.
+
+Database-free manual/mode/detail frames and selected bridge telemetry/results now
+dispatch directly to their original handlers. Rate limits, Pydantic validation,
+authenticated identity, applied-mode ownership, map/preview and E-STOP gates
+remain in those handlers. Connection/auth and ORM-capable messages still use
+framework cleanup. No new Web transport, new command path or lease change.
+A blocked-ORM regression verifies control/telemetry can dispatch while an
+ORM-capable command remains waiting; authentication still takes the framework
+path and manual STOP still passes through the original validated receiver.
+
+Source validation: 35 targeted backend tests PASS, manage.py check PASS;
+changed Python compile PASS. Migration check previously passed; no models
+changed. Only backend autoreload was needed, with the managed ROS/Gazebo stack
+kept running at zero command; R01 heartbeat/system health recovered.
+
+Fresh Forward after this correction: Gazebo +0.634291 m, odom +0.603946 m;
+3.015 sim / 19.291 wall seconds; RTF 0.156289. Continuous WEB_MANUAL ownership
+and **zero hold-zero samples** on both manual/selected topics. STOP settled in
+1.446 sim / 9.076 wall seconds, wheel drift 0.003356/0.003353 rad/s (<0.005).
+MAX_CLIENT_SEND_GAP_MS=218.041 (start cadence); completion cadence=253.165 ms;
+maximum send duration=98.739 ms. Django gap=285.584 ms, bridge gap=298.686 ms,
+manual topic gap=167.811 ms, selected topic gap=168.023 ms.
+WEB_MANUAL_FORWARD=PASS on this focused current-source run. Backward/Rotate Right
+verified evidence is retained; Left/Right/Rotate Left require the focused
+continuity retest, followed by the complete current-source safety gate.

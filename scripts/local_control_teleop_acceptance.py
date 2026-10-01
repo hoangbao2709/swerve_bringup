@@ -17,7 +17,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from gazebo_msgs.msg import ModelStates
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, Imu
 from rosgraph_msgs.msg import Clock
 from std_msgs.msg import Float64MultiArray, String
 from rcl_interfaces.srv import GetParameters
@@ -46,6 +46,8 @@ for topic in ('/steering_controller/commands','/drive_controller/commands'):
  n.create_subscription(Float64MultiArray,topic,lambda m,key=topic:record(key,list(m.data)),50)
 n.create_subscription(JointState,'/joint_states',lambda m:record('joints',{'positions':dict(zip(m.name,m.position)),'velocities':dict(zip(m.name,m.velocity))}),feedback_qos)
 n.create_subscription(Odometry,'/odom',lambda m:record('odom',{'pose':a.pose_from_odom(m),'velocity':twist(m.twist.twist)}),feedback_qos)
+def imu(m):record('imu',{'yaw':a.yaw_from_quaternion(m.orientation),'angular_velocity_z':m.angular_velocity.z})
+n.create_subscription(Imu,'/imu/data',imu,feedback_qos)
 def model(m):
  if 'swerve_base' in m.name:
   i=m.name.index('swerve_base');record('gazebo',{'pose':a.pose_from_pose(m.pose[i]),'velocity':twist(m.twist[i])})
@@ -96,7 +98,13 @@ def command(action):
  if action=='STOP':sender.stop()
  else:sender.hold(action)
 def settle(timeout=45):
- monitor=MechanicalSettling(sim[0],time.monotonic(),timeout_sim=timeout,wheel_radius=wheel_radius)
+ # Calibration-only runs may use a shorter wall watchdog when Gazebo's
+ # encoder position noise prevents an otherwise stationary robot from
+ # satisfying the mechanical-settling threshold. This only bounds waiting;
+ # it never relaxes the settling pass criteria.
+ settle_wall_timeout=float(os.environ.get('TRACE_SETTLE_TIMEOUT_WALL_S','180'))
+ monitor=MechanicalSettling(sim[0],time.monotonic(),timeout_sim=timeout,
+  timeout_wall=settle_wall_timeout,wheel_radius=wheel_radius)
  while True:
   sample=None
   try:

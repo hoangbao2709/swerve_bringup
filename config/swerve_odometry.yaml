@@ -1,12 +1,12 @@
 swerve_odometry:
   ros__parameters:
-    # Encoder scale calibrated from the one-metre X+ smoke trace:
-    # Gazebo displacement / encoder displacement ~= 0.943 on the
-    # low-angular-rate near-goal controller trace.
-    # Keep controller geometry at the CAD radius; this is the measured
-    # rolling/contact scale used only to report odometry.
-    wheel_radius: 0.0637
-    # Calibrated against Gazebo contact motion.
+    # Calibrated from independent Web-Teleop motion traces using Gazebo
+    # displacement / measured wheel-joint angle: forward 0.067424 m,
+    # backward 0.067425 m, left 0.067302 m, right 0.067507 m.
+    # The 0.067414 m mean agrees with the 0.0675 m controller/URDF radius;
+    # keep this encoder-only estimate evidence-based without changing physics.
+    wheel_radius: 0.0674
+    # Positive encoder sign verified against Gazebo contact motion.
     wheel_velocity_sign: 1.0
     # Gazebo's post-contact instantaneous velocity can disagree with encoder
     # position increments, creating phantom odom drift at zero drive target.

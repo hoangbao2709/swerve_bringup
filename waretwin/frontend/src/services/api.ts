@@ -87,6 +87,30 @@ export type LocalMapLoadResult = {
   message: string;
 };
 
+export type LocalSlamResumeResult = {
+  ok: boolean;
+  status?: "TRANSITIONING" | "RESUMED" | string;
+  map?: LocalRobotMap;
+  map_id?: string;
+  request_id?: string | null;
+  mapping_state?: string;
+  transition?: LocalRuntimeModeStatus;
+  restore_evidence?: {
+    passed?: boolean;
+    saved_dimensions?: number[];
+    live_dimensions?: number[];
+    saved_known_cells?: number;
+    live_known_cells?: number;
+    saved_coverage_ratio?: number;
+    known_overlap_ratio?: number;
+    cell_class_agreement_ratio?: number;
+    saved_image_sha256?: string;
+    live_grid_sha256?: string;
+    reason?: string;
+  } | null;
+  message: string;
+};
+
 export type Vda5050Configuration = {
   robot_id: string;
   enabled: boolean;
@@ -139,6 +163,9 @@ export const saveLocalRobotMap = (robotId: string, name: string) =>
 
 export const loadLocalRobotMap = (robotId: string, map_id: string) =>
   localRobotApi<LocalMapLoadResult>(robotId, "maps/load", { method: "POST", body: JSON.stringify({ map_id }) });
+
+export const resumeLocalRobotSlamSession = (robotId: string, map_id: string) =>
+  localRobotApi<LocalSlamResumeResult>(robotId, "maps/resume-session", { method: "POST", body: JSON.stringify({ map_id }) });
 
 export const initializeLocalRobotPose = (robotId: string, pose: { x: number; y: number; yaw: number; frame_id: "map" }) =>
   localRobotApi<{ ok: boolean; pose: typeof pose; localization_owner: string }>(robotId, "initial-pose", { method: "POST", body: JSON.stringify(pose) });

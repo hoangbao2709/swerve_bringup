@@ -1,18 +1,23 @@
 import json
+import base64
 from copy import deepcopy
 import tempfile
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.http import JsonResponse
 from django.test import Client, TestCase, override_settings
 
 from accounts.models import ApiToken
 from twin.local_control import (
     get_robot_map,
+    get_robot_slam_session,
     list_robot_maps,
     map_output_prefix,
     register_saved_map,
+    slam_map_restoration_evidence,
     validate_map_name,
 )
 from twin.models import RobotVda5050Configuration
@@ -120,6 +125,47 @@ class LocalMapRegistryTests(TestCase):
         self.assertEqual(rows[0]['slam_session_state']['status'], 'MISSING')
         self.assertTrue(get_robot_map('R01', record['id'])[1].is_file())
 
+    def test_saved_slam_session_resolves_only_complete_robot_scoped_files(self):
+        prefix = map_output_prefix('R01', 'resume')
+        prefix.with_suffix('.pgm').write_bytes(b'P5\n1 1\n255\n\xfe')
+        prefix.with_suffix('.yaml').write_text(
+            'image: resume.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n'
+            'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
+        session_prefix = prefix.parent / 'resume_slam_session'
+        session_prefix.with_suffix('.posegraph').write_bytes(b'pose graph')
+        session_prefix.with_suffix('.data').write_bytes(b'sensor data')
+        record = register_saved_map('R01', 'resume', prefix.with_suffix('.yaml'), slam_session={
+            'engine': 'SLAM_TOOLBOX', 'status': 'AVAILABLE',
+            'posegraph_path': str(session_prefix.with_suffix('.posegraph')),
+            'data_path': str(session_prefix.with_suffix('.data')),
+        })
+        loaded, session, posegraph, session_data = get_robot_slam_session('R01', record['id'])
+        self.assertEqual(loaded['id'], record['id'])
+        self.assertEqual(session, session_prefix)
+        self.assertEqual(posegraph, session_prefix.with_suffix('.posegraph'))
+        self.assertEqual(session_data, session_prefix.with_suffix('.data'))
+
+    def test_restoration_gate_compares_saved_pgm_cells_against_live_slam_grid(self):
+        prefix = map_output_prefix('R01', 'restore')
+        prefix.with_suffix('.pgm').write_bytes(b'P5\n2 2\n255\n' + bytes([0, 254, 205, 254]))
+        prefix.with_suffix('.yaml').write_text(
+            'image: restore.pgm\nresolution: 0.1\norigin: [0, 0, 0]\n'
+            'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
+        record = register_saved_map('R01', 'restore', prefix.with_suffix('.yaml'))
+        # OccupancyGrid row zero is the bottom: unknown/free, then occupied/free.
+        encoded = base64.b64encode(zlib.compress(bytes([0, 1, 101, 1]))).decode('ascii')
+        evidence = slam_map_restoration_evidence(record, prefix.with_suffix('.yaml'),
+            prefix.with_suffix('.pgm'), {
+                'map_source': 'SLAM_TOOLBOX', 'mapping_session_id': 'resumed-1',
+                'width': 2, 'height': 2, 'resolution': 0.1, 'known_cells': 3,
+                'origin': {'x': 0, 'y': 0, 'yaw': 0},
+                'data_encoding': 'zlib-base64-offset1', 'data_zlib_base64': encoded,
+            })
+        self.assertTrue(evidence['passed'], evidence)
+        self.assertEqual(evidence['saved_known_cells'], 3)
+        self.assertEqual(evidence['matched_saved_cells'], 3)
+        self.assertEqual(evidence['cell_class_agreement_ratio'], 1.0)
+
 
 class Vda5050ConfigurationTests(TestCase):
     def test_secret_is_encrypted_and_never_returned(self):
@@ -220,6 +266,7 @@ class LocalControlApiTests(TestCase):
         self.old_local_map_revisions = runtime.local_map_revisions.copy()
         self.old_local_map_status = runtime.local_map_status.copy()
         self.old_pending_local_map_loads = runtime.pending_local_map_loads.copy()
+        self.old_pending_slam_session_resumes = runtime.pending_slam_session_resumes.copy()
         runtime.runtime_mode = 'GAZEBO_ROS'
         runtime.operation_mode = 'MAPPING'
         runtime.robot_mapping_sessions['R01'] = 'unit-session'
@@ -244,6 +291,7 @@ class LocalControlApiTests(TestCase):
         runtime.local_map_status.clear(); runtime.local_map_status.update(self.old_local_map_status)
         runtime.local_map_transitions.clear()
         runtime.pending_local_map_loads.clear(); runtime.pending_local_map_loads.update(self.old_pending_local_map_loads)
+        runtime.pending_slam_session_resumes.clear(); runtime.pending_slam_session_resumes.update(self.old_pending_slam_session_resumes)
         runtime.robot_mapping_state.clear()
         robots = runtime.engine.state.setdefault('robots', {})
         if self.previous_robot is None:
@@ -407,6 +455,73 @@ class LocalControlApiTests(TestCase):
         switch.assert_not_called()
         bridge.assert_not_called()
 
+    def test_saved_slam_resume_restarts_mapping_then_requires_live_old_map_match(self):
+        with tempfile.TemporaryDirectory() as tempdir, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tempdir)):
+            prefix = map_output_prefix('R01', 'resume')
+            prefix.with_suffix('.pgm').write_bytes(b'P5\n2 2\n255\n' + bytes([0, 254, 205, 254]))
+            prefix.with_suffix('.yaml').write_text(
+                'image: resume.pgm\nresolution: 0.1\norigin: [0, 0, 0]\n'
+                'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
+            session_prefix = prefix.parent / 'resume_slam_session'
+            session_prefix.with_suffix('.posegraph').write_bytes(b'pose graph')
+            session_prefix.with_suffix('.data').write_bytes(b'sensor data')
+            record = register_saved_map('R01', 'resume', prefix.with_suffix('.yaml'), slam_session={
+                'engine': 'SLAM_TOOLBOX', 'status': 'AVAILABLE',
+                'posegraph_path': str(session_prefix.with_suffix('.posegraph')),
+                'data_path': str(session_prefix.with_suffix('.data')),
+            })
+            runtime.operation_mode = 'NAVIGATION'
+            runtime.local_map_overrides['R01'] = record['id']
+            runtime.local_map_revisions['R01'] = record['revision']
+            transition_states = [
+                {'robot_id': 'R01', 'mode': 'navigation', 'status': 'READY'},
+                {'robot_id': 'R01', 'mode': 'mapping', 'status': 'RESTARTING', 'request_id': 'resume-1'},
+                {'robot_id': 'R01', 'mode': 'mapping', 'status': 'READY', 'request_id': 'resume-1'},
+            ]
+            with patch.object(SimulationRuntimeAdapter, 'get_mode_status', side_effect=transition_states), \
+                    patch.object(SimulationRuntimeAdapter, 'request_mode_change', return_value={
+                        'ok': True, 'robot_id': 'R01', 'mode': 'mapping',
+                        'request_id': 'resume-1', 'status': 'REQUESTED',
+                        'message': 'restart requested',
+                        'slam_session_file': str(session_prefix)} ) as switch, \
+                    patch('twin.local_control_views._robot_available', side_effect=[
+                        None, JsonResponse({'ok': False, 'error': 'bridge is offline'}, status=503),
+                    ]) as availability:
+                queued = self.client.post('/api/robots/R01/local/maps/resume-session',
+                    data=json.dumps({'map_id': record['id']}), content_type='application/json')
+                self.assertEqual(queued.status_code, 202, queued.content)
+                self.assertEqual(queued.json()['status'], 'TRANSITIONING')
+                self.assertNotIn(str(session_prefix), queued.content.decode('utf-8'))
+                self.assertEqual(switch.call_args.kwargs['slam_session_file'], str(session_prefix))
+
+                # The bridge is intentionally offline during its supervised
+                # process restart. Polling the already-pending transition
+                # must not be rejected by the initial online-bridge guard.
+                transition = self.client.post('/api/robots/R01/local/maps/resume-session',
+                    data=json.dumps({'map_id': record['id']}), content_type='application/json')
+                self.assertEqual(transition.status_code, 202, transition.content)
+                self.assertEqual(transition.json()['transition']['status'], 'RESTARTING')
+                self.assertEqual(availability.call_count, 1)
+
+                encoded = base64.b64encode(zlib.compress(bytes([0, 1, 101, 1]))).decode('ascii')
+                runtime.operation_mode = 'MAPPING'
+                runtime.robot_map_snapshots['R01'] = {'map': {
+                    'map_source': 'SLAM_TOOLBOX', 'mapping_session_id': 'resumed-runtime',
+                    'map_version': 1, 'timestamp': '2026-10-02T00:00:00Z', 'stamp': 2.0,
+                    'width': 2, 'height': 2, 'resolution': 0.1, 'known_cells': 3,
+                    'origin': {'x': 0, 'y': 0, 'yaw': 0},
+                    'data_encoding': 'zlib-base64-offset1', 'data_zlib_base64': encoded,
+                }}
+                resumed = self.client.post('/api/robots/R01/local/maps/resume-session',
+                    data=json.dumps({'map_id': record['id']}), content_type='application/json')
+            self.assertEqual(resumed.status_code, 200, resumed.content)
+            self.assertEqual(resumed.json()['status'], 'RESUMED')
+            self.assertTrue(resumed.json()['restore_evidence']['passed'])
+            self.assertNotIn('R01', runtime.local_map_overrides)
+            self.assertEqual(runtime.robot_mapping_state['R01'], 'MAPPING')
+            self.assertNotIn('R01', runtime.pending_slam_session_resumes)
+            self.assertNotIn('R01', runtime.local_map_transitions)
+
     def test_failed_local_map_load_clears_pending_transition_state(self):
         with tempfile.TemporaryDirectory() as tempdir, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tempdir)):
             prefix = map_output_prefix('R01', 'floor')
@@ -526,6 +641,23 @@ class LocalControlApiTests(TestCase):
                 robots.pop('R01', None)
             else:
                 robots['R01'] = previous_robot
+
+    def test_saved_slam_mode_queue_keeps_session_prefix_out_of_public_status(self):
+        session_prefix = '/private/local_robot_maps/R01/session'
+        with tempfile.TemporaryDirectory() as tempdir, override_settings(
+                WARETWIN_STACK_RUNTIME_DIR=Path(tempdir)):
+            runtime_dir = Path(tempdir)
+            status_file = runtime_dir / 'mode-switch-status.json'
+            status_file.write_text(json.dumps({
+                'robot_id': 'R01', 'mode': 'navigation', 'status': 'READY',
+            }), encoding='utf-8')
+            queued = SimulationRuntimeAdapter().request_mode_change(
+                'R01', 'mapping', slam_session_file=session_prefix)
+            self.assertTrue(queued['ok'])
+            self.assertNotIn(session_prefix, json.dumps(queued))
+            self.assertNotIn(session_prefix, status_file.read_text(encoding='utf-8'))
+            request = json.loads((runtime_dir / 'mode-switch-request.json').read_text(encoding='utf-8'))
+            self.assertEqual(request['slam_session_file'], session_prefix)
 
     def test_real_robot_mode_change_requires_a_configured_physical_runtime_adapter(self):
         old_mode, old_operation_mode = runtime.runtime_mode, runtime.operation_mode

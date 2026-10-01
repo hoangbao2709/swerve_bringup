@@ -18,6 +18,8 @@ def generate_launch_description():
     start_slam = LaunchConfiguration('start_slam')
     map_topic = LaunchConfiguration('map_topic')
     transform_publish_period = LaunchConfiguration('transform_publish_period')
+    slam_session_file = LaunchConfiguration('slam_session_file')
+    slam_start_at_dock = LaunchConfiguration('slam_start_at_dock')
     preprocess_config = os.path.join(pkg_share, 'config', 'lidar_preprocessing.yaml')
     scan_config = os.path.join(pkg_share, 'config', 'pointcloud_to_laserscan.yaml')
     slam_config = os.path.join(pkg_share, 'config', 'slam_toolbox.yaml')
@@ -44,7 +46,9 @@ def generate_launch_description():
         output='screen',
         parameters=[slam_config, {'use_sim_time': use_sim_time,
                                   'map_name': map_topic,
-                                  'transform_publish_period': transform_publish_period}],
+                                  'transform_publish_period': transform_publish_period,
+                                  'map_file_name': slam_session_file,
+                                  'map_start_at_dock': slam_start_at_dock}],
         condition=IfCondition(start_slam),
     )
 
@@ -60,6 +64,10 @@ def generate_launch_description():
                               description='SLAM occupancy topic; simulation separates it from canonical /map.'),
         DeclareLaunchArgument('transform_publish_period', default_value='0.02',
                               description='SLAM map->odom TF period; zero when the canonical tag localizer owns TF.'),
+        DeclareLaunchArgument('slam_session_file', default_value='',
+                              description='Optional serialized SLAM Toolbox pose-graph prefix to restore during node configure.'),
+        DeclareLaunchArgument('slam_start_at_dock', default_value='false',
+                              description='Start restored mapping at the saved graph first node; only valid with slam_session_file.'),
         preprocessor,
         cloud_to_scan,
         slam,

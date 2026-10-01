@@ -28,7 +28,7 @@ vi.mock("../src/services/api", () => ({
     last_error: null, ignored_orders: 0, updated_at: null,
   })),
   setMappingState: vi.fn(() => Promise.resolve({ ok: true, mapping_state: "MAPPING" })),
-  saveLocalRobotMap: vi.fn(), loadLocalRobotMap: vi.fn(),
+  saveLocalRobotMap: vi.fn(), loadLocalRobotMap: vi.fn(), resumeLocalRobotSlamSession: vi.fn(),
   initializeLocalRobotPose: vi.fn(), applyVda5050Configuration: vi.fn(),
   testVda5050Connection: vi.fn(() => Promise.resolve({ ok: true, latency_ms: 12, broker: "broker.local:1883" })),
 }));
@@ -359,6 +359,7 @@ describe("robot detail route stability", () => {
     const savedMap: LocalRobotMap = {
       id: "local-map-1", name: "floor_1", robot_id: "R01", created_at: "2026-09-30T00:00:00Z",
       resolution: 0.05, origin: [0, 0, 0], revision: "rev-2", frame_id: "map", width: 100, height: 100,
+      slam_session_state: { status: "AVAILABLE", engine: "SLAM_TOOLBOX", artifact_id: "session-artifact" },
     };
     vi.mocked(api.getLocalRobotMaps).mockImplementation(async () => ({
       robot_id: "R01", maps, runtime_mode: "GAZEBO_ROS", mapping_state: mappingState,
@@ -441,6 +442,21 @@ describe("robot detail route stability", () => {
     await act(async () => { buttonNamed("LOAD SAVED MAP FOR NAVIGATION")?.click(); await settleUi(); });
     expect(container.textContent).toContain("map_server rejected map");
     expect(container.textContent).toContain("ERROR");
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(api.resumeLocalRobotSlamSession).mockResolvedValue({
+      ok: true, status: "RESUMED", map: savedMap, map_id: savedMap.id,
+      mapping_state: "MAPPING", request_id: "slam-resume-1",
+      transition: { robot_id: "R01", mode: "mapping", status: "READY" },
+      restore_evidence: { passed: true, live_known_cells: 62_000,
+        known_overlap_ratio: 0.97, saved_coverage_ratio: 1, cell_class_agreement_ratio: 0.96 },
+      message: "The prior SLAM map is restored and live mapping has resumed.",
+    });
+    await act(async () => { buttonNamed("RESUME SAVED SLAM SESSION")?.click(); await settleUi(); });
+    expect(api.resumeLocalRobotSlamSession).toHaveBeenCalledWith("R01", "local-map-1");
+    expect(container.textContent).toContain("SLAM SESSION RESTORED");
+    expect(container.textContent).toContain("97.0%");
+    confirm.mockRestore();
   });
 
   it("does not present a cached Nav2/canonical grid as the accumulated SLAM map", async () => {

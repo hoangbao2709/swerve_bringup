@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import base64
 import math
 import os
 import re
 import threading
 import uuid
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -170,6 +172,216 @@ def get_robot_map(robot_id: str, map_id: str) -> tuple[dict[str, Any], Path, Pat
             break
         return row, yaml_path, image_path
     raise FileNotFoundError('map not found for this robot')
+
+
+def get_robot_slam_session(robot_id: str, map_id: str) -> tuple[dict[str, Any], Path, Path, Path]:
+    """Resolve a registered SLAM Toolbox session without exposing its paths in the API."""
+    record, _yaml_path, _image_path = get_robot_map(robot_id, map_id)
+    state = record.get('slam_session_state') or {}
+    if (str(state.get('engine') or '').upper() != 'SLAM_TOOLBOX'
+            or str(state.get('status') or '').upper() != 'AVAILABLE'):
+        raise FileNotFoundError('saved map has no available SLAM Toolbox session')
+    directory = robot_map_dir(robot_id).resolve(strict=True)
+    raw_rows = json.loads(_registry_path(robot_id).read_text(encoding='utf-8'))
+    raw = next((item for item in raw_rows if item.get('id') == map_id), None)
+    if not isinstance(raw, dict):
+        raise FileNotFoundError('saved SLAM session registry entry is missing')
+    posegraph = (directory / str(raw.get('_slam_posegraph') or '')).resolve(strict=True)
+    session_data = (directory / str(raw.get('_slam_data') or '')).resolve(strict=True)
+    if (not posegraph.is_relative_to(directory) or not session_data.is_relative_to(directory)
+            or posegraph.suffix != '.posegraph' or session_data.suffix != '.data'
+            or posegraph.with_suffix('.data') != session_data
+            or not posegraph.is_file() or not session_data.is_file()
+            or posegraph.stat().st_size <= 0 or session_data.stat().st_size <= 0):
+        raise FileNotFoundError('saved SLAM Toolbox session artifacts are incomplete or invalid')
+    return record, posegraph.with_suffix(''), posegraph, session_data
+
+
+def _read_pgm_pixels(path: Path) -> tuple[int, int, bytes]:
+    data = path.read_bytes()
+    index = 0
+    tokens: list[bytes] = []
+    while len(tokens) < 4:
+        while index < len(data):
+            if data[index] in b' \t\r\n':
+                index += 1
+            elif data[index:index + 1] == b'#':
+                newline = data.find(b'\n', index)
+                if newline < 0:
+                    raise ValueError('PGM comment is not terminated')
+                index = newline + 1
+            else:
+                break
+        start = index
+        while index < len(data) and data[index] not in b' \t\r\n#':
+            index += 1
+        if start == index:
+            raise ValueError('PGM header is incomplete')
+        tokens.append(data[start:index])
+    try:
+        width, height, maximum = int(tokens[1]), int(tokens[2]), int(tokens[3])
+    except ValueError as exc:
+        raise ValueError('PGM dimensions are invalid') from exc
+    if tokens[0] not in (b'P5', b'P2') or width <= 0 or height <= 0 or maximum != 255:
+        raise ValueError('SLAM resume comparison requires an 8-bit P2 or P5 PGM')
+    if tokens[0] == b'P5':
+        if index >= len(data) or data[index] not in b' \t\r\n':
+            raise ValueError('PGM header has no raster delimiter')
+        delimiter = data[index]
+        index += 1
+        if delimiter == 13 and index < len(data) and data[index] == 10:
+            index += 1
+        pixels = data[index:]
+        if len(pixels) != width * height:
+            raise ValueError('PGM raster length does not match its dimensions')
+        return width, height, pixels
+
+    values: list[int] = []
+    while index < len(data):
+        while index < len(data) and data[index] in b' \t\r\n':
+            index += 1
+        if index >= len(data):
+            break
+        if data[index:index + 1] == b'#':
+            newline = data.find(b'\n', index)
+            if newline < 0:
+                break
+            index = newline + 1
+            continue
+        start = index
+        while index < len(data) and data[index] not in b' \t\r\n#':
+            index += 1
+        try:
+            value = int(data[start:index])
+        except ValueError as exc:
+            raise ValueError('PGM raster contains an invalid pixel') from exc
+        if not 0 <= value <= 255:
+            raise ValueError('PGM pixel value is outside 0-255')
+        values.append(value)
+    if len(values) != width * height:
+        raise ValueError('PGM raster length does not match its dimensions')
+    return width, height, bytes(values)
+
+
+def slam_map_restoration_evidence(record: dict[str, Any], yaml_path: Path,
+                                  image_path: Path, map_data: dict[str, Any]) -> dict[str, Any]:
+    """Compare the live SLAM OccupancyGrid against known cells in its saved image.
+
+    SLAM Toolbox's deserialize service response is empty in the installed ROS
+    package, so service/startup acknowledgement is not treated as restoration
+    proof. This compares the map's world-coordinate cell classes instead.
+    """
+    evidence: dict[str, Any] = {
+        'passed': False, 'saved_map_id': record.get('id'),
+        'saved_image_sha256': record.get('image_sha256'),
+        'live_mapping_session_id': map_data.get('mapping_session_id'),
+    }
+    try:
+        import yaml
+
+        document = yaml.safe_load(yaml_path.read_text(encoding='utf-8')) or {}
+        saved_width, saved_height, pixels = _read_pgm_pixels(image_path)
+        saved_resolution = float(document['resolution'])
+        saved_origin = [float(value) for value in document['origin']]
+        negate = int(document['negate'])
+        occupied_thresh = float(document['occupied_thresh'])
+        free_thresh = float(document['free_thresh'])
+        width, height = int(map_data['width']), int(map_data['height'])
+        resolution = float(map_data['resolution'])
+        origin = map_data['origin']
+        origin_x, origin_y, origin_yaw = (float(origin[key]) for key in ('x', 'y', 'yaw'))
+        if (map_data.get('map_source') != 'SLAM_TOOLBOX'
+                or not map_data.get('mapping_session_id')
+                or width <= 0 or height <= 0 or width * height > 4_000_000
+                or resolution <= 0 or saved_resolution <= 0
+                or saved_width != int(record['width']) or saved_height != int(record['height'])
+                or len(saved_origin) != 3 or negate not in (0, 1)
+                or not all(math.isfinite(value) for value in
+                           (saved_resolution, *saved_origin, resolution,
+                            origin_x, origin_y, origin_yaw, occupied_thresh, free_thresh))
+                or not math.isclose(saved_resolution, resolution, rel_tol=0.0, abs_tol=1e-6)
+                or abs(math.sin(origin_yaw - saved_origin[2])) > 1e-5):
+            evidence['reason'] = 'live map identity or geometry is not compatible with the saved map'
+            return evidence
+        compressed = map_data.get('data_zlib_base64')
+        if map_data.get('data_encoding') != 'zlib-base64-offset1' or not isinstance(compressed, str):
+            evidence['reason'] = 'live OccupancyGrid payload is missing or unsupported'
+            return evidence
+        occupancy_bytes = zlib.decompress(base64.b64decode(compressed, validate=True))
+        if len(occupancy_bytes) != width * height:
+            evidence['reason'] = 'live OccupancyGrid payload length does not match its geometry'
+            return evidence
+
+        saved_yaw = saved_origin[2]
+        saved_cos, saved_sin = math.cos(saved_yaw), math.sin(saved_yaw)
+        live_cos, live_sin = math.cos(origin_yaw), math.sin(origin_yaw)
+        saved_known = compared = live_known = matched = 0
+        for image_y in range(saved_height):
+            map_y = saved_height - image_y - 1
+            row = image_y * saved_width
+            for map_x in range(saved_width):
+                pixel = pixels[row + map_x]
+                # SLAM Toolbox's trinary map_saver writes its unknown cells as
+                # gray 205. Given the YAML thresholds that shade can otherwise
+                # be misclassified as free by a generic image threshold test.
+                if pixel == 205:
+                    continue
+                probability = (pixel if negate else 255 - pixel) / 255.0
+                if probability > occupied_thresh:
+                    expected = 1
+                elif probability < free_thresh:
+                    expected = 0
+                else:
+                    continue
+                saved_known += 1
+                world_x = saved_origin[0] + saved_cos * ((map_x + 0.5) * saved_resolution) - saved_sin * ((map_y + 0.5) * saved_resolution)
+                world_y = saved_origin[1] + saved_sin * ((map_x + 0.5) * saved_resolution) + saved_cos * ((map_y + 0.5) * saved_resolution)
+                dx, dy = world_x - origin_x, world_y - origin_y
+                local_x = live_cos * dx + live_sin * dy
+                local_y = -live_sin * dx + live_cos * dy
+                cell_x, cell_y = math.floor(local_x / resolution), math.floor(local_y / resolution)
+                if not (0 <= cell_x < width and 0 <= cell_y < height):
+                    continue
+                compared += 1
+                value = occupancy_bytes[cell_y * width + cell_x] - 1
+                if value < 0:
+                    continue
+                live_known += 1
+                probability = value / 100.0
+                actual = 1 if probability > occupied_thresh else 0 if probability < free_thresh else -1
+                if actual == expected:
+                    matched += 1
+
+        coverage = compared / saved_known if saved_known else 0.0
+        known_overlap = live_known / compared if compared else 0.0
+        agreement = matched / live_known if live_known else 0.0
+        expected_known = int(record.get('known_cells') or saved_known)
+        live_known_cells = int(map_data.get('known_cells') or 0)
+        evidence.update({
+            'saved_dimensions': [saved_width, saved_height],
+            'live_dimensions': [width, height],
+            'saved_known_cells': saved_known,
+            'registered_known_cells': expected_known,
+            'live_known_cells': live_known_cells,
+            'covered_saved_cells': compared,
+            'known_overlap_cells': live_known,
+            'matched_saved_cells': matched,
+            'saved_coverage_ratio': coverage,
+            'known_overlap_ratio': known_overlap,
+            'cell_class_agreement_ratio': agreement,
+            'live_grid_sha256': hashlib.sha256(
+                f'{width}:{height}:{resolution:.9f}:{origin_x:.6f}:{origin_y:.6f}:{origin_yaw:.6f}'.encode()
+                + occupancy_bytes).hexdigest(),
+        })
+        evidence['passed'] = bool(
+            saved_known > 0 and live_known_cells >= expected_known * 0.9
+            and coverage >= 0.9 and known_overlap >= 0.9 and agreement >= 0.9)
+        if not evidence['passed']:
+            evidence['reason'] = 'live SLAM map does not yet preserve enough saved-map cell content'
+        return evidence
+    except Exception as exc:
+        evidence['reason'] = f'map restoration comparison failed: {type(exc).__name__}'
+        return evidence
 
 
 def register_saved_map(robot_id: str, name: str, yaml_path: Path, *,

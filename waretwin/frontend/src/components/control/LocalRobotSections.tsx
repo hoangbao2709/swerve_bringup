@@ -5,6 +5,7 @@ import {
   getVda5050Configuration,
   initializeLocalRobotPose,
   loadLocalRobotMap,
+  resumeLocalRobotSlamSession,
   saveLocalRobotMap,
   getLocalRuntimeMode,
   requestLocalRuntimeMode,
@@ -150,6 +151,42 @@ function MappingPanel({ robotId, robot, mapSnapshot, scan, diagnostics, controlO
     setName(""); setSelected(result.map.id);
     return `SAVE SUCCESS · ${result.map.name} · revision ${result.map.revision}`;
   }, "SAVING");
+  const selectedMap = maps.find((map) => map.id === selected) ?? null;
+  const resumeSession = () => {
+    if (!selectedMap || selectedMap.slam_session_state?.status !== "AVAILABLE") return;
+    if (!window.confirm(`Restart ${robotId} in Mapping mode and resume the saved SLAM Toolbox session for ${selectedMap.name}? The simulator will respawn at its configured dock.`)) return;
+    setOperationState("RESUMING SLAM SESSION"); setBusy(true); setError(""); setNotice("");
+    void (async () => {
+      const deadline = Date.now() + 20 * 60 * 1000;
+      try {
+        let result = await resumeLocalRobotSlamSession(robotId, selectedMap.id);
+        while (result.status === "TRANSITIONING" && Date.now() < deadline) {
+          if (result.transition) {
+            setModeTransition(result.transition);
+            if (["ERROR", "ROLLED_BACK"].includes(result.transition.status)) {
+              throw new Error(result.transition.message || "Saved SLAM session restart failed");
+            }
+          }
+          if (result.mapping_state) setMappingStateValue(result.mapping_state);
+          await wait(1500);
+          result = await resumeLocalRobotSlamSession(robotId, selectedMap.id);
+        }
+        if (result.status !== "RESUMED" || !result.restore_evidence?.passed) {
+          throw new Error(Date.now() >= deadline
+            ? "Saved SLAM session did not restore before the runtime timeout"
+            : result.message || "Live SLAM map did not verify the saved session");
+        }
+        setMappingStateValue("MAPPING"); setActiveLocalMapId(null);
+        const evidence = result.restore_evidence;
+        setNotice(`SLAM SESSION RESTORED · ${result.map?.name ?? selectedMap.name} · ${evidence.live_known_cells ?? "—"} live known cells · saved-map overlap ${((evidence.known_overlap_ratio ?? 0) * 100).toFixed(1)}%`);
+        await refresh();
+        setOperationState("READY");
+      } catch (caught) {
+        setOperationState("ERROR");
+        setError(caught instanceof Error ? caught.message : "Saved SLAM session resume failed");
+      } finally { setBusy(false); }
+    })();
+  };
   const load = () => {
     if (!selected) return;
     setOperationState("LOADING"); setBusy(true); setError(""); setNotice("");
@@ -327,9 +364,10 @@ function MappingPanel({ robotId, robot, mapSnapshot, scan, diagnostics, controlO
       </div>}
       <div className="local-action-row">
         <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || !["MAPPING", "NAVIGATION"].includes(runtimeState) || busy || !selected} onClick={load}>LOAD SAVED MAP FOR NAVIGATION</button>
+        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || !["MAPPING", "NAVIGATION"].includes(runtimeState) || busy || selectedMap?.slam_session_state?.status !== "AVAILABLE"} onClick={resumeSession}>RESUME SAVED SLAM SESSION</button>
         {activeLocalMapId && <Status value="LOCAL_ONLY · LOCAL NAVIGATION ENABLED" />}
       </div>
-      <p className="local-help">This loads only the navigation YAML + image into map_server. It does not resume the separately saved SLAM Toolbox pose graph; Fleet missions remain tied to the canonical warehouse map.</p>
+      <p className="local-help">LOAD FOR NAVIGATION switches to map_server and loads only YAML + image. RESUME SAVED SLAM SESSION is a separate supervised Mapping restart that restores the pose graph at the configured simulation dock, verifies the old cells on live /map, and then continues mapping. Neither action promotes the map to canonical.</p>
     </SectionPanel>
     <SectionPanel title="ACCUMULATED SLAM MAP · /map + CURRENT /scan">
       <div className="local-map-toggles" role="group" aria-label="Mapping map layers">

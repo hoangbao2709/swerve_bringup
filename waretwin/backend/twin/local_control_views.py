@@ -5,6 +5,7 @@ import fcntl
 import math
 import os
 import threading
+import time
 import uuid
 from types import SimpleNamespace
 from pathlib import Path
@@ -18,7 +19,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .local_control import (
-    get_robot_map, list_robot_maps, map_output_prefix, register_saved_map,
+    get_robot_map, get_robot_slam_session, list_robot_maps, map_output_prefix,
+    register_saved_map, slam_map_restoration_evidence,
     validate_map_name,
 )
 from .models import RobotVda5050Configuration
@@ -48,10 +50,13 @@ def _read_mode_status(robot_id: str) -> dict:
     return status
 
 
-def _write_mode_request(robot_id: str, mode: str) -> dict:
+def _write_mode_request(robot_id: str, mode: str, *, slam_session_file: str | None = None) -> dict:
     request_path, status_path = _mode_files()
     request_id = uuid.uuid4().hex
     request = {'request_id': request_id, 'robot_id': robot_id, 'mode': mode}
+    if slam_session_file:
+        request['slam_session_file'] = str(slam_session_file)
+        request['force_restart'] = True
     request_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = request_path.with_suffix(request_path.suffix + '.tmp')
     with temporary.open('w', encoding='utf-8') as stream:
@@ -59,7 +64,13 @@ def _write_mode_request(robot_id: str, mode: str) -> dict:
         json.dump(request, stream, separators=(',', ':'))
         stream.flush()
         os.fsync(stream.fileno())
-    status = {**request, 'status': 'REQUESTED', 'message': 'waiting for the ROS stack supervisor'}
+    # The queued launch argument contains an absolute robot-local session
+    # prefix. Keep it in the mode-request file for the supervisor only; the
+    # status file and API response are operator-facing and must not expose it.
+    status = {
+        'request_id': request_id, 'robot_id': robot_id, 'mode': mode,
+        'status': 'REQUESTED', 'message': 'waiting for the ROS stack supervisor',
+    }
     status_tmp = status_path.with_suffix(status_path.suffix + '.tmp')
     try:
         with status_tmp.open('w', encoding='utf-8') as stream:
@@ -81,7 +92,8 @@ class SimulationRuntimeAdapter:
     def get_mode_status(self, robot_id: str) -> dict:
         return _read_mode_status(robot_id)
 
-    def request_mode_change(self, robot_id: str, target: str) -> dict:
+    def request_mode_change(self, robot_id: str, target: str, *,
+                            slam_session_file: str | None = None) -> dict:
         with _MODE_SWITCH_LOCK:
             request_path, _status_path = _mode_files()
             lock_path = request_path.with_suffix('.lock')
@@ -103,7 +115,8 @@ class SimulationRuntimeAdapter:
                 if status.get('status') in ('STARTING', 'REQUESTED', 'RESTARTING', 'ROLLING_BACK'):
                     return {'ok': False, 'http_status': 409,
                             'message': 'a runtime mode transition is already in progress'}
-                status = _write_mode_request(robot_id, target.lower())
+                status = _write_mode_request(
+                    robot_id, target.lower(), slam_session_file=slam_session_file)
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 os.close(lock_fd)
@@ -181,6 +194,29 @@ def _robot_available(robot_id: str):
 def _clear_pending_local_map_load(robot_id: str) -> None:
     getattr(runtime, 'pending_local_map_loads', {}).pop(robot_id, None)
     runtime.local_map_transitions.discard(robot_id)
+
+
+def _clear_pending_slam_session_resume(robot_id: str) -> None:
+    getattr(runtime, 'pending_slam_session_resumes', {}).pop(robot_id, None)
+    runtime.local_map_transitions.discard(robot_id)
+
+
+def _slam_session_resume_response(robot_id: str, record: dict, pending: dict,
+                                  transition: dict, *, status: str = 'TRANSITIONING',
+                                  evidence: dict | None = None):
+    public_transition = ({key: transition[key] for key in (
+        'ok', 'request_id', 'robot_id', 'mode', 'status', 'message') if key in transition}
+        if isinstance(transition, dict) else None)
+    return JsonResponse({
+        'ok': True, 'status': status, 'robot_id': robot_id,
+        'map': record, 'map_id': record['id'],
+        'request_id': pending['request_id'], 'transition': public_transition,
+        'mapping_state': 'MAPPING' if status == 'RESUMED' else 'RESTORING_SESSION',
+        'restore_evidence': evidence,
+        'message': ('SLAM Toolbox is restoring the saved pose graph before it accepts new scans.'
+                    if status == 'TRANSITIONING' else
+                    'The prior SLAM map is restored and live mapping has resumed.'),
+    }, status=202 if status == 'TRANSITIONING' else 200)
 
 
 def _require_manual_stopped(robot_id: str):
@@ -361,6 +397,8 @@ def mapping_command(request, robot_id: str, action: str):
             'the current launch keeps SLAM and Nav2 mutually exclusive.', 409,
             {'runtime_mode': runtime.operation_mode},
         )
+    if robot_id in getattr(runtime, 'pending_slam_session_resumes', {}):
+        return _error('mapping controls are blocked while a saved SLAM session is restoring', 409)
     operation = 'MAPPING_START' if action == 'start' else 'MAPPING_STOP'
     try:
         result = _bridge_request(robot_id, operation, timeout=8.0)
@@ -384,6 +422,8 @@ def save_robot_map(request, robot_id: str):
         return problem
     if runtime.operation_mode != 'MAPPING':
         return _error('map save requires the active SLAM mapping runtime', 409)
+    if robot_id in getattr(runtime, 'pending_slam_session_resumes', {}):
+        return _error('map save is blocked until the saved SLAM session has been verified', 409)
     if str(getattr(runtime, 'robot_mapping_state', {}).get(robot_id) or '').upper() != 'PAUSED':
         return _error('stop mapping before saving so the accumulated map and serialized pose graph are consistent', 409)
     try:
@@ -444,6 +484,8 @@ def load_robot_map(request, robot_id: str):
     stopped = _require_manual_stopped(robot_id)
     if stopped:
         return stopped
+    if robot_id in getattr(runtime, 'pending_slam_session_resumes', {}):
+        return _error('navigation-map loading is blocked while a saved SLAM session is restoring', 409)
     map_id = str(_body(request).get('map_id') or '').strip()
     try:
         record, yaml_path, image_path = get_robot_map(robot_id, map_id)
@@ -584,6 +626,133 @@ def load_robot_map(request, robot_id: str):
         'map_source': 'SAVED_LOCAL', 'map_sync_status': 'LOCAL_ONLY',
         'message': 'Nav2 confirmed this robot-local map. Local navigation is enabled; fleet missions remain tied to the canonical map.',
     })
+
+
+@csrf_exempt
+@api_user_required
+@require_http_methods(['POST'])
+def resume_robot_slam_session(request, robot_id: str):
+    """Restart the supervised Mapping runtime with one registered pose graph.
+
+    SLAM Toolbox loads the graph during lifecycle configure, before its scan
+    subscription is activated. This avoids replacing graph-owned sensor state
+    while the synchronous scan-processing path is running.
+    """
+    pending_resumes = runtime.pending_slam_session_resumes
+    pending = pending_resumes.get(robot_id)
+    if pending is None:
+        problem = _robot_available(robot_id)
+        if problem:
+            return problem
+    if runtime.runtime_mode != 'GAZEBO_ROS':
+        return _error('saved-session resume currently requires the supervised Gazebo/ROS runtime', 409)
+    body = _body(request)
+    map_id = str(body.get('map_id') or '').strip()
+    try:
+        record, session_prefix, _posegraph, _session_data = get_robot_slam_session(robot_id, map_id)
+        _record, yaml_path, image_path = get_robot_map(robot_id, map_id)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        return _error(str(exc), 404)
+
+    if pending and pending.get('map_id') != map_id:
+        return _error('another saved SLAM session is already restoring for this robot', 409)
+    if robot_id in runtime.pending_local_map_loads:
+        return _error('saved SLAM resume is blocked while a navigation map is loading', 409)
+
+    adapter = _runtime_adapter(runtime.runtime_mode)
+    if adapter is None:
+        return _error('no supervised runtime adapter is available for saved-session resume', 409)
+
+    if pending is None:
+        stopped = _require_manual_stopped(robot_id)
+        if stopped:
+            return stopped
+        mode = str(runtime.operation_mode or '').upper()
+        if mode not in ('MAPPING', 'NAVIGATION'):
+            return _error(f'saved SLAM sessions cannot resume while runtime mode is {mode or "UNKNOWN"}', 409)
+        transition = adapter.get_mode_status(robot_id)
+        if transition.get('status') != 'READY' or str(transition.get('mode') or '').lower() != mode.lower():
+            return _error('runtime supervisor is not ready for a saved-session handoff', 409,
+                          {'transition': transition})
+        if mode == 'MAPPING' and str(runtime.robot_mapping_state.get(robot_id) or '').upper() != 'PAUSED':
+            try:
+                stopped_slam = _bridge_request(robot_id, 'MAPPING_STOP', timeout=8.0)
+            except Exception as exc:
+                return _error(f'SLAM could not pause before session restore: {type(exc).__name__}', 502)
+            failure = _response_for_bridge_result(stopped_slam)
+            if failure:
+                return failure
+            runtime.robot_mapping_state[robot_id] = 'PAUSED'
+
+        runtime.local_map_transitions.add(robot_id)
+        runtime.invalidate_path_previews(robot_id, 'runtime changed to resume a saved SLAM session')
+        result = adapter.request_mode_change(
+            robot_id, 'MAPPING', slam_session_file=str(session_prefix))
+        if not result.get('ok'):
+            runtime.local_map_transitions.discard(robot_id)
+            return _error(str(result.get('message') or 'runtime supervisor rejected SLAM session resume'),
+                          int(result.get('http_status') or 502), {'code': result.get('code')})
+        pending = {
+            'map_id': map_id, 'map_revision': str(record['revision']),
+            'session_artifact_id': (record.get('slam_session_state') or {}).get('artifact_id'),
+            'request_id': result.get('request_id'), 'started_monotonic': time.monotonic(),
+            'phase': 'MODE_TRANSITION', 'last_snapshot_marker': None,
+            'restore_evidence': None,
+        }
+        pending_resumes[robot_id] = pending
+        # Do not let a stale pre-restart map satisfy the restored-map gate.
+        runtime.robot_map_snapshots.pop(robot_id, None)
+        runtime.robot_map_geometry.pop(robot_id, None)
+        return _slam_session_resume_response(robot_id, record, pending, result)
+
+    transition = adapter.get_mode_status(robot_id)
+    if (transition.get('request_id') != pending.get('request_id')
+            or transition.get('status') in ('ROLLED_BACK', 'ERROR')):
+        _clear_pending_slam_session_resume(robot_id)
+        return _error(transition.get('message') or 'saved SLAM session runtime transition failed', 409,
+                      {'transition': transition})
+    if (transition.get('status') != 'READY'
+            or str(transition.get('mode') or '').lower() != 'mapping'
+            or str(runtime.operation_mode or '').upper() != 'MAPPING'):
+        return _slam_session_resume_response(robot_id, record, pending, transition)
+
+    # SLAM mode is now authoritative; a previous Navigation local-map identity
+    # must not remain presented as the active map while the restored /map is
+    # being independently checked.
+    runtime.local_map_overrides.pop(robot_id, None)
+    runtime.local_map_revisions.pop(robot_id, None)
+    runtime.local_map_status.pop(robot_id, None)
+    snapshot = runtime.robot_map_snapshots.get(robot_id) or {}
+    map_data = snapshot.get('map') if isinstance(snapshot, dict) else None
+    evidence = None
+    if isinstance(map_data, dict) and map_data.get('map_source') == 'SLAM_TOOLBOX':
+        marker = (map_data.get('mapping_session_id'), map_data.get('map_version'),
+                  map_data.get('timestamp'), map_data.get('stamp'))
+        if marker != pending.get('last_snapshot_marker'):
+            evidence = slam_map_restoration_evidence(record, yaml_path, image_path, map_data)
+            pending['last_snapshot_marker'] = marker
+            pending['restore_evidence'] = evidence
+        else:
+            evidence = pending.get('restore_evidence')
+    if evidence and evidence.get('passed'):
+        runtime.robot_mapping_state[robot_id] = 'MAPPING'
+        runtime.robot_mapping_elapsed_s[robot_id] = 0.0
+        runtime.robot_mapping_sessions[robot_id] = str(map_data.get('mapping_session_id') or '')
+        _clear_pending_slam_session_resume(robot_id)
+        return _slam_session_resume_response(robot_id, record, pending, transition,
+                                             status='RESUMED', evidence=evidence)
+
+    if time.monotonic() - float(pending.get('started_monotonic') or time.monotonic()) > 180.0:
+        try:
+            _bridge_request(robot_id, 'MAPPING_STOP', timeout=8.0)
+            runtime.robot_mapping_state[robot_id] = 'PAUSED'
+        except Exception:
+            pass
+        _clear_pending_slam_session_resume(robot_id)
+        return _error('saved SLAM runtime started, but the live map did not prove restoration of the saved area',
+                      502, {'restore_evidence': evidence or pending.get('restore_evidence')})
+    return _slam_session_resume_response(robot_id, record, pending, transition,
+                                         evidence=evidence or pending.get('restore_evidence'))
 
 
 @csrf_exempt

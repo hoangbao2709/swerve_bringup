@@ -2323,3 +2323,75 @@ empty; any new resume workflow must therefore verify restoration through
 independent map/session evidence, not infer success from service completion.
 Saved-session resume, old-map restoration/extension, large-route loop closure,
 and VDA5050 are not accepted by this phase.
+
+### Follow-up: saved SLAM session restore (2026-10-02)
+
+The limitation above describes the end of the Load/Navigation acceptance; this
+follow-up adds a separate saved-session resume action without changing the
+already-proven live Mapping accumulation or the distinct `LOAD FOR NAVIGATION`
+path. SLAM Toolbox supports restoring its serialized pose graph and continuing
+mapping; this project now exposes that operation only through a supervised
+Mapping-mode restart ([SLAM Toolbox documentation](https://github.com/SteveMacenski/slam_toolbox)).
+The new Web action is `RESUME SAVED SLAM SESSION`, separate from
+`LOAD SAVED MAP FOR NAVIGATION`.
+
+Django resolves the selected robot-local registry entry and requires its
+non-empty `.posegraph` and `.data` artifacts. The supervisor independently
+confines the session prefix to that robot's local map directory, then restarts
+the stack in Mapping mode with the selected prefix and dock-start restore
+option. This prevents simultaneous Navigation/localization and SLAM ownership.
+The request path is kept in the supervisor-only request file; it is excluded
+from operator-facing status and API responses. While the mode transition is
+restarting ROS and the authenticated bridge is briefly offline, the Web poll
+continues to use supervisor status instead of failing on the bridge-readiness
+guard.
+
+Resume is not accepted from an HTTP/service acknowledgement alone. Once a new
+SLAM mapping session is live, the backend compares the saved PGM's known
+occupied/free cells by world coordinates against the fresh `/map` payload.
+The real saved artifact `slam_accumulated_20261001_01` restored at 440 x 598,
+0.05 m/cell. The saved image had 60,875 known cells; the live SLAM map had
+70,383. All 60,875 saved known cells were covered by known live cells, and
+60,867 cell classes agreed (99.9869%). The live mapping session ID was
+`2de84610997b`; the map source was `SLAM_TOOLBOX`. This independently verifies
+that the old mapped area reappeared, while leaving the canonical map untouched.
+
+The subsequent map-extension check is **not a pass**. A bounded Web Teleop
+attempt produced only about `0.00053 m` of measured Gazebo displacement and no
+verified increase in map extent or known cells. At the time, `/odom` had no
+fresh samples (reported age about 907 s) and `map -> lidar`/`map -> base` TF
+were stale (latest relevant transform age about 173 s). The ROS graph still
+listed a `/swerve_odometry` publisher, but the topic was not advancing. I
+stopped the stack instead of driving farther without fresh odometry/TF. The
+current boot storage gate remained clear: 98 GB root filesystem, about 40 GB
+free, with no current-boot storage, EXT4, blocked-journal, OOM, or panic
+signatures. The resume map-extension acceptance therefore remains open; no
+large-route or loop-closure test was attempted.
+
+Follow-up results:
+
+```text
+SLAM_SESSION_LOAD=PASS
+OLD_MAP_RESTORED=PASS
+MAP_ODOM_OWNER=SLAM_TOOLBOX
+CANONICAL_MAP_UNCHANGED=PASS
+RESUME_MAPPING=PARTIAL
+RESUMED_MAP_EXTENDS=UNVERIFIED
+LARGE_ROUTE_MAPPING=UNVERIFIED
+LOOP_RETURN_CONSISTENCY=UNVERIFIED
+```
+
+The primary real-artifact Create -> Save -> Load -> Initialize -> Path Preview
+-> Send Goal workflow recorded above remains PASS. The resume feature's
+restoration and ownership boundary are verified, but this turn does not claim
+continued physical exploration or map growth. The final combined local-map
+workflow is consequently `PARTIAL` until fresh odometry/TF permits a safe
+extension run.
+
+Follow-up source checks passed: backend local-control, bridge, and map-sync
+tests 52/52; Django `check`; migration `--check`; supervisor/map-sync tests
+8/8; Python compile; browser-helper syntax; and `git diff --check`. The
+frontend workflow suite (19/19) and production build passed after the UI
+changes, and the relevant ROS build passed after the launch-argument change.
+These checks validate the implementation but do not substitute for the
+unverified motion/map-extension acceptance above.

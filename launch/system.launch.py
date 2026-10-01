@@ -70,6 +70,8 @@ def generate_launch_description():
     datamatrix_map_file = LaunchConfiguration('datamatrix_map_file')
     tag_graph_file = LaunchConfiguration('tag_graph_file')
     map_file = LaunchConfiguration('map_file')
+    slam_session_file = LaunchConfiguration('slam_session_file')
+    slam_start_at_dock = LaunchConfiguration('slam_start_at_dock')
     urdf = os.path.join(pkg, 'urdf', 'swerve_base.urdf')
     interface_cfg = os.path.join(pkg, 'config', 'sim_real_interface.yaml')
     default_artifact_root = os.environ.get('WARETWIN_ARTIFACT_ROOT') or os.path.abspath(
@@ -244,6 +246,8 @@ def generate_launch_description():
                                        'start_slam': 'true',
                                        'map_topic': '/map',
                                        'transform_publish_period': '0.02',
+                                       'slam_session_file': slam_session_file,
+                                       'slam_start_at_dock': slam_start_at_dock,
                                    }.items(),
                                    condition=mapping_mode)
     # The point-cloud preprocessor and 2D projection are needed by Nav2 too.
@@ -307,6 +311,10 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true', description='Use Gazebo clock; set false for real robot'),
         DeclareLaunchArgument('mode', default_value='mapping',
                               description='Mapping uses SLAM Toolbox as the map->odom owner and publishes the accumulated map on /map. Navigation uses the selected saved/canonical map and simulation tag localization.'),
+        DeclareLaunchArgument('slam_session_file', default_value='',
+                              description='Optional local SLAM Toolbox session prefix, supplied only by the supervised Resume SLAM Session workflow.'),
+        DeclareLaunchArgument('slam_start_at_dock', default_value='false',
+                              description='Restore a saved SLAM session at its first node; used by supervised simulation resume.'),
         DeclareLaunchArgument(
             'map_file',
             default_value=os.path.join(pkg, 'swerve_navigation', 'maps', 'warehouse.yaml'),

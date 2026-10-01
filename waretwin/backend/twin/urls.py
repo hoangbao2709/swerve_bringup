@@ -77,6 +77,7 @@ urlpatterns = [
     path('robots/<str:robot_id>/local/mapping/<str:action>', local_control_views.mapping_command),
     path('robots/<str:robot_id>/local/maps/save', local_control_views.save_robot_map),
     path('robots/<str:robot_id>/local/maps/load', local_control_views.load_robot_map),
+    path('robots/<str:robot_id>/local/maps/resume-session', local_control_views.resume_robot_slam_session),
     path('robots/<str:robot_id>/local/initial-pose', local_control_views.initialize_robot_pose),
     path('robots/<str:robot_id>/local/vda5050', local_control_views.vda5050_configuration),
     path('robots/<str:robot_id>/local/vda5050/test', local_control_views.vda5050_test_connection),

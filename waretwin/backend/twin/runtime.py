@@ -134,6 +134,7 @@ class TwinRuntime:
         self.robot_map_geometry: dict[str, dict[str, Any]] = {}
         self.local_map_transitions: set[str] = set()
         self.pending_local_map_loads: dict[str, dict[str, Any]] = {}
+        self.pending_slam_session_resumes: dict[str, dict[str, Any]] = {}
         self.robot_mapping_state: dict[str, str] = {}
         self.robot_mapping_elapsed_s: dict[str, float] = {}
         self.robot_mapping_sessions: dict[str, str] = {}

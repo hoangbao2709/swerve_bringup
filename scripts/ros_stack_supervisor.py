@@ -128,17 +128,49 @@ def command_for_revision(base: Sequence[str], root: Path, revision: int,
     return command
 
 
-def command_for_mode(base: Sequence[str], mode: str) -> list[str]:
+def command_for_mode(base: Sequence[str], mode: str, *,
+                     slam_session_file: str | None = None) -> list[str]:
     """Return the same launch command with one explicit runtime mode."""
     mode = str(mode).strip().lower()
     if mode not in ('mapping', 'navigation'):
         raise ValueError('mode must be mapping or navigation')
     command = [arg for arg in base if not arg.startswith('mode:=')
-               and not arg.startswith('defer_nav2_start:=')]
+               and not arg.startswith('defer_nav2_start:=')
+               and not arg.startswith('slam_session_file:=')
+               and not arg.startswith('slam_start_at_dock:=')]
+    if slam_session_file and mode != 'mapping':
+        raise ValueError('a saved SLAM session can only start in mapping mode')
     command.append(f'mode:={mode}')
     if mode == 'navigation':
         command.append('defer_nav2_start:=true')
+    if slam_session_file:
+        command.extend((f'slam_session_file:={slam_session_file}',
+                        'slam_start_at_dock:=true'))
     return command
+
+
+def validate_slam_session_prefix(value: str, robot_id: str,
+                                 base_command: Sequence[str],
+                                 readiness_root: Path) -> str:
+    """Fail closed unless the selected posegraph pair is inside this robot's local store."""
+    artifact_arg = next((arg.split(':=', 1)[1] for arg in base_command
+                         if arg.startswith('artifact_root:=')), None)
+    artifact_root = (Path(artifact_arg).expanduser() if artifact_arg else
+                     Path(os.environ.get('WARETWIN_ARTIFACT_ROOT') or
+                          (Path(readiness_root) / 'generated' / 'maps')))
+    if not artifact_root.is_absolute():
+        artifact_root = Path(readiness_root) / artifact_root
+    local_root = (artifact_root.resolve() / 'local_robot_maps' / robot_id).resolve()
+    prefix = Path(str(value or '')).expanduser().resolve()
+    if prefix.parent != local_root or prefix.suffix:
+        raise ValueError('saved SLAM session prefix must be a direct child of this robot local-map store')
+    posegraph = prefix.with_suffix('.posegraph').resolve(strict=True)
+    session_data = prefix.with_suffix('.data').resolve(strict=True)
+    if (not posegraph.is_relative_to(local_root) or not session_data.is_relative_to(local_root)
+            or not posegraph.is_file() or not session_data.is_file()
+            or posegraph.stat().st_size <= 0 or session_data.stat().st_size <= 0):
+        raise ValueError('saved SLAM session must have non-empty posegraph and data artifacts')
+    return str(prefix)
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -304,13 +336,22 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                     raise ValueError('mode transition request robot_id does not match the active stack')
                 if target_mode not in ('mapping', 'navigation'):
                     raise ValueError('mode transition target must be mapping or navigation')
+                slam_session_file = mode_request.get('slam_session_file')
+                if slam_session_file:
+                    if target_mode != 'mapping' or mode_request.get('force_restart') is not True:
+                        raise ValueError('saved SLAM resume requires a forced Mapping runtime restart')
+                    slam_session_file = validate_slam_session_prefix(
+                        str(slam_session_file), robot_id, command, readiness_root)
+                elif mode_request.get('force_restart'):
+                    raise ValueError('forced runtime restart is reserved for a validated saved SLAM session')
                 mode_request_file.unlink(missing_ok=True)
-                if target_mode == active_mode:
+                if target_mode == active_mode and not slam_session_file:
                     _write_mode_status(mode_status_file, mode_request, 'READY',
                                        f'{target_mode} mode is already active')
                 else:
                     previous_mode, previous_command = active_mode, command
-                    target_command = command_for_mode(command, target_mode)
+                    target_command = command_for_mode(
+                        command, target_mode, slam_session_file=slam_session_file)
                     print(f'[MODE-SUPERVISOR] transition {previous_mode}->{target_mode}; restarting ROS/Gazebo and rechecking readiness', flush=True)
                     _write_mode_status(mode_status_file, mode_request, 'RESTARTING',
                                        'ROS/Gazebo restart in progress; simulated robot will respawn at its configured start pose')

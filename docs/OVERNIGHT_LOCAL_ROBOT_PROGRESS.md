@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: f94407b
+Current HEAD: a180195
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 
@@ -14,7 +14,7 @@ Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 | T04 | Robot pose/frame stability | BLOCKED | c9e0f9f, d65665a | `docs/ROBOT_POSE_ALIGNMENT_20261002.md#runtime-result`; frontend/backend frame contract tests | Static selectors reject wrong map/session/revision; canonical 2D/3D warehouse alignment and Mapping 2D alignment have three-position evidence. `active_map_pose` now labels telemetry/localization readouts; legacy generic pose is only used in LOCAL_SIM adapters or the explicit frame projection. Mapping 3D pose alignment is blocked because T03 produced no cloud frame/robot marker in Web. Tests: 31 frontend, 23 Django, TypeScript, Django system/migration checks, Python compile. |
 | T05 | Resume Mapping | BLOCKED | 58c4dc2 | `.runtime/local-map-slam-resume-acceptance.json` (`acceptance`, `initial_map_restoration_check`, `teleop_motion`, `mapping_extension`, `resumed_map_save_evidence`) | Prior restore proof: 60,875 saved known cells covered by 70,438 live cells; 99.977% class agreement. Web Teleop attempt moved 0.0607 m but did not maintain source continuity; map stayed 70,438 cells, same 440×598 extent/signature, zero newly known cells. Old map remained intact and a distinct resumed session was saved without promoting canonical. First failing layer: Web Teleop did not carry the robot into a verified new frontier; mapping did not extend. Current-boot storage errors block safe retest. |
 | T06 | Map Point navigation | BLOCKED | 2e6bf44, f94407b | `.runtime/local-map-workflow-acceptance-scale-final.json`; `.runtime/resume-web-navigation.json`; frontend/backend bridge test output | Map clicks now select only; PREVIEW PATH is explicit. Backend invalidates prior approvals on target change/cancel and binds previews to live TF pose frame/map/revision/provenance/freshness. Tests: frontend 21/21, TypeScript check, backend bridge 23/23, Django system check, Python compile, `git diff --check`. Runtime gate not met: available samples include a near-goal timeout/yaw error 2.09 rad and a medium goal with 0.0699 m XY error; required controlled near/medium/turning run is unsafe under T00 storage gate. |
-| T07 | Tag registry/navigation target | PENDING | - | - | - |
+| T07 | Tag registry/navigation target | RUNNING | - | - | Auditing authoritative Tag registry, active-map compatibility, and the common navigation target resolution boundary. |
 | T08 | Tag dropdown UI | PENDING | - | - | - |
 | T09 | Tag path preview | PENDING | - | - | - |
 | T10 | Tag navigation runtime | PENDING | - | - | - |

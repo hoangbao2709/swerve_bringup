@@ -1,9 +1,9 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: 4b4a5b9
+Current HEAD: 5485ec3
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
-Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
+Last updated: 2026-10-03 02:24 (Asia/Ho_Chi_Minh)
 
 | ID | Task | Status | Commit | Runtime evidence | Notes |
 |---|---|---|---|---|---|
@@ -21,7 +21,7 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 | T11 | Navigation cancel/safety | BLOCKED | bad4265 | `.runtime/t11-navigation-safety.json`; prior E-STOP trace summarized in `docs/LOCAL_ROBOT_CONTROL_ACCEPTANCE.md` | Fixed late-accepted-goal cancellation and E-STOP clear race; bridge tests pass 36/36. Real active-Nav2 cancellation, zero/settle, and no-resume checks remain blocked by T00. |
 | T12 | Navigation repeatability/accuracy | BLOCKED | - | `.runtime/t12-navigation-accuracy.json` | Retained Map Point evidence is mixed (0.04826 m and 0.0699 m reported, plus a later 0.10297 m Gazebo miss); no Tag runtime sample series exists. Mean/median/max not computed from incomplete incomparable samples. T00 blocks retest. |
 | T13 | Large-route mapping/loop closure | BLOCKED | - | `.runtime/t13-large-route.json`; current-boot kernel evidence in T00 | Required healthy-storage precondition is false: repeated `/dev/sda` timeouts/read errors and blocked jbd2/workers. No Gazebo route was launched; loop closure was not measured. |
-| T14 | Full integrated acceptance | PENDING | - | - | - |
+| T14 | Full integrated acceptance | BLOCKED | - | `.runtime/t14-final-integrated.json`; T00 current-boot kernel evidence | No final ROS/Gazebo/Web run was started because T00 storage-health gate is still blocked and several required live dependencies remain incomplete. |
 
 ## T00 preflight evidence
 
@@ -114,3 +114,8 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
 - T13 is explicitly conditional on a healthy current boot. T00 still records repeated `/dev/sda` `DID_TIME_OUT`, read I/O errors, and blocked `jbd2`/worker tasks. Storage health therefore fails before route startup.
 - No multi-meter route was run. Route distance, known-cell deltas, map extents, loop-return consistency, and SLAM correction measurements are null. `LOOP_CLOSURE_EVENT=NOT_RUN` (not evidence that loop closure failed or was not triggered during a route). T13 is BLOCKED; no Gazebo stress was attempted. Evidence artifact: `.runtime/t13-large-route.json`.
+
+## T14 Final integrated acceptance gate
+
+- T14 requires one clean production ROS/Gazebo/Web run across the canonical warehouse, both SLAM views, Map Point and Tag navigation, cancel/E-STOP, and mapping save/load/resume smoke checks. The prerequisite work remains incomplete: T02–T13 include blocked live gates, with T00 storage health still preventing runtime startup.
+- No integrated runtime was started. T01's prior Global warehouse evidence remains a historical PASS and was not needlessly repeated, but it cannot substitute for this requested clean end-to-end run. Final Mapping, both navigation target methods, active-goal safety, and final Local Robot Control are therefore BLOCKED, not passed. Evidence artifact: `.runtime/t14-final-integrated.json`.

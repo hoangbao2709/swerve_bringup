@@ -1,9 +1,9 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: ca74db7
+Current HEAD: 20ff08f (T09 source checkpoint; ledger checkpoint follows)
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
-Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
+Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
 | ID | Task | Status | Commit | Runtime evidence | Notes |
 |---|---|---|---|---|---|
@@ -16,7 +16,7 @@ Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 | T06 | Map Point navigation | BLOCKED | 2e6bf44, f94407b | `.runtime/local-map-workflow-acceptance-scale-final.json`; `.runtime/resume-web-navigation.json`; frontend/backend bridge test output | Map clicks now select only; PREVIEW PATH is explicit. Backend invalidates prior approvals on target change/cancel and binds previews to live TF pose frame/map/revision/provenance/freshness. Tests: frontend 21/21, TypeScript check, backend bridge 23/23, Django system check, Python compile, `git diff --check`. Runtime gate not met: available samples include a near-goal timeout/yaw error 2.09 rad and a medium goal with 0.0699 m XY error; required controlled near/medium/turning run is unsafe under T00 storage gate. |
 | T07 | Tag registry/navigation target | BLOCKED | 6208ea8 | `twin.tests.test_navigation_graph` (8/8); read-only active registry query: `WH-TEST-01`, revision 21, 30 enabled Tags | Authoritative source is the database `NavigationTag` registry synchronized from the active warehouse layout. Added authenticated robot-scoped registry API and shared `NavigationTarget` resolver; all required positive/negative resolution tests pass. Live API against a robot-confirmed active map remains unverified because T00 blocks starting/restarting the ROS/Gazebo/Web runtime. |
 | T08 | Tag dropdown UI | BLOCKED | 4f7ae83 | `waretwin/frontend/tests/robot_control_workflow.test.tsx` (24/24); `twin.tests.test_navigation_graph` (8/8) | Added Robot Control MAP POINT/TAG selector and authenticated robot-scoped Tag API client. Selection shows registry ID/label/type/map/revision/pose, highlights the resolved pose on canonical map, and sends no preview/goal. Loading, empty, backend failure, disabled, and map-incompatibility states are tested. Live authenticated Web/API acceptance remains unavailable under T00. |
-| T09 | Tag path preview | RUNNING | - | - | Implementing one-use source-bound Nav2 path preview for Tags through the common resolver; selection remains non-moving. |
+| T09 | Tag path preview | BLOCKED | 20ff08f | `.runtime/t09-tag-preview.json` | Shared resolver and source-bound preview authorization implemented; targeted checks pass, but live ComputePathToPose/Web acceptance is blocked by T00 storage health. |
 | T10 | Tag navigation runtime | PENDING | - | - | - |
 | T11 | Navigation cancel/safety | PENDING | - | - | - |
 | T12 | Navigation repeatability/accuracy | PENDING | - | - | - |
@@ -83,3 +83,10 @@ Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 - Robot Control now has a MAP POINT/TAG method control and an authoritative `getRobotNavigationTags(robotId)` request. The dropdown has no free-text path; incompatible registries and backend failures fail closed. Disabled/non-navigable rows remain visible as disabled options with their status.
 - Selecting a navigable Tag displays ID, label, family, map/revision and resolved X/Y/yaw, and draws a distinct selected-target marker on the GLOBAL canonical map. Selection clears/invalidate previews and does not emit `PATH_PREVIEW_REQUEST` or `NAV_GOAL`; Tag preview remains disabled pending T09's source-bound common preview flow.
 - Frontend tests passed 24/24; TypeScript `--noEmit` passed. Backend registry tests passed 8/8; Django system/migration checks, Python compile, and `git diff --check` passed. Production frontend build and real authenticated Web/API interaction were not run under the current-boot storage fault. First unverified layer: live browser-to-Django robot/map registry response. T08 remains blocked, with no runtime PASS claimed.
+
+## T09 Tag path preview evidence and blocker
+
+- Tag and Map Point preview requests now resolve through the same `NavigationTarget` contract. The Tag request carries registry and per-Tag revisions, while the server supplies the resolved pose to the existing Nav2 `ComputePathToPose` bridge path; client-supplied Tag coordinates are not used.
+- The server revalidates Tag identity, pose, Tag revision, registry revision, map/revision, and localization after Nav2 returns a path and again before Send Goal. Missing preview, stale revision, changed Tag, mismatched source, or changed resolved pose rejects navigation. Selecting a Tag only selects a destination; it sends no goal. The approved path is drawn and its status/length is surfaced in the UI.
+- Targeted checks passed: frontend workflow 25/25; backend navigation graph plus ROS bridge 32/32; TypeScript `--noEmit`; Django system check; `makemigrations --check --dry-run` (no changes); backend `compileall`; and `git diff --check`.
+- The live request/render/no-motion chain was not run, so T09 is not a runtime pass. First failing gate is T00 before ROS/Gazebo startup: the current boot still reports `/dev/sda` `DID_TIME_OUT` and read I/O errors. Production frontend build and live Web-to-bridge `ComputePathToPose` remain unverified. Runtime acceptance: BLOCKED, not failed source behavior. Evidence artifact: `.runtime/t09-tag-preview.json`.

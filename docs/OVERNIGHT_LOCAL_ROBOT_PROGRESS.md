@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: 770513d
+Current HEAD: 084dbef (T12 audit checkpoint; ledger checkpoint follows)
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
@@ -19,7 +19,7 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 | T09 | Tag path preview | BLOCKED | 20ff08f | `.runtime/t09-tag-preview.json` | Shared resolver and source-bound preview authorization implemented; targeted checks pass, but live ComputePathToPose/Web acceptance is blocked by T00 storage health. |
 | T10 | Tag navigation runtime | BLOCKED | 7f04439 | `.runtime/t10-tag-nav.json` | Static audit confirms the shared resolved-target/preview/NavigateToPose route; bridge tests pass. Three live Tag runs, arbiter ownership, Gazebo motion, and accuracy are blocked by T00. |
 | T11 | Navigation cancel/safety | BLOCKED | bad4265 | `.runtime/t11-navigation-safety.json`; prior E-STOP trace summarized in `docs/LOCAL_ROBOT_CONTROL_ACCEPTANCE.md` | Fixed late-accepted-goal cancellation and E-STOP clear race; bridge tests pass 36/36. Real active-Nav2 cancellation, zero/settle, and no-resume checks remain blocked by T00. |
-| T12 | Navigation repeatability/accuracy | RUNNING | - | - | Reconciling retained goal-error samples against the required three Map Point and three Tag runtime samples; no new Gazebo run is safe under T00. |
+| T12 | Navigation repeatability/accuracy | BLOCKED | - | `.runtime/t12-navigation-accuracy.json` | Retained Map Point evidence is mixed (0.04826 m and 0.0699 m reported, plus a later 0.10297 m Gazebo miss); no Tag runtime sample series exists. Mean/median/max not computed from incomplete incomparable samples. T00 blocks retest. |
 | T13 | Large-route mapping/loop closure | PENDING | - | - | - |
 | T14 | Full integrated acceptance | PENDING | - | - | - |
 
@@ -103,3 +103,9 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 - The bridge now retains pending cancel/E-STOP state, cancels a late-accepted goal immediately, records its result callback, and refuses to clear the E-STOP latch while a goal request, accepted goal, or cancellation is still in flight. Clear resets pending cancel/replan state only after that barrier is satisfied. The shared pose-goal path applies to both Map Point and Tag targets.
 - Bridge suite passed 36/36; Python compile and `git diff --check` passed. Existing runtime evidence records E-STOP zero and clear-without-resume during prior Web safety tests, but not with Nav2 active, so it does not satisfy this task's active-navigation gates.
 - Real Map Point cancel, Tag cancel, E-STOP during active Nav2, selected-zero/settling, and clear-without-resume remain unmeasured. First blocked gate: T00 current-boot storage health before ROS/Gazebo runtime. T11 is BLOCKED despite the source fix. Evidence artifact: `.runtime/t11-navigation-safety.json`.
+
+## T12 Navigation accuracy reconciliation and blocker
+
+- The retained successful Map Point run in `.runtime/local-map-workflow-acceptance-scale-final.json` has 0.0482557 m map-frame XY error and 0.0427296 m Gazebo XY error. Other retained observations are mixed: T06 records a 0.0699 m medium-goal error and a near-goal timeout with 2.09 rad yaw error; the later report records a 0.10297 m Gazebo XY miss. `.runtime/resume-web-navigation.json` has no numeric XY fields for its succeeded goal.
+- No comparable Tag-navigation runtime sample set was found; the three required real Tag goals are absent. Because the samples are incomplete and include different error fields/results, mean/median/max are deliberately not computed as if they were an acceptance series.
+- No new runtime run was attempted: T10 Tag navigation is blocked and T00 current-boot storage errors prohibit a safe Gazebo retest. T12 is BLOCKED; `NAV_REPEATABILITY` is not passed. Evidence artifact: `.runtime/t12-navigation-accuracy.json`.

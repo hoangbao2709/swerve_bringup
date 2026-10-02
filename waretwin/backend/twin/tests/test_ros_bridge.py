@@ -328,6 +328,17 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 self.assertEqual(navigation_calls(), [])
 
                 await request_preview('preview-approved')
+                await runtime.handle_message(capture, {
+                    'type': 'PATH_PREVIEW_INVALIDATE', 'robot_id': 'R01',
+                }, None)
+                self.assertNotIn(('R01', 'preview-approved'), runtime.path_preview_results)
+                self.assertNotIn(('R01', 'preview-approved'), runtime.approved_path_previews)
+                capture.send_json.reset_mock()
+                await send_goal('preview-approved')
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_INVALID')
+                self.assertEqual(navigation_calls(), [])
+
+                await request_preview('preview-approved')
                 await send_goal('preview-approved')
                 self.assertEqual(len(navigation_calls()), 1)
                 self.assertEqual(gateway.send_command.await_args.args, ('R01', 'NAVIGATE', {

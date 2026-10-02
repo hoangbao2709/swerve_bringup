@@ -392,6 +392,15 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setError("");
   };
 
+  const selectMapPoint = useCallback((target: WorldGoal) => {
+    wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
+    setGoalPreview(target);
+    latestPathRequest.current = "";
+    setPathRequestState("IDLE");
+    setRobotDetail(robotId, { pathPreview: null });
+    setError("");
+  }, [robotId, setRobotDetail]);
+
   const requestPathPreview = useCallback((target: WorldGoal) => {
     setGoalPreview(target);
     setError("");
@@ -427,6 +436,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [pathPreview]);
 
   const cancelPathPreview = () => {
+    wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
     latestPathRequest.current = "";
     setGoalPreview(null);
     setPathRequestState("IDLE");
@@ -497,14 +507,15 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             {activeLocalMapId && runtimeState !== "MAPPING" && <span className="map-sync-warning">LOCAL MAP DIFFERS FROM CANONICAL r{mapSync.publishedRevision ?? "—"} · LOCAL NAV ONLY</span>}
           </div>
           <div className="robot-detail-view-stack" key={robotId}>
-            <div className={"robot-detail-view-layer " + (detailView === "GLOBAL" ? "is-active" : "")} data-view="GLOBAL" aria-hidden={detailView !== "GLOBAL"}><DetailMapCanvas active={detailView === "GLOBAL"} robotId={robotId} robot={robot} canonicalRevision={mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} onGoalPreview={requestPathPreview} canPick={runtimeState !== "MAPPING" && activeMapId === "CANONICAL" && !activeLocalMapId} /></div>
+            <div className={"robot-detail-view-layer " + (detailView === "GLOBAL" ? "is-active" : "")} data-view="GLOBAL" aria-hidden={detailView !== "GLOBAL"}><DetailMapCanvas active={detailView === "GLOBAL"} robotId={robotId} robot={robot} canonicalRevision={mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} onGoalSelect={selectMapPoint} canPick={runtimeState !== "MAPPING" && activeMapId === "CANONICAL" && !activeLocalMapId} /></div>
             {visitedViews.current.has("LIDAR_2D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_2D" ? "is-active" : "")} data-view="LIDAR_2D" aria-hidden={detailView !== "LIDAR_2D"}><AccumulatedSlamMap2DView map={currentSlam2dMap} robot={robot} scan={mappingScan} /></div>}
             {visitedViews.current.has("LIDAR_3D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_3D" ? "is-active" : "")} data-view="LIDAR_3D" aria-hidden={detailView !== "LIDAR_3D"}><RobotLidar3DView active={detailView === "LIDAR_3D"} frame={currentSlam3dCloud} robot={robot} slamMap={currentSlam2dMap} /></div>}
           </div>
           <div className="robot-detail-goal-toolbar">
-            <span>{goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination to request a Nav2 path preview"}</span>
-            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview({ ...goalPreview, yaw: goalPreview.yaw - Math.PI / 12 })}>YAW −</button>
-            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview({ ...goalPreview, yaw: goalPreview.yaw + Math.PI / 12 })}>YAW +</button>
+            <span>{goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
+            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw - Math.PI / 12 })}>YAW −</button>
+            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw + Math.PI / 12 })}>YAW +</button>
+            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
             <button type="button" disabled={!goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady || runtimeState !== "NAVIGATION"} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
             <button type="button" disabled={!goalPreview} onClick={cancelPathPreview}>CANCEL</button>
           </div>
@@ -648,9 +659,9 @@ function MetricContent({ label, value, mono = false, status = false }: { label: 
   return <div className="robot-detail-metric"><span>{label}</span>{status ? <StatusValue value={value} /> : <b className={mono ? "mono" : ""}>{safeText(value)}</b>}</div>;
 }
 
-type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; canonicalRevision: string | number; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; onGoalPreview: (goal: WorldGoal) => void; canPick: boolean };
+type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; canonicalRevision: string | number; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; onGoalSelect: (goal: WorldGoal) => void; canPick: boolean };
 
-function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, globalPath, localPath, goal, goalPreview, pathPreview, onGoalPreview, canPick }: MapCanvasProps) {
+function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, globalPath, localPath, goal, goalPreview, pathPreview, onGoalSelect, canPick }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -713,7 +724,7 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
     const rect = event.currentTarget.getBoundingClientRect();
     const point = transform.toWorld(event.clientX - rect.left, event.clientY - rect.top);
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
-    onGoalPreview({ x: point.x, y: point.y, yaw: displayedPose?.yaw ?? 0 });
+    onGoalSelect({ x: point.x, y: point.y, yaw: displayedPose?.yaw ?? 0 });
     setFollow(false);
   };
 

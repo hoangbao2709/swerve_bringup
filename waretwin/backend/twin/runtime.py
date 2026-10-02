@@ -1460,6 +1460,8 @@ class TwinRuntime:
             else:
                 await consumer.send_json({'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
                     'message': 'robot detail visualization requires an online ROS bridge'})
+        elif t == 'PATH_PREVIEW_INVALIDATE':
+            self.invalidate_path_previews(msg.robot_id, 'navigation target changed')
         elif t == 'PATH_PREVIEW_REQUEST':
             now = time.monotonic()
             request_id = str(getattr(msg, 'request_id', '') or '')

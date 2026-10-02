@@ -770,6 +770,11 @@ class CmdPathPreviewRequest(_Base):
     active_map_revision: Optional[str] = Field(default=None, max_length=128)
 
 
+class CmdPathPreviewInvalidate(_Base):
+    type: Literal["PATH_PREVIEW_INVALIDATE"] = "PATH_PREVIEW_INVALIDATE"
+    robot_id: RobotId = Field(min_length=1, max_length=64)
+
+
 class CmdRobotDetailView(_Base):
     type: Literal["ROBOT_DETAIL_VIEW"] = "ROBOT_DETAIL_VIEW"
     robot_id: RobotId = Field(min_length=1, max_length=64)
@@ -815,7 +820,7 @@ class SimControlBody(_Base):
 ClientMessage = Annotated[
     Union[CmdResync, CmdSimControl, CmdInject, CmdClearInjection, CmdCreateTask,
           CmdAssignTask, CmdAckAlert, CmdSelectRobot, CmdRobotMode, CmdRobotManual,
-          CmdNavGoal, CmdNavControl, CmdPathPreviewRequest, CmdRobotDetailView,
+          CmdNavGoal, CmdNavControl, CmdPathPreviewRequest, CmdPathPreviewInvalidate, CmdRobotDetailView,
           CmdWhatIfRun, CmdCopilotAsk],
     Field(discriminator="type"),
 ]

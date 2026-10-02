@@ -362,7 +362,7 @@ describe("robot detail route stability", () => {
     expect(canvas?.dataset.mapSource).toBe("CANONICAL_WAREHOUSE");
   });
 
-  it("requests a Nav2 preview from the map click and gates Send Goal on the matching current approval", async () => {
+  it("requires PREVIEW PATH after map-point selection and invalidates approval when the point changes", async () => {
     setOnlineRobot();
     useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
     renderNode(<RobotControlDetailPage robotId="R01" />);
@@ -370,8 +370,11 @@ describe("robot detail route stability", () => {
     const canvas = container.querySelector<HTMLCanvasElement>('[aria-label="Canonical warehouse and robot pose map"]');
     expect(canvas).toBeTruthy();
     await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
     const request = vi.mocked(wsSend).mock.calls.map(([message]) => message)
-      .find((message) => message.type === "PATH_PREVIEW_REQUEST");
+      .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
     expect(request?.type).toBe("PATH_PREVIEW_REQUEST");
     if (!request || request.type !== "PATH_PREVIEW_REQUEST") throw new Error("path preview request was not emitted");
     expect(request).toMatchObject({ robot_id: "R01", frame_id: "map", active_map_id: "CANONICAL", active_map_revision: "21" });
@@ -387,16 +390,30 @@ describe("robot detail route stability", () => {
     };
     act(() => useStore.getState().setRobotDetail("R01", { pathPreview: approved }));
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(false);
+
+    await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 330, clientY: 180 })); });
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    const replacement = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
+    expect(replacement?.type).toBe("PATH_PREVIEW_REQUEST");
+    if (!replacement || replacement.type !== "PATH_PREVIEW_REQUEST") throw new Error("replacement preview was not emitted");
+    expect(replacement.request_id).not.toBe(request.request_id);
+
+    const approvedReplacement = { ...approved, request_id: replacement.request_id,
+      goal: { x: replacement.x, y: replacement.y, yaw: replacement.yaw } };
+    act(() => useStore.getState().setRobotDetail("R01", { pathPreview: approvedReplacement }));
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(false);
     await act(async () => { buttonNamed("SEND GOAL")?.click(); });
     const goalMessage = vi.mocked(wsSend).mock.calls.map(([message]) => message)
       .find((message) => message.type === "NAV_GOAL");
-    expect(goalMessage).toMatchObject({ type: "NAV_GOAL", robot_id: "R01", preview_request_id: request.request_id,
+    expect(goalMessage).toMatchObject({ type: "NAV_GOAL", robot_id: "R01", preview_request_id: replacement.request_id,
       active_map_id: "CANONICAL", active_map_revision: "21" });
 
-    act(() => useStore.getState().setRobotDetail("R01", { pathPreview: { ...approved, path: [] } }));
+    act(() => useStore.getState().setRobotDetail("R01", { pathPreview: { ...approvedReplacement, path: [] } }));
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
     act(() => useStore.getState().setRobotDetail("R01", {
-      pathPreview: { ...approved, timestamp: new Date(Date.now() - 121_000).toISOString() },
+      pathPreview: { ...approvedReplacement, timestamp: new Date(Date.now() - 121_000).toISOString() },
     }));
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
   });

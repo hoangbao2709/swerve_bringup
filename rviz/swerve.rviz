@@ -9,6 +9,24 @@ Visualization Manager:
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Enabled: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: R01 live /scan
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /scan
+      Color Transformer: FlatColor
+      Color: 39; 224; 208
+      Decay Time: 0
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.02
+      Style: Points
+      Use Fixed Frame: true
     - Class: rviz_default_plugins/RobotModel
       Name: RobotModel
       Enabled: true
@@ -45,6 +63,7 @@ Visualization Manager:
         X: 0
         Y: 0
         Z: 0
+      Target Frame: base_footprint
       Yaw: 0.8
       Pitch: 0.5
 Window Geometry:

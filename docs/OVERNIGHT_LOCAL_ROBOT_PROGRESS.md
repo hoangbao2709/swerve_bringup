@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: 20ff08f (T09 source checkpoint; ledger checkpoint follows)
+Current HEAD: 339d49d
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
@@ -17,7 +17,7 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 | T07 | Tag registry/navigation target | BLOCKED | 6208ea8 | `twin.tests.test_navigation_graph` (8/8); read-only active registry query: `WH-TEST-01`, revision 21, 30 enabled Tags | Authoritative source is the database `NavigationTag` registry synchronized from the active warehouse layout. Added authenticated robot-scoped registry API and shared `NavigationTarget` resolver; all required positive/negative resolution tests pass. Live API against a robot-confirmed active map remains unverified because T00 blocks starting/restarting the ROS/Gazebo/Web runtime. |
 | T08 | Tag dropdown UI | BLOCKED | 4f7ae83 | `waretwin/frontend/tests/robot_control_workflow.test.tsx` (24/24); `twin.tests.test_navigation_graph` (8/8) | Added Robot Control MAP POINT/TAG selector and authenticated robot-scoped Tag API client. Selection shows registry ID/label/type/map/revision/pose, highlights the resolved pose on canonical map, and sends no preview/goal. Loading, empty, backend failure, disabled, and map-incompatibility states are tested. Live authenticated Web/API acceptance remains unavailable under T00. |
 | T09 | Tag path preview | BLOCKED | 20ff08f | `.runtime/t09-tag-preview.json` | Shared resolver and source-bound preview authorization implemented; targeted checks pass, but live ComputePathToPose/Web acceptance is blocked by T00 storage health. |
-| T10 | Tag navigation runtime | PENDING | - | - | - |
+| T10 | Tag navigation runtime | RUNNING | - | - | Auditing the shared resolved-target → preview authorization → Nav2 command chain and available tests; live three-Tag acceptance remains gated by T00/T09 runtime availability. |
 | T11 | Navigation cancel/safety | PENDING | - | - | - |
 | T12 | Navigation repeatability/accuracy | PENDING | - | - | - |
 | T13 | Large-route mapping/loop closure | PENDING | - | - | - |

@@ -120,24 +120,86 @@ const writeJson = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.s
     if (!initialSnapshot || initialSnapshot.known_cells <= 0) {
       throw Error('Web channel did not receive a live accumulated SLAM map after restoration');
     }
-    if (!skipResumeRequest) {
-      writeJson('session-restored.json', { restored_notice: restoredNotice,
-        resume_response: resumed, initial_map_snapshot: initialSnapshot,
-        screenshot: path.join(dir, 'session-restored.png') });
-      await page.screenshot({ path: path.join(dir, 'session-restored.png'), fullPage: true });
-    }
+    writeJson('session-restored.json', { restored_notice: restoredNotice,
+      resume_response: resumed || restorationCarryover,
+      initial_map_snapshot: initialSnapshot,
+      screenshot: path.join(dir, 'session-restored.png') });
+    await page.screenshot({ path: path.join(dir, 'session-restored.png'), fullPage: true });
 
     await page.getByRole('tab', { name: 'CONTROL', exact: true }).click();
     const forward = page.getByRole('button', { name: 'Forward (W / ↑)', exact: true });
     await forward.waitFor({ state: 'visible', timeout: 30000 });
-    if (await forward.isDisabled()) throw Error('Web Teleop Forward is disabled after session restoration');
-    const box = await forward.boundingBox();
-    if (!box) throw Error('Web Teleop Forward has no pointer target');
-    const holdS = Math.max(6, Math.min(20, Number(process.env.SLAM_RESUME_TELEOP_HOLD_S || 15)));
+    const gateDeadline = Date.now() + 150000;
+    let gate = null;
+    while (Date.now() < gateDeadline) {
+      gate = readJson('teleop-gate.json');
+      if (gate?.state === 'BLOCKED') {
+        writeJson('browser-result.json', {
+          errors: browserErrors, motion_started: false,
+          readiness_gate: gate, restored_notice: restoredNotice,
+          resume_responses: resumeResponses, restoration_carryover: restorationCarryover,
+          initial_map_snapshot: initialSnapshot, extended_map_snapshot: null,
+          teleop_start: null, teleop_end: null, mapping_paused: false,
+        });
+        return;
+      }
+      if (gate?.state === 'APPROVED'
+          && Date.now() - Number(gate.updated_at_ms || 0) <= 500) break;
+      gate = null;
+      await sleep(100);
+    }
+    if (!gate || gate.state !== 'APPROVED'
+        || Date.now() - Number(gate.updated_at_ms || 0) > 500) {
+      writeJson('browser-result.json', {
+        errors: browserErrors, motion_started: false,
+        readiness_gate: gate, readiness_gate_timeout: true,
+        restored_notice: restoredNotice, resume_responses: resumeResponses,
+        restoration_carryover: restorationCarryover,
+        initial_map_snapshot: initialSnapshot, extended_map_snapshot: null,
+        teleop_start: null, teleop_end: null, mapping_paused: false,
+      });
+      return;
+    }
+    // Control remains disabled while the supervisor reconnects the authenticated
+    // R01 bridge after switching from Navigation to Mapping. Wait for the real
+    // UI online state only after ROS readiness has passed; do not fail merely
+    // because the page rendered before that handover completed.
+    const manualModeButton = page.locator('.robot-detail-manual-mode')
+      .getByRole('button', { name: 'MANUAL', exact: true });
+    try {
+      await manualModeButton.waitFor({ state: 'visible', timeout: 30000 });
+      await page.waitForFunction(() => {
+        const button = document.querySelector('.robot-detail-manual-mode button');
+        return button && !button.disabled;
+      }, null, { timeout: 30000 });
+    } catch (error) {
+      const mode = (await page.locator('.robot-detail-mode').textContent().catch(() => ''))?.trim();
+      const runtime = (await page.locator('.robot-detail-runtime').textContent().catch(() => ''))?.trim();
+      await page.screenshot({ path: path.join(dir, 'teleop-not-ready.png'), fullPage: true }).catch(() => {});
+      throw Error(`Web control did not reconnect after readiness; mode=${mode}; runtime=${runtime}; ${error.message}`);
+    }
+    const modeText = (await page.locator('.robot-detail-mode').textContent() || '').trim();
+    if (!modeText.startsWith('MANUAL APPLIED')) {
+      await manualModeButton.click();
+      await page.waitForFunction(() =>
+        document.querySelector('.robot-detail-mode')?.textContent?.trim() === 'MANUAL APPLIED',
+      null, { timeout: 20000 });
+    }
+    if (await forward.isDisabled()) {
+      throw Error('Web Teleop Forward is still disabled after bridge reconnect and MANUAL application');
+    }
+    gate = readJson('teleop-gate.json');
+    if (!gate || gate.state !== 'APPROVED'
+        || Date.now() - Number(gate.updated_at_ms || 0) > 500
+        || !Object.values(gate.gates || {}).every(Boolean)) {
+      throw Error('post-resume readiness lease expired while waiting for Web controls');
+    }
+    const holdS = Math.max(2, Math.min(5, Number(process.env.SLAM_RESUME_TELEOP_HOLD_S || 3.5)));
     writeJson('teleop-start.json', { at_ms: Date.now(), action: 'FORWARD', hold_s: holdS,
       initial_map_known_cells: initialSnapshot.known_cells,
-      mapping_session_id: initialSnapshot.mapping_session_id });
-    await sleep(1200);
+      mapping_session_id: initialSnapshot.mapping_session_id,
+      readiness_gate_updated_at_ms: gate.updated_at_ms,
+      readiness_gates: gate.gates });
     await page.keyboard.down('ArrowUp');
     await sleep(holdS * 1000);
     await page.keyboard.up('ArrowUp');
@@ -147,7 +209,7 @@ const writeJson = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.s
       manual_stop_commands_sent: sent.filter(row => row.message.action === 'STOP').length });
     writeJson('websocket-manual-frames.json', sent);
 
-    const extensionDeadline = Date.now() + 180000;
+    const extensionDeadline = Date.now() + 90000;
     let extendedSnapshot = null;
     while (Date.now() < extensionDeadline) {
       const candidate = received.findLast(row => row.message.type === 'MAP_SNAPSHOT'
@@ -160,27 +222,81 @@ const writeJson = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.s
       }
       await sleep(150);
     }
-    if (!extendedSnapshot) throw Error('Web Teleop did not produce a later extended SLAM /map snapshot');
+    if (!extendedSnapshot) {
+      extendedSnapshot = received.findLast(row => row.message.type === 'MAP_SNAPSHOT'
+        && row.message.map?.map_source === 'SLAM_TOOLBOX'
+        && row.message.map?.mapping_session_id === initialSnapshot.mapping_session_id)?.message.map || null;
+    }
     await sleep(2000);
     extendedSnapshot = received.findLast(row => row.message.type === 'MAP_SNAPSHOT'
       && row.message.map?.map_source === 'SLAM_TOOLBOX'
       && row.message.map?.mapping_session_id === initialSnapshot.mapping_session_id)?.message.map || extendedSnapshot;
-    writeJson('extended-map.json', extendedSnapshot);
-    await page.screenshot({ path: path.join(dir, 'resumed-map-extended.png'), fullPage: true });
+    if (extendedSnapshot) {
+      writeJson('extended-map.json', extendedSnapshot);
+      await page.screenshot({ path: path.join(dir, 'resumed-map-extended.png'), fullPage: true });
+    }
 
     await page.getByRole('tab', { name: 'MAPPING', exact: true }).click();
     const stopMapping = page.getByRole('button', { name: 'STOP MAPPING', exact: true });
     await stopMapping.waitFor({ state: 'visible', timeout: 30000 });
     if (!(await stopMapping.isDisabled())) await stopMapping.click();
     await page.getByText('MAPPING PAUSED', { exact: true }).waitFor({ state: 'visible', timeout: 30000 });
+    const resumedMapName = `${mapName}_resumed_${Date.now()}`.slice(0, 64);
+    const mapNameInput = page.locator('.local-form-row input').first();
+    await mapNameInput.fill(resumedMapName);
+    await page.getByRole('button', { name: 'SAVE MAP', exact: true }).click();
+    await page.locator('.local-feedback.ok')
+      .filter({ hasText: `SAVE SUCCESS · ${resumedMapName}` })
+      .waitFor({ state: 'visible', timeout: 120000 });
+    const resumedMapRow = page.locator('.local-map-row').filter({ hasText: resumedMapName }).first();
+    await resumedMapRow.waitFor({ state: 'visible', timeout: 30000 });
+    const resumedMapRowText = (await resumedMapRow.textContent() || '').trim();
+    if (!resumedMapRowText.includes('SLAM AVAILABLE')) {
+      throw Error(`new resumed map ${resumedMapName} did not register a serialized SLAM session`);
+    }
+    const resumedMapSave = {
+      name: resumedMapName,
+      registry_row_text: resumedMapRowText,
+      initial_map_name: mapName,
+      distinct_name: resumedMapName !== mapName,
+    };
+    writeJson('resumed-map-save.json', resumedMapSave);
     writeJson('browser-result.json', {
-      errors: browserErrors, restored_notice: restoredNotice,
+      errors: browserErrors, motion_started: true,
+      readiness_gate: gate, restored_notice: restoredNotice,
       resume_responses: resumeResponses, restoration_carryover: restorationCarryover,
       initial_map_snapshot: initialSnapshot,
-      extended_map_snapshot: extendedSnapshot, teleop_start: readJson('teleop-start.json'),
+      extended_map_snapshot: extendedSnapshot,
+      map_extension_observed: Boolean(extendedSnapshot && (
+        Number(extendedSnapshot.known_cells) > Number(initialSnapshot.known_cells)
+        || extendedSnapshot.width !== initialSnapshot.width
+        || extendedSnapshot.height !== initialSnapshot.height)),
+      teleop_start: readJson('teleop-start.json'),
       teleop_end: readJson('teleop-end.json'), mapping_paused: true,
-      screenshots: [path.join(dir, 'session-restored.png'), path.join(dir, 'resumed-map-extended.png')],
+      resumed_map_save: resumedMapSave,
+      screenshots: [path.join(dir, 'session-restored.png'),
+        ...(extendedSnapshot ? [path.join(dir, 'resumed-map-extended.png')] : [])],
     });
     if (browserErrors.length) throw Error(`browser page error: ${browserErrors.join('; ')}`);
   } finally { await browser.close(); }
-})().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
+})().catch(error => {
+  console.error(error.stack || error.message);
+  const previous = readJson('browser-result.json') || {};
+  const restored = readJson('session-restored.json') || {};
+  writeJson('browser-result.json', {
+    ...previous,
+    errors: [...(previous.errors || []), error.message || String(error)],
+    failure_stack: error.stack || null,
+    restored_notice: previous.restored_notice || restored.restored_notice || null,
+    resume_responses: previous.resume_responses || readJson('resume-responses.json') || [],
+    restoration_carryover: previous.restoration_carryover || null,
+    initial_map_snapshot: previous.initial_map_snapshot
+      || restored.initial_map_snapshot || null,
+    extended_map_snapshot: previous.extended_map_snapshot
+      || readJson('extended-map.json') || null,
+    teleop_start: previous.teleop_start || readJson('teleop-start.json'),
+    teleop_end: previous.teleop_end || readJson('teleop-end.json'),
+    mapping_paused: Boolean(previous.mapping_paused),
+  });
+  process.exitCode = 1;
+});

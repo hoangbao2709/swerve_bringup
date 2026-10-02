@@ -4,9 +4,11 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { RobotState } from "../src/schema/twin_state";
 import { useStore } from "../src/state/store";
+import type { RobotNavigationTagRegistry } from "../src/services/api";
 
 vi.mock("../src/services/api", () => ({
   apiFetch: vi.fn(() => Promise.resolve({ ok: false, status: 503 })),
+  getRobotNavigationTags: vi.fn(() => Promise.reject(new Error("Tag registry unavailable"))),
   emergencyStop: vi.fn(() => Promise.resolve({ ok: true })),
   clearEmergencyStop: vi.fn(() => Promise.resolve({ ok: true })),
   getLocalRobotMaps: vi.fn(() => Promise.resolve({ maps: [], mapping_state: "MAPPING", active_local_map_id: null })),
@@ -161,6 +163,83 @@ describe("robot quick detail workflow", () => {
 });
 
 describe("robot detail route stability", () => {
+  it("loads Tags from the robot registry, shows the resolved details and highlights selection without motion", async () => {
+    setOnlineRobot();
+    const registry: RobotNavigationTagRegistry = {
+      robot_id: "R01", source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY", warehouse_id: 1,
+      warehouse_code: "WH-TEST-01", map_id: "CANONICAL", map_revision: "21", frame_id: "map",
+      compatible: true, reason: null, registry_revision: "registry-21", tags: [
+        { id: 1, tag_id: 1301, label: "Right Storage", family: "APRILTAG", floor_id: "F1", lane_id: "A-01", zone_id: 2,
+          x: 2.5, y: 3.5, z: 0, yaw: 1.2, enabled: true, navigable: true, reason: null,
+          frame_id: "map", map_id: "CANONICAL", map_revision: "21", navigation_pose: { x: 2.5, y: 3.5, yaw: 1.2 },
+          navigation_pose_source: "REGISTERED_NAVIGATION_NODE", tag_revision: "tag-1301", metadata: {} },
+        { id: 2, tag_id: 1302, label: "Disabled Rack", family: "DATAMATRIX", floor_id: "F1", lane_id: "A-02", zone_id: null,
+          x: 3, y: 4, z: 0, yaw: 0, enabled: false, navigable: false, reason: "disabled",
+          frame_id: "map", map_id: "CANONICAL", map_revision: "21", navigation_pose: null,
+          navigation_pose_source: "REGISTERED_NAVIGATION_NODE", tag_revision: "tag-1302", metadata: {} },
+      ],
+    };
+    vi.mocked(api.getRobotNavigationTags).mockResolvedValue(registry);
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { buttonNamed("TAG")?.click(); await settleUi(); });
+
+    expect(api.getRobotNavigationTags).toHaveBeenCalledWith("R01");
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]');
+    expect(select?.disabled).toBe(false);
+    expect(Array.from(select?.options ?? []).map((option) => option.textContent)).toContain("1301 — Right Storage");
+    expect(Array.from(select?.options ?? []).find((option) => option.value === "1302")?.disabled).toBe(true);
+
+    await act(async () => {
+      if (select) {
+        select.value = "1301";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    expect(container.querySelector('[data-testid="selected-navigation-tag"]')?.textContent)
+      .toContain("TAG ID 1301LABEL Right StorageTYPE APRILTAGMAP CANONICALREVISION 21X 2.500Y 3.500YAW 1.200 rad");
+    expect(container.querySelector<HTMLCanvasElement>('[aria-label="Canonical warehouse and robot pose map"]')?.dataset.selectedTagId).toBe("1301");
+    const motionMessages = vi.mocked(wsSend).mock.calls.map(([message]) => message.type);
+    expect(motionMessages).not.toContain("PATH_PREVIEW_REQUEST");
+    expect(motionMessages).not.toContain("NAV_GOAL");
+  });
+
+  it("shows Tag registry loading and empty states", async () => {
+    setOnlineRobot();
+    let resolveRegistry!: (value: RobotNavigationTagRegistry) => void;
+    const pending = new Promise<RobotNavigationTagRegistry>((resolve) => { resolveRegistry = resolve; });
+    vi.mocked(api.getRobotNavigationTags).mockReturnValue(pending);
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    act(() => buttonNamed("TAG")?.click());
+    expect(container.textContent).toContain("Loading authoritative Tags");
+
+    const empty: RobotNavigationTagRegistry = {
+      robot_id: "R01", source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY", warehouse_id: 1,
+      map_id: "CANONICAL", map_revision: "21", frame_id: "map", compatible: true,
+      reason: null, registry_revision: "empty-registry", tags: [],
+    };
+    await act(async () => { resolveRegistry(empty); await pending; });
+    expect(container.textContent).toContain("No Tags are registered for this active map.");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]')?.disabled).toBe(true);
+  });
+
+  it("surfaces Tag registry failures and incompatible maps", async () => {
+    setOnlineRobot();
+    vi.mocked(api.getRobotNavigationTags).mockRejectedValueOnce(new Error("Unauthorized"));
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { buttonNamed("TAG")?.click(); await settleUi(); });
+    expect(container.textContent).toContain("Tag registry unavailable: Unauthorized");
+
+    vi.mocked(api.getRobotNavigationTags).mockResolvedValueOnce({
+      robot_id: "R01", source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY", warehouse_id: null,
+      map_id: "local-R01-map", map_revision: "map-r2", frame_id: "map", compatible: false,
+      reason: "Tag registry is incompatible with the local map", registry_revision: null, tags: [],
+    });
+    await act(async () => { buttonNamed("MAP POINT")?.click(); await settleUi(); });
+    await act(async () => { buttonNamed("TAG")?.click(); await settleUi(); });
+    expect(container.textContent).toContain("Tags unavailable: Tag registry is incompatible with the local map");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]')?.disabled).toBe(true);
+  });
+
   it("keeps applied mode while a requested transition is pending", () => {
     useStore.setState({ runtimeMode: "GAZEBO_ROS", rosConnected: true, websocketState: "CONNECTED", connectedRobotIds: ["R01"] });
     renderNode(<RobotControlDetailPage robotId="R01" />);

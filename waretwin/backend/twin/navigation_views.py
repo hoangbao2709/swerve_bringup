@@ -35,6 +35,19 @@ def tags(request):
 @require_http_methods(['GET'])
 def robot_tags(request, robot_id: str):
     active_map = runtime.active_map_state(robot_id)
+    if runtime.operation_mode == 'MAPPING':
+        return JsonResponse({
+            'robot_id': robot_id,
+            'source': 'WAREHOUSE_NAVIGATION_TAG_REGISTRY',
+            'warehouse_id': None,
+            'map_id': active_map.get('active_map_id'),
+            'map_revision': active_map.get('active_map_revision'),
+            'frame_id': 'map',
+            'compatible': False,
+            'reason': 'Tag navigation is unavailable while the robot uses its live SLAM map',
+            'registry_revision': None,
+            'tags': [],
+        })
     registry = navigation_tag_registry(active_map)
     return JsonResponse({'robot_id': robot_id, **registry})
 

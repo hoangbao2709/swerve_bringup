@@ -19,6 +19,51 @@ export async function navigationApi(path: string, init: RequestInit = {}) {
   if (!response.ok) throw new Error(await responseError(response));
   return response.json();
 }
+
+export type RobotNavigationTag = {
+  id: number;
+  tag_id: number;
+  label: string;
+  family: string;
+  floor_id: string;
+  lane_id: string;
+  zone_id: number | null;
+  x: number | null;
+  y: number | null;
+  z: number | null;
+  yaw: number | null;
+  enabled: boolean;
+  navigable: boolean;
+  reason: string | null;
+  frame_id: "map";
+  map_id: string;
+  map_revision: string;
+  navigation_pose: { x: number; y: number; yaw: number } | null;
+  navigation_pose_source: string | null;
+  tag_revision: string;
+  metadata: Record<string, unknown>;
+};
+
+export type RobotNavigationTagRegistry = {
+  robot_id: string;
+  source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY";
+  warehouse_id: number | null;
+  warehouse_code?: string;
+  map_id: string | null;
+  map_revision: string | null;
+  frame_id: "map";
+  compatible: boolean;
+  reason: string | null;
+  registry_revision: string | null;
+  tags: RobotNavigationTag[];
+};
+
+export async function getRobotNavigationTags(robotId: string): Promise<RobotNavigationTagRegistry> {
+  const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/navigation-tags`);
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<RobotNavigationTagRegistry>;
+}
+
 export const startTagMission = (robot_id: string, target_tag_id: number) => {
   const state = useStore.getState();
   if (state.runtimeMode !== "LOCAL_SIM" && state.mapSync.status !== "SYNCED") {

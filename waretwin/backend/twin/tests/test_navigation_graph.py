@@ -166,5 +166,11 @@ class NavigationTargetResolutionTests(TestCase):
         self.assertFalse(response.json()['compatible'])
         self.assertEqual(response.json()['tags'], [])
 
+        with patch.object(runtime, 'active_map_state', return_value=self.active_map), \
+                patch.object(runtime, 'operation_mode', 'MAPPING'):
+            response = client.get('/api/robots/R01/navigation-tags')
+        self.assertFalse(response.json()['compatible'])
+        self.assertIn('SLAM map', response.json()['reason'])
+
         anonymous = Client().get('/api/robots/R01/navigation-tags')
         self.assertEqual(anonymous.status_code, 401)

@@ -105,6 +105,7 @@ class TwinRuntime:
         self.ros_bridge_connected = False
         self.connected_robot_ids: set[str] = set()
         self.robot_bridge_heartbeats: dict[str, float] = {}
+        self.robot_pose_heartbeats: dict[str, float] = {}
         self.bridge_status = 'DISCONNECTED' if self.is_external else 'LOCAL'
         self.last_telemetry_at: float | None = None
         self.last_telemetry_iso: str | None = None
@@ -235,6 +236,30 @@ class TwinRuntime:
             'canonical_map_revision': canonical_revision,
             'map_sync_status': status,
         }
+
+    def navigation_localization_state(self, robot_id: str, active_map: dict[str, Any]) -> dict[str, str] | None:
+        rid = str(robot_id)
+        timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        pose_heartbeat = self.robot_pose_heartbeats.get(rid)
+        if pose_heartbeat is None or time.monotonic() - pose_heartbeat > timeout:
+            return None
+        robot = self.engine.state.get('robots', {}).get(rid)
+        pose = robot.get('active_map_pose') if isinstance(robot, dict) else None
+        if not isinstance(pose, dict) or pose.get('valid') is not True:
+            return None
+        signature = {
+            'frame_id': str(pose.get('frame_id') or ''),
+            'map_id': str(pose.get('map_id') or ''),
+            'map_revision': str(pose.get('map_revision') or ''),
+            'map_source': str(pose.get('map_source') or ''),
+            'pose_source': str(pose.get('pose_source') or ''),
+        }
+        if (signature['frame_id'] != 'map'
+                or signature['map_id'] != str(active_map.get('active_map_id') or '')
+                or signature['map_revision'] != str(active_map.get('active_map_revision') or '')
+                or signature['pose_source'] != 'TF'):
+            return None
+        return signature
 
     def invalidate_path_previews(self, robot_id: str, reason: str = 'robot control state changed') -> None:
         rid = str(robot_id or '').strip()
@@ -437,6 +462,7 @@ class TwinRuntime:
             rid = str(robot_id)
             self.connected_robot_ids.add(rid)
             self.robot_bridge_heartbeats[rid] = time.monotonic()
+            self.robot_pose_heartbeats.pop(rid, None)
             self.robot_map_sync.pop(rid, None)
             self.invalidate_path_previews(rid)
             self._aggregate_robot_map_sync()
@@ -453,11 +479,13 @@ class TwinRuntime:
             rid = str(robot_id)
             self.connected_robot_ids.discard(rid)
             self.robot_bridge_heartbeats.pop(rid, None)
+            self.robot_pose_heartbeats.pop(rid, None)
             self.robot_map_sync.pop(rid, None)
             self._aggregate_robot_map_sync()
         else:
             self.connected_robot_ids.clear()
             self.robot_bridge_heartbeats.clear()
+            self.robot_pose_heartbeats.clear()
             self.robot_map_sync.clear()
         self.ros_bridge_connected = bool(self.connected_robot_ids) if robot_id else False
         if self.ros_bridge_connected:
@@ -715,6 +743,7 @@ class TwinRuntime:
         self.last_telemetry_at = time.monotonic()
         self.last_ros_heartbeat = self.last_telemetry_at
         self.robot_bridge_heartbeats[rid] = self.last_telemetry_at
+        self.robot_pose_heartbeats[rid] = self.last_telemetry_at
         self.bridge_status = 'CONNECTED'
         self.ros_diagnostics['ros'] = True
         self.last_telemetry_iso = now_iso
@@ -854,6 +883,7 @@ class TwinRuntime:
             still_current = (
                 active_now.get('active_map_id') == request['active_map_id']
                 and active_now.get('active_map_revision') == request['active_map_revision']
+                and self.navigation_localization_state(robot_id, active_now) == request['localization_state']
             )
             if status == 'VALID' and not (path_is_valid and target_matches and map_matches and still_current):
                 status = 'INVALID'
@@ -1497,6 +1527,10 @@ class TwinRuntime:
             if active['map_sync_status'] not in ('CANONICAL', 'LOCAL_ONLY'):
                 await preview_failure('INVALID', f'map is not ready for local navigation ({active["map_sync_status"]})')
                 return
+            localization_state = self.navigation_localization_state(msg.robot_id, active)
+            if localization_state is None:
+                await preview_failure('INVALID', 'a fresh TF pose in the confirmed active map is required for navigation')
+                return
 
             for key, pending in list(self.path_preview_requests.items()):
                 if now - float(pending.get('created_monotonic', now)) > 120.0:
@@ -1520,6 +1554,7 @@ class TwinRuntime:
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
                 'canonical_map_revision': active['canonical_map_revision'],
+                'localization_state': localization_state,
                 'created_monotonic': now,
             }
             self.path_preview_requests[key] = request
@@ -1626,6 +1661,7 @@ class TwinRuntime:
                     return
                 if (preview.get('active_map_id') != active['active_map_id']
                         or preview.get('active_map_revision') != active['active_map_revision']
+                        or preview.get('localization_state') != self.navigation_localization_state(msg.robot_id, active)
                         or str(getattr(msg, 'active_map_id', '') or '') != preview.get('active_map_id')
                         or str(getattr(msg, 'active_map_revision', '') or '') != preview.get('active_map_revision')):
                     await consumer.send_json({

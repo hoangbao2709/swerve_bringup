@@ -223,6 +223,8 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             'path_preview_results': deepcopy(runtime.path_preview_results),
             'expired_path_previews': dict(runtime.expired_path_previews),
             'path_preview_invalidations': dict(runtime.path_preview_invalidations),
+            'robots': deepcopy(runtime.engine.state.get('robots', {})),
+            'robot_pose_heartbeats': dict(runtime.robot_pose_heartbeats),
         }
         runtime.runtime_mode = 'GAZEBO_ROS'
         runtime.operation_mode = 'NAVIGATION'
@@ -238,6 +240,11 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         runtime.path_preview_results.clear()
         runtime.expired_path_previews.clear()
         runtime.path_preview_invalidations.clear()
+        runtime.robot_pose_heartbeats['R01'] = time.monotonic()
+        runtime.engine.state.setdefault('robots', {}).setdefault('R01', {})['active_map_pose'] = {
+            'valid': True, 'frame_id': 'map', 'map_id': 'CANONICAL',
+            'map_revision': '21', 'map_source': 'CANONICAL', 'pose_source': 'TF',
+        }
         capture = SimpleNamespace(send_json=AsyncMock())
         gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
 
@@ -305,6 +312,26 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                     'gazebo_revision': 21, 'nav2_revision': 21, 'tag_map_revision': 21,
                 }
 
+                runtime.robot_pose_heartbeats['R01'] = time.monotonic() - 10.0
+                await runtime.handle_message(capture, {
+                    'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01',
+                    'request_id': 'preview-stale-localization',
+                    'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
+                    'active_map_id': 'CANONICAL', 'active_map_revision': '21',
+                }, None)
+                self.assertEqual(capture.send_json.await_args.args[0]['type'], 'PATH_PREVIEW_RESULT')
+                self.assertEqual(capture.send_json.await_args.args[0]['status'], 'INVALID')
+                self.assertIn('fresh TF pose', capture.send_json.await_args.args[0]['reason'])
+                runtime.robot_pose_heartbeats['R01'] = time.monotonic()
+
+                await request_preview('preview-localization-change')
+                runtime.engine.state['robots']['R01']['active_map_pose']['pose_source'] = 'GAZEBO_MODEL_STATES'
+                capture.send_json.reset_mock()
+                await send_goal('preview-localization-change')
+                self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_MAP_MISMATCH')
+                self.assertEqual(navigation_calls(), [])
+                runtime.engine.state['robots']['R01']['active_map_pose']['pose_source'] = 'TF'
+
                 key = ('R01', 'preview-valid')
                 runtime.path_preview_results[key]['created_monotonic'] = time.monotonic() - 121
                 runtime.approved_path_previews[key]['created_monotonic'] = time.monotonic() - 121
@@ -349,7 +376,10 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 }))
         finally:
             for key, value in old_values.items():
-                setattr(runtime, key, value)
+                if key == 'robots':
+                    runtime.engine.state['robots'] = value
+                else:
+                    setattr(runtime, key, value)
 
     async def test_gateway_does_not_publish_without_bridge(self):
         previous = registry.consumer

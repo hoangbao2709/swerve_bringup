@@ -10,6 +10,7 @@ from django.views.decorators.http import require_http_methods
 
 from .auth import user_from_request
 from .models import EventLog, RobotNavigationMission
+from .navigation_targets import navigation_tag_registry
 from .runtime import runtime
 from .tag_navigation import active_warehouse, create_mission, current_mission, get_tag_graph, mission_snapshot, shortest_tag_route, validate_target_tag
 from .views import _body, _error
@@ -28,6 +29,14 @@ def _auth(view):
 @require_http_methods(['GET'])
 def tags(request):
     return JsonResponse(get_tag_graph(request.GET.get('warehouse_id')).get('tags', []), safe=False)
+
+
+@_auth
+@require_http_methods(['GET'])
+def robot_tags(request, robot_id: str):
+    active_map = runtime.active_map_state(robot_id)
+    registry = navigation_tag_registry(active_map)
+    return JsonResponse({'robot_id': robot_id, **registry})
 
 
 @_auth

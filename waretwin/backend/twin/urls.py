@@ -64,6 +64,7 @@ urlpatterns = [
     path('ai/status', views.ai_status),
     path('sim', views.sim),
     path('navigation/tags', navigation_views.tags),
+    path('robots/<str:robot_id>/navigation-tags', navigation_views.robot_tags),
     path('navigation/tag-graph', navigation_views.tag_graph),
     path('navigation/missions/current', navigation_views.current),
     path('navigation/missions', navigation_views.missions),

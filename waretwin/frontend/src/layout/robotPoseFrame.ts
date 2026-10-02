@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { FramePose, RobotState } from "../schema/twin_state";
 
 export type MapPoseIdentity = {
@@ -68,4 +69,69 @@ export function robotForWarehouse(robot: RobotState, runtimeMode: string, frame:
   if (runtimeMode === "LOCAL_SIM") return robot;
   return robotForDisplayedMap(robot, { frame_id: frame, active_map_id: "CANONICAL",
     active_map_revision: revision, map_source: "CANONICAL" });
+}
+
+export const ROBOT_POSE_HOLD_TTL_MS = 2500;
+
+export function displayedPoseIdentity(map: MapPoseIdentity): string {
+  const session = map.map_source === "SLAM_TOOLBOX" ? map.mapping_session_id ?? "" : "";
+  const revision = map.active_map_id === "CANONICAL" ? String(map.active_map_revision ?? "") : "";
+  return [map.frame_id ?? "", map.active_map_id ?? "", map.map_source ?? "", session, revision].join("|");
+}
+
+/** Keep the last compatible frame pose through brief missing/stale telemetry. */
+export type RetainedFramePose = { identity: string; acceptedAt: number; pose: FramePose };
+
+export function displayedFramePose(robot: RobotState, map: MapPoseIdentity): FramePose | undefined {
+  const pose = map.active_map_id === "CANONICAL" ? robot.canonical_pose
+    : map.map_source === "SLAM_TOOLBOX" ? robot.slam_pose : undefined;
+  if (!pose?.valid || robot.status === "OFFLINE" || ![pose.x, pose.y, pose.yaw].every(Number.isFinite)) return undefined;
+  const age = Date.now() - Date.parse(pose.timestamp);
+  if (!Number.isFinite(age) || age < -1000 || age > 3000) return undefined;
+  if (pose.frame_id !== map.frame_id || pose.map_id !== map.active_map_id) return undefined;
+  if (map.active_map_id === "CANONICAL") {
+    if (!["TF", "GAZEBO_MODEL_STATES"].includes(pose.pose_source)) return undefined;
+    if (pose.map_source !== "CANONICAL" || !sameRevision(pose.map_revision, map.active_map_revision)) return undefined;
+    if (pose.pose_source === "GAZEBO_MODEL_STATES" && (pose.source_frame_id !== "world"
+        || pose.transform_source !== "VALIDATED_CANONICAL_WORLD_BUNDLE")) return undefined;
+    return pose;
+  }
+  if (map.map_source === "SLAM_TOOLBOX" && pose.pose_source === "TF"
+      && pose.map_source === "SLAM_TOOLBOX" && Boolean(map.mapping_session_id)
+      && pose.mapping_session_id === map.mapping_session_id
+      && map.active_map_id === "SLAM-" + map.mapping_session_id) return pose;
+  return undefined;
+}
+
+export function stabilizeDisplayedFramePose(
+  robot: RobotState | undefined,
+  map: MapPoseIdentity,
+  previous: RetainedFramePose | null,
+  now = Date.now(),
+  ttlMs = ROBOT_POSE_HOLD_TTL_MS,
+): { pose: FramePose | undefined; retained: RetainedFramePose | null } {
+  const identity = displayedPoseIdentity(map);
+  if (robot?.status === "OFFLINE") return { pose: undefined, retained: null };
+  const compatible = robot ? displayedFramePose(robot, map) : undefined;
+  if (compatible) return { pose: compatible, retained: { identity, acceptedAt: now, pose: compatible } };
+  if (previous?.identity === identity && now - previous.acceptedAt <= ttlMs) {
+    return { pose: previous.pose, retained: previous };
+  }
+  return { pose: undefined, retained: previous?.identity === identity ? previous : null };
+}
+
+export function useStableDisplayedFramePose(robot: RobotState | undefined, map: MapPoseIdentity): FramePose | undefined {
+  const retained = useRef<RetainedFramePose | null>(null);
+  const [, expire] = useState(0);
+  const stable = stabilizeDisplayedFramePose(robot, map, retained.current);
+  retained.current = stable.retained;
+  const acceptedAt = stable.retained?.acceptedAt ?? 0;
+  const identity = displayedPoseIdentity(map);
+  useEffect(() => {
+    if (!acceptedAt) return;
+    const remaining = Math.max(0, ROBOT_POSE_HOLD_TTL_MS - (Date.now() - acceptedAt));
+    const timer = window.setTimeout(() => expire((value) => value + 1), remaining + 1);
+    return () => window.clearTimeout(timer);
+  }, [acceptedAt, identity]);
+  return stable.pose;
 }

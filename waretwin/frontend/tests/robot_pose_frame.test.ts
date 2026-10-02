@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { robotPoseMatchesMap, robotForWarehouse, robotForDisplayedMap, type MapPoseIdentity, type RobotPoseIdentity } from "../src/layout/robotPoseFrame";
+import { robotPoseMatchesMap, robotForWarehouse, robotForDisplayedMap, stabilizeDisplayedFramePose,
+  ROBOT_POSE_HOLD_TTL_MS, type MapPoseIdentity, type RobotPoseIdentity, type RetainedFramePose } from "../src/layout/robotPoseFrame";
 import type { RobotState, FramePose } from "../src/schema/twin_state";
 
 const slamMap: MapPoseIdentity = {
@@ -69,5 +70,40 @@ describe("robot pose and displayed map identity", () => {
   it("rejects missing pose provenance and frame mismatches", () => {
     expect(robotPoseMatchesMap({ ...slamPose, pose_source: undefined }, slamMap)).toBe(false);
     expect(robotPoseMatchesMap({ ...slamPose, pose_frame_id: "odom" }, slamMap)).toBe(false);
+  });
+
+  it("retains a compatible robot marker through transient pose loss and expires it after the TTL", () => {
+    const start = Date.now();
+    const liveRobot = { ...robot, canonical_pose: { ...canonical, timestamp: new Date(start).toISOString() } };
+    const accepted = stabilizeDisplayedFramePose(liveRobot, {
+      frame_id: "map", active_map_id: "CANONICAL", active_map_revision: "21", map_source: "CANONICAL",
+    }, null, start);
+    const missing = stabilizeDisplayedFramePose(undefined, {
+      frame_id: "map", active_map_id: "CANONICAL", active_map_revision: "21", map_source: "CANONICAL",
+    }, accepted.retained, start + 800);
+    expect(missing.pose).toBe(accepted.pose);
+    const expired = stabilizeDisplayedFramePose(undefined, {
+      frame_id: "map", active_map_id: "CANONICAL", active_map_revision: "21", map_source: "CANONICAL",
+    }, accepted.retained, start + ROBOT_POSE_HOLD_TTL_MS + 1);
+    expect(expired.pose).toBeUndefined();
+  });
+
+  it("keeps marker visibility continuous across a 30-second motion stream with transient packets missing", () => {
+    const start = Date.now();
+    const map: MapPoseIdentity = { frame_id: "map", active_map_id: "CANONICAL",
+      active_map_revision: "21", map_source: "CANONICAL" };
+    let retained: RetainedFramePose | null = null;
+    let visibleSamples = 0;
+    const totalSamples = 301;
+    for (let sample = 0; sample < totalSamples; sample++) {
+      const elapsed = sample * 100;
+      const pose = { ...canonical, x: 15 + elapsed / 1000, timestamp: new Date(start).toISOString() };
+      const packet = sample % 20 === 10 ? undefined : { ...robot, canonical_pose: pose };
+      const result = stabilizeDisplayedFramePose(packet, map, retained, start + elapsed);
+      retained = result.retained;
+      if (result.pose) visibleSamples++;
+    }
+    expect(totalSamples).toBe(301);
+    expect(visibleSamples).toBe(totalSamples);
   });
 });

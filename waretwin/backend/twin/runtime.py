@@ -127,6 +127,8 @@ class TwinRuntime:
         self.map_sync_error: str | None = None
         self.robot_map_sync: dict[str, dict[str, Any]] = {}
         self.robot_map_snapshots: dict[str, dict[str, Any]] = {}
+        self.robot_runtime_map_snapshots: dict[str, dict[str, Any]] = {}
+        self.robot_slam_map_snapshots: dict[str, dict[str, Any]] = {}
         self.visualization_clients = set()
         self.local_map_overrides: dict[str, str] = {}
         self.local_map_revisions: dict[str, str] = {}
@@ -768,12 +770,14 @@ class TwinRuntime:
             previous_mapping_session = self.robot_mapping_sessions.get(robot_id)
             cached_snapshot = self.robot_map_snapshots.get(robot_id, {})
             cached_map = cached_snapshot.get('map') if isinstance(cached_snapshot, dict) else {}
+            cached_slam_snapshot = self.robot_slam_map_snapshots.get(robot_id, {})
+            cached_slam_map = cached_slam_snapshot.get('map') if isinstance(cached_slam_snapshot, dict) else {}
             current_session_snapshot = (
                 incoming_mode == 'MAPPING'
-                and isinstance(cached_map, dict)
-                and cached_map.get('map_source') == 'SLAM_TOOLBOX'
+                and isinstance(cached_slam_map, dict)
+                and cached_slam_map.get('map_source') == 'SLAM_TOOLBOX'
                 and mapping_session
-                and cached_map.get('mapping_session_id') == mapping_session
+                and cached_slam_map.get('mapping_session_id') == mapping_session
             )
             if (previous_mode != incoming_mode
                     or (incoming_mode == 'MAPPING'
@@ -782,6 +786,8 @@ class TwinRuntime:
                 # Never replay a map snapshot from the previous runtime/map
                 # source into a new mapping or navigation session.
                 self.robot_map_snapshots.pop(robot_id, None)
+                self.robot_runtime_map_snapshots.pop(robot_id, None)
+                self.robot_slam_map_snapshots.pop(robot_id, None)
                 self.robot_map_geometry.pop(robot_id, None)
             self.robot_runtime_modes[robot_id] = incoming_mode
             if incoming_mode == 'MAPPING' and mapping_session:
@@ -912,16 +918,31 @@ class TwinRuntime:
                     if (rid and (has_cells or has_compressed_cells)
                             and width * height <= 4_000_000):
                         # Map snapshots are event-driven at the bridge. Retain
-                        # the latest bounded robot map so a browser that opens
-                        # after /map became static can render it immediately.
-                        self.robot_map_snapshots[rid] = {
+                        # the latest active map for backend map operations, and
+                        # retain SLAM independently so reconnect/replay never
+                        # conflates accumulated mapping data with runtime maps.
+                        retained = {
                             **data,
                             'map': {**map_data, 'robot_id': rid},
                         }
+                        self.robot_map_snapshots[rid] = retained
+                        if map_data.get('map_source') == 'SLAM_TOOLBOX':
+                            self.robot_slam_map_snapshots[rid] = retained
+                        else:
+                            self.robot_runtime_map_snapshots[rid] = retained
                         if len(self.robot_map_snapshots) > 64:
                             oldest_robot = next(iter(self.robot_map_snapshots))
                             if oldest_robot != rid:
                                 self.robot_map_snapshots.pop(oldest_robot, None)
+                        if len(self.robot_slam_map_snapshots) > 64:
+                            oldest_robot = next(iter(self.robot_slam_map_snapshots))
+                            if oldest_robot != rid:
+                                self.robot_slam_map_snapshots.pop(oldest_robot, None)
+                        for cache in (self.robot_runtime_map_snapshots, self.robot_slam_map_snapshots):
+                            if len(cache) > 64:
+                                oldest_robot = next(iter(cache))
+                                if oldest_robot != rid:
+                                    cache.pop(oldest_robot, None)
             except (TypeError, ValueError, KeyError):
                 pass
             await self.broadcast(data)

@@ -73,9 +73,10 @@ export interface WindowInstance {
 
 export const EMPTY_ROBOT_DETAIL: RobotDetailState = {
   scan: null,
-  lidar2d: null,
-  lidar3d: null,
-  map: null,
+  lidar2dSensorFrame: null,
+  slam3dAccumulatedCloud: null,
+  slam2dMap: null,
+  runtimeMapSnapshot: null,
   globalPath: null,
   localPath: null,
   goal: null,

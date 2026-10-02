@@ -5,6 +5,8 @@ import { Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { RobotDetailLidar2D, RobotDetailLidar3D, RobotDetailPathPreview, RobotState } from "../../schema/twin_state";
 import { createWorldTransform, screenToWorld, worldToScreen, type WorldBounds } from "../../layout/coordinates";
+import { useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
+import type { RobotDetailMapSnapshot } from "../../schema/twin_state";
 
 type LocalPoint = { x: number; y: number };
 
@@ -108,32 +110,41 @@ export function RobotLidar2DView({ frame, robot, onPick, overlay, active = true 
   </div>;
 }
 
-export const RobotLidar3DView = memo(function RobotLidar3DView({ frame, overlay, active = true, fresh = true }: {
+export const RobotLidar3DView = memo(function RobotLidar3DView({ frame, robot, slamMap, active = true }: {
   active?: boolean;
-  fresh?: boolean;
   frame: RobotDetailLidar3D | null;
-  overlay?: { path: Array<[number, number]>; goal: { x: number; y: number; yaw: number } | null } | null;
+  robot?: RobotState;
+  slamMap: RobotDetailMapSnapshot | null;
 }) {
   const [renderActive, setRenderActive] = useState(false);
   useEffect(() => {
-    if (!active || !fresh) { setRenderActive(false); return; }
+    if (!active) { setRenderActive(false); return; }
     let second = 0;
-    // Reveal the retained framebuffer immediately. Do not spend software-GL
-    // time redrawing an old epoch before the lightweight applied ACK arrives.
     const first = requestAnimationFrame(() => {
       second = requestAnimationFrame(() => setRenderActive(true));
     });
     return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
-  }, [active, fresh]);
+  }, [active]);
+  const mapIdentity = useMemo<MapPoseIdentity>(() => slamMap ?? {
+    frame_id: frame?.slam_pose?.frame_id ?? "map",
+    active_map_id: frame?.slam_pose?.map_id ?? "",
+    active_map_revision: frame?.slam_pose?.map_revision ?? null,
+    map_source: frame?.slam_pose?.map_source ?? "SLAM_TOOLBOX",
+    mapping_session_id: frame?.slam_pose?.mapping_session_id ?? null,
+  }, [frame?.slam_pose?.frame_id, frame?.slam_pose?.map_id, frame?.slam_pose?.map_revision,
+    frame?.slam_pose?.map_source, frame?.slam_pose?.mapping_session_id, slamMap]);
+  const poseRobot = useMemo(() => robot && frame?.slam_pose
+    ? { ...robot, slam_pose: frame.slam_pose } : robot, [frame?.slam_pose, robot]);
+  const displayedPose = useStableDisplayedFramePose(poseRobot, mapIdentity);
   const pointGeometry = useMemo(() => {
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(4000 * 3), 3));
+    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(20000 * 3), 3));
     geometry.setDrawRange(0, 0);
     return geometry;
   }, []);
   useEffect(() => {
     const attribute = pointGeometry.getAttribute("position") as THREE.BufferAttribute;
-    const count = Math.min(frame?.points.length ?? 0, 4000);
+    const count = Math.min(frame?.points.length ?? 0, 20000);
     for (let index = 0; index < count; index++) attribute.setXYZ(index, ...frame!.points[index]);
     attribute.needsUpdate = true;
     pointGeometry.setDrawRange(0, count);
@@ -141,22 +152,27 @@ export const RobotLidar3DView = memo(function RobotLidar3DView({ frame, overlay,
   }, [pointGeometry, frame?.epoch, frame?.revision, frame?.points]);
   useEffect(() => () => pointGeometry.dispose(), [pointGeometry]);
 
-  return <div className="robot-lidar-view robot-lidar-3d-view">
+  const trajectory = frame?.trajectory ?? [];
+  return <div className="robot-lidar-view robot-lidar-3d-view" data-testid="slam-map-3d"
+    data-accumulated-points={frame?.point_count ?? 0} data-map-frame={frame?.frame_id}
+    data-map-source="SLAM_3D_ACCUMULATED_CLOUD" data-accumulation-mode={frame?.accumulation_mode}
+    data-mapping-session-id={frame?.slam_pose?.mapping_session_id}
+    data-trajectory-points={trajectory.length}>
     <Canvas frameloop={active && renderActive ? "demand" : "never"} onCreated={() => detailPerformance("canvas_3d_created")} camera={{ position: [7, -7, 6], up: [0, 0, 1], fov: 55, near: 0.05, far: 100 }} dpr={1}>
       <color attach="background" args={["#06101a"]} />
       <ambientLight intensity={0.8} />
       <axesHelper args={[1.2]} />
-      {/* Finite line grid avoids a full-screen fragment shader on VM software GL. */}
-      <gridHelper args={[30, 30, "#31526b", "#173146"]} position={[0, 0, -0.03]} rotation={[Math.PI / 2, 0, 0]} />
       {pointGeometry && <points geometry={pointGeometry}><pointsMaterial color="#45e3d4" size={0.045} sizeAttenuation /></points>}
-      {(overlay?.path ?? frame?.path ?? []).length > 1 && <Line points={(overlay?.path ?? frame?.path ?? []).map(([x, y]) => [x, y, 0.05])} color="#aa91ff" lineWidth={2} />}
-      {(overlay?.goal ?? frame?.goal) && <mesh position={[(overlay?.goal ?? frame?.goal)!.x, (overlay?.goal ?? frame?.goal)!.y, 0.08]}><sphereGeometry args={[0.12, 12, 8]} /><meshBasicMaterial color="#f4cf52" /></mesh>}
-      <mesh position={[0, 0, 0.12]}><boxGeometry args={[0.62, 0.42, 0.24]} /><meshBasicMaterial color="#39d6c7" wireframe /></mesh>
+      <gridHelper args={[30, 30, "#31526b", "#173146"]} position={[0, 0, -0.03]} rotation={[Math.PI / 2, 0, 0]} />
+      {trajectory.length > 1 && <Line points={trajectory.map(([x, y]) => [x, y, 0.04])} color="#f5a64a" lineWidth={2} />}
+      {displayedPose && <mesh position={[displayedPose.x, displayedPose.y, 0.12]} rotation={[0, 0, displayedPose.yaw]}>
+        <boxGeometry args={[0.62, 0.42, 0.24]} /><meshBasicMaterial color="#39d6c7" wireframe />
+      </mesh>}
       <OrbitControls makeDefault enableDamping={false} enabled={active} />
       <CameraFit frame={frame} />
       <RenderProbe frame={frame} active={active && renderActive} />
     </Canvas>
-    <div className="robot-lidar-view-readout"><span>{frame?.point_count ?? 0} PTS</span><span>{frame?.render_fps?.toFixed(1) ?? "0.0"} FPS</span><span>{frame?.source_frame_id ?? "WAITING FOR CLOUD"}</span><span>REV {frame?.revision ?? "—"}</span></div>
+    <div className="robot-lidar-view-readout"><span>{frame?.point_count ?? 0} ACCUMULATED PTS</span><span>{frame?.render_fps?.toFixed(1) ?? "0.0"} FPS</span><span>{frame?.frame_id ?? "WAITING FOR SLAM MAP"}</span><span>VISUALIZATION ACCUMULATION · NOT 3D SLAM</span></div>
   </div>;
 });
 
@@ -176,13 +192,17 @@ function RenderProbe({ frame, active }: { frame: RobotDetailLidar3D | null; acti
 
 function CameraFit({ frame }: { frame: RobotDetailLidar3D | null }) {
   const { camera } = useThree();
+  const fitted = useRef("");
   useEffect(() => {
-    if (!frame?.bounds) return;
+    const mapIdentity = `${frame?.epoch ?? ""}/${frame?.slam_pose?.mapping_session_id ?? ""}`;
+    if (!frame?.bounds || !mapIdentity || fitted.current === mapIdentity) return;
     const maxExtent = Math.max(...frame.bounds.max.map((value, index) => Math.abs(value - frame.bounds!.min[index])), 4);
+    const center = frame.bounds.min.map((value, index) => (value + frame.bounds!.max[index]) / 2);
     camera.up.set(0, 0, 1);
-    camera.position.set(maxExtent * 0.6, -maxExtent * 0.7, maxExtent * 0.55);
-    camera.lookAt(0, 0, 0);
-  }, [camera, frame?.epoch]);
+    camera.position.set(center[0] + maxExtent * 0.6, center[1] - maxExtent * 0.7, center[2] + maxExtent * 0.55);
+    camera.lookAt(center[0], center[1], center[2]);
+    fitted.current = mapIdentity;
+  }, [camera, frame?.bounds, frame?.epoch, frame?.slam_pose?.mapping_session_id]);
   return null;
 }
 

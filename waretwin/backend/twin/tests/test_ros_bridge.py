@@ -39,6 +39,8 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
 
     async def test_latest_valid_map_snapshot_is_retained_for_new_control_clients(self):
         previous = runtime.robot_map_snapshots.copy()
+        previous_runtime = runtime.robot_runtime_map_snapshots.copy()
+        previous_geometry = runtime.robot_map_geometry.copy()
         payload = {
             'type': 'MAP_SNAPSHOT',
             'map': {
@@ -53,10 +55,48 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             with patch.object(runtime, 'broadcast', new_callable=AsyncMock) as broadcast:
                 await runtime.handle_ros_message(payload)
             self.assertEqual(runtime.robot_map_snapshots['R01'], payload)
+            self.assertEqual(runtime.robot_runtime_map_snapshots['R01'], payload)
             broadcast.assert_awaited_once_with(payload)
         finally:
             runtime.robot_map_snapshots.clear()
             runtime.robot_map_snapshots.update(previous)
+            runtime.robot_runtime_map_snapshots.clear()
+            runtime.robot_runtime_map_snapshots.update(previous_runtime)
+            runtime.robot_map_geometry.clear()
+            runtime.robot_map_geometry.update(previous_geometry)
+
+    async def test_slam_and_runtime_map_snapshots_are_cached_independently(self):
+        previous = runtime.robot_map_snapshots.copy()
+        previous_runtime = runtime.robot_runtime_map_snapshots.copy()
+        previous_slam = runtime.robot_slam_map_snapshots.copy()
+        previous_geometry = runtime.robot_map_geometry.copy()
+        runtime_snapshot = {'type': 'MAP_SNAPSHOT', 'map': {
+            'robot_id': 'R01', 'frame_id': 'map', 'map_source': 'NAV2_MAP',
+            'active_map_id': 'CANONICAL', 'active_map_revision': '21',
+            'width': 1, 'height': 1, 'resolution': 0.05,
+            'origin': {'x': 0.0, 'y': 0.0, 'yaw': 0.0}, 'data': [0],
+        }}
+        slam_snapshot = {'type': 'MAP_SNAPSHOT', 'map': {
+            'robot_id': 'R01', 'frame_id': 'map', 'map_source': 'SLAM_TOOLBOX',
+            'mapping_session_id': 'session-1', 'active_map_id': 'SLAM-session-1',
+            'active_map_revision': 'slam-r1', 'width': 1, 'height': 1,
+            'resolution': 0.05, 'origin': {'x': 0.0, 'y': 0.0, 'yaw': 0.0}, 'data': [100],
+        }}
+        try:
+            for cache in (runtime.robot_map_snapshots, runtime.robot_runtime_map_snapshots,
+                          runtime.robot_slam_map_snapshots):
+                cache.pop('R01', None)
+            with patch.object(runtime, 'broadcast', new_callable=AsyncMock):
+                await runtime.handle_ros_message(runtime_snapshot)
+                await runtime.handle_ros_message(slam_snapshot)
+            self.assertEqual(runtime.robot_runtime_map_snapshots['R01'], runtime_snapshot)
+            self.assertEqual(runtime.robot_slam_map_snapshots['R01'], slam_snapshot)
+            self.assertEqual(runtime.robot_map_snapshots['R01'], slam_snapshot)
+        finally:
+            runtime.robot_map_snapshots.clear(); runtime.robot_map_snapshots.update(previous)
+            runtime.robot_runtime_map_snapshots.clear(); runtime.robot_runtime_map_snapshots.update(previous_runtime)
+            runtime.robot_slam_map_snapshots.clear(); runtime.robot_slam_map_snapshots.update(previous_slam)
+            runtime.robot_map_geometry.clear(); runtime.robot_map_geometry.update(previous_geometry)
 
     async def test_mapping_health_diagnostics_are_retained_for_mapping_ui(self):
         previous = runtime.ros_diagnostics.get('mapping')
@@ -91,6 +131,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
 
     async def test_mapping_heartbeat_invalidates_old_map_but_keeps_same_session_snapshot(self):
         snapshots = runtime.robot_map_snapshots.copy()
+        slam_snapshots = runtime.robot_slam_map_snapshots.copy()
         geometry = runtime.robot_map_geometry.copy()
         modes = runtime.robot_runtime_modes.copy()
         sessions = runtime.robot_mapping_sessions.copy()
@@ -102,6 +143,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             runtime.connected_robot_ids.add('R01')
             runtime.robot_runtime_modes['R01'] = 'NAVIGATION'
             runtime.robot_map_snapshots['R01'] = {'map': {'map_source': 'NAV2_MAP'}}
+            runtime.robot_slam_map_snapshots.pop('R01', None)
             runtime.robot_map_geometry['R01'] = {'width': 3}
             with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
                 await runtime.handle_ros_message({
@@ -109,18 +151,22 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                     'mapping_state': 'MAPPING', 'mapping_session_id': 'session-1',
                 })
             self.assertNotIn('R01', runtime.robot_map_snapshots)
+            self.assertNotIn('R01', runtime.robot_slam_map_snapshots)
             self.assertNotIn('R01', runtime.robot_map_geometry)
 
             current = {'map': {'map_source': 'SLAM_TOOLBOX', 'mapping_session_id': 'session-1'}}
             runtime.robot_map_snapshots['R01'] = current
+            runtime.robot_slam_map_snapshots['R01'] = current
             with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
                 await runtime.handle_ros_message({
                     'type': 'HEARTBEAT', 'robot_id': 'R01', 'runtime_state': 'MAPPING',
                     'mapping_state': 'MAPPING', 'mapping_session_id': 'session-1',
                 })
             self.assertIs(runtime.robot_map_snapshots['R01'], current)
+            self.assertIs(runtime.robot_slam_map_snapshots['R01'], current)
         finally:
             runtime.robot_map_snapshots.clear(); runtime.robot_map_snapshots.update(snapshots)
+            runtime.robot_slam_map_snapshots.clear(); runtime.robot_slam_map_snapshots.update(slam_snapshots)
             runtime.robot_map_geometry.clear(); runtime.robot_map_geometry.update(geometry)
             runtime.robot_runtime_modes.clear(); runtime.robot_runtime_modes.update(modes)
             runtime.robot_mapping_sessions.clear(); runtime.robot_mapping_sessions.update(sessions)

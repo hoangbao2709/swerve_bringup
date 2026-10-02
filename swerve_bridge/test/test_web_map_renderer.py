@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from swerve_bridge.web_map_renderer import (
+    BoundedVoxelMap,
     LatestFrameBuffer,
     bounded_voxel_points,
     compress_occupancy_grid,
@@ -18,6 +19,7 @@ from swerve_bridge.web_map_renderer import (
     quaternion_rotate_xyz,
     successful_path_result,
     transform_points_xyz,
+    transformed_cloud_voxels,
 )
 
 
@@ -142,6 +144,25 @@ def test_voxel_filter_removes_nan_height_and_range_and_respects_point_budget():
     assert all(math.isfinite(value) for point in result for value in point)
     assert all(-0.2 <= z <= 2.0 for _x, _y, z in result)
     assert all(math.hypot(x, y) <= 20 for x, y, _z in result)
+
+
+def test_map_frame_cloud_transform_checks_sensor_range_before_translation():
+    import numpy as np
+
+    raw = np.array([(1.0, 0.0, 0.2)], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+    result = transformed_cloud_voxels(raw, (10.0, 2.0, 0.0), (0.0, 0.0, 0.0, 1.0),
+                                     min_range=0.1, max_range=2.0, min_height=-0.2,
+                                     max_height=1.0, voxel_size=0.01)
+    assert result == [[11.0, 2.0, 0.20000000298023224]]
+
+
+def test_bounded_voxel_map_accumulates_across_frames_and_caps_memory():
+    cloud = BoundedVoxelMap(max_points=3, voxel_size=0.1)
+    assert cloud.update([(0.01, 0, 0), (1.01, 0, 0)]) == 2
+    assert cloud.update([(0.02, 0, 0), (2.01, 0, 0)]) == 1
+    assert cloud.snapshot() == [(0.01, 0.0, 0.0), (1.01, 0.0, 0.0), (2.01, 0.0, 0.0)]
+    assert cloud.update([(3.01, 0, 0)]) == 1
+    assert cloud.snapshot() == [(1.01, 0.0, 0.0), (2.01, 0.0, 0.0), (3.01, 0.0, 0.0)]
 
 
 def test_path_length_uses_route_points_and_ignores_non_finite_vertices():

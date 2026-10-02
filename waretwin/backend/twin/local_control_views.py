@@ -702,6 +702,8 @@ def resume_robot_slam_session(request, robot_id: str):
         pending_resumes[robot_id] = pending
         # Do not let a stale pre-restart map satisfy the restored-map gate.
         runtime.robot_map_snapshots.pop(robot_id, None)
+        runtime.robot_runtime_map_snapshots.pop(robot_id, None)
+        runtime.robot_slam_map_snapshots.pop(robot_id, None)
         runtime.robot_map_geometry.pop(robot_id, None)
         return _slam_session_resume_response(robot_id, record, pending, result)
 

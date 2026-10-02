@@ -42,7 +42,10 @@ vi.mock("../src/components/control/RobotLidarViews", async () => {
     localLidarPointToMap: (point: { x: number; y: number }) => point,
     previewLidarPath: () => null,
     RobotLidar2DView: () => React.createElement("div", { className: "robot-lidar-view", "data-testid": "lidar-2d" }),
-    RobotLidar3DView: ({ fresh }: { fresh?: boolean }) => React.createElement("div", { className: "robot-lidar-view robot-lidar-3d-view", "data-testid": "lidar-3d", "data-fresh": String(fresh) }),
+    RobotLidar3DView: ({ frame }: { frame: { point_count: number } | null }) => React.createElement("div", {
+      className: "robot-lidar-view robot-lidar-3d-view", "data-testid": "slam-map-3d",
+      "data-accumulated-points": String(frame?.point_count ?? 0),
+    }),
   };
 });
 vi.mock("../src/simulation/runner", () => ({ useSimulationRunner: () => undefined }));
@@ -66,6 +69,12 @@ function r01(): RobotState {
     fsm_since_tick: 0, stats: { distance_m: 0, tasks_completed: 0, energy_wh: 0, busy_ticks: 0, wait_ticks: 0 },
     perception: { state: "CLEAR", ahead_m: 4, nearest_m: null, obstacles: [] }, control_mode: "MANUAL",
     vx: 0.1, vy: 0, wz: 0, navigation_state: "IDLE", last_telemetry_at: new Date().toISOString(),
+    canonical_pose: { x: 15, y: 5.5, yaw: 0.7, frame_id: "map", map_id: "CANONICAL",
+      map_revision: "21", map_source: "CANONICAL", pose_source: "GAZEBO_MODEL_STATES", valid: true,
+      source_frame_id: "world", transform_source: "VALIDATED_CANONICAL_WORLD_BUNDLE", timestamp: new Date().toISOString() },
+    slam_pose: { x: 2.25, y: 3.5, yaw: -0.2, frame_id: "map", map_id: "SLAM-session-1",
+      map_revision: "slam-r1", map_source: "SLAM_TOOLBOX", pose_source: "TF", valid: true,
+      mapping_session_id: "session-1", timestamp: new Date().toISOString() },
   };
 }
 
@@ -88,7 +97,7 @@ function setOnlineRobot(runtimeState = "NAVIGATION") {
         tagMapRevision: 21, tfStatus: true, error: null, status: "SYNCED" } },
     },
   });
-  useStore.getState().setRobotDetail("R01", { map: mapSnapshot });
+  useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: mapSnapshot });
 }
 
 function buttonNamed(name: string): HTMLButtonElement | undefined {
@@ -223,7 +232,7 @@ describe("robot detail route stability", () => {
     renderNode(<RobotControlDetailPage robotId="R01" />);
     expect(container.textContent).toContain("40.000 m");
     expect(container.textContent).toContain("64.000 m");
-    expect(container.textContent).toContain("LiDAR WAITING");
+    expect(container.textContent).toContain("LIDAR OUTPUTS");
     expect(container.textContent).toContain("N/A");
   });
 
@@ -265,44 +274,74 @@ describe("robot detail route stability", () => {
     expect(container.querySelector("h1")?.textContent).toBe("R01");
   });
 
-  it("offers only Global and LiDAR as primary map modes, with 2D/3D under LiDAR", () => {
+  it("offers three separate canonical and SLAM map views", () => {
     renderNode(<RobotControlDetailPage robotId="R01" />);
-    const sourceTabs = container.querySelector('[role="tablist"][aria-label="Primary map source"]');
-    expect(sourceTabs?.textContent).toBe("GLOBAL MAPLIDAR MAP");
-    act(() => Array.from(sourceTabs?.querySelectorAll("button") ?? []).find((button) => button.textContent === "LIDAR MAP")?.click());
-    expect(container.querySelector('[role="tablist"][aria-label="LiDAR view dimension"]')?.textContent).toBe("2D3D");
-    expect(container.querySelector(".robot-lidar-view")).toBeTruthy();
-    act(() => buttonNamed("3D")?.click());
-    expect(container.querySelector("[data-testid='lidar-3d']")).toBeTruthy();
+    const sourceTabs = container.querySelector('[role="tablist"][aria-label="Robot map view"]');
+    expect(sourceTabs?.textContent).toBe("GLOBAL MAPMAP VIEW 2DMAP VIEW 3D");
+    act(() => buttonNamed("MAP VIEW 2D")?.click());
+    expect(container.querySelector('[data-testid="slam-map-2d-empty"]')).toBeTruthy();
+    act(() => buttonNamed("MAP VIEW 3D")?.click());
+    expect(container.querySelector("[data-testid='slam-map-3d']")).toBeTruthy();
   });
 
   it("switches views immediately without clearing the selected robot's cached frames", () => {
-    setOnlineRobot();
-    const frame2d = { robot_id: "R01", frame_id: "base_footprint", source_frame_id: "laser", point_count: 1, points: [[1, 0]] as [number, number][], path: [], goal: null };
-    const frame3d = { ...frame2d, points: [[1, 0, 0]] as [number, number, number][], bounds: null, epoch: "bridge", revision: 1 };
-    useStore.getState().setRobotDetail("R01", { lidar2d: frame2d, lidar3d: frame3d });
+    setOnlineRobot("MAPPING");
+    const slamMap = { robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX" as const,
+      mapping_session_id: "session-1", active_map_id: "SLAM-session-1", width: 2, height: 2,
+      resolution: .05, origin: { x: 0, y: 0, yaw: 0 }, data: [-1, 0, 100, -1] };
+    const frame3d = { robot_id: "R01", frame_id: "map", source_frame_id: "lidar_link", point_count: 2,
+      points: [[1, 0, 0], [2, 1, 0.1]] as [number, number, number][], bounds: null,
+      epoch: "bridge", revision: 1, accumulated: true as const, accumulation_mode: "SLAM_VISUALIZATION_VOXEL_MAP" as const,
+      slam_pose: { ...r01().slam_pose!, timestamp: new Date().toISOString() } };
+    useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1", slam2dMap: slamMap,
+      slam3dAccumulatedCloud: frame3d });
     renderNode(<RobotControlDetailPage robotId="R01" />);
-    for (const name of ["LIDAR MAP", "3D", "2D", "GLOBAL MAP"]) act(() => buttonNamed(name)?.click());
-    expect(useStore.getState().robotDetail.R01.lidar2d).toBe(frame2d);
-    expect(useStore.getState().robotDetail.R01.lidar3d).toBe(frame3d);
+    const globalMap = container.querySelector('[data-testid="global-warehouse-map"]');
+    for (const name of ["MAP VIEW 2D", "MAP VIEW 3D", "MAP VIEW 2D", "GLOBAL MAP"]) act(() => buttonNamed(name)?.click());
+    expect(useStore.getState().robotDetail.R01.slam2dMap).toBe(slamMap);
+    expect(useStore.getState().robotDetail.R01.slam3dAccumulatedCloud).toBe(frame3d);
+    expect(container.querySelector('[data-testid="global-warehouse-map"]')).toBe(globalMap);
     expect(useStore.getState().robotDetail.R02).toBeUndefined();
-    expect(container.textContent).toContain("WAITING FOR FRESH FRAME");
+    expect(container.querySelector('[data-testid="slam-map-3d"]')?.getAttribute("data-accumulated-points")).toBe("2");
   });
 
-  it("keeps cached 3D pixels until the matching view becomes fresh", () => {
-    setOnlineRobot();
+  it("renders the cached accumulated cloud immediately when switching back to 3D", () => {
+    setOnlineRobot("MAPPING");
+    const cloud = { robot_id: "R01", frame_id: "map", source_frame_id: "lidar_link", point_count: 12,
+      points: Array.from({ length: 12 }, (_, index) => [index, 0, 0] as [number, number, number]),
+      bounds: null, epoch: "bridge", revision: 8, accumulated: true as const,
+      accumulation_mode: "SLAM_VISUALIZATION_VOXEL_MAP" as const,
+      slam_pose: { ...r01().slam_pose!, timestamp: new Date().toISOString() } };
+    useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1", slam3dAccumulatedCloud: cloud });
     renderNode(<RobotControlDetailPage robotId="R01" />);
-    act(() => buttonNamed("LIDAR MAP")?.click());
-    act(() => buttonNamed("3D")?.click());
-    expect(container.querySelector('[data-testid="lidar-3d"]')?.getAttribute("data-fresh")).toBe("false");
-    const requested = useStore.getState().robotDetail.R01.viewStatus!;
-    act(() => useStore.getState().setRobotDetail("R01", { viewStatus: { ...requested, state: "APPLIED" } }));
-    expect(container.querySelector('[data-testid="lidar-3d"]')?.getAttribute("data-fresh")).toBe("false");
-    act(() => useStore.getState().setRobotDetail("R01", { viewStatus: { ...requested, state: "FRESH" } }));
-    expect(container.querySelector('[data-testid="lidar-3d"]')?.getAttribute("data-fresh")).toBe("true");
-    act(() => buttonNamed("2D")?.click());
-    act(() => buttonNamed("3D")?.click());
-    expect(container.querySelector('[data-testid="lidar-3d"]')?.getAttribute("data-fresh")).toBe("false");
+    act(() => buttonNamed("MAP VIEW 3D")?.click());
+    expect(container.querySelector('[data-testid="slam-map-3d"]')?.getAttribute("data-accumulated-points")).toBe("12");
+    act(() => buttonNamed("MAP VIEW 2D")?.click());
+    act(() => buttonNamed("MAP VIEW 3D")?.click());
+    expect(container.querySelector('[data-testid="slam-map-3d"]')?.getAttribute("data-accumulated-points")).toBe("12");
+  });
+
+  it("keeps the canonical warehouse and canonical pose selected while SLAM telemetry changes", () => {
+    setOnlineRobot("MAPPING");
+    const slamMap = { robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX" as const,
+      mapping_session_id: "session-1", active_map_id: "SLAM-session-1", width: 2, height: 2,
+      resolution: .05, origin: { x: -1, y: -1, yaw: 0 }, data: [-1, 0, 100, -1] };
+    const runtimeMap = { ...slamMap, map_source: "NAV2_MAP" as const, mapping_session_id: null, active_map_id: "CANONICAL" };
+    useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1", slam2dMap: slamMap, runtimeMapSnapshot: runtimeMap });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]');
+    expect(canvas?.dataset.mapSource).toBe("CANONICAL_WAREHOUSE");
+    expect(canvas?.dataset.poseSource).toBe("GAZEBO_MODEL_STATES");
+    expect(canvas?.dataset.renderX).toBe("15");
+    act(() => buttonNamed("MAP VIEW 2D")?.click());
+    expect(container.querySelector<HTMLCanvasElement>('[data-testid="slam-map-2d-canvas"]')?.dataset.mapSource).toBe("SLAM_TOOLBOX");
+    act(() => useStore.setState({ twin: { ...useStore.getState().twin!, robots: {
+      ...useStore.getState().twin!.robots, R01: { ...r01(), position: [90, 0, 90],
+        canonical_pose: null, slam_pose: { ...r01().slam_pose!, x: 4.5, y: 6.25, timestamp: new Date().toISOString() } },
+    } } }));
+    expect(container.querySelector('[data-testid="global-warehouse-map"]')).toBe(canvas);
+    expect(canvas?.dataset.renderX).toBe("15");
+    expect(canvas?.dataset.mapSource).toBe("CANONICAL_WAREHOUSE");
   });
 
   it("requests a Nav2 preview from the map click and gates Send Goal on the matching current approval", async () => {
@@ -310,7 +349,7 @@ describe("robot detail route stability", () => {
     useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
     renderNode(<RobotControlDetailPage robotId="R01" />);
 
-    const canvas = container.querySelector<HTMLCanvasElement>('[aria-label="World metre map and LiDAR renderer"]');
+    const canvas = container.querySelector<HTMLCanvasElement>('[aria-label="Canonical warehouse and robot pose map"]');
     expect(canvas).toBeTruthy();
     await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
     const request = vi.mocked(wsSend).mock.calls.map(([message]) => message)
@@ -346,7 +385,7 @@ describe("robot detail route stability", () => {
 
   it("runs the mapping lifecycle and routes save/list/load to robot-scoped APIs", async () => {
     setOnlineRobot("MAPPING");
-    useStore.getState().setRobotDetail("R01", { map: {
+    useStore.getState().setRobotDetail("R01", { slam2dMap: {
       robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX",
       mapping_session_id: "session-ui", active_map_id: "SLAM-session-ui",
       active_map_revision: "revision-1", width: 10, height: 10, resolution: 0.05,
@@ -461,7 +500,7 @@ describe("robot detail route stability", () => {
 
   it("does not present a cached Nav2/canonical grid as the accumulated SLAM map", async () => {
     setOnlineRobot("MAPPING");
-    useStore.getState().setRobotDetail("R01", { map: {
+    useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: {
       robot_id: "R01", frame_id: "map", map_source: "NAV2_MAP",
       width: 1, height: 1, resolution: 0.05, origin: { x: 0, y: 0, yaw: 0 }, data: [100],
     } });
@@ -475,7 +514,7 @@ describe("robot detail route stability", () => {
   it("shows separate accumulated SLAM, transformed scan, TF robot and bounded trajectory layers", async () => {
     setOnlineRobot("MAPPING");
     useStore.getState().setRobotDetail("R01", {
-      map: {
+      slam2dMap: {
         robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX",
         mapping_session_id: "session-1", active_map_id: "SLAM-session-1",
         active_map_revision: "rev-1", map_version: 1,
@@ -515,7 +554,7 @@ describe("robot detail route stability", () => {
     setOnlineRobot("MAPPING");
     useStore.getState().setRobotDetail("R01", {
       mappingSessionId: "session-current",
-      map: {
+      slam2dMap: {
         robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX",
         mapping_session_id: "session-old", active_map_id: "SLAM-session-old",
         width: 1, height: 1, resolution: 0.05, origin: { x: 0, y: 0, yaw: 0 }, data: [100],

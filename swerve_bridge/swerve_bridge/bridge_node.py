@@ -46,9 +46,10 @@ from .qos import canonical_map_qos_profile, gazebo_clock_qos_profile
 from .coordinates import (is_small_future_tf_skew, pose_from_transform,
                           quaternion_yaw, rotate_translate_xy)
 from .web_map_renderer import (
-    LatestFrameBuffer, bounded_cloud_points, compress_occupancy_grid,
+    BoundedVoxelMap, LatestFrameBuffer, compress_occupancy_grid,
     laser_scan_xy, path_length, successful_path_result,
     transform_points_xyz,
+    transformed_cloud_voxels,
     occupancy_content_signature,
     occupancy_grid_statistics,
 )
@@ -88,10 +89,15 @@ class SwerveBridge(Node):
         self.declare_parameter('base_link_frame', 'base_link')
         self.declare_parameter('tf_max_age_s', 2.0)
         self.declare_parameter('tf_future_tolerance_s', 0.1)
+        # Mapping scans/clouds can arrive slightly ahead of the TF listener on
+        # a slow Gazebo clock. Wait for their exact timestamp on the separate
+        # visualization worker; never substitute a latest transform.
+        self.declare_parameter('mapping_sensor_tf_timeout_s', 2.5)
         self.declare_parameter('lidar_ui_hz', 5.0)
         self.declare_parameter('lidar_max_points', 720)
         self.declare_parameter('lidar_web_3d_hz', 3.0)
         self.declare_parameter('lidar_max_3d_points', 4000)
+        self.declare_parameter('lidar_max_3d_accumulated_points', 20000)
         self.declare_parameter('lidar_3d_voxel_size', 0.04)
         self.declare_parameter('lidar_3d_min_range', 0.15)
         self.declare_parameter('lidar_3d_max_range', 25.0)
@@ -203,6 +209,12 @@ class SwerveBridge(Node):
         self.processed_map_payload_signature = None
         self.latest_map_received_monotonic = None
         self.mapping_session_id = uuid.uuid4().hex[:12]
+        self.slam_trajectory = deque(maxlen=500)
+        self.latest_slam_pose = None
+        self.accumulated_slam_cloud = BoundedVoxelMap(
+            max_points=int(self.get_parameter('lidar_max_3d_accumulated_points').value),
+            voxel_size=float(self.get_parameter('lidar_3d_voxel_size').value))
+        self.accumulated_slam_cloud_session = self.mapping_session_id
         self.mapping_map_revision = None
         self.mapping_map_version = 0
         self.latest_map_statistics = None
@@ -858,6 +870,23 @@ class SwerveBridge(Node):
         t = msg.twist.twist
         try:
             pose, base_frame = self._lookup_robot_pose()
+            if self.runtime_state == 'MAPPING':
+                point = (float(pose['x']), float(pose['y']))
+                previous = self.slam_trajectory[-1] if self.slam_trajectory else None
+                now = time.monotonic()
+                if (previous is None or math.hypot(point[0] - previous[0], point[1] - previous[1]) >= 0.05
+                        or now - getattr(self, 'last_slam_trajectory_sample', 0.0) >= 1.0):
+                    self.slam_trajectory.append(point)
+                    self.last_slam_trajectory_sample = now
+                self.latest_slam_pose = {
+                    'x': point[0], 'y': point[1], 'yaw': float(pose['yaw']),
+                    'frame_id': str(self.get_parameter('map_frame').value),
+                    'map_id': f'SLAM-{self.mapping_session_id}',
+                    'map_revision': self.mapping_map_revision,
+                    'map_source': 'SLAM_TOOLBOX', 'pose_source': 'TF',
+                    'mapping_session_id': self.mapping_session_id,
+                    'timestamp': self.now(), 'valid': True,
+                }
             canonical_pose = self.latest_canonical_pose if (
                 self.last_canonical_pose_monotonic is not None
                 and time.monotonic() - self.last_canonical_pose_monotonic <= 3.0) else None
@@ -1059,8 +1088,13 @@ class SwerveBridge(Node):
             raise TransformException('LaserScan frame_id is empty')
         transform = None
         if source_frame != target_frame:
+            timeout = (Duration(seconds=max(0.05, float(self.get_parameter(
+                'mapping_sensor_tf_timeout_s').value)))
+                if self.runtime_state == 'MAPPING'
+                and target_frame == str(self.get_parameter('map_frame').value or 'map')
+                else Duration(seconds=0.05))
             transform = self.tf_buffer.lookup_transform(
-                target_frame, source_frame, Time.from_msg(scan.header.stamp), timeout=Duration(seconds=0.05))
+                target_frame, source_frame, Time.from_msg(scan.header.stamp), timeout=timeout)
         if transform is None:
             translation = (0.0, 0.0, 0.0)
             quaternion = (0.0, 0.0, 0.0, 1.0)
@@ -1093,6 +1127,7 @@ class SwerveBridge(Node):
             'mapping_session_id': (self.mapping_session_id
                                    if self.runtime_state == 'MAPPING' else None),
             'sensor_pose': sensor_pose,
+            'trajectory': [[x, y] for x, y in self.slam_trajectory],
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'stamp': self.last_scan_stamp,
             'angle_min': float(scan.angle_min), 'angle_max': float(scan.angle_max),
@@ -1194,15 +1229,15 @@ class SwerveBridge(Node):
         filtered_is_fresh = (self.latest_filtered_cloud is not None
                              and self.latest_filtered_cloud_monotonic is not None
                              and time.monotonic() - self.latest_filtered_cloud_monotonic <= 1.0)
-        source = self.latest_filtered_cloud if filtered_is_fresh else self.latest_cloud
-        if source is None:
+        if self.runtime_state != 'MAPPING' or not filtered_is_fresh:
             return
+        source = self.latest_filtered_cloud
         stamp = source.header.stamp
         source_stamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
         if source_stamp == self.last_web_cloud_source_stamp:
             return
         source_frame = str(source.header.frame_id or '')
-        target = str(self.get_parameter('base_footprint_frame').value or 'base_footprint')
+        target = str(self.get_parameter('map_frame').value or 'map')
         if not source_frame:
             raise TransformException('PointCloud2 frame_id is empty')
         stamp = Time.from_msg(source.header.stamp)
@@ -1210,7 +1245,9 @@ class SwerveBridge(Node):
             transform = None
         else:
             transform = self.tf_buffer.lookup_transform(
-                target, source_frame, stamp, timeout=Duration(seconds=0.05))
+                target, source_frame, stamp,
+                timeout=Duration(seconds=max(0.05, float(self.get_parameter(
+                    'mapping_sensor_tf_timeout_s').value))))
         translation, quaternion = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)
         if transform is not None:
             t, q = transform.transform.translation, transform.transform.rotation
@@ -1218,7 +1255,10 @@ class SwerveBridge(Node):
             quaternion = (float(q.x), float(q.y), float(q.z), float(q.w))
 
         raw = point_cloud2.read_points(source, field_names=('x', 'y', 'z'), skip_nans=True)
-        values = bounded_cloud_points(
+        if self.accumulated_slam_cloud_session != self.mapping_session_id:
+            self.accumulated_slam_cloud.clear()
+            self.accumulated_slam_cloud_session = self.mapping_session_id
+        new_points = transformed_cloud_voxels(
             raw, translation, quaternion,
             max_points=int(self.get_parameter('lidar_max_3d_points').value),
             min_range=float(self.get_parameter('lidar_3d_min_range').value),
@@ -1227,6 +1267,15 @@ class SwerveBridge(Node):
             max_height=float(self.get_parameter('lidar_3d_max_height').value),
             voxel_size=float(self.get_parameter('lidar_3d_voxel_size').value),
         )
+        self.accumulated_slam_cloud.update(new_points)
+        if self.detail_view != 'LIDAR_3D':
+            # Accumulate while another map tab is visible, but send only the
+            # latest bounded snapshot when the user selects the 3D view.
+            # set_detail_view resets this marker so the retained cloud is
+            # emitted immediately on return to 3D.
+            self.last_web_cloud_source_stamp = source_stamp
+            return
+        values = self.accumulated_slam_cloud.snapshot()
         try:
             route = self._local_path()
             goal = self._local_goal()
@@ -1248,6 +1297,10 @@ class SwerveBridge(Node):
             'render_timestamp': datetime.now(timezone.utc).isoformat(),
             'frame_id': target, 'source_frame_id': source_frame,
             'point_count': len(xyz), 'points': xyz, 'bounds': bounds,
+            'accumulated': True,
+            'accumulation_mode': 'SLAM_VISUALIZATION_VOXEL_MAP',
+            'trajectory': [[x, y] for x, y in self.slam_trajectory],
+            'slam_pose': dict(self.latest_slam_pose) if self.latest_slam_pose else None,
             'source_fps': self._frequency(
                 self.filtered_cloud_intervals if filtered_is_fresh else self.raw_cloud_intervals),
             'web_output_fps': self._frequency(self.lidar_output_intervals),
@@ -1369,8 +1422,8 @@ class SwerveBridge(Node):
                 self.last_tf_error = str(exc)[:300]
 
         cloud_hz = max(0.1, float(self.get_parameter('lidar_web_3d_hz').value))
-        cloud_available = self.latest_cloud is not None or self.latest_filtered_cloud is not None
-        if (self.detail_view == 'LIDAR_3D' and cloud_available
+        cloud_available = self.latest_filtered_cloud is not None
+        if (mapping_view and cloud_available
                 and time.monotonic() - self.last_cloud_publish_monotonic >= 1.0 / cloud_hz):
             try:
                 self._render_lidar_3d()

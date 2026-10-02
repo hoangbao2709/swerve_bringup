@@ -13,6 +13,7 @@ import math
 import threading
 import time
 import zlib
+from collections import OrderedDict
 import numpy as np
 from typing import Iterable, Sequence
 
@@ -181,6 +182,75 @@ def bounded_cloud_points(raw, translation, quaternion, *, max_points=4000,
     limit = max(1, int(max_points))
     stride = max(1, math.ceil(len(points) / limit))
     return points[::stride][:limit].tolist()
+
+
+def transformed_cloud_voxels(raw, translation, quaternion, *, max_points=4000,
+                             min_range=.15, max_range=25, min_height=-1,
+                             max_height=3, voxel_size=.04, max_input_points=200_000):
+    """Transform one filtered sensor cloud into its target frame and voxelize it.
+
+    Range is checked in the sensor frame; height is checked after the stamped
+    transform. This matters for map-frame accumulation because distance from
+    the map origin is not the sensor's measurement range.
+    """
+    rows = raw[:max_input_points]
+    points = np.column_stack([rows[name] for name in ('x', 'y', 'z')]).astype(np.float64, copy=False)
+    sensor_range2 = np.sum(points * points, axis=1)
+    valid = (np.isfinite(points).all(axis=1) & (sensor_range2 >= min_range ** 2)
+        & (sensor_range2 <= max_range ** 2))
+    points = points[valid]
+    if not len(points):
+        return []
+    q = np.asarray(quaternion[:3], dtype=np.float64)
+    cross = 2 * np.cross(q, points)
+    points = points + float(quaternion[3]) * cross + np.cross(q, cross) + np.asarray(translation)
+    valid_height = np.isfinite(points).all(axis=1) & (points[:, 2] >= min_height) & (points[:, 2] <= max_height)
+    points = points[valid_height]
+    if not len(points):
+        return []
+    voxel = max(.005, float(voxel_size))
+    keys = np.floor(points / voxel).astype(np.int64)
+    _, indexes = np.unique(keys, axis=0, return_index=True)
+    points = points[np.sort(indexes)]
+    limit = max(1, int(max_points))
+    stride = max(1, math.ceil(len(points) / limit))
+    return points[::stride][:limit].tolist()
+
+
+class BoundedVoxelMap:
+    """Insertion-ordered, bounded visualization cloud; existing voxels persist."""
+
+    def __init__(self, max_points=20_000, voxel_size=.04):
+        self.max_points = max(1, int(max_points))
+        self.voxel_size = max(.005, float(voxel_size))
+        self._points = OrderedDict()
+
+    def clear(self):
+        self._points.clear()
+
+    def update(self, points):
+        added = 0
+        for raw in points:
+            try:
+                point = tuple(float(value) for value in raw[:3])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if len(point) != 3 or not all(math.isfinite(value) for value in point):
+                continue
+            key = tuple(math.floor(value / self.voxel_size) for value in point)
+            if key in self._points:
+                continue
+            self._points[key] = point
+            added += 1
+            if len(self._points) > self.max_points:
+                self._points.popitem(last=False)
+        return added
+
+    def snapshot(self):
+        return list(self._points.values())
+
+    def __len__(self):
+        return len(self._points)
 
 
 def successful_path_result(action_status: int, succeeded_status: int,

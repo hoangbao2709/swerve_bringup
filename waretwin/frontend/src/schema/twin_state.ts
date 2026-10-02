@@ -607,6 +607,7 @@ export type RobotDetailScan = {
   mapping_session_id?: string | null;
   frame_id: string;
   sensor_pose?: { x: number; y: number; yaw: number };
+  trajectory?: RobotWorldPoint[];
   timestamp?: string | null;
   stamp?: number | null;
   angle_min: number;
@@ -692,6 +693,10 @@ export type RobotDetailLidar3D = ViewFrameMetadata & {
   point_count: number;
   points: Array<[number, number, number]>;
   bounds: { min: [number, number, number]; max: [number, number, number] } | null;
+  accumulated?: boolean;
+  accumulation_mode?: "SLAM_VISUALIZATION_VOXEL_MAP" | string;
+  trajectory?: RobotWorldPoint[];
+  slam_pose?: FramePose | null;
   render_fps?: number | null;
   source_fps?: number | null;
   web_output_fps?: number | null;
@@ -777,9 +782,10 @@ export type RobotDetailState = {
   appliedMode?: "MANUAL" | "AUTONOMOUS" | null;
   modeTransitionState?: "REQUESTED" | "APPLIED" | "FAILED" | null;
   scan: RobotDetailScan | null;
-  lidar2d: RobotDetailLidar2D | null;
-  lidar3d: RobotDetailLidar3D | null;
-  map: RobotDetailMapSnapshot | null;
+  lidar2dSensorFrame: RobotDetailLidar2D | null;
+  slam3dAccumulatedCloud: RobotDetailLidar3D | null;
+  slam2dMap: RobotDetailMapSnapshot | null;
+  runtimeMapSnapshot: RobotDetailMapSnapshot | null;
   globalPath: RobotDetailPath | null;
   localPath: RobotDetailPath | null;
   goal: RobotDetailGoal | null;

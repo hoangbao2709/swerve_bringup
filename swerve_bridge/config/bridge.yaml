@@ -21,6 +21,7 @@ swerve_bridge:
     goal_topic: /goal_pose
     navigate_pose_action: /navigate_to_pose
     map_frame: map
+    mapping_sensor_tf_timeout_s: 2.5
     lidar_ui_hz: 5.0
     lidar_max_points: 720
     lidar_web_3d_hz: 3.0

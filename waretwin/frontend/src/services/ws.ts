@@ -372,7 +372,14 @@ function handle(msg: ServerMessage) {
       st.setRobotDetail(msg.robot_id, detailViewStatusPatch(st.robotDetail[msg.robot_id], msg));
       break;
     case "MAP_SNAPSHOT":
-      st.setRobotDetail(msg.map.robot_id, { map: msg.map });
+      if (msg.map.map_source === "SLAM_TOOLBOX") {
+        if (msg.map.frame_id === "map" && msg.map.mapping_session_id
+            && msg.map.active_map_id === `SLAM-${msg.map.mapping_session_id}`) {
+          st.setRobotDetail(msg.map.robot_id, { slam2dMap: msg.map });
+        }
+      } else {
+        st.setRobotDetail(msg.map.robot_id, { runtimeMapSnapshot: msg.map });
+      }
       break;
     case "NAV_GLOBAL_PATH":
       st.setRobotDetail(msg.path.robot_id, { globalPath: msg.path });

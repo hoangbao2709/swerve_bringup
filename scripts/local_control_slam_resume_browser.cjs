@@ -10,12 +10,36 @@ const mapName = process.env.SAVED_MAP_NAME || 'slam_accumulated_20261001_01';
 const skipResumeRequest = process.env.SLAM_RESUME_SKIP_REQUEST === '1';
 const restoreEvidencePath = process.env.SLAM_RESUME_RESTORE_EVIDENCE;
 const authStorageKey = 'waretwin.auth';
+const readinessGateNames = [
+  'CLOCK_FRESH', 'GAZEBO_PHYSICS_ACTIVE', 'CONTROLLERS_ACTIVE',
+  'COMMAND_ARBITER_READY', 'SWERVE_CONTROLLER_READY', 'JOINT_STATES_FRESH',
+  'ODOM_FRESH', 'ODOM_TF_FRESH', 'MAP_ODOM_TF_FRESH', 'MAP_BASE_TF_FRESH',
+  'TF_LIDAR_FRESH', 'SCAN_FRESH', 'SLAM_ACTIVE', 'SLAM_INPUT_FRESH', 'MAP_LIVE',
+];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const readJson = name => {
   try { return JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')); }
   catch { return null; }
 };
 const writeJson = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.stringify(value, null, 2));
+const hasFreshReadinessLease = gate => {
+  const gates = gate?.gates;
+  const age = Date.now() - Number(gate?.updated_at_ms || 0);
+  return gate?.state === 'APPROVED' && age >= 0 && age <= 500
+    && gates && readinessGateNames.length === Object.keys(gates).length
+    && readinessGateNames.every(name => gates[name] === true);
+};
+const waitForFreshReadinessLease = async timeoutMs => {
+  const deadline = Date.now() + timeoutMs;
+  let latest = null;
+  while (Date.now() < deadline) {
+    latest = readJson('teleop-gate.json');
+    if (latest?.state === 'BLOCKED') return { gate: latest, blocked: true };
+    if (hasFreshReadinessLease(latest)) return { gate: latest, blocked: false };
+    await sleep(100);
+  }
+  return { gate: latest, blocked: false };
+};
 
 (async () => {
   fs.mkdirSync(dir, { recursive: true });
@@ -189,10 +213,20 @@ const writeJson = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.s
       throw Error('Web Teleop Forward is still disabled after bridge reconnect and MANUAL application');
     }
     gate = readJson('teleop-gate.json');
-    if (!gate || gate.state !== 'APPROVED'
-        || Date.now() - Number(gate.updated_at_ms || 0) > 500
-        || !Object.values(gate.gates || {}).every(Boolean)) {
-      throw Error('post-resume readiness lease expired while waiting for Web controls');
+    if (!hasFreshReadinessLease(gate)) {
+      const renewed = await waitForFreshReadinessLease(60000);
+      if (!hasFreshReadinessLease(renewed.gate)) {
+        const failed = renewed.gate?.failed_gates ||
+          readinessGateNames.filter(name => renewed.gate?.gates?.[name] !== true);
+        throw Error(`post-resume readiness lease did not renew before Forward; blocked=${renewed.blocked}; failed=${failed.join(',') || 'lease_timeout'}`);
+      }
+      gate = renewed.gate;
+    }
+    // Read the lease again at the last possible moment. A stale or incomplete
+    // gate always prevents the command, even after Web controls reconnect.
+    gate = readJson('teleop-gate.json');
+    if (!hasFreshReadinessLease(gate)) {
+      throw Error('post-resume readiness lease expired immediately before Forward');
     }
     const holdS = Math.max(2, Math.min(5, Number(process.env.SLAM_RESUME_TELEOP_HOLD_S || 3.5)));
     writeJson('teleop-start.json', { at_ms: Date.now(), action: 'FORWARD', hold_s: holdS,
@@ -235,6 +269,34 @@ const writeJson = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.s
       writeJson('extended-map.json', extendedSnapshot);
       await page.screenshot({ path: path.join(dir, 'resumed-map-extended.png'), fullPage: true });
     }
+    writeJson('extended-map-ready.json', {
+      snapshot_available: Boolean(extendedSnapshot),
+      mapping_session_id: extendedSnapshot?.mapping_session_id || null,
+    });
+    const extensionDecisionDeadline = Date.now() + 30000;
+    let extensionDecision = null;
+    while (Date.now() < extensionDecisionDeadline) {
+      extensionDecision = readJson('map-extension-decision.json');
+      if (extensionDecision?.resolved === true) break;
+      await sleep(100);
+    }
+    if (extensionDecision?.resolved !== true || extensionDecision.passed !== true
+        || extensionDecision.evidence?.passed !== true) {
+      writeJson('browser-result.json', {
+        errors: browserErrors, motion_started: true, readiness_gate: gate,
+        restored_notice: restoredNotice, resume_responses: resumeResponses,
+        restoration_carryover: restorationCarryover,
+        initial_map_snapshot: initialSnapshot, extended_map_snapshot: extendedSnapshot,
+        map_extension_decision: extensionDecision || {
+          resolved: false, passed: false,
+          reason: 'world-coordinate extension decision timed out',
+        },
+        teleop_start: readJson('teleop-start.json'),
+        teleop_end: readJson('teleop-end.json'),
+        mapping_paused: false, resumed_map_save: null,
+      });
+      return;
+    }
 
     await page.getByRole('tab', { name: 'MAPPING', exact: true }).click();
     const stopMapping = page.getByRole('button', { name: 'STOP MAPPING', exact: true });
@@ -267,6 +329,7 @@ const writeJson = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.s
       resume_responses: resumeResponses, restoration_carryover: restorationCarryover,
       initial_map_snapshot: initialSnapshot,
       extended_map_snapshot: extendedSnapshot,
+      map_extension_decision: extensionDecision,
       map_extension_observed: Boolean(extendedSnapshot && (
         Number(extendedSnapshot.known_cells) > Number(initialSnapshot.known_cells)
         || extendedSnapshot.width !== initialSnapshot.width

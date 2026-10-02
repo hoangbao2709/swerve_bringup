@@ -47,10 +47,33 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from twin.local_control import slam_map_restoration_evidence
 
 
+def resume_tf_qos_profiles():
+    """Keep the independent observer on the newest TF instead of a backlog."""
+    dynamic = QoSProfile(
+        depth=1,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.VOLATILE,
+    )
+    static = QoSProfile(
+        depth=100,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+    return dynamic, static
+
+
 def write_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, indent=2), encoding='utf-8')
     os.replace(temporary, path)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def stop_browser_process(process) -> None:
@@ -83,7 +106,30 @@ class ResumeReadinessNode(Node):
         super().__init__('slam_resume_readiness_probe', parameter_overrides=[
             Parameter('use_sim_time', Parameter.Type.BOOL, True)])
         self.tf = Buffer(node=self)
-        self.tf_listener = TransformListener(self.tf, self)
+        dynamic_qos, static_qos = resume_tf_qos_profiles()
+        self.tf_listener = TransformListener(
+            self.tf, self, qos=dynamic_qos, static_qos=static_qos)
+
+
+class ResumeMotionProbe(acceptance.MotionProbe):
+    """Motion probe that waits through incomplete Gazebo ModelStates arrays."""
+
+    def __init__(self):
+        self.malformed_model_state_samples = 0
+        super().__init__()
+
+    def _model_states_cb(self, msg):
+        try:
+            index = msg.name.index(acceptance.EXPECTED_ROBOT_ENTITY)
+            pose_count = len(msg.pose)
+            twist_count = len(msg.twist)
+        except (AttributeError, TypeError, ValueError):
+            self.malformed_model_state_samples += 1
+            return
+        if index >= pose_count or index >= twist_count:
+            self.malformed_model_state_samples += 1
+            return
+        super()._model_states_cb(msg)
 
 
 class ResumeReadinessGate:
@@ -93,6 +139,11 @@ class ResumeReadinessGate:
     MAX_WALL_AGE_S = 1.0
     MAX_SIM_AGE_S = 1.0
     MAX_FUTURE_SKEW_S = 0.5
+    MAX_MAP_WALL_AGE_S = 3.5
+    MAX_MAP_SIM_AGE_S = 3.5
+    MAX_TF_WALL_AGE_S = 3.5
+    MAX_DYNAMIC_TOPIC_WALL_AGE_S = 3.5
+    MAX_SCAN_TF_STAMP_SKEW_S = 0.05
     MIN_RATE_HZ = 1.0
     MIN_RATE_HZ_BY_TOPIC = {
         'clock': 3.0,
@@ -358,12 +409,20 @@ class ResumeReadinessGate:
                 self.service_futures[key] = client.call_async(request)
 
     def _topic_stats(self, key, now, sim_now, max_wall_age=None,
-                     max_sim_age=None, min_rate_hz=None):
-        with self.lock:
-            rows = list(self.samples[key])
+                     max_sim_age=None, min_rate_hz=None, require_progress=True,
+                     sample_rows=None, gazebo_rtf=None):
+        if sample_rows is None:
+            with self.lock:
+                rows = list(self.samples[key])
+        else:
+            rows = list(sample_rows)
         if not rows:
             return {'rate_hz': None, 'wall_age_s': None, 'stamp_s': None,
-                    'sim_age_s': None, 'stamp_increasing': False, 'samples_5s': 0}
+                    'sim_age_s': None, 'stamp_increasing': False, 'samples_5s': 0,
+                    'max_wall_age_s': (max_wall_age if max_wall_age is not None
+                                       else self.MAX_WALL_AGE_S),
+                    'required_rate_hz': (self.MIN_RATE_HZ_BY_TOPIC.get(
+                        key, self.MIN_RATE_HZ) if min_rate_hz is None else min_rate_hz)}
         latest_wall, latest_stamp = rows[-1]
         recent = [row for row in rows if now - row[0] <= 5.0]
         if not recent:
@@ -373,10 +432,18 @@ class ResumeReadinessGate:
                 'rate_hz': None, 'wall_age_s': wall_age, 'stamp_s': latest_stamp,
                 'sim_age_s': sim_age, 'stamp_increasing': False,
                 'stamp_span_s': 0.0, 'duplicate_stamp_pairs': 0,
-                'out_of_order_stamp_pairs': 0, 'samples_5s': 0, 'fresh': False,
+                'out_of_order_stamp_pairs': 0, 'samples_5s': 0,
+                'max_wall_age_s': (max_wall_age if max_wall_age is not None
+                                   else self.MAX_WALL_AGE_S),
+                'required_rate_hz': (self.MIN_RATE_HZ_BY_TOPIC.get(
+                    key, self.MIN_RATE_HZ) if min_rate_hz is None else min_rate_hz),
+                'fresh': False,
             }
         rate = ((len(recent) - 1) / (recent[-1][0] - recent[0][0])
                 if len(recent) > 1 and recent[-1][0] > recent[0][0] else None)
+        sim_stamp_span = recent[-1][1] - recent[0][1]
+        sim_rate = ((len(recent) - 1) / sim_stamp_span
+                    if len(recent) > 1 and sim_stamp_span > 0.0 else None)
         # Multiple publications can legitimately share one simulation stamp
         # when /clock is quantized below a sensor's publication rate. Require
         # a nondecreasing stream with actual progress, not a strict increase
@@ -393,21 +460,119 @@ class ResumeReadinessGate:
             if recent[i][1] < recent[i - 1][1])
         wall_age = max(0.0, now - latest_wall)
         sim_age = sim_now - latest_stamp
-        max_wall_age = max_wall_age or self.MAX_WALL_AGE_S
-        max_sim_age = max_sim_age or self.MAX_SIM_AGE_S
+        max_wall_age = (self.MAX_WALL_AGE_S if max_wall_age is None else max_wall_age)
+        max_sim_age = (self.MAX_SIM_AGE_S if max_sim_age is None else max_sim_age)
+        if key != 'map' and gazebo_rtf is not None and gazebo_rtf > 0.0:
+            # A sim-stamped sample ages slowly in ROS time when Gazebo RTF is
+            # low. Keep the wall bound finite while allowing the observed RTF
+            # to explain a delayed-but-current sample.
+            rtf_wall_age = max(0.0, sim_age) / max(gazebo_rtf, 0.05) + 0.5
+            max_wall_age = min(
+                self.MAX_DYNAMIC_TOPIC_WALL_AGE_S,
+                max(max_wall_age, rtf_wall_age))
         min_rate_hz = (self.MIN_RATE_HZ_BY_TOPIC.get(key, self.MIN_RATE_HZ)
                        if min_rate_hz is None else min_rate_hz)
+        wall_rate_ready = rate is not None and rate >= min_rate_hz
+        sim_rate_ready = sim_rate is not None and sim_rate >= min_rate_hz
+        rate_ready = ((wall_rate_ready or sim_rate_ready)
+                      if require_progress else (rate is None or rate >= min_rate_hz
+                                                or sim_rate is None or sim_rate_ready))
         return {
             'rate_hz': rate, 'wall_age_s': wall_age, 'stamp_s': latest_stamp,
-            'sim_age_s': sim_age, 'stamp_increasing': increasing,
+            'sim_age_s': sim_age, 'sim_rate_hz': sim_rate,
+            'rate_requirement_met_by': (
+                'wall' if wall_rate_ready else 'simulation_time' if sim_rate_ready
+                else None),
+            'rate_basis': 'wall_or_simulation_time',
+            'stamp_increasing': increasing,
             'stamp_span_s': recent[-1][1] - recent[0][1],
             'duplicate_stamp_pairs': duplicate_stamps,
             'out_of_order_stamp_pairs': out_of_order_stamps,
             'samples_5s': len(recent),
+            'max_wall_age_s': max_wall_age,
+            'required_rate_hz': min_rate_hz,
             'fresh': (wall_age <= max_wall_age
                       and -self.MAX_FUTURE_SKEW_S <= sim_age <= max_sim_age
-                      and rate is not None and rate >= min_rate_hz
-                      and increasing),
+                      and rate_ready and (increasing or not require_progress)),
+        }
+
+    @staticmethod
+    def _map_live_evidence(map_stats, latest_map, slam_active):
+        """Require a valid, recently received SLAM map, not stationary map churn."""
+        summary = latest_map or {}
+        try:
+            width = int(summary.get('width') or 0)
+            height = int(summary.get('height') or 0)
+            resolution = float(summary.get('resolution') or 0.0)
+            known_cells = int(summary.get('known_cells') or 0)
+            content_valid = (width > 0 and height > 0 and math.isfinite(resolution)
+                             and resolution > 0.0 and known_cells > 0
+                             and bool(summary.get('signature')))
+        except (TypeError, ValueError, OverflowError):
+            content_valid = False
+        wall_age = map_stats.get('wall_age_s')
+        sim_age = map_stats.get('sim_age_s')
+        conditions = {
+            'slam_toolbox_is_map_owner': bool(slam_active),
+            'valid_nonempty_map_content': content_valid,
+            'map_message_fresh': bool(map_stats.get('fresh', False)),
+            'map_received_within_wall_bound': (
+                wall_age is not None and 0.0 <= wall_age <= ResumeReadinessGate.MAX_MAP_WALL_AGE_S),
+            'map_stamp_within_sim_bound': (
+                sim_age is not None
+                and -ResumeReadinessGate.MAX_FUTURE_SKEW_S <= sim_age
+                <= ResumeReadinessGate.MAX_MAP_SIM_AGE_S),
+        }
+        return {
+            'passed': all(conditions.values()),
+            'conditions': conditions,
+            'topic': '/map',
+            'publisher': 'slam_toolbox' if slam_active else None,
+            'wall_age_s': wall_age,
+            'max_wall_age_s': ResumeReadinessGate.MAX_MAP_WALL_AGE_S,
+            'stamp_s': map_stats.get('stamp_s'),
+            'sim_age_s': sim_age,
+            'max_sim_age_s': ResumeReadinessGate.MAX_MAP_SIM_AGE_S,
+            'observed_rate_hz': map_stats.get('rate_hz'),
+            'required_rate_hz': None,
+            'stamp_increasing_required': False,
+            'content_signature': summary.get('signature'),
+            'known_cells': summary.get('known_cells'),
+            'failed_conditions': [name for name, passed in conditions.items() if not passed],
+        }
+
+    @staticmethod
+    def _scan_tf_readiness(scan_fresh, scan_stamp_s, exact_lookup,
+                           latest_lookup, odom_base_fresh, map_odom_fresh):
+        exact_available = bool(scan_fresh and exact_lookup.get('fresh'))
+        latest_stamp = latest_lookup.get('stamp_s')
+        stamp_skew = (float(latest_stamp) - float(scan_stamp_s)
+                      if latest_stamp is not None and scan_stamp_s is not None else None)
+        dynamic_edges_fresh = bool(odom_base_fresh and map_odom_fresh)
+        bounded_latest = bool(
+            scan_fresh and latest_lookup.get('fresh') and dynamic_edges_fresh
+            and stamp_skew is not None
+            and abs(stamp_skew) <= ResumeReadinessGate.MAX_SCAN_TF_STAMP_SKEW_S)
+        conditions = {
+            'latest_scan_is_fresh': bool(scan_fresh),
+            'exact_latest_scan_transform_available': bool(exact_lookup.get('fresh')),
+            'latest_transform_is_fresh': bool(latest_lookup.get('fresh')),
+            'dynamic_odom_and_map_edges_fresh': dynamic_edges_fresh,
+            'latest_transform_within_scan_stamp_bound': bool(
+                stamp_skew is not None
+                and abs(stamp_skew) <= ResumeReadinessGate.MAX_SCAN_TF_STAMP_SKEW_S),
+        }
+        return {
+            'passed': bool(exact_available or bounded_latest),
+            'exact_latest_scan_lookup_passed': exact_available,
+            'bounded_latest_transform_fallback_passed': bounded_latest,
+            'scan_stamp_s': scan_stamp_s,
+            'latest_transform_stamp_s': latest_stamp,
+            'latest_transform_minus_scan_stamp_s': stamp_skew,
+            'max_stamp_skew_s': ResumeReadinessGate.MAX_SCAN_TF_STAMP_SKEW_S,
+            'dynamic_edges_fresh': dynamic_edges_fresh,
+            'conditions': conditions,
+            'failed_conditions': [name for name, passed in conditions.items() if not passed],
         }
 
     def _transform_stats(self, edge, sim_now, now):
@@ -425,10 +590,11 @@ class ResumeReadinessGate:
         recent = [row for row in history if now - row[0] <= self.WINDOW_S]
         rate = ((len(recent) - 1) / (recent[-1][0] - recent[0][0])
                 if len(recent) > 1 and recent[-1][0] > recent[0][0] else None)
-        fresh = (static or (wall_age <= self.MAX_WALL_AGE_S
+        fresh = (static or (wall_age <= self.MAX_TF_WALL_AGE_S
                             and sim_age is not None
                             and -self.MAX_FUTURE_SKEW_S <= sim_age <= self.MAX_SIM_AGE_S))
         return {'available': True, 'static': static, 'wall_age_s': wall_age,
+                'max_wall_age_s': None if static else self.MAX_TF_WALL_AGE_S,
                 'stamp_s': stamp, 'sim_age_s': sim_age, 'rate_hz': rate,
                 'samples_5s': len(recent), 'fresh': fresh}
 
@@ -508,6 +674,7 @@ class ResumeReadinessGate:
         self._send_service_requests()
         now = time.monotonic()
         with self.lock:
+            sample_rows = {key: list(rows) for key, rows in self.samples.items()}
             clock_value = float(self.latest_clock_s)
             latest_scan = dict(self.latest_scan or {})
             scan_tf_candidates = list(self.scan_tf_candidates)
@@ -515,18 +682,12 @@ class ResumeReadinessGate:
             latest_model_pose = list(self.latest_model_pose or [])
             latest_joint_positions = dict(self.latest_joint_positions)
             latest_odom_pose = list(self.latest_odom_pose or [])
-            clock_rows = [row for row in self.samples['clock']
+            clock_rows = [row for row in sample_rows['clock']
                           if now - row[0] <= self.WINDOW_S]
             model_pose_rows = [row for row in self.model_pose_samples
                                if now - row[0] <= self.WINDOW_S]
         ros_clock_value = self.node.get_clock().now().nanoseconds * 1e-9
         sim_now = max(clock_value, ros_clock_value)
-        stats = {key: self._topic_stats(
-            key, now, sim_now,
-            max_wall_age=3.5 if key == 'map' else None,
-            max_sim_age=3.5 if key == 'map' else None,
-            min_rate_hz=0.2 if key == 'map' else None)
-                 for key in self.samples}
         clock_delta = (clock_rows[-1][1] - clock_rows[0][1]
                        if len(clock_rows) > 1 else 0.0)
         clock_wall_delta = (clock_rows[-1][0] - clock_rows[0][0]
@@ -534,6 +695,14 @@ class ResumeReadinessGate:
         clock_hz = ((len(clock_rows) - 1) / clock_wall_delta
                     if len(clock_rows) > 1 and clock_wall_delta > 0 else None)
         rtf = clock_delta / clock_wall_delta if clock_wall_delta > 0 else None
+        stats = {key: self._topic_stats(
+            key, now, sim_now,
+            max_wall_age=self.MAX_MAP_WALL_AGE_S if key == 'map' else None,
+            max_sim_age=self.MAX_MAP_SIM_AGE_S if key == 'map' else None,
+            min_rate_hz=0.0 if key == 'map' else None,
+            require_progress=key != 'map', sample_rows=sample_rows[key],
+            gazebo_rtf=rtf)
+                 for key in self.samples}
 
         graph = self._graph()
         nodes = graph['nodes']
@@ -544,49 +713,47 @@ class ResumeReadinessGate:
         odom_base_tf = self._transform_stats(('odom', 'base_footprint'), sim_now, now)
         map_base_lookup = self._lookup_stats('map', 'base_footprint', sim_now)
         scan_frame = latest_scan.get('frame_id')
+        scan_stamp_s = latest_scan.get('stamp_s')
+        scan_fresh = stats['scan'].get('fresh', False) and bool(scan_frame)
         lidar_lookup = {
             'available': False, 'stamp_s': None, 'sim_age_s': None,
-            'fresh': False, 'query_stamp_s': latest_scan.get('stamp_s'),
-            'reason': 'no exact recent scan-time transform found',
+            'fresh': False, 'query_stamp_s': scan_stamp_s,
+            'reason': 'no latest scan-time transform lookup attempted',
         }
-        latest_scan_lookup = None
-        if scan_frame:
-            # Scan publication and dynamic base TF are asynchronous. Query exact
-            # LaserScan stamps in a bounded recent window so the latest scan may
-            # wait one TF publication cycle without treating a slightly older,
-            # otherwise-valid scan as current sensor input. SCAN_FRESH below
-            # independently requires the newest /scan sample itself to be live.
-            for scan_received, candidate_frame, candidate_stamp in reversed(scan_tf_candidates):
-                scan_wall_age = max(0.0, now - scan_received)
-                if scan_wall_age > self.MAX_WALL_AGE_S:
-                    break
-                if candidate_frame != scan_frame:
-                    continue
-                candidate_lookup = self._lookup_stats(
-                    'map', candidate_frame, sim_now, candidate_stamp)
-                if latest_scan_lookup is None:
-                    latest_scan_lookup = candidate_lookup
-                if candidate_lookup.get('fresh'):
-                    lidar_lookup = {
-                        **candidate_lookup,
-                        'query_frame': f'map -> {candidate_frame}',
-                        'scan_frame': candidate_frame,
-                        'scan_sample_wall_age_s': scan_wall_age,
-                        'latest_scan_stamp_s': latest_scan.get('stamp_s'),
-                        'latest_scan_lookup_fresh': bool(latest_scan_lookup.get('fresh')),
-                    }
-                    break
-            else:
-                if latest_scan_lookup is not None:
-                    lidar_lookup = {
-                        **latest_scan_lookup,
-                        'query_frame': f'map -> {scan_frame}',
-                        'scan_frame': scan_frame,
-                        'scan_sample_wall_age_s': max(0.0, now - (
-                            scan_tf_candidates[-1][0] if scan_tf_candidates else now)),
-                        'latest_scan_stamp_s': latest_scan.get('stamp_s'),
-                        'latest_scan_lookup_fresh': False,
-                    }
+        latest_lidar_lookup = {
+            'available': False, 'stamp_s': None, 'sim_age_s': None,
+            'fresh': False, 'query_stamp_s': None,
+            'reason': 'no latest-time LiDAR transform lookup attempted',
+        }
+        if scan_frame and scan_stamp_s is not None:
+            lidar_lookup = self._lookup_stats(
+                'map', scan_frame, sim_now, scan_stamp_s, timeout_s=0.10)
+            latest_lidar_lookup = self._lookup_stats(
+                'map', scan_frame, sim_now, timeout_s=0.05)
+        newest_scan_candidate = scan_tf_candidates[-1] if scan_tf_candidates else None
+        scan_tf_readiness = self._scan_tf_readiness(
+            scan_fresh, scan_stamp_s, lidar_lookup, latest_lidar_lookup,
+            odom_base_tf.get('fresh', False), map_odom_tf.get('fresh', False))
+        lidar_lookup.update({
+            'query_frame': f'map -> {scan_frame}' if scan_frame else None,
+            'scan_frame': scan_frame,
+            'latest_scan_stamp_s': scan_stamp_s,
+            'scan_sample_wall_age_s': (
+                max(0.0, now - float(latest_scan['wall_received_monotonic_s']))
+                if latest_scan.get('wall_received_monotonic_s') is not None else None),
+            'latest_scan_lookup_fresh': bool(lidar_lookup.get('fresh')),
+            'latest_time_lookup': latest_lidar_lookup,
+            'candidate_count': len(scan_tf_candidates),
+            'newest_candidate_wall_age_s': (
+                max(0.0, now - newest_scan_candidate[0])
+                if newest_scan_candidate else None),
+            'newest_candidate_matches_latest_scan': bool(
+                newest_scan_candidate and scan_frame == newest_scan_candidate[1]
+                and scan_stamp_s is not None
+                and math.isclose(float(scan_stamp_s), float(newest_scan_candidate[2]),
+                                 rel_tol=0.0, abs_tol=1e-9)),
+            'scan_tf_readiness': scan_tf_readiness,
+        })
 
         controllers = {}
         if self.controllers_response is not None:
@@ -638,10 +805,7 @@ class ResumeReadinessGate:
                 'max_update_rate': float(self.physics_response.max_update_rate),
                 'status': self.physics_response.status_message,
             }
-        model_fresh = stats['model_states'].get('wall_age_s') is not None and \
-            stats['model_states']['wall_age_s'] <= self.MAX_WALL_AGE_S and \
-            (stats['model_states'].get('rate_hz') or 0.0) >= \
-            self.MIN_RATE_HZ_BY_TOPIC['model_states']
+        model_fresh = stats['model_states'].get('fresh', False)
         model_pose_span = None
         if len(model_pose_rows) >= 2:
             first, last = model_pose_rows[0], model_pose_rows[-1]
@@ -662,8 +826,7 @@ class ResumeReadinessGate:
         # This lookup is made at the exact LaserScan stamp and verifies the
         # complete map -> LiDAR chain. The direct dynamic edges are gated
         # independently below so one bad edge report remains diagnosable.
-        tf_lidar = lidar_lookup.get('fresh', False)
-        scan_fresh = stats['scan'].get('fresh', False) and bool(scan_frame)
+        tf_lidar = scan_tf_readiness['passed']
         slam_subscribers = {self._frame(row['node']) for row in subs.get('/scan', [])}
         map_publishers = {self._frame(row['node']) for row in pubs.get('/map', [])}
         tf_publishers = {self._frame(row['node']) for row in pubs.get('/tf', [])}
@@ -724,9 +887,8 @@ class ResumeReadinessGate:
                                 for row in pubs.get('/drive_controller/commands', []))
                         and any(self._frame(row['node']) == 'swerve_controller'
                                 for row in pubs.get('/steering_controller/commands', [])))
-        map_fresh = (stats['map'].get('fresh', False)
-                     and (stats['map'].get('rate_hz') or 0.0) >= 0.2
-                     and stats['map'].get('stamp_increasing', False))
+        map_liveness = self._map_live_evidence(
+            stats['map'], latest_map, slam_active)
         gates = {
             'CLOCK_FRESH': stats['clock'].get('fresh', False) and clock_delta > 0.20,
             'GAZEBO_PHYSICS_ACTIVE': physics_active,
@@ -742,7 +904,7 @@ class ResumeReadinessGate:
             'SCAN_FRESH': scan_fresh,
             'SLAM_ACTIVE': slam_active,
             'SLAM_INPUT_FRESH': scan_fresh and 'slam_toolbox' in slam_subscribers and tf_lidar,
-            'MAP_LIVE': map_fresh and slam_active,
+            'MAP_LIVE': map_liveness['passed'],
         }
         sources = {}
         topics = {
@@ -751,8 +913,7 @@ class ResumeReadinessGate:
             'scan': '/scan', 'map': '/map',
         }
         for key, topic in topics.items():
-            with self.lock:
-                last_received = self.samples[key][-1][0] if self.samples[key] else None
+            last_received = sample_rows[key][-1][0] if sample_rows[key] else None
             sources[topic] = {
                 **stats[key], 'publishers': pubs.get(topic, []),
                 'last_wall_received_monotonic_s': last_received,
@@ -770,6 +931,11 @@ class ResumeReadinessGate:
             'map->lidar': {
                 **lidar_lookup, 'scan_frame': scan_frame,
                 'latest_scan_stamp_s': latest_scan.get('stamp_s'),
+                'latest_time_lookup': latest_lidar_lookup,
+                'candidate_count': len(scan_tf_candidates),
+                'newest_candidate_wall_age_s': (
+                    max(0.0, now - scan_tf_candidates[-1][0])
+                    if scan_tf_candidates else None),
             },
         }
         return {
@@ -813,6 +979,7 @@ class ResumeReadinessGate:
             'transforms': tf_sources,
             'tf_out_of_order_messages_ignored': self.tf_out_of_order_messages_ignored,
             'map': latest_map or None,
+            'map_liveness': map_liveness,
             'gates': gates,
             'all_gates_pass': all(gates.values()),
         }
@@ -881,6 +1048,12 @@ def map_extension_evidence(before: dict, after: dict) -> dict:
     return evidence
 
 
+def resumed_map_save_gate(extension_evidence: dict, save_checks: dict) -> bool:
+    """A post-resume save cannot pass unless world-coordinate extension passed."""
+    return bool(extension_evidence.get('passed') and save_checks
+                and all(save_checks.values()))
+
+
 def saved_session_artifact_evidence(record: dict, map_root: Path) -> dict:
     """Validate the distinct post-resume registry row and all saved products."""
     evidence = {'passed': False, 'files': {}, 'reason': None}
@@ -893,6 +1066,7 @@ def saved_session_artifact_evidence(record: dict, map_root: Path) -> dict:
                 raise ValueError(f'{key} does not resolve to a nonempty in-registry artifact')
             artifacts[key] = path
             evidence['files'][key] = {'path': str(path), 'size_bytes': path.stat().st_size}
+        artifact_hashes = {key: file_sha256(path) for key, path in artifacts.items()}
 
         import yaml
         metadata = yaml.safe_load(artifacts['_yaml'].read_text(encoding='utf-8'))
@@ -916,7 +1090,7 @@ def saved_session_artifact_evidence(record: dict, map_root: Path) -> dict:
             raise ValueError('saved YAML threshold/negate metadata is invalid')
 
         data = artifacts['_image'].read_bytes()
-        image_sha256 = hashlib.sha256(data).hexdigest()
+        image_sha256 = artifact_hashes['_image']
         if record.get('image_sha256') and image_sha256 != record.get('image_sha256'):
             raise ValueError('saved image hash does not match map registry metadata')
         cursor = 0
@@ -955,6 +1129,7 @@ def saved_session_artifact_evidence(record: dict, map_root: Path) -> dict:
             'dimensions': [width, height], 'resolution': resolution, 'origin': origin,
             'known_cells': int(record.get('known_cells') or 0),
             'image_sha256': image_sha256,
+            'artifact_sha256': artifact_hashes,
             'image_format': 'P5', 'image_max_value': max_value,
             'yaml_metadata': metadata,
         })
@@ -980,9 +1155,16 @@ def main() -> int:
     image_path = (map_root / str(record['_image'])).resolve(strict=True)
     posegraph_path = (map_root / str(record['_slam_posegraph'])).resolve(strict=True)
     session_data_path = (map_root / str(record['_slam_data'])).resolve(strict=True)
-    for artifact in (yaml_path, image_path, posegraph_path, session_data_path):
+    source_artifact_paths = {
+        '_yaml': yaml_path, '_image': image_path,
+        '_slam_posegraph': posegraph_path, '_slam_data': session_data_path,
+    }
+    for artifact in source_artifact_paths.values():
         if not artifact.is_relative_to(map_root) or not artifact.is_file() or artifact.stat().st_size <= 0:
             raise RuntimeError(f'saved local map/session artifact is missing or out of scope: {artifact.name}')
+    source_artifact_hashes = {
+        key: file_sha256(path) for key, path in source_artifact_paths.items()
+    }
     if (record.get('slam_session_state') or {}).get('status') != 'AVAILABLE':
         raise RuntimeError('registered saved SLAM session is not AVAILABLE')
 
@@ -1002,11 +1184,12 @@ def main() -> int:
             'resolution': record['resolution'], 'origin': record['origin'],
             'known_cells': record.get('known_cells'),
             'image_sha256': record.get('image_sha256'),
+            'artifact_sha256': source_artifact_hashes,
         },
         'evidence_directory': str(evidence_dir),
     }
     rclpy.init()
-    probe = acceptance.MotionProbe()
+    probe = ResumeMotionProbe()
     token = acceptance.authenticate(backend)
     ws_url = backend.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws?token=' + token
     ws = websocket.create_connection(ws_url, timeout=5.0, enable_multithread=True)
@@ -1055,12 +1238,47 @@ def main() -> int:
             readiness_since = None
             next_readiness_sample = 0.0
             latest_readiness = None
+            readiness_history = []
+            next_history_record = 0.0
+            last_gate_signature = None
             teleop_gate_path = evidence_dir / 'teleop-gate.json'
+            extension_ready_path = evidence_dir / 'extended-map-ready.json'
+            extension_decision_path = evidence_dir / 'map-extension-decision.json'
             teleop_start = teleop_end = None
             teleop_start_monotonic = teleop_end_monotonic = None
             start_selected_index = start_owner_index = start_drive_index = None
             start_joint_index = start_odom = None
             while browser.poll() is None:
+                if extension_ready_path.is_file() and not extension_decision_path.is_file():
+                    try:
+                        extension_ready = json.loads(
+                            extension_ready_path.read_text(encoding='utf-8'))
+                        session_evidence = json.loads(
+                            (evidence_dir / 'session-restored.json').read_text(encoding='utf-8'))
+                        before_snapshot = session_evidence.get('initial_map_snapshot') or {}
+                        after_snapshot_path = evidence_dir / 'extended-map.json'
+                        after_snapshot = (json.loads(after_snapshot_path.read_text(encoding='utf-8'))
+                                          if extension_ready.get('snapshot_available')
+                                          and after_snapshot_path.is_file() else {})
+                        extension_decision = (map_extension_evidence(before_snapshot, after_snapshot)
+                                              if before_snapshot and after_snapshot else {
+                                                  'passed': False,
+                                                  'newly_known_cells': 0,
+                                                  'known_cells_outside_prior_extent': 0,
+                                                  'reason': 'missing pre/post-motion map snapshot',
+                                              })
+                        write_json(extension_decision_path, {
+                            'resolved': True, 'passed': bool(extension_decision.get('passed')),
+                            'evidence': extension_decision,
+                        })
+                    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                        write_json(extension_decision_path, {
+                            'resolved': True, 'passed': False,
+                            'evidence': {
+                                'passed': False,
+                                'reason': f'{type(exc).__name__}: {exc}',
+                            },
+                        })
                 if ws is not None:
                     ws_error_index = len(probe.ws_errors)
                     try:
@@ -1131,9 +1349,48 @@ def main() -> int:
                     next_readiness_sample = time.monotonic() + 0.25
                     latest_readiness = readiness.snapshot()
                     result['post_resume_readiness'] = latest_readiness
+                    sample_wall = time.monotonic()
+                    gate_signature = tuple(
+                        name for name, passed in latest_readiness['gates'].items()
+                        if not passed)
+                    if (gate_signature != last_gate_signature
+                            or sample_wall >= next_history_record):
+                        sources = latest_readiness.get('sources') or {}
+                        transforms = latest_readiness.get('transforms') or {}
+                        history_row = {
+                            'wall_monotonic_s': sample_wall,
+                            'sim_time_s': latest_readiness.get('latest_clock_s'),
+                            'gates': latest_readiness['gates'],
+                            'failed_gates': list(gate_signature),
+                            'topics': {
+                                topic: {key: values.get(key) for key in (
+                                    'wall_age_s', 'max_wall_age_s', 'stamp_s',
+                                    'sim_age_s', 'rate_hz', 'sim_rate_hz',
+                                    'rate_basis', 'rate_requirement_met_by',
+                                    'required_rate_hz',
+                                    'samples_5s', 'fresh')}
+                                for topic, values in sources.items()},
+                            'transforms': {
+                                edge: {key: values.get(key) for key in (
+                                    'available', 'wall_age_s', 'max_wall_age_s',
+                                    'stamp_s', 'sim_age_s', 'rate_hz', 'fresh', 'reason')}
+                                for edge, values in transforms.items()},
+                            'scan_tf_readiness': (
+                                transforms.get('map->lidar', {}).get('scan_tf_readiness')),
+                            'map_liveness': latest_readiness.get('map_liveness'),
+                        }
+                        readiness_history.append(history_row)
+                        readiness_history = readiness_history[-240:]
+                        last_gate_signature = gate_signature
+                        next_history_record = sample_wall + 1.0
+                        result['post_resume_readiness_history'] = readiness_history
+                        write_json(evidence_dir / 'readiness-history.json', {
+                            'samples': readiness_history,
+                        })
                     write_json(ROOT / '.runtime' / 'local-map-slam-resume-readiness.json', {
                         'map_id': record['id'], 'map_revision': record['revision'],
                         'readiness': latest_readiness,
+                        'history': readiness_history,
                     })
                     if latest_readiness['all_gates_pass']:
                         readiness_since = readiness_since or time.monotonic()
@@ -1141,7 +1398,22 @@ def main() -> int:
                         readiness_since = None
                     stable_s = (time.monotonic() - readiness_since
                                 if readiness_since is not None else 0.0)
-                    if stable_s >= readiness.WINDOW_S:
+                    if teleop_start is not None:
+                        # The short approval lease was consumed before Forward.
+                        # Later sensor jitter must not rewrite that decision as
+                        # a pre-motion timeout or imply that no motion occurred.
+                        previous_gate = json.loads(teleop_gate_path.read_text(
+                            encoding='utf-8')) if teleop_gate_path.is_file() else {}
+                        if previous_gate.get('state') != 'CONSUMED':
+                            write_json(teleop_gate_path, {
+                                'state': 'CONSUMED',
+                                'updated_at_ms': int(time.time() * 1000),
+                                'consumed_at_ms': teleop_start.get('at_ms'),
+                                'approval_updated_at_ms': teleop_start.get(
+                                    'readiness_gate_updated_at_ms'),
+                                'gates': teleop_start.get('readiness_gates') or {},
+                            })
+                    elif stable_s >= readiness.WINDOW_S:
                         write_json(teleop_gate_path, {
                             'state': 'APPROVED', 'updated_at_ms': int(time.time() * 1000),
                             'stable_window_s': stable_s,
@@ -1226,6 +1498,17 @@ def main() -> int:
             resume_result = (browser_result.get('restoration_carryover') or {}).get('body')
         initial_map = browser_result.get('initial_map_snapshot') or {}
         extended_map = browser_result.get('extended_map_snapshot') or {}
+        extension = map_extension_evidence(initial_map, extended_map) if extended_map else {
+            'passed': False, 'newly_known_cells': 0,
+            'known_cells_outside_prior_extent': 0,
+            'reason': 'no post-motion SLAM map snapshot'}
+        extension_decision = browser_result.get('map_extension_decision') or {}
+        if (extension_decision.get('resolved') is not True
+                or extension_decision.get('passed') is not True
+                or not extension.get('passed')):
+            extension['passed'] = False
+            if extension_decision.get('evidence', {}).get('reason'):
+                extension['decision_reason'] = extension_decision['evidence']['reason']
         initial_check = slam_map_restoration_evidence(record, yaml_path, image_path, initial_map)
         extended_check = (slam_map_restoration_evidence(record, yaml_path, image_path, extended_map)
                           if extended_map else {'passed': False, 'reason': 'no post-motion SLAM map snapshot'})
@@ -1246,6 +1529,15 @@ def main() -> int:
             original_record_after.get(key) == record.get(key)
             for key in ('id', 'name', 'revision', 'image_sha256',
                         '_yaml', '_image', '_slam_posegraph', '_slam_data')))
+        try:
+            source_artifact_hashes_after = {
+                key: file_sha256(path) for key, path in source_artifact_paths.items()
+            }
+        except OSError:
+            source_artifact_hashes_after = {}
+        original_artifacts_unchanged = (
+            bool(source_artifact_hashes_after)
+            and source_artifact_hashes_after == source_artifact_hashes)
         new_id = (resumed_record or {}).get('id')
         saved_dimensions = [int((resumed_record or {}).get('width') or 0),
                            int((resumed_record or {}).get('height') or 0)]
@@ -1256,21 +1548,33 @@ def main() -> int:
         save_cells_match = bool(resumed_record
                                 and int(resumed_record.get('known_cells') or 0)
                                 >= int(initial_map.get('known_cells') or 0))
-        resumed_save_passed = bool(
-            save_request.get('distinct_name')
-            and save_request.get('name') != map_name
-            and new_id and new_id != record.get('id')
-            and (resumed_record or {}).get('canonical_map_promoted') is False
-            and ((resumed_record or {}).get('slam_session_state') or {}).get('status') == 'AVAILABLE'
-            and artifact_check.get('passed') and original_unchanged
-            and save_dimensions_match and save_cells_match)
+        save_checks = {
+            'distinct_name': bool(save_request.get('distinct_name')
+                                  and save_request.get('name') != map_name),
+            'distinct_map_id': bool(new_id and new_id != record.get('id')),
+            'not_canonical': (resumed_record or {}).get('canonical_map_promoted') is False,
+            'slam_session_available': (
+                ((resumed_record or {}).get('slam_session_state') or {}).get('status') == 'AVAILABLE'),
+            'saved_artifacts_valid': bool(artifact_check.get('passed')),
+            'original_registry_unchanged': original_unchanged,
+            'original_artifacts_unchanged': original_artifacts_unchanged,
+            'dimensions_match': save_dimensions_match,
+            'saved_cells_cover_pre_save_map': save_cells_match,
+        }
+        resumed_save_passed = resumed_map_save_gate(extension, save_checks)
         result['resumed_map_save_evidence'] = {
             'passed': resumed_save_passed,
+            'requires_map_extension': True,
+            'map_extension_passed': bool(extension.get('passed')),
+            'checks': save_checks,
             'requested_name': save_request.get('name'),
             'registry_map_id': new_id,
             'distinct_from_original': bool(new_id and new_id != record.get('id')),
             'canonical_map_promoted': (resumed_record or {}).get('canonical_map_promoted'),
             'original_registry_unchanged': original_unchanged,
+            'original_artifacts_unchanged': original_artifacts_unchanged,
+            'original_artifact_sha256_before': source_artifact_hashes,
+            'original_artifact_sha256_after': source_artifact_hashes_after,
             'dimensions': saved_dimensions,
             'extended_map_dimensions': extended_dimensions,
             'saved_known_cells': (resumed_record or {}).get('known_cells'),
@@ -1284,6 +1588,8 @@ def main() -> int:
                 'OLD_MAP_RESTORED': bool(initial_check.get('passed')),
                 'POST_RESUME_READINESS_GATE': bool(
                     (result.get('teleop_gate') or {}).get('state') == 'APPROVED'),
+                'ORIGINAL_MAP_UNCHANGED': bool(
+                    original_unchanged and original_artifacts_unchanged),
                 'RESUME_WEB_TELEOP': False,
                 'RESUMED_MAP_EXTENDS': False,
                 'OLD_MAP_PRESERVED_AFTER_EXTENSION': False,
@@ -1374,8 +1680,6 @@ def main() -> int:
         final_cells = int(extended_map.get('known_cells') or 0)
         dimensions_grew = (extended_map.get('width'), extended_map.get('height')) != (
             initial_map.get('width'), initial_map.get('height'))
-        extension = map_extension_evidence(initial_map, extended_map) if extended_map else {
-            'passed': False, 'reason': 'no post-motion map snapshot'}
         map_extended = (final_cells > initial_cells or dimensions_grew
                         or extension.get('passed', False))
         gate_at_command = result.get('teleop_gate_at_command') or {}
@@ -1392,6 +1696,7 @@ def main() -> int:
             'SLAM_SESSION_LOAD': bool(resume_result and resume_result.get('status') == 'RESUMED'),
             'OLD_MAP_RESTORED': bool(initial_check.get('passed')),
             'POST_RESUME_READINESS_GATE': bool(gates_at_command and all(gates_at_command.values())),
+            'ORIGINAL_MAP_UNCHANGED': bool(original_unchanged and original_artifacts_unchanged),
             'RESUME_WEB_TELEOP': resume_web_teleop,
             'RESUMED_MAP_EXTENDS': bool(map_extended and extension.get('passed')),
             'OLD_MAP_PRESERVED_AFTER_EXTENSION': bool(
@@ -1421,7 +1726,7 @@ def main() -> int:
         result['acceptance']['RESUME_MAPPING'] = bool(
             all(result['acceptance'].get(key, False) for key in (
                 'SLAM_SESSION_LOAD', 'OLD_MAP_RESTORED', 'POST_RESUME_READINESS_GATE',
-                'RESUME_WEB_TELEOP', 'RESUMED_MAP_EXTENDS',
+                'ORIGINAL_MAP_UNCHANGED', 'RESUME_WEB_TELEOP', 'RESUMED_MAP_EXTENDS',
                 'OLD_MAP_PRESERVED_AFTER_EXTENSION', 'RESUMED_MAP_SAVE',
                 'MAP_ODOM_OWNER_SLAM_TOOLBOX')))
         result['passed'] = all(result['acceptance'].values())
@@ -1467,6 +1772,11 @@ def main() -> int:
             cleanup_errors.append(f'rclpy shutdown: {type(exc).__name__}: {exc}')
         if cleanup_errors:
             result['cleanup_errors'] = cleanup_errors
+        result['harness_diagnostics'] = {
+            **(result.get('harness_diagnostics') or {}),
+            'model_states_rejected_missing_pose_or_twist':
+                getattr(probe, 'malformed_model_state_samples', 0),
+        }
         write_json(output, result)
 
     print(json.dumps({'passed': result.get('passed'),

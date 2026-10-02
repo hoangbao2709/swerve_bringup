@@ -2602,7 +2602,8 @@ class SwerveBridge(Node):
             try:
                 active_handle = self.active_pose_goal or self.active_goal
                 future = active_handle.cancel_goal_async()
-                future.add_done_callback(lambda _future: setattr(self, 'cancel_pending', False))
+                context = self.active_pose_context or self.active_context or {'robot_id': self.robot_id}
+                future.add_done_callback(lambda completed: self.cancel_response(completed, context))
             except Exception as exc:
                 self.cancel_pending = False
                 self.get_logger().warning(f'failed to cancel navigation during emergency stop: {exc}')
@@ -2613,8 +2614,18 @@ class SwerveBridge(Node):
         }, 'EMERGENCY_STOPPED', 'emergency stop asserted')
 
     def clear_emergency_stop(self, _data):
+        if (self.goal_request_pending or self.active_pose_goal is not None
+                or self.active_goal is not None or self.cancel_pending):
+            self.cmd_pub.publish(Twist())
+            self.send_nav_status(
+                {'robot_id': self.robot_id}, 'EMERGENCY_STOPPED',
+                'E-STOP remains active until the pre-stop Nav2 goal is terminal',
+            )
+            return False
         self.emergency_stop_active = False
         self.estop_pub.publish(Bool(data=False))
+        self.pending_cancel_state = None
+        self.pending_replan = None
         self.nav_state = 'IDLE'
         self.manual_twist = Twist()
         self.manual_deadline = 0.0
@@ -2662,7 +2673,8 @@ class SwerveBridge(Node):
             try:
                 active_handle = self.active_pose_goal or self.active_goal
                 future = active_handle.cancel_goal_async()
-                future.add_done_callback(lambda _future: setattr(self, 'cancel_pending', False))
+                context = self.active_pose_context or self.active_context or {'robot_id': self.robot_id}
+                future.add_done_callback(lambda completed: self.cancel_response(completed, context))
             except Exception as exc:
                 self.cancel_pending = False
                 self.get_logger().warning(f'failed to cancel autonomous goal before manual mode: {exc}')
@@ -2876,46 +2888,110 @@ class SwerveBridge(Node):
         try:
             handle = future.result()
         except Exception as exc:
-            self.nav_state = 'FAILED'
+            cancel_state = self._pending_goal_cancel_state()
+            self.pending_cancel_state = None
+            self.pending_replan = None
+            self.cancel_pending = False
+            self.nav_state = cancel_state or 'FAILED'
+            if cancel_state:
+                self.send_nav_status(context, cancel_state,
+                                     'Nav2 goal ended before acceptance after cancellation was requested')
+                return
             self.send_nav_status(context, 'FAILED', f'GoToTag goal request failed: {exc}')
             return
         if handle is None or not handle.accepted:
-            self.nav_state = 'FAILED'
+            cancel_state = self._pending_goal_cancel_state()
+            self.pending_cancel_state = None
+            self.pending_replan = None
+            self.cancel_pending = False
+            self.nav_state = cancel_state or 'FAILED'
+            if cancel_state:
+                self.send_nav_status(context, cancel_state,
+                                     'Nav2 rejected the goal before the pending cancellation completed')
+                return
             self.send_nav_status(context, 'FAILED', 'GoToTag rejected the goal')
             return
         self.active_goal = handle
         self.active_context = context
         self.cancel_pending = False
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(lambda f: self.goal_result(f, handle, context))
+        cancel_state = self._pending_goal_cancel_state()
+        if cancel_state:
+            self._cancel_accepted_goal(handle, context, cancel_state)
+            self.nav_state = cancel_state
+            return
         self.pending_cancel_state = None
         self.nav_state = 'NAVIGATING'
         self.send_nav_status(context, 'ACTIVE')
-        result_future = handle.get_result_async()
-        result_future.add_done_callback(lambda f: self.goal_result(f, handle, context))
 
     def pose_goal_response(self, future, context):
         self.goal_request_pending = False
         try:
             handle = future.result()
         except Exception as exc:
-            self.nav_state = 'FAILED'
+            cancel_state = self._pending_goal_cancel_state()
+            self.pending_cancel_state = None
+            self.pending_replan = None
+            self.cancel_pending = False
+            self.nav_state = cancel_state or 'FAILED'
+            if cancel_state:
+                self.send_nav_status(context, cancel_state,
+                                     'Nav2 goal ended before acceptance after cancellation was requested')
+                return
             self.send_nav_status(context, 'FAILED', f'NavigateToPose request failed: {exc}')
             return
         if handle is None or not handle.accepted:
-            self.nav_state = 'FAILED'
+            cancel_state = self._pending_goal_cancel_state()
+            self.pending_cancel_state = None
+            self.pending_replan = None
+            self.cancel_pending = False
+            self.nav_state = cancel_state or 'FAILED'
+            if cancel_state:
+                self.send_nav_status(context, cancel_state,
+                                     'Nav2 rejected the goal before the pending cancellation completed')
+                return
             self.send_nav_status(context, 'FAILED', 'NavigateToPose rejected the goal')
             return
         self.active_pose_goal = handle
         self.active_pose_context = context
         self.paused_pose_context = None
         self.cancel_pending = False
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(lambda f: self.pose_goal_result(f, handle, context))
+        cancel_state = self._pending_goal_cancel_state()
+        if cancel_state:
+            self._cancel_accepted_goal(handle, context, cancel_state)
+            self.nav_state = cancel_state
+            return
         self.pending_cancel_state = None
         self.nav_state = 'NAVIGATING'
         self.send({'type': 'NAV_GOAL', 'goal': {
             **context, 'status': 'ACTIVE', 'timestamp': self.now(),
         }})
         self.send_nav_status(context, 'ACTIVE')
-        result_future = handle.get_result_async()
-        result_future.add_done_callback(lambda f: self.pose_goal_result(f, handle, context))
+
+    def _pending_goal_cancel_state(self):
+        if self.emergency_stop_active:
+            return 'EMERGENCY_STOPPED'
+        if self.control_mode != 'AUTONOMOUS':
+            return 'CANCELLED'
+        return self.pending_cancel_state
+
+    def _cancel_accepted_goal(self, handle, context, cancel_state):
+        if self.cancel_pending:
+            return
+        self.pending_cancel_state = cancel_state
+        if cancel_state != 'PLANNING':
+            self.pending_replan = None
+        self.cancel_pending = True
+        try:
+            future = handle.cancel_goal_async()
+            future.add_done_callback(lambda completed: self.cancel_response(completed, context))
+        except Exception as exc:
+            self.cancel_pending = False
+            self.send_nav_status(context, 'FAILED',
+                                 f'failed to cancel Nav2 goal accepted after a pending stop: {exc}')
 
     def pose_goal_result(self, future, handle, context):
         try:
@@ -3116,8 +3192,10 @@ class SwerveBridge(Node):
 
     def cancel_navigation(self, data):
         kind = str(data.get('type') or '').upper()
-        is_replan = kind == 'TAG_NAV_REPLAN'
-        cancel_state = 'PLANNING' if is_replan else 'PAUSED' if kind == 'TAG_NAV_PAUSE' else 'CANCELLED'
+        is_replan = kind == 'TAG_NAV_REPLAN' and not self.emergency_stop_active
+        cancel_state = ('EMERGENCY_STOPPED' if self.emergency_stop_active else
+                        'PLANNING' if is_replan else
+                        'PAUSED' if kind == 'TAG_NAV_PAUSE' else 'CANCELLED')
         context = self.active_pose_context or self.active_context or self.paused_pose_context or {
             'robot_id': self.robot_id,
             'schedule_id': data.get('schedule_id'),
@@ -3130,6 +3208,16 @@ class SwerveBridge(Node):
             self.cancel_pose_navigation(context, cancel_state)
             return
         if self.active_goal is None:
+            if self.goal_request_pending:
+                self.pending_cancel_state = cancel_state
+                self.pending_replan = dict(data) if is_replan else None
+                self.cmd_pub.publish(Twist())
+                self.nav_state = cancel_state
+                self.send_nav_status(
+                    context, cancel_state,
+                    'cancel requested before Nav2 goal acceptance; will cancel immediately if accepted',
+                )
+                return
             self.cmd_pub.publish(Twist())
             if is_replan and data.get('target_tag_id') is not None:
                 self.navigate(data)

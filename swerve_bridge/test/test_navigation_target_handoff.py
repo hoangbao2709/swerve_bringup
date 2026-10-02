@@ -3,6 +3,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from swerve_bridge import bridge_node
 from swerve_bridge.bridge_node import SwerveBridge
 
@@ -30,6 +32,39 @@ def _navigate_to_pose_goal():
             ),
         ),
     )
+
+
+def _nav_safety_bridge():
+    bridge = object.__new__(SwerveBridge)
+    bridge.robot_id = 'R01'
+    bridge.control_mode = 'AUTONOMOUS'
+    bridge.emergency_stop_active = False
+    bridge.goal_request_pending = False
+    bridge.active_goal = None
+    bridge.active_pose_goal = None
+    bridge.active_context = None
+    bridge.active_pose_context = None
+    bridge.paused_pose_context = None
+    bridge.cancel_pending = False
+    bridge.pending_cancel_state = None
+    bridge.pending_replan = None
+    bridge.nav_state = 'NAVIGATING'
+    bridge.cmd_pub = SimpleNamespace(publish=Mock())
+    bridge.estop_pub = SimpleNamespace(publish=Mock())
+    bridge.send = Mock()
+    bridge.send_nav_status = Mock()
+    return bridge
+
+
+def _accepted_pose_handle():
+    cancel_future = SimpleNamespace(add_done_callback=Mock())
+    result_future = SimpleNamespace(add_done_callback=Mock())
+    handle = SimpleNamespace(
+        accepted=True,
+        cancel_goal_async=Mock(return_value=cancel_future),
+        get_result_async=Mock(return_value=result_future),
+    )
+    return handle, cancel_future, result_future
 
 
 def test_tag_resolved_pose_uses_shared_compute_path_and_navigate_to_pose_actions(monkeypatch):
@@ -107,3 +142,87 @@ def test_tag_resolved_pose_uses_shared_compute_path_and_navigate_to_pose_actions
     assert nav_goal.pose.pose.position.y == target['y']
     assert nav_goal.pose.pose.orientation.z == math.sin(target['yaw'] / 2.0)
     assert nav_goal.pose.pose.orientation.w == math.cos(target['yaw'] / 2.0)
+
+
+@pytest.mark.parametrize(('source_type', 'source_id'), [('MAP_POINT', None), ('TAG', '1301')])
+def test_common_pose_goal_cancel_waits_for_a_pending_nav2_acceptance(source_type, source_id):
+    bridge = _nav_safety_bridge()
+    bridge.goal_request_pending = True
+    context = {
+        'robot_id': 'R01', 'frame_id': 'map', 'x': 2.5, 'y': 3.5, 'yaw': 1.2,
+        'source_type': source_type, 'source_id': source_id,
+    }
+
+    bridge.cancel_navigation({'type': 'NAV_CANCEL', 'robot_id': 'R01'})
+    assert bridge.goal_request_pending
+    assert bridge.pending_cancel_state == 'CANCELLED'
+    assert bridge.cmd_pub.publish.call_count == 1
+
+    handle, _cancel_future, result_future = _accepted_pose_handle()
+    bridge.pose_goal_response(SimpleNamespace(result=lambda: handle), context)
+    handle.cancel_goal_async.assert_called_once_with()
+    result_future.add_done_callback.assert_called_once()
+    assert bridge.cancel_pending
+    assert bridge.nav_state == 'CANCELLED'
+    assert not any(message.get('goal', {}).get('status') == 'ACTIVE'
+                   for message in (call.args[0] for call in bridge.send.call_args_list))
+
+
+def test_estop_during_pending_nav2_acceptance_cancels_goal_and_blocks_clear_until_terminal():
+    bridge = _nav_safety_bridge()
+    bridge.goal_request_pending = True
+    context = {'robot_id': 'R01', 'frame_id': 'map', 'x': 2.5, 'y': 3.5, 'yaw': 1.2}
+
+    bridge.emergency_stop({'stop_id': 'estop-1'})
+    assert bridge.emergency_stop_active
+    assert bridge.pending_cancel_state == 'EMERGENCY_STOPPED'
+    assert bridge.clear_emergency_stop({}) is False
+    assert bridge.estop_pub.publish.call_count == 1
+
+    handle, cancel_future, result_future = _accepted_pose_handle()
+    bridge.pose_goal_response(SimpleNamespace(result=lambda: handle), context)
+    handle.cancel_goal_async.assert_called_once_with()
+    assert bridge.cancel_pending
+    assert bridge.clear_emergency_stop({}) is False
+    assert bridge.emergency_stop_active
+    assert bridge.estop_pub.publish.call_count == 1
+
+    cancel_callback = cancel_future.add_done_callback.call_args.args[0]
+    cancel_callback(SimpleNamespace(result=lambda: SimpleNamespace(goals_canceling=[1])))
+    assert bridge.cancel_pending  # Request acceptance is not Nav2 goal termination.
+    bridge.pose_goal_result(
+        SimpleNamespace(result=lambda: SimpleNamespace(status=bridge_node.GoalStatus.STATUS_CANCELED)),
+        handle, context,
+    )
+    assert bridge.active_pose_goal is None
+    assert not bridge.cancel_pending
+    assert bridge.emergency_stop_active
+    assert bridge.clear_emergency_stop({}) is None
+    assert not bridge.emergency_stop_active
+    assert bridge.pending_cancel_state is None
+    assert bridge.estop_pub.publish.call_count == 2
+
+
+def test_estop_on_active_nav2_goal_does_not_clear_before_cancel_result():
+    bridge = _nav_safety_bridge()
+    context = {'robot_id': 'R01', 'frame_id': 'map', 'x': 2.5, 'y': 3.5, 'yaw': 1.2}
+    handle, cancel_future, _result_future = _accepted_pose_handle()
+    bridge.active_pose_goal = handle
+    bridge.active_pose_context = context
+
+    bridge.emergency_stop({'stop_id': 'estop-active'})
+    handle.cancel_goal_async.assert_called_once_with()
+    assert bridge.clear_emergency_stop({}) is False
+    callback = cancel_future.add_done_callback.call_args.args[0]
+    callback(SimpleNamespace(result=lambda: SimpleNamespace(goals_canceling=[1])))
+    assert bridge.cancel_pending
+    assert bridge.emergency_stop_active
+    bridge.pose_goal_result(
+        SimpleNamespace(result=lambda: SimpleNamespace(status=bridge_node.GoalStatus.STATUS_CANCELED)),
+        handle, context,
+    )
+    assert bridge.active_pose_goal is None
+    assert not bridge.cancel_pending
+    assert bridge.clear_emergency_stop({}) is None
+    assert not bridge.emergency_stop_active
+    assert handle.cancel_goal_async.call_count == 1

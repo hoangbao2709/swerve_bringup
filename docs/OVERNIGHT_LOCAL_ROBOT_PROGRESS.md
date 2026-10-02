@@ -3,7 +3,7 @@
 Current branch: web-simulation
 Current HEAD: 5485ec3
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
-Last updated: 2026-10-03 02:24 (Asia/Ho_Chi_Minh)
+Last updated: 2026-10-03 02:26 (Asia/Ho_Chi_Minh)
 
 | ID | Task | Status | Commit | Runtime evidence | Notes |
 |---|---|---|---|---|---|
@@ -19,9 +19,9 @@ Last updated: 2026-10-03 02:24 (Asia/Ho_Chi_Minh)
 | T09 | Tag path preview | BLOCKED | 20ff08f | `.runtime/t09-tag-preview.json` | Shared resolver and source-bound preview authorization implemented; targeted checks pass, but live ComputePathToPose/Web acceptance is blocked by T00 storage health. |
 | T10 | Tag navigation runtime | BLOCKED | 7f04439 | `.runtime/t10-tag-nav.json` | Static audit confirms the shared resolved-target/preview/NavigateToPose route; bridge tests pass. Three live Tag runs, arbiter ownership, Gazebo motion, and accuracy are blocked by T00. |
 | T11 | Navigation cancel/safety | BLOCKED | bad4265 | `.runtime/t11-navigation-safety.json`; prior E-STOP trace summarized in `docs/LOCAL_ROBOT_CONTROL_ACCEPTANCE.md` | Fixed late-accepted-goal cancellation and E-STOP clear race; bridge tests pass 36/36. Real active-Nav2 cancellation, zero/settle, and no-resume checks remain blocked by T00. |
-| T12 | Navigation repeatability/accuracy | BLOCKED | - | `.runtime/t12-navigation-accuracy.json` | Retained Map Point evidence is mixed (0.04826 m and 0.0699 m reported, plus a later 0.10297 m Gazebo miss); no Tag runtime sample series exists. Mean/median/max not computed from incomplete incomparable samples. T00 blocks retest. |
-| T13 | Large-route mapping/loop closure | BLOCKED | - | `.runtime/t13-large-route.json`; current-boot kernel evidence in T00 | Required healthy-storage precondition is false: repeated `/dev/sda` timeouts/read errors and blocked jbd2/workers. No Gazebo route was launched; loop closure was not measured. |
-| T14 | Full integrated acceptance | BLOCKED | - | `.runtime/t14-final-integrated.json`; T00 current-boot kernel evidence | No final ROS/Gazebo/Web run was started because T00 storage-health gate is still blocked and several required live dependencies remain incomplete. |
+| T12 | Navigation repeatability/accuracy | BLOCKED | 4b4a5b9 | `.runtime/t12-navigation-accuracy.json` | Retained Map Point evidence is mixed (0.04826 m and 0.0699 m reported, plus a later 0.10297 m Gazebo miss); no Tag runtime sample series exists. Mean/median/max not computed from incomplete incomparable samples. T00 blocks retest. |
+| T13 | Large-route mapping/loop closure | BLOCKED | 5485ec3 | `.runtime/t13-large-route.json`; current-boot kernel evidence in T00 | Required healthy-storage precondition is false: repeated `/dev/sda` timeouts/read errors and blocked jbd2/workers. No Gazebo route was launched; loop closure was not measured. |
+| T14 | Full integrated acceptance | BLOCKED | 3b44513 | `.runtime/t14-final-integrated.json`; T00 current-boot kernel evidence | No final ROS/Gazebo/Web run was started because T00 storage-health gate is still blocked and several required live dependencies remain incomplete. |
 
 ## T00 preflight evidence
 
@@ -101,7 +101,7 @@ Last updated: 2026-10-03 02:24 (Asia/Ho_Chi_Minh)
 
 - The bridge audit found a pending-action race: a cancel could arrive before Nav2 returned its goal handle, be acknowledged locally as “no accepted goal,” and then the later acceptance callback could activate the goal. E-STOP had the same late-acceptance window, and clear-E-STOP did not require an active/pending goal to reach a terminal result first.
 - The bridge now retains pending cancel/E-STOP state, cancels a late-accepted goal immediately, records its result callback, and refuses to clear the E-STOP latch while a goal request, accepted goal, or cancellation is still in flight. Clear resets pending cancel/replan state only after that barrier is satisfied. The shared pose-goal path applies to both Map Point and Tag targets.
-- Bridge suite passed 36/36; Python compile and `git diff --check` passed. Existing runtime evidence records E-STOP zero and clear-without-resume during prior Web safety tests, but not with Nav2 active, so it does not satisfy this task's active-navigation gates.
+- Bridge suite passed 36/36; Python compile and `git diff --check` passed. The relevant `colcon build` was not run because it writes into the current storage-fault worktree. Existing runtime evidence records E-STOP zero and clear-without-resume during prior Web safety tests, but not with Nav2 active, so it does not satisfy this task's active-navigation gates.
 - Real Map Point cancel, Tag cancel, E-STOP during active Nav2, selected-zero/settling, and clear-without-resume remain unmeasured. First blocked gate: T00 current-boot storage health before ROS/Gazebo runtime. T11 is BLOCKED despite the source fix. Evidence artifact: `.runtime/t11-navigation-safety.json`.
 
 ## T12 Navigation accuracy reconciliation and blocker

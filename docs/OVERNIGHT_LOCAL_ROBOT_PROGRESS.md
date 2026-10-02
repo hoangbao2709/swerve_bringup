@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: e1078a3
+Current HEAD: bad4265 (T11 source checkpoint; ledger checkpoint follows)
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
@@ -18,7 +18,7 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 | T08 | Tag dropdown UI | BLOCKED | 4f7ae83 | `waretwin/frontend/tests/robot_control_workflow.test.tsx` (24/24); `twin.tests.test_navigation_graph` (8/8) | Added Robot Control MAP POINT/TAG selector and authenticated robot-scoped Tag API client. Selection shows registry ID/label/type/map/revision/pose, highlights the resolved pose on canonical map, and sends no preview/goal. Loading, empty, backend failure, disabled, and map-incompatibility states are tested. Live authenticated Web/API acceptance remains unavailable under T00. |
 | T09 | Tag path preview | BLOCKED | 20ff08f | `.runtime/t09-tag-preview.json` | Shared resolver and source-bound preview authorization implemented; targeted checks pass, but live ComputePathToPose/Web acceptance is blocked by T00 storage health. |
 | T10 | Tag navigation runtime | BLOCKED | 7f04439 | `.runtime/t10-tag-nav.json` | Static audit confirms the shared resolved-target/preview/NavigateToPose route; bridge tests pass. Three live Tag runs, arbiter ownership, Gazebo motion, and accuracy are blocked by T00. |
-| T11 | Navigation cancel/safety | RUNNING | - | - | Auditing Map Point/Tag cancel and E-STOP behavior; a pending NavigateToPose acceptance may race a cancel/clear, so the bridge path is being tested and hardened. Live motion tests remain gated by T00. |
+| T11 | Navigation cancel/safety | BLOCKED | bad4265 | `.runtime/t11-navigation-safety.json`; prior E-STOP trace summarized in `docs/LOCAL_ROBOT_CONTROL_ACCEPTANCE.md` | Fixed late-accepted-goal cancellation and E-STOP clear race; bridge tests pass 36/36. Real active-Nav2 cancellation, zero/settle, and no-resume checks remain blocked by T00. |
 | T12 | Navigation repeatability/accuracy | PENDING | - | - | - |
 | T13 | Large-route mapping/loop closure | PENDING | - | - | - |
 | T14 | Full integrated acceptance | PENDING | - | - | - |
@@ -96,3 +96,10 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 - Source audit confirms the common chain: Tag resolution and preview authorization remain in Django; the bridge computes the preview with `ComputePathToPose`; an approved resolved map pose is then sent through the ordinary `NAV_GOAL`/`NavigateToPose` path. No separate Tag-only action path is used for this workflow.
 - Added a bridge handoff regression test that checks the resolved Tag pose passed to both Nav2 actions, verifies preview alone does not send a navigation goal, and rejects a changed pose against the bridge approval. The complete bridge test suite passed 32/32; bridge Python compile and `git diff --check` passed.
 - No real Tag was navigated. The required three Web→Django→bridge→Nav2→arbiter→Gazebo samples and final map/Gazebo errors are absent. First failing gate is T00 before runtime startup; no software runtime divergence was observed. T10 remains BLOCKED, with no Tag navigation PASS claimed. Evidence artifact: `.runtime/t10-tag-nav.json`.
+
+## T11 Navigation cancel and E-STOP evidence and blocker
+
+- The bridge audit found a pending-action race: a cancel could arrive before Nav2 returned its goal handle, be acknowledged locally as “no accepted goal,” and then the later acceptance callback could activate the goal. E-STOP had the same late-acceptance window, and clear-E-STOP did not require an active/pending goal to reach a terminal result first.
+- The bridge now retains pending cancel/E-STOP state, cancels a late-accepted goal immediately, records its result callback, and refuses to clear the E-STOP latch while a goal request, accepted goal, or cancellation is still in flight. Clear resets pending cancel/replan state only after that barrier is satisfied. The shared pose-goal path applies to both Map Point and Tag targets.
+- Bridge suite passed 36/36; Python compile and `git diff --check` passed. Existing runtime evidence records E-STOP zero and clear-without-resume during prior Web safety tests, but not with Nav2 active, so it does not satisfy this task's active-navigation gates.
+- Real Map Point cancel, Tag cancel, E-STOP during active Nav2, selected-zero/settling, and clear-without-resume remain unmeasured. First blocked gate: T00 current-boot storage health before ROS/Gazebo runtime. T11 is BLOCKED despite the source fix. Evidence artifact: `.runtime/t11-navigation-safety.json`.

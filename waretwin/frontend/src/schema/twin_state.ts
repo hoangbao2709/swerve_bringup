@@ -210,6 +210,8 @@ export interface RobotState {
   last_telemetry_at?: string | null;
   /** Map identity attached to the live pose; absent for LOCAL_SIM robots. */
   pose_frame_id?: string | null;
+  /** Current runtime pose with its explicit active-map identity. */
+  active_map_pose?: FramePose | null;
   slam_pose?: FramePose | null;
   canonical_pose?: FramePose | null;
   pose_map_id?: string | null;

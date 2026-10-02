@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import { detailPerformance } from "./detailPerformance";
 import { Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import type { RobotDetailLidar2D, RobotDetailLidar3D, RobotDetailPathPreview, RobotState } from "../../schema/twin_state";
+import type { FramePose, RobotDetailLidar2D, RobotDetailLidar3D, RobotDetailPathPreview, RobotState } from "../../schema/twin_state";
 import { createWorldTransform, screenToWorld, worldToScreen, type WorldBounds } from "../../layout/coordinates";
 import { useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
 import type { RobotDetailMapSnapshot } from "../../schema/twin_state";
@@ -106,7 +106,7 @@ export function RobotLidar2DView({ frame, robot, onPick, overlay, active = true 
   return <div className="robot-lidar-view" ref={hostRef}>
     <canvas ref={canvasRef} onClick={pick} className={onPick ? "is-target-pick" : ""} aria-label="Live 2D LiDAR map in the robot base frame" />
     <div className="robot-lidar-view-controls"><button type="button" onClick={() => setRange((value) => Math.max(3, value / 1.25))}>ZOOM +</button><button type="button" onClick={() => setRange((value) => Math.min(40, value * 1.25))}>ZOOM −</button></div>
-    <div className="robot-lidar-view-readout"><span>{frame?.point_count ?? 0} PTS</span><span>{frame?.render_fps?.toFixed(1) ?? "0.0"} FPS</span><span>{age === null ? "NO FRAME" : `${age.toFixed(2)} s`}</span><span>POSE {robot ? `${robot.position[0].toFixed(2)}, ${robot.position[2].toFixed(2)}` : "N/A"}</span></div>
+    <div className="robot-lidar-view-readout"><span>{frame?.point_count ?? 0} PTS</span><span>{frame?.render_fps?.toFixed(1) ?? "0.0"} FPS</span><span>{age === null ? "NO FRAME" : `${age.toFixed(2)} s`}</span><span>{robot?.active_map_pose ? `POSE ${robot.active_map_pose.x.toFixed(2)}, ${robot.active_map_pose.y.toFixed(2)} · ${robot.active_map_pose.map_id}` : "POSE N/A"}</span></div>
   </div>;
 }
 
@@ -206,12 +206,12 @@ function CameraFit({ frame }: { frame: RobotDetailLidar3D | null }) {
   return null;
 }
 
-export function localLidarPointToMap(point: LocalPoint, robot: RobotState): LocalPoint {
-  const yaw = robot.heading;
+export function localLidarPointToMap(point: LocalPoint, pose: FramePose): LocalPoint {
+  const yaw = pose.yaw;
   const cosine = Math.cos(yaw), sine = Math.sin(yaw);
   return {
-    x: robot.position[0] + cosine * point.x - sine * point.y,
-    y: robot.position[2] + sine * point.x + cosine * point.y,
+    x: pose.x + cosine * point.x - sine * point.y,
+    y: pose.y + sine * point.x + cosine * point.y,
   };
 }
 

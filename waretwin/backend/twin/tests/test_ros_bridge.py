@@ -619,6 +619,8 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_revision'], 'grid-abc')
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_source'], 'SLAM_TOOLBOX')
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_mapping_session_id'], 'session-current')
+            self.assertEqual(runtime.engine.state['robots']['R01']['active_map_pose']['map_id'], 'SLAM-session-current')
+            self.assertEqual(runtime.engine.state['robots']['R01']['active_map_pose']['x'], 1.2)
             self.assertEqual(runtime.engine.state['robots']['R01']['slam_pose']['x'], 1.2)
             self.assertEqual(runtime.engine.state['robots']['R01']['canonical_pose']['x'], 15)
             self.assertEqual(runtime.engine.state['robots']['R01']['canonical_pose']['yaw'], 0.8)

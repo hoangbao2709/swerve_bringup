@@ -173,6 +173,10 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     && slam3dAccumulatedCloud.slam_pose.map_id === `SLAM-${slam3dAccumulatedCloud.slam_pose.mapping_session_id}`
     && (!mappingSessionId || slam3dAccumulatedCloud.slam_pose.mapping_session_id === mappingSessionId)
     ? slam3dAccumulatedCloud : null;
+  const statePose = robot?.active_map_pose ?? (runtimeMode === "LOCAL_SIM" && robot ? {
+    x: robot.position[0], y: robot.position[2], yaw: robot.heading,
+    frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
+  } : null);
   const candidatePreview = pathPreview?.request_id === latestPathRequest.current ? pathPreview : null;
   const previewAgeMs = candidatePreview?.timestamp ? clockNow - Date.parse(candidatePreview.timestamp) : Infinity;
   const previewTargetMatches = Boolean(candidatePreview && goalPreview
@@ -474,11 +478,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       </nav>
 
       {activeTab !== "CONTROL" ? <main className="robot-detail-section-main">
-        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : runtimeState === "MAPPING" ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeState={runtimeState} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} />
+        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : runtimeState === "MAPPING" ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} />
       </main> : <main className="robot-detail-main">
         <aside className="robot-detail-column robot-detail-left">
           <SystemInputsPanel robotId={robotId} robot={robot} controlMode={controlMode} runtimeMode={runtimeMode} goal={goalPreview ?? goal} mission={tagMission?.robot_id === robotId ? tagMission : null} />
-          <StatePanel robot={robot} localization={localization} diagnostics={detailDiagnostics ?? diagnostics} controller={controller} navigationStatus={navigationStatus} />
+          <StatePanel pose={statePose} robot={robot} localization={localization} diagnostics={detailDiagnostics ?? diagnostics} controller={controller} navigationStatus={navigationStatus} />
         </aside>
 
         <section className="robot-detail-map-panel">
@@ -551,15 +555,14 @@ function SystemInputsPanel({ robotId, robot, controlMode, runtimeMode, goal, mis
   </Panel>;
 }
 
-function StatePanel({ robot, localization, diagnostics, controller, navigationStatus }: { robot?: RobotState; localization: unknown; diagnostics: RobotSystemDiagnostics | null; controller: { controllers: Array<{ name: string; state: string }> } | null; navigationStatus: string | null }) {
+function StatePanel({ pose, robot, localization, diagnostics, controller, navigationStatus }: { pose: { x: number; y: number; yaw: number; frame_id: string; map_id: string } | null; robot?: RobotState; localization: unknown; diagnostics: RobotSystemDiagnostics | null; controller: { controllers: Array<{ name: string; state: string }> } | null; navigationStatus: string | null }) {
   const controllerValue = controller?.controllers.length ? (controller.controllers.every((item) => item.state === "active") ? "ACTIVE" : "ERROR") : diagnostics?.controller_manager ? "ACTIVE" : "N/A";
   return <Panel title="STATE">
-    <div className="robot-detail-subtitle">POSITION</div>
-    <Metric label="x" value={safeNumber(robot?.position?.[0], 3, " m")} mono />
-    <Metric label="y" value={safeNumber(robot?.position?.[2], 3, " m")} mono />
-    <Metric label="z" value={safeNumber(robot?.position?.[1], 3, " m")} mono />
-    <div className="robot-detail-subtitle">ORIENTATION</div>
-    <Metric label="yaw" value={safeNumber(robot?.heading, 3, " rad")} mono />
+    <div className="robot-detail-subtitle">ACTIVE MAP POSE · {pose ? `${pose.frame_id} / ${pose.map_id}` : "WAITING"}</div>
+    <Metric label="x" value={safeNumber(pose?.x, 3, " m")} mono />
+    <Metric label="y" value={safeNumber(pose?.y, 3, " m")} mono />
+    <div className="robot-detail-subtitle">ORIENTATION · active map</div>
+    <Metric label="yaw" value={safeNumber(pose?.yaw, 3, " rad")} mono />
     <div className="robot-detail-subtitle">VELOCITY</div>
     <Metric label="vx" value={safeNumber(robot?.vx, 3, " m/s")} mono />
     <Metric label="vy" value={safeNumber(robot?.vy, 3, " m/s")} mono />

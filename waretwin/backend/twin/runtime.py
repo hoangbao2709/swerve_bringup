@@ -703,6 +703,7 @@ class TwinRuntime:
         robot.update({'navigation_state': nav, 'last_telemetry_at': now_iso,
                       'control_mode': control_mode, 'status': 'ACTIVE',
                       'fsm': self._fsm_from_nav(nav),
+                      'active_map_pose': active_pose,
                       'slam_pose': active_pose if reported_map_source == 'SLAM_TOOLBOX' else None,
                       'canonical_pose': canonical_pose,
                       'pose_frame_id': frame_id,

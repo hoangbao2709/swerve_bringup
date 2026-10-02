@@ -28,6 +28,10 @@ export function RobotQuickDetailModal() {
   const localization = useStore((state) => state.localization);
   const lastTelemetryAt = useStore((state) => state.lastTelemetryAt);
   const runtimeMode = useStore((state) => state.runtimeMode);
+  const activePose = robot?.active_map_pose ?? (runtimeMode === "LOCAL_SIM" && robot ? {
+    x: robot.position[0], y: robot.position[2], yaw: robot.heading,
+    frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
+  } : null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -91,9 +95,9 @@ export function RobotQuickDetailModal() {
           <QuickField label="Robot name" value={robot?.model ?? "N/A"} />
           <QuickField label="Current mission" value={activeMission?.status ?? task?.status ?? "N/A"} />
           <QuickField label="Current task" value={task ? `${task.id} · ${task.type}` : robot?.current_task_id ?? "N/A"} />
-          <QuickField label="x" value={fmt(robot?.position?.[0], 3, " m")} mono />
-          <QuickField label="y" value={fmt(robot?.position?.[2], 3, " m")} mono />
-          <QuickField label="yaw" value={fmt(robot?.heading, 3, " rad")} mono />
+          <QuickField label={`x · ${activePose?.frame_id ?? "NO FRAME"}/${activePose?.map_id ?? ""}`} value={fmt(activePose?.x, 3, " m")} mono />
+          <QuickField label="y" value={fmt(activePose?.y, 3, " m")} mono />
+          <QuickField label="yaw" value={fmt(activePose?.yaw, 3, " rad")} mono />
           <QuickField label="vx / vy / wz" value={`${fmt(robot?.vx, 3)} / ${fmt(robot?.vy, 3)} / ${fmt(robot?.wz, 3)}`} mono />
           <QuickField label="Battery" value={fmt(robot?.battery, 1, "%")} />
           <QuickField label="ROS status" value={robotDiagnostics ? (robotDiagnostics.ros ? "CONNECTED" : "OFFLINE") : "N/A"} />

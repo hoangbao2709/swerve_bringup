@@ -35,6 +35,7 @@ type Props = {
   errors: RobotDetailError[];
   controlOnline: boolean;
   controlMode: "MANUAL" | "AUTONOMOUS";
+  runtimeMode: string;
   runtimeState: string;
   localization: unknown;
   websocketState: string;
@@ -424,12 +425,12 @@ export function AccumulatedSlamMap2DView({ map, robot, scan }: {
   </div>;
 }
 
-function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, localization }: Props) {
+function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, localization, runtimeMode }: Props) {
   const current = useMemo<Pose>(() => ({
-    x: Number(robot?.position?.[0] ?? 0),
-    y: Number(robot?.position?.[2] ?? 0),
-    yaw: Number(robot?.heading ?? 0),
-  }), [robot?.heading, robot?.position]);
+    x: Number(robot?.active_map_pose?.x ?? (runtimeMode === "LOCAL_SIM" ? robot?.position?.[0] : 0) ?? 0),
+    y: Number(robot?.active_map_pose?.y ?? (runtimeMode === "LOCAL_SIM" ? robot?.position?.[2] : 0) ?? 0),
+    yaw: Number(robot?.active_map_pose?.yaw ?? (runtimeMode === "LOCAL_SIM" ? robot?.heading : 0) ?? 0),
+  }), [robot?.active_map_pose, robot?.heading, robot?.position, runtimeMode]);
   const [pose, setPose] = useState<Pose>(current);
   const [pickMode, setPickMode] = useState(false);
   const [busy, setBusy] = useState(false);

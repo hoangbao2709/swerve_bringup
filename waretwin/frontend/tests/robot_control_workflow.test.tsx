@@ -72,6 +72,9 @@ function r01(): RobotState {
     canonical_pose: { x: 15, y: 5.5, yaw: 0.7, frame_id: "map", map_id: "CANONICAL",
       map_revision: "21", map_source: "CANONICAL", pose_source: "GAZEBO_MODEL_STATES", valid: true,
       source_frame_id: "world", transform_source: "VALIDATED_CANONICAL_WORLD_BUNDLE", timestamp: new Date().toISOString() },
+    active_map_pose: { x: 15, y: 5.5, yaw: 0.7, frame_id: "map", map_id: "CANONICAL",
+      map_revision: "21", map_source: "CANONICAL", pose_source: "GAZEBO_MODEL_STATES", valid: true,
+      source_frame_id: "world", transform_source: "VALIDATED_CANONICAL_WORLD_BUNDLE", timestamp: new Date().toISOString() },
     slam_pose: { x: 2.25, y: 3.5, yaw: -0.2, frame_id: "map", map_id: "SLAM-session-1",
       map_revision: "slam-r1", map_source: "SLAM_TOOLBOX", pose_source: "TF", valid: true,
       mapping_session_id: "session-1", timestamp: new Date().toISOString() },
@@ -230,10 +233,24 @@ describe("robot detail route stability", () => {
 
   it("renders live telemetry values without requiring a map snapshot", () => {
     renderNode(<RobotControlDetailPage robotId="R01" />);
-    expect(container.textContent).toContain("40.000 m");
-    expect(container.textContent).toContain("64.000 m");
+    expect(container.textContent).toContain("ACTIVE MAP POSE · map / CANONICAL");
+    expect(container.textContent).toContain("15.000 m");
+    expect(container.textContent).toContain("5.500 m");
+    expect(container.textContent).not.toContain("40.000 m");
     expect(container.textContent).toContain("LIDAR OUTPUTS");
     expect(container.textContent).toContain("N/A");
+  });
+
+  it("labels the Robot Control status pose with the active SLAM map while GLOBAL stays canonical", () => {
+    setOnlineRobot("MAPPING");
+    const slamPose = { ...r01().slam_pose!, x: 4.5, y: 6.25, timestamp: new Date().toISOString() };
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: {
+      ...r01(), position: [90, 0, 90], active_map_pose: slamPose, slam_pose: slamPose,
+    } } } });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    expect(container.textContent).toContain("ACTIVE MAP POSE · map / SLAM-session-1");
+    expect(container.textContent).toContain("4.500 m");
+    expect(container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')?.dataset.renderX).toBe("15");
   });
 
   it("enables control only for the robot with a live ROS bridge", () => {
@@ -337,7 +354,8 @@ describe("robot detail route stability", () => {
     expect(container.querySelector<HTMLCanvasElement>('[data-testid="slam-map-2d-canvas"]')?.dataset.mapSource).toBe("SLAM_TOOLBOX");
     act(() => useStore.setState({ twin: { ...useStore.getState().twin!, robots: {
       ...useStore.getState().twin!.robots, R01: { ...r01(), position: [90, 0, 90],
-        canonical_pose: null, slam_pose: { ...r01().slam_pose!, x: 4.5, y: 6.25, timestamp: new Date().toISOString() } },
+        canonical_pose: null, active_map_pose: { ...r01().slam_pose!, x: 4.5, y: 6.25, timestamp: new Date().toISOString() },
+        slam_pose: { ...r01().slam_pose!, x: 4.5, y: 6.25, timestamp: new Date().toISOString() } },
     } } }));
     expect(container.querySelector('[data-testid="global-warehouse-map"]')).toBe(canvas);
     expect(canvas?.dataset.renderX).toBe("15");

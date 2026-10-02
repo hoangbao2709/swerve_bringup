@@ -597,6 +597,13 @@ class SwerveBridge(Node):
             'canonical_map_revision': revision,
         }
 
+    def active_map_source(self):
+        if self.runtime_state == 'MAPPING':
+            return 'SLAM_TOOLBOX'
+        if self.loaded_local_map_id:
+            return 'LOCAL_MAP'
+        return 'CANONICAL' if self.ros_map_revision is not None else None
+
     def set_detail_view(self, view, request=None):
         view = str(view or '').upper()
         if view not in ('GLOBAL', 'LIDAR_2D', 'LIDAR_3D'):
@@ -839,6 +846,8 @@ class SwerveBridge(Node):
                        'frame_id': str(self.get_parameter('map_frame').value),
                        'map_revision': self.ros_map_revision,
                        **self.active_map_identity(),
+                       'map_source': self.active_map_source(),
+                       'pose_source': 'TF',
                        'mapping_session_id': self.mapping_session_id if self.runtime_state == 'MAPPING' else None,
                        'base_frame_id': base_frame, **pose,
                        'vx': t.linear.x, 'vy': t.linear.y, 'wz': t.angular.z,

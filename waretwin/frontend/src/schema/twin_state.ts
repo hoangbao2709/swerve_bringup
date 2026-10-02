@@ -200,6 +200,13 @@ export interface RobotState {
   navigation_state?: string;
   control_mode?: "MANUAL" | "AUTONOMOUS";
   last_telemetry_at?: string | null;
+  /** Map identity attached to the live pose; absent for LOCAL_SIM robots. */
+  pose_frame_id?: string | null;
+  pose_map_id?: string | null;
+  pose_map_revision?: string | number | null;
+  pose_map_source?: string | null;
+  pose_source?: string | null;
+  pose_mapping_session_id?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -802,7 +809,7 @@ export type ServerMessage =
   | { type: "LOCALIZATION_STATUS"; robot_id: string; state: string; last_tag_id?: number | null; expected_tag_id?: number | null; tag_visible?: boolean; last_tag_seen_at?: string | null }
   | { type: "TAG_NAV_ROUTE"; robot_id: string; mission_id?: number; route: number[] }
   | { type: "TAG_NAV_EVENT"; robot_id: string; mission_id?: number; event: string; details?: unknown; timestamp?: string }
-  | { type: "ROBOT_STATE"; robot_id: RobotId; frame_id: "map"; map_revision: number | null; active_map_id?: string | null; active_map_revision?: string | null; canonical_map_revision?: string | number | null; base_frame_id?: string; x: number; y: number; z?: number; yaw: number; vx: number; vy: number; wz: number; navigation_state?: string; control_mode?: "MANUAL" | "AUTONOMOUS"; timestamp?: string }
+  | { type: "ROBOT_STATE"; robot_id: RobotId; frame_id: "map"; map_revision: number | null; active_map_id?: string | null; active_map_revision?: string | null; canonical_map_revision?: string | number | null; map_source?: string | null; pose_source?: "TF" | string; mapping_session_id?: string | null; base_frame_id?: string; x: number; y: number; z?: number; yaw: number; vx: number; vy: number; wz: number; navigation_state?: string; control_mode?: "MANUAL" | "AUTONOMOUS"; timestamp?: string }
   | { type: "LIDAR_SCAN"; scan: RobotDetailScan }
   | ({ type: "LIDAR_MAP_2D" } & RobotDetailLidar2D)
   | ({ type: "LIDAR_MAP_3D" } & RobotDetailLidar3D)

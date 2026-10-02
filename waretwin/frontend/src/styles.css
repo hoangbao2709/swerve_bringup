@@ -542,6 +542,7 @@ table.dt tbody tr:hover td { background: var(--panel-2); }
 .map2d-light .map-view-controls { border-color: #94a3b8; background: rgba(255,255,255,.95); }
 .map2d-light .map-view-controls button { border-color: #94a3b8; color: #0f172a; }
 .map2d-light .map-view-controls span { color: #0f172a; }
+.map2d-frame-notice { position: absolute; top: 11px; left: 10px; z-index: 5; max-width: calc(100% - 135px); padding: 6px 8px; border: 1px solid #a16207; border-radius: 6px; background: rgba(69, 39, 8, .94); color: #fde68a; font: 9px var(--mono); letter-spacing: .03em; }
 .map2d-canvas { cursor: default; touch-action: none; }
 .map2d-canvas.is-panning { cursor: grabbing; }
 /* The overview viewport already has a toolbar in this corner. Keep the map

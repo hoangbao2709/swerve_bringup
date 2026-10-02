@@ -260,6 +260,13 @@ class RobotState(_Base):
     navigation_state: str = "IDLE"
     control_mode: Literal["MANUAL", "AUTONOMOUS"] = "AUTONOMOUS"
     last_telemetry_at: Optional[str] = None
+    # Identity of the coordinate frame and map used for this live robot pose.
+    pose_frame_id: Optional[str] = None
+    pose_map_id: Optional[str] = None
+    pose_map_revision: Optional[str] = None
+    pose_map_source: Optional[str] = None
+    pose_source: Optional[str] = None
+    pose_mapping_session_id: Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────

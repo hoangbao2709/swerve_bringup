@@ -441,6 +441,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
                 'type': 'ROBOT_STATE', 'robot_id': 'R01', 'frame_id': 'map',
                 'map_revision': 12, 'x': 1.2, 'y': 2.3, 'z': 0.1, 'yaw': 0.4,
                 'active_map_id': 'CANONICAL', 'active_map_revision': '12',
+                'map_source': 'CANONICAL', 'pose_source': 'TF',
                 'vx': 0.5, 'vy': 0.2, 'wz': -0.1,
                 'navigation_state': 'NAVIGATING', 'control_mode': 'MANUAL',
                 'timestamp': '2026-09-22T00:00:00+00:00',
@@ -455,6 +456,21 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             self.assertEqual(robot['control_mode'], 'MANUAL')
             self.assertEqual(robot['status'], 'ACTIVE')
             self.assertEqual(robot['fsm'], 'NAVIGATING')
+            self.assertEqual(robot['pose_frame_id'], 'map')
+            self.assertEqual(robot['pose_map_id'], 'CANONICAL')
+            self.assertEqual(robot['pose_map_revision'], '12')
+            self.assertEqual(robot['pose_map_source'], 'CANONICAL')
+            self.assertEqual(robot['pose_source'], 'TF')
+            self.assertIsNone(robot['pose_mapping_session_id'])
+            previous_robot_patch = runtime._prev.setdefault('_robots', {}).pop('R01', None)
+            robot_patch = runtime._robot_patch()['R01']
+            self.assertEqual(robot_patch['pose_frame_id'], 'map')
+            self.assertEqual(robot_patch['pose_map_id'], 'CANONICAL')
+            self.assertEqual(robot_patch['pose_map_revision'], '12')
+            if previous_robot_patch is not None:
+                runtime._prev['_robots']['R01'] = previous_robot_patch
+            else:
+                runtime._prev['_robots'].pop('R01', None)
             self.assertTrue(runtime.ros_bridge_connected)
             self.assertEqual(runtime.last_telemetry_iso, '2026-09-22T00:00:00+00:00')
         finally:
@@ -541,10 +557,15 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             await runtime.update_external_robot_state({
                 'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 21,
                 'active_map_id': 'SLAM-session-current', 'active_map_revision': 'grid-abc',
-                'mapping_session_id': 'session-current',
+                'mapping_session_id': 'session-current', 'map_source': 'SLAM_TOOLBOX',
+                'pose_source': 'TF',
                 'x': 1.2, 'y': 2.3, 'yaw': 0.4, 'vx': 0, 'vy': 0, 'wz': 0,
             })
             self.assertEqual(runtime.engine.state['robots']['R01']['position'], [1.2, 0.0, 2.3])
+            self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_id'], 'SLAM-session-current')
+            self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_revision'], 'grid-abc')
+            self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_source'], 'SLAM_TOOLBOX')
+            self.assertEqual(runtime.engine.state['robots']['R01']['pose_mapping_session_id'], 'session-current')
             await runtime.update_external_robot_state({
                 'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 21,
                 'active_map_id': 'SLAM-session-current', 'active_map_revision': 'grid-abc',

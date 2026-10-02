@@ -6,6 +6,7 @@ import { layout, useStore } from "../../state/store";
 import type { RobotDetailError, RobotDetailGoal, RobotDetailMapSnapshot, RobotDetailPath, RobotDetailPathPreview, RobotDetailScan, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
 import type { WarehouseLayout } from "../../layout/types";
 import { createWorldTransform, floorBoundary, screenToWorld, worldToScreen, type WorldBounds, type WorldTransform } from "../../layout/coordinates";
+import { robotPoseMatchesMap, type MapPoseIdentity } from "../../layout/robotPoseFrame";
 import { LocalRobotSection } from "./LocalRobotSections";
 import { localLidarPointToMap, previewLidarPath, RobotLidar2DView, RobotLidar3DView } from "./RobotLidarViews";
 import { occupancyRasters } from "./occupancyRaster";
@@ -628,6 +629,8 @@ function DetailMapCanvas({ active = true, robotId, robot, mapSnapshot, globalPat
   const [showWarehouse, setShowWarehouse] = useState(true);
   const scan = useStore((state) => state.robotDetail[robotId]?.scan ?? null);
   const layoutRevision = useStore((state) => state.layoutRevision);
+  const runtimeMode = useStore((state) => state.runtimeMode);
+  const runtimeState = useStore((state) => state.runtimeState);
 
   useEffect(() => {
     setFollow(true);
@@ -647,7 +650,17 @@ function DetailMapCanvas({ active = true, robotId, robot, mapSnapshot, globalPat
   }, []);
 
   const bounds = useMemo(() => worldBounds(mapSnapshot, layout), [mapSnapshot, layoutRevision]);
-  const transform = useMemo(() => makeTransform(size.width, size.height, bounds, zoom, center, follow, robot), [bounds, center, follow, robot, size.height, size.width, zoom]);
+  const displayedMapIdentity: MapPoseIdentity = mapSnapshot ?? {
+    frame_id: layout.coordinate_system?.frame ?? "",
+    active_map_id: "CANONICAL",
+    active_map_revision: layoutRevision,
+    map_source: "CANONICAL",
+  };
+  const externalRuntime = runtimeMode === "GAZEBO_ROS" || runtimeMode === "REAL_ROBOT";
+  const poseCompatible = Boolean(robot && robotPoseMatchesMap(robot, displayedMapIdentity)
+    && !(externalRuntime && runtimeState === "MAPPING" && displayedMapIdentity.map_source !== "SLAM_TOOLBOX"));
+  const robotForDisplayedMap = externalRuntime ? (poseCompatible ? robot : undefined) : robot;
+  const transform = useMemo(() => makeTransform(size.width, size.height, bounds, zoom, center, follow, robotForDisplayedMap), [bounds, center, follow, robotForDisplayedMap, size.height, size.width, zoom]);
   const [occupancyRaster, setOccupancyRaster] = useState<HTMLCanvasElement | null>(() => occupancyRasters.peek(mapSnapshot));
 
   useEffect(() => {
@@ -670,15 +683,15 @@ function DetailMapCanvas({ active = true, robotId, robot, mapSnapshot, globalPat
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawDetailMap(ctx, size.width, size.height, transform, bounds, mapSnapshot, occupancyRaster, scan, robot, globalPath, localPath, goal, goalPreview, pathPreview, { showGrid, showLidar, showPaths, showWarehouse: showWarehouse && !localOnly });
+    drawDetailMap(ctx, size.width, size.height, transform, bounds, mapSnapshot, occupancyRaster, scan, robotForDisplayedMap, globalPath, localPath, goal, goalPreview, pathPreview, { showGrid, showLidar, showPaths, showWarehouse: showWarehouse && !localOnly && mapSnapshot?.map_source !== "SLAM_TOOLBOX" });
     detailPerformance("view_render", { view: "GLOBAL", useful: Boolean(occupancyRaster), robot_id: robotId });
-  }, [active, bounds, goal, goalPreview, globalPath, localOnly, localPath, mapSnapshot, occupancyRaster, pathPreview, robot, scan, showGrid, showLidar, showPaths, showWarehouse, size.height, size.width, transform]);
+  }, [active, bounds, goal, goalPreview, globalPath, localOnly, localPath, mapSnapshot, occupancyRaster, pathPreview, robotForDisplayedMap, scan, showGrid, showLidar, showPaths, showWarehouse, size.height, size.width, transform]);
 
   const handleMapClick = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const point = transform.toWorld(event.clientX - rect.left, event.clientY - rect.top);
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
-    onGoalPreview({ x: point.x, y: point.y, yaw: robot?.heading ?? 0 });
+    onGoalPreview({ x: point.x, y: point.y, yaw: robotForDisplayedMap?.heading ?? 0 });
     setFollow(false);
   };
 

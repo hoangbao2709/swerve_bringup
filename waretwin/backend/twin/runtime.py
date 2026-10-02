@@ -627,6 +627,17 @@ class TwinRuntime:
         active = self.active_map_state(rid)
         reported_map_id = str(data.get('active_map_id') or 'CANONICAL')
         reported_active_revision = str(data.get('active_map_revision') or '')
+        reported_map_source = str(data.get('map_source') or '')
+        if not reported_map_source:
+            if reported_map_id.startswith('SLAM-'):
+                reported_map_source = 'SLAM_TOOLBOX'
+            elif reported_map_id == 'CANONICAL':
+                reported_map_source = 'CANONICAL'
+            elif active.get('local_active_map_id') == reported_map_id:
+                reported_map_source = 'LOCAL_MAP'
+        # ROBOT_STATE is emitted only after the bridge resolves map -> base via tf2.
+        # The fallback labels older bridge payloads while retaining frame/map identity.
+        pose_source = str(data.get('pose_source') or 'TF')
         if self.operation_mode == 'MAPPING':
             # Mapping poses are display-only in the live SLAM frame. They are
             # accepted only from the authenticated bridge's SLAM session and
@@ -680,7 +691,13 @@ class TwinRuntime:
         robot.update(twist)
         robot.update({'navigation_state': nav, 'last_telemetry_at': now_iso,
                       'control_mode': control_mode, 'status': 'ACTIVE',
-                      'fsm': self._fsm_from_nav(nav)})
+                      'fsm': self._fsm_from_nav(nav),
+                      'pose_frame_id': frame_id,
+                      'pose_map_id': reported_map_id,
+                      'pose_map_revision': reported_active_revision or str(data.get('map_revision') or ''),
+                      'pose_map_source': reported_map_source,
+                      'pose_source': pose_source,
+                      'pose_mapping_session_id': str(data.get('mapping_session_id') or '') or None})
         self.last_telemetry_at = time.monotonic()
         self.last_ros_heartbeat = self.last_telemetry_at
         self.robot_bridge_heartbeats[rid] = self.last_telemetry_at

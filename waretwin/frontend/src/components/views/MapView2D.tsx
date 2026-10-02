@@ -6,6 +6,7 @@ import { rackOccupancy } from "../../layout/shelfOccupancy";
 import { floorBoundary, polygonPoints, worldToSvgTransform } from "../../layout/coordinates";
 import { buildAisleFootprint, rackFootprint2D, resolveNavigationEdgeEndpoints, zoneLabelLayout } from "../../layout/geometry";
 import { canonicalFloorId, resolveRuntimeFloorIndex, sameFloor, type WarehouseLayout } from "../../layout/types";
+import { robotPoseMatchesMap } from "../../layout/robotPoseFrame";
 import type { TwinState } from "../../schema/twin_state";
 
 type MapViewProps = { mode: "MAP" | "TRAFFIC" | "HEATMAP"; size?: { width: number; height: number } };
@@ -76,11 +77,26 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
     ? { floor: "#f8fafc", hole: "#cbd5e1", grid: "#cbd5e1", blocked: "#94a3b8", rack: "#e2e8f0", rackText: "#0f172a", robotStroke: "#0f172a", label: "#0f172a", border: "#64748b" }
     : { floor: "#0a1020", hole: "#020617", grid: "#16213a", blocked: "#334155", rack: "#0b1220", rackText: "#e2e8f0", robotStroke: "#05080f", label: "#f8fafc", border: "#334155" };
   const twin = useStore((state) => state.twin);
+  const runtimeMode = useStore((state) => state.runtimeMode);
+  const runtimeState = useStore((state) => state.runtimeState);
   const activeFloorSel = useStore((s) => s.activeFloor);
   const mapFloor = typeof activeFloorSel === "number" ? activeFloorSel : 1;   // 2D 圖一次畫一層；All/Exploded 時畫一樓
   const canonicalMapFloor = canonicalFloorId(mapLayout, mapFloor);
   const allRobots = twin?.robots && typeof twin.robots === "object" && !Array.isArray(twin.robots) ? twin.robots : EMPTY_ROBOTS;
-  const robots = useMemo(() => Object.fromEntries(Object.entries(allRobots).filter(([, robot]) => robot?.floor === mapFloor)), [allRobots, mapFloor]);
+  const externalRuntime = runtimeMode === "GAZEBO_ROS" || runtimeMode === "REAL_ROBOT";
+  const warehouseMapIdentity = {
+    frame_id: mapLayout.coordinate_system?.frame ?? "",
+    active_map_id: "CANONICAL",
+    active_map_revision: layoutRevision,
+    map_source: "CANONICAL",
+  };
+  const robots = useMemo(() => Object.fromEntries(Object.entries(allRobots).filter(([, robot]) => {
+    if (robot?.floor !== mapFloor) return false;
+    if (!externalRuntime) return true;
+    return runtimeState !== "MAPPING" && robotPoseMatchesMap(robot, warehouseMapIdentity);
+  })), [allRobots, externalRuntime, layoutRevision, mapFloor, mapLayout, runtimeState]);
+  const hiddenRobotCount = externalRuntime ? Object.values(allRobots).filter((robot) => robot?.floor === mapFloor
+    && (runtimeState === "MAPPING" || !robotPoseMatchesMap(robot, warehouseMapIdentity))).length : 0;
   const zones = twin?.zones && typeof twin.zones === "object" && !Array.isArray(twin.zones) ? twin.zones : EMPTY_ZONES;
   const selected = useStore((s) => s.selectedRobot);
   const openRobotQuickDetail = useStore((s) => s.openRobotQuickDetail);
@@ -212,6 +228,7 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
       <button type="button" className="map2d-theme-toggle" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} aria-label={`Switch to ${light ? "dark" : "light"} map`}>
         {light ? "☾ Dark" : "☀ Light"}
       </button>
+      {hiddenRobotCount > 0 && <div className="map2d-frame-notice" role="status">ROBOT OVERLAY HIDDEN · POSE DOES NOT MATCH WAREHOUSE MAP</div>}
       <div className="map-view-controls" aria-label="Map view controls">
         <button type="button" onClick={() => zoomBy(1.2)} aria-label="Zoom in">+</button>
         <span>{Math.round(zoom * 100)}%</span>

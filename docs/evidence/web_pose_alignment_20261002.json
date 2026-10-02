@@ -1,0 +1,255 @@
+{
+  "limits": {
+    "distance_m": 0.05,
+    "yaw_rad": 0.05
+  },
+  "position_method": "gazebo",
+  "render_quality": "medium",
+  "render_lights": true,
+  "positions": [
+    {
+      "index": 1,
+      "web_2d": {
+        "actual": {
+          "x": 15.299959182739258,
+          "y": 6.299841403961182,
+          "yaw": 1.2235998496576632,
+          "source": "GAZEBO_MODEL_STATES"
+        },
+        "expected": {
+          "x": 15.299958796921072,
+          "y": 6.29984144054785,
+          "yaw": 1.2236000435412617
+        },
+        "distance_error_m": 3.87549038368012e-7,
+        "yaw_error_rad": 1.9388359850935896e-7,
+        "passed": true
+      },
+      "web_3d": {
+        "actual": {
+          "x": 15.299958786559811,
+          "y": 6.29984143801592,
+          "yaw": 1.2236005602374873,
+          "source": "GAZEBO_MODEL_STATES"
+        },
+        "expected": {
+          "x": 15.299958614066071,
+          "y": 6.29984139644853,
+          "yaw": 1.2236093568083144
+        },
+        "distance_error_m": 1.7743150325582388e-7,
+        "yaw_error_rad": 0.000008796570827085404,
+        "passed": true
+      },
+      "web_mapping": {
+        "actual": {
+          "x": -0.003919363683038653,
+          "y": -3.416882809495704e-8,
+          "yaw": -0.00001488026878426752,
+          "source": "TF"
+        },
+        "expected": {
+          "x": -0.003920940796748224,
+          "y": -3.4167372021139914e-8,
+          "yaw": 0.00005881479250646749
+        },
+        "distance_error_m": 0.0000015771137095719467,
+        "yaw_error_rad": 0.000073695061290735,
+        "passed": true
+      },
+      "truth": {
+        "observer_at_ms": 1790936958595.757,
+        "world": {
+          "x": 15.299958301792133,
+          "y": 6.299841319882338,
+          "yaw": 1.223624741096869
+        },
+        "world_received_at_ms": 1790936958572.918,
+        "stopped": true,
+        "sim_time": 448.933,
+        "owner": "NONE",
+        "selected_zero": true,
+        "slam": {
+          "x": -0.003922205452410495,
+          "y": -3.4216788733051456e-8,
+          "yaw": 0.00018766875902542795
+        },
+        "slam_stamp": 448.742,
+        "placement": {
+          "id": "1790936557223-2",
+          "success": true
+        }
+      }
+    },
+    {
+      "index": 2,
+      "web_2d": {
+        "actual": {
+          "x": 15.299959182739258,
+          "y": 6.699841499328613,
+          "yaw": 1.2236011077963018,
+          "source": "GAZEBO_MODEL_STATES"
+        },
+        "expected": {
+          "x": 15.299959024256093,
+          "y": 6.69984132990042,
+          "yaw": 1.2236013512514063
+        },
+        "distance_error_m": 2.3199746993792357e-7,
+        "yaw_error_rad": 2.434551045205069e-7,
+        "passed": true
+      },
+      "web_3d": {
+        "actual": {
+          "x": 15.29995879342904,
+          "y": 6.699841242537867,
+          "yaw": 1.2236065523806532,
+          "source": "GAZEBO_MODEL_STATES"
+        },
+        "expected": {
+          "x": 15.299958738531247,
+          "y": 6.6998412460014345,
+          "yaw": 1.2236088604647166
+        },
+        "distance_error_m": 5.500694475881285e-8,
+        "yaw_error_rad": 0.000002308084063429305,
+        "passed": true
+      },
+      "web_mapping": {
+        "actual": {
+          "x": -0.003938696632418059,
+          "y": -3.4352427775238834e-8,
+          "yaw": 0.0001471092489122583,
+          "source": "TF"
+        },
+        "expected": {
+          "x": -0.00394333995180396,
+          "y": -3.43958102763398e-8,
+          "yaw": 0.0001321697875287243
+        },
+        "distance_error_m": 0.000004643319386103556,
+        "yaw_error_rad": 0.000014939461383534,
+        "passed": true
+      },
+      "truth": {
+        "observer_at_ms": 1790936998804.0156,
+        "world": {
+          "x": 15.299958387548042,
+          "y": 6.699841047335464,
+          "yaw": 1.2236235261955266
+        },
+        "world_received_at_ms": 1790936998695.2312,
+        "stopped": true,
+        "sim_time": 454.244,
+        "owner": "NONE",
+        "selected_zero": true,
+        "slam": {
+          "x": -0.003943579817203379,
+          "y": -3.4404445182708264e-8,
+          "yaw": 0.00006069897499028088
+        },
+        "slam_stamp": 453.89,
+        "placement": {
+          "id": "1790936961197-1",
+          "success": true
+        }
+      }
+    },
+    {
+      "index": 3,
+      "web_2d": {
+        "actual": {
+          "x": 15.599964141845703,
+          "y": 7.099847793579102,
+          "yaw": 0.8736064736517202,
+          "source": "GAZEBO_MODEL_STATES"
+        },
+        "expected": {
+          "x": 15.599964272264366,
+          "y": 7.099847640676757,
+          "yaw": 0.8736066077749652
+        },
+        "distance_error_m": 2.0096804316834494e-7,
+        "yaw_error_rad": 1.3412324506578702e-7,
+        "passed": true
+      },
+      "web_3d": {
+        "actual": {
+          "x": 15.599967971980782,
+          "y": 7.099852428563702,
+          "yaw": 0.8736172556977004,
+          "source": "GAZEBO_MODEL_STATES"
+        },
+        "expected": {
+          "x": 15.599968199761173,
+          "y": 7.099852722551384,
+          "yaw": 0.8736179016722684
+        },
+        "distance_error_m": 3.7190410620220964e-7,
+        "yaw_error_rad": 6.459745679476825e-7,
+        "passed": true
+      },
+      "web_mapping": {
+        "actual": {
+          "x": -0.00394274914050773,
+          "y": -3.435693555042257e-8,
+          "yaw": 0.00015379594737874314,
+          "source": "TF"
+        },
+        "expected": {
+          "x": -0.003942705980626171,
+          "y": -3.4354362147284703e-8,
+          "yaw": 0.00011091179268207796
+        },
+        "distance_error_m": 4.315988163601816e-8,
+        "yaw_error_rad": 0.00004288415469666518,
+        "passed": true
+      },
+      "truth": {
+        "observer_at_ms": 1790937028770.5317,
+        "world": {
+          "x": 15.59997135201991,
+          "y": 7.099856841779779,
+          "yaw": 0.8736282538891367
+        },
+        "world_received_at_ms": 1790937028767.0776,
+        "stopped": true,
+        "sim_time": 457.815,
+        "owner": "NONE",
+        "selected_zero": true,
+        "slam": {
+          "x": -0.003943461995190993,
+          "y": -3.4376417396661407e-8,
+          "yaw": 0.00019375844982061363
+        },
+        "slam_stamp": 457.533,
+        "placement": {
+          "id": "1790937001419-2",
+          "success": true
+        }
+      }
+    }
+  ],
+  "browser_errors": [],
+  "console_errors": [],
+  "failed_requests": [],
+  "stage": "position-3-3d-passed",
+  "passed": true,
+  "configuration": {
+    "startup": "./scripts/start_stack.sh mapping --gui --rviz",
+    "gazebo_entity": "swerve_base",
+    "canonical_frame_id": "map",
+    "canonical_map_id": "CANONICAL",
+    "canonical_map_revision": "21",
+    "slam_frame_id": "map",
+    "slam_map_id": "SLAM-dc3e46b37591",
+    "slam_mapping_session_id": "dc3e46b37591",
+    "rviz_fixed_frame": "map",
+    "browser_arguments": [
+      "--no-sandbox",
+      "--ozone-platform=x11",
+      "--ignore-gpu-blocklist",
+      "--use-angle=gl"
+    ]
+  }
+}

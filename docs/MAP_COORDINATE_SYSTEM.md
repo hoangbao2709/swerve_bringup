@@ -2,7 +2,9 @@
 
 ## Canonical convention
 
-The warehouse map is a right-handed metric frame named `warehouse_map`:
+The warehouse map is a right-handed metric frame identified by the published
+canonical document (`frame_id: map` in the current bundle), not by a shared TF
+frame name alone:
 
 ```text
 X/Y = floor plane in metres
@@ -10,8 +12,10 @@ Z   = elevation in metres
 yaw = counter-clockwise radians about +Z
 ```
 
-The default Gazebo world, ROS map frame and WareTwin canonical layout share the
-same origin and orientation. A map YAML follows the Nav2 convention: `origin`
+The generated Gazebo world and canonical layout share an origin/orientation
+only after validating their published bundle and live static anchors. SLAM's
+`map` frame has an independent origin, even if its name is also `map`. Never
+apply a SLAM pose directly to canonical warehouse geometry. A map YAML follows the Nav2 convention: `origin`
 is `[x, y, yaw]` in metres/radians, and `resolution` is metres per pixel.
 
 ## Web conversion
@@ -35,7 +39,20 @@ metres before rendering.
 
 Gazebo export consumes the canonical document and emits the same X/Y pose,
 orientation and object dimensions in an SDF world. There is no frontend robot
-animation: the browser renders the `ROBOT_STATE` pose received from ROS.
+animation in external ROS runtime: the browser renders measured poses.
+
+During mapping, `ROBOT_STATE` carries the active SLAM TF pose and a separately
+validated Gazebo-world canonical pose. Django exposes these as `slam_pose` and
+`canonical_pose`, including x/y/yaw, frame, map/revision/source, validity and
+timestamp. `GazeboCanonicalAlignment` validates immutable artifact hashes,
+canonical boundary wall anchors and live static-model poses before permitting
+the identity world-to-canonical transform; it does not estimate a spawn offset.
+
+`robotPoseFrame.ts` is the common frontend adapter. Mapping uses `slam_pose`
+with the same SLAM session as `/map`. Both main 2D and 3D views use
+`canonical_pose` with the displayed canonical revision. Missing, stale,
+offline, nonfinite or incompatible poses are hidden. The existing ROS planar
+x/y to Three.js x/z projection is a renderer convention, not a frame correction.
 
 The exporter is the single place for mesh/SDF details. `manifest.json` carries
 revision and SHA-256 hashes so ROS, Gazebo and Web can verify they are using the
@@ -57,4 +74,3 @@ approximately 2, 4, …, 18 m from the chosen endpoint—not pixel-derived value
 4. Publish one immutable revision.
 5. Compare Web layout, generated `canonical_map.json`, Gazebo world and ROS
    `MAP_REVISION_STATUS` before sending a mission.
-

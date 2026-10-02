@@ -6,7 +6,7 @@ import { rackOccupancy } from "../../layout/shelfOccupancy";
 import { floorBoundary, polygonPoints, worldToSvgTransform } from "../../layout/coordinates";
 import { buildAisleFootprint, rackFootprint2D, resolveNavigationEdgeEndpoints, zoneLabelLayout } from "../../layout/geometry";
 import { canonicalFloorId, resolveRuntimeFloorIndex, sameFloor, type WarehouseLayout } from "../../layout/types";
-import { robotPoseMatchesMap } from "../../layout/robotPoseFrame";
+import { robotForWarehouse } from "../../layout/robotPoseFrame";
 import type { TwinState } from "../../schema/twin_state";
 
 type MapViewProps = { mode: "MAP" | "TRAFFIC" | "HEATMAP"; size?: { width: number; height: number } };
@@ -78,25 +78,17 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
     : { floor: "#0a1020", hole: "#020617", grid: "#16213a", blocked: "#334155", rack: "#0b1220", rackText: "#e2e8f0", robotStroke: "#05080f", label: "#f8fafc", border: "#334155" };
   const twin = useStore((state) => state.twin);
   const runtimeMode = useStore((state) => state.runtimeMode);
-  const runtimeState = useStore((state) => state.runtimeState);
   const activeFloorSel = useStore((s) => s.activeFloor);
   const mapFloor = typeof activeFloorSel === "number" ? activeFloorSel : 1;   // 2D 圖一次畫一層；All/Exploded 時畫一樓
   const canonicalMapFloor = canonicalFloorId(mapLayout, mapFloor);
   const allRobots = twin?.robots && typeof twin.robots === "object" && !Array.isArray(twin.robots) ? twin.robots : EMPTY_ROBOTS;
   const externalRuntime = runtimeMode === "GAZEBO_ROS" || runtimeMode === "REAL_ROBOT";
-  const warehouseMapIdentity = {
-    frame_id: mapLayout.coordinate_system?.frame ?? "",
-    active_map_id: "CANONICAL",
-    active_map_revision: layoutRevision,
-    map_source: "CANONICAL",
-  };
-  const robots = useMemo(() => Object.fromEntries(Object.entries(allRobots).filter(([, robot]) => {
-    if (robot?.floor !== mapFloor) return false;
-    if (!externalRuntime) return true;
-    return runtimeState !== "MAPPING" && robotPoseMatchesMap(robot, warehouseMapIdentity);
-  })), [allRobots, externalRuntime, layoutRevision, mapFloor, mapLayout, runtimeState]);
-  const hiddenRobotCount = externalRuntime ? Object.values(allRobots).filter((robot) => robot?.floor === mapFloor
-    && (runtimeState === "MAPPING" || !robotPoseMatchesMap(robot, warehouseMapIdentity))).length : 0;
+  const robots = useMemo(() => Object.fromEntries(Object.entries(allRobots).flatMap(([id, robot]) => {
+    if (robot?.floor !== mapFloor) return [];
+    const canonical = robotForWarehouse(robot, runtimeMode, mapLayout.coordinate_system?.frame ?? "", layoutRevision);
+    return canonical ? [[id, canonical]] : [];
+  })), [allRobots, runtimeMode, layoutRevision, mapFloor, mapLayout]);
+  const hiddenRobotCount = externalRuntime ? Object.values(allRobots).filter((robot) => robot?.floor === mapFloor).length - Object.keys(robots).length : 0;
   const zones = twin?.zones && typeof twin.zones === "object" && !Array.isArray(twin.zones) ? twin.zones : EMPTY_ZONES;
   const selected = useStore((s) => s.selectedRobot);
   const openRobotQuickDetail = useStore((s) => s.openRobotQuickDetail);
@@ -306,7 +298,7 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
       {Object.values(robots).map((r) => {
         const sel = r.id === selected;
         return (
-          <g key={r.id} transform={`translate(${r.position[0]},${r.position[2]})`} onClick={(event) => { event.stopPropagation(); openRobotQuickDetail(r.id); }} style={{ cursor: "pointer" }}>
+          <g key={r.id} data-robot-id={r.id} data-pose-source={r.pose_source} data-yaw={r.heading} transform={`translate(${r.position[0]},${r.position[2]})`} onClick={(event) => { event.stopPropagation(); openRobotQuickDetail(r.id); }} style={{ cursor: "pointer" }}>
             {sel && <circle r="2.2" fill="none" stroke="#60a5fa" strokeWidth="0.3" />}
             <circle r="1" fill={STATUS_COLOR[r.status]} stroke={mapColors.robotStroke} strokeWidth="0.25" />
             <line x1="0" y1="0" x2={Math.cos(r.heading) * 1.6} y2={Math.sin(r.heading) * 1.6} stroke="#fff" strokeWidth="0.25" />

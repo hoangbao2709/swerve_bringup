@@ -2,7 +2,8 @@ import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Html, Line } from "@react-three/drei";
 import * as THREE from "three";
-import { labelZIndexRange, STATUS_COLOR, useStore } from "../../state/store";
+import { layout, labelZIndexRange, STATUS_COLOR, useStore } from "../../state/store";
+import { robotForWarehouse } from "../../layout/robotPoseFrame";
 import { FLOOR_ELEV } from "./Mezzanine";
 import type { RobotState } from "../../schema/twin_state";
 
@@ -12,6 +13,7 @@ export function RobotMesh({ r, selected, onSelect, showLabel, labelZIndex = 8, l
   const ringRef = useRef<THREE.Mesh>(null!);
   const lampRef = useRef<THREE.MeshBasicMaterial>(null!);
   const groupRef = useRef<THREE.Group>(null!);
+  const labelRef = useRef<HTMLDivElement>(null);
   const wheelsRef = useRef<THREE.Group>(null!);
   // ⚠ round-9 真因修正：transform 只能給「掛載當下」的初始值（穩定參照）。
   // 若直接寫 position={[r.position[0], FLOOR_ELEV[r.floor], ...]}，props 內容每個 tick 都變，
@@ -44,6 +46,11 @@ export function RobotMesh({ r, selected, onSelect, showLabel, labelZIndex = 8, l
       g.position.y += (ty - g.position.y) * ky;
       let dh = -r.heading - g.rotation.y; while (dh > Math.PI) dh -= 2 * Math.PI; while (dh < -Math.PI) dh += 2 * Math.PI;
       g.rotation.y += dh * k;
+      if (labelRef.current) {
+        labelRef.current.dataset.renderX = String(g.position.x);
+        labelRef.current.dataset.renderY = String(g.position.z);
+        labelRef.current.dataset.renderYaw = String(-g.rotation.y);
+      }
       if (wheelsRef.current && r.velocity > 0.05) wheelsRef.current.rotation.z -= (r.velocity / 0.12) * dt;
     }
     if (ringRef.current) { const s = 1 + Math.sin(clock.elapsedTime * 3) * 0.08; ringRef.current.scale.set(s, s, s); }
@@ -51,7 +58,7 @@ export function RobotMesh({ r, selected, onSelect, showLabel, labelZIndex = 8, l
   });
   const loaded = r.load.current > 0;
   return (
-    <group ref={groupRef} position={init.current.p} rotation-y={init.current.h}>
+    <group name={`robot-${r.id}`} ref={groupRef} position={init.current.p} rotation-y={init.current.h}>
       <group onClick={(e) => { e.stopPropagation(); onSelect(); }} onPointerOver={() => (document.body.style.cursor = "pointer")} onPointerOut={() => (document.body.style.cursor = "")}>
         {/* 底盤 */}
         <mesh position={[0, 0.22, 0]} castShadow>
@@ -116,7 +123,7 @@ export function RobotMesh({ r, selected, onSelect, showLabel, labelZIndex = 8, l
       {!lite && (r.status === "ERROR") && <pointLight position={[0, 1, 0]} color="#ef4444" intensity={4} distance={5} />}
       {showLabel && (
         <Html position={[0, 1.5, 0]} zIndexRange={labelZIndexRange(labelZIndex)} occlude={false}>
-          <div className={"lbl" + (selected ? " sel" : r.status === "ERROR" ? " err" : r.status === "CHARGING" ? " chg" : "")} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
+          <div ref={labelRef} data-robot-id={r.id} data-pose-source={r.pose_source} className={"lbl" + (selected ? " sel" : r.status === "ERROR" ? " err" : r.status === "CHARGING" ? " chg" : "")} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
             {r.status === "ERROR" ? "⚠ " : ""}{r.id}
           </div>
         </Html>
@@ -185,17 +192,21 @@ export function Robots({ lite = false }: { lite?: boolean }) {
   const robotLabels = useStore((s) => s.labelLayers.robots);
   const showPaths = useStore((s) => s.showPaths);
   const runtimeMode = useStore((s) => s.runtimeMode);
+  const layoutRevision = useStore((s) => s.layoutRevision);
   const af = useStore((s) => s.activeFloor);
   const activeFloor = lite || af === "exploded" ? "all" : af;
   const visible = (r: RobotState) => activeFloor === "all" || r.floor === activeFloor || !!r.lift_id;
   return (
     <group>
-      {Object.values(robots).filter(visible).map((r) => (
+      {Object.values(robots).filter(visible).flatMap((raw) => {
+        const r = robotForWarehouse(raw, runtimeMode, layout.coordinate_system?.frame ?? "", layoutRevision);
+        return r ? [(
         <group key={r.id}>
-          <RobotMesh r={r} selected={r.id === selected} onSelect={() => { if (!lite) openRobotQuickDetail(r.id); }} showLabel={showLabels && robotLabels.visible && !lite} labelZIndex={robotLabels.zIndex} lite={lite} />
+          <RobotMesh r={r} selected={r.id === selected} onSelect={() => { if (!lite) openRobotQuickDetail(r.id); }} showLabel={showLabels && robotLabels.visible && !lite} labelZIndex={robotLabels.zIndex} lite={lite} smooth={runtimeMode === "LOCAL_SIM"} />
           {showPaths && runtimeMode === "LOCAL_SIM" && !lite && <RobotPath r={r} selected={r.id === selected} />}
         </group>
-      ))}
+      )] : [];
+      })}
     </group>
   );
 }

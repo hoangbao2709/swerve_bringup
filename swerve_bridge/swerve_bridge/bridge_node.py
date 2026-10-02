@@ -27,6 +27,8 @@ from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as RosPath
+from gazebo_msgs.msg import ModelStates
+from .canonical_pose import GazeboCanonicalAlignment
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import LoadMap
 from rosgraph_msgs.msg import Clock
@@ -110,6 +112,7 @@ class SwerveBridge(Node):
             os.environ.get('WARETWIN_ARTIFACT_ROOT') or os.path.join(os.getcwd(), 'generated', 'maps'),
             'local_robot_maps'))
         self.declare_parameter('gazebo_world_file', '')
+        self.declare_parameter('gazebo_model_name', 'swerve_base')
         self.declare_parameter('nav2_map_file', '')
         self.declare_parameter('datamatrix_map_file', '')
         self.declare_parameter('tag_graph_file', '')
@@ -131,6 +134,15 @@ class SwerveBridge(Node):
         self.local_map_root = (Path(str(self.get_parameter('local_map_root').value)).expanduser()
                                / self.robot_id).resolve()
         self.gazebo_world_file = Path(str(self.get_parameter('gazebo_world_file').value)).expanduser()
+        self.canonical_alignment = None
+        self.latest_canonical_pose = None
+        self.last_canonical_pose_monotonic = None
+        try:
+            self.canonical_alignment = GazeboCanonicalAlignment(
+                self.gazebo_world_file, self.robot_id,
+                str(self.get_parameter('gazebo_model_name').value))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.get_logger().warning(f'Canonical Gazebo pose unavailable: {exc}')
         self.nav2_map_file = Path(str(self.get_parameter('nav2_map_file').value)).expanduser()
         self.datamatrix_map_file = Path(str(self.get_parameter('datamatrix_map_file').value)).expanduser()
         self.tag_graph_file = Path(str(self.get_parameter('tag_graph_file').value)).expanduser()
@@ -282,6 +294,8 @@ class SwerveBridge(Node):
         emergency_stop_topic = self._scoped_topic(self.get_parameter('emergency_stop_topic').value)
         navigate_action = self._scoped_topic(self.get_parameter('navigate_action').value)
         self.create_subscription(Odometry, odom_topic, self.odom_cb, 20)
+        if self.canonical_alignment:
+            self.create_subscription(ModelStates, '/model_states', self.model_states_cb, qos_profile_sensor_data)
         self.create_subscription(JointState, joint_states_topic, self.joint_cb, 10)
         self.create_subscription(PointCloud2, lidar_topic, self.lidar_cb, 10)
         self.create_subscription(PointCloud2, lidar_filtered_topic, self.filtered_lidar_cb, 1)
@@ -429,6 +443,10 @@ class SwerveBridge(Node):
             except (TypeError, ValueError):
                 continue
         return None
+
+    def model_states_cb(self, msg):
+        self.latest_canonical_pose = self.canonical_alignment.pose(msg, self.now())
+        self.last_canonical_pose_monotonic = time.monotonic()
 
     def odom_cb(self, msg):
         now = time.monotonic()
@@ -840,6 +858,9 @@ class SwerveBridge(Node):
         t = msg.twist.twist
         try:
             pose, base_frame = self._lookup_robot_pose()
+            canonical_pose = self.latest_canonical_pose if (
+                self.last_canonical_pose_monotonic is not None
+                and time.monotonic() - self.last_canonical_pose_monotonic <= 3.0) else None
             self.tf_status = True
             self.tf_error = None
             self.send({'type': 'ROBOT_STATE', 'robot_id': self.robot_id,
@@ -848,6 +869,7 @@ class SwerveBridge(Node):
                        **self.active_map_identity(),
                        'map_source': self.active_map_source(),
                        'pose_source': 'TF',
+                       'canonical_pose': canonical_pose,
                        'mapping_session_id': self.mapping_session_id if self.runtime_state == 'MAPPING' else None,
                        'base_frame_id': base_frame, **pose,
                        'vx': t.linear.x, 'vy': t.linear.y, 'wz': t.angular.z,

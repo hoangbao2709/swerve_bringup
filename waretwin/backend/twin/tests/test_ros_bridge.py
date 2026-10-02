@@ -547,11 +547,13 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
         old_connected = set(runtime.connected_robot_ids)
         old_heartbeats = dict(runtime.robot_bridge_heartbeats)
         old_sessions = runtime.robot_mapping_sessions.copy()
+        old_published = runtime.published_map_revision
         robots = runtime.engine.state.setdefault('robots', {})
         old_robot = deepcopy(robots.get('R01'))
         try:
             runtime.runtime_mode = 'GAZEBO_ROS'
             runtime.operation_mode = 'MAPPING'
+            runtime.published_map_revision = 21
             runtime.connected_robot_ids.add('R01')
             runtime.robot_mapping_sessions['R01'] = 'session-current'
             await runtime.update_external_robot_state({
@@ -559,6 +561,11 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
                 'active_map_id': 'SLAM-session-current', 'active_map_revision': 'grid-abc',
                 'mapping_session_id': 'session-current', 'map_source': 'SLAM_TOOLBOX',
                 'pose_source': 'TF',
+                'canonical_pose': {'x': 15, 'y': 5.5, 'yaw': 0.8, 'frame_id': 'map',
+                    'map_id': 'CANONICAL', 'map_revision': '21', 'map_source': 'CANONICAL',
+                    'pose_source': 'GAZEBO_MODEL_STATES', 'source_frame_id': 'world',
+                    'transform_source': 'VALIDATED_CANONICAL_WORLD_BUNDLE', 'valid': True,
+                    'timestamp': '2026-10-02T00:00:00+00:00'},
                 'x': 1.2, 'y': 2.3, 'yaw': 0.4, 'vx': 0, 'vy': 0, 'wz': 0,
             })
             self.assertEqual(runtime.engine.state['robots']['R01']['position'], [1.2, 0.0, 2.3])
@@ -566,6 +573,9 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_revision'], 'grid-abc')
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_source'], 'SLAM_TOOLBOX')
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_mapping_session_id'], 'session-current')
+            self.assertEqual(runtime.engine.state['robots']['R01']['slam_pose']['x'], 1.2)
+            self.assertEqual(runtime.engine.state['robots']['R01']['canonical_pose']['x'], 15)
+            self.assertEqual(runtime.engine.state['robots']['R01']['canonical_pose']['yaw'], 0.8)
             await runtime.update_external_robot_state({
                 'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 21,
                 'active_map_id': 'SLAM-session-current', 'active_map_revision': 'grid-abc',
@@ -579,6 +589,7 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.connected_robot_ids = old_connected
             runtime.robot_bridge_heartbeats = old_heartbeats
             runtime.robot_mapping_sessions.clear(); runtime.robot_mapping_sessions.update(old_sessions)
+            runtime.published_map_revision = old_published
             if old_robot is None:
                 robots.pop('R01', None)
             else:

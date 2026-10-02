@@ -10,6 +10,7 @@
   <depend>swerve_bringup</depend>
   <depend>action_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>gazebo_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>nav2_msgs</depend>
   <depend>nav2_map_server</depend>

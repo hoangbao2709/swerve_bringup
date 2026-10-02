@@ -155,6 +155,14 @@ export interface Perception {
   obstacles: PerceivedObstacle[];
 }
 
+export interface FramePose {
+  x: number; y: number; yaw: number;
+  frame_id: string; map_id: string; map_revision: string | number;
+  map_source: string; pose_source: string; timestamp: string; valid: boolean;
+  mapping_session_id?: string | null;
+  source_frame_id?: string; transform_source?: string;
+}
+
 export interface RobotState {
   id: RobotId;
   model: string;                 // "AMR-L" 等，對應 GLB 模型名
@@ -202,6 +210,8 @@ export interface RobotState {
   last_telemetry_at?: string | null;
   /** Map identity attached to the live pose; absent for LOCAL_SIM robots. */
   pose_frame_id?: string | null;
+  slam_pose?: FramePose | null;
+  canonical_pose?: FramePose | null;
   pose_map_id?: string | null;
   pose_map_revision?: string | number | null;
   pose_map_source?: string | null;

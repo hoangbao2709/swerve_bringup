@@ -22,7 +22,7 @@ from .sim.engine import SIM, SimEngine
 from .sim.navgrid import load_layout
 from .sim.whatif import run_whatif
 from .conveyor_plc import PLCSimulator
-from .coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin
+from .coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin, validated_canonical_pose
 from .control_timing import profile_async, profile_sync
 
 log = logging.getLogger(__name__)
@@ -679,6 +679,15 @@ class TwinRuntime:
         twist = ros_twist_to_waretwin(float(data.get('vx', 0.0)), float(data.get('vy', 0.0)),
                                       float(data.get('wz', 0.0)))
         now_iso = str(data.get('timestamp') or datetime.now(timezone.utc).isoformat())
+        active_pose = {'x': float(data['x']), 'y': float(data['y']), 'yaw': float(data['yaw']),
+                       'frame_id': frame_id, 'map_id': reported_map_id,
+                       'map_revision': reported_active_revision, 'map_source': reported_map_source,
+                       'pose_source': pose_source, 'mapping_session_id': data.get('mapping_session_id'),
+                       'timestamp': now_iso, 'valid': True}
+        canonical_pose = validated_canonical_pose(data.get('canonical_pose'),
+                                                  self.published_map_revision, self.runtime_mode)
+        if self.operation_mode != 'MAPPING' and reported_map_id == 'CANONICAL' and pose_source == 'TF':
+            canonical_pose = active_pose
         nav = str(data.get('navigation_state') or 'IDLE').upper()
         control_mode = str(data.get('control_mode') or robot.get('control_mode') or 'AUTONOMOUS').upper()
         if control_mode not in ('MANUAL', 'AUTONOMOUS'):
@@ -692,6 +701,8 @@ class TwinRuntime:
         robot.update({'navigation_state': nav, 'last_telemetry_at': now_iso,
                       'control_mode': control_mode, 'status': 'ACTIVE',
                       'fsm': self._fsm_from_nav(nav),
+                      'slam_pose': active_pose if reported_map_source == 'SLAM_TOOLBOX' else None,
+                      'canonical_pose': canonical_pose,
                       'pose_frame_id': frame_id,
                       'pose_map_id': reported_map_id,
                       'pose_map_revision': reported_active_revision or str(data.get('map_revision') or ''),

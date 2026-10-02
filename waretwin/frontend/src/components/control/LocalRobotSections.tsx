@@ -19,7 +19,7 @@ import { wsSetRobotMode } from "../../services/ws";
 import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
 import { occupancyRasters } from "./occupancyRaster";
-import { robotPoseMatchesMap } from "../../layout/robotPoseFrame";
+import { robotPoseMatchesMap, robotForDisplayedMap } from "../../layout/robotPoseFrame";
 
 type SectionName = "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type Pose = { x: number; y: number; yaw: number };
@@ -88,7 +88,7 @@ export function LocalRobotSection(props: Props) {
   return <DiagnosticsPanel {...props} />;
 }
 
-function MappingPanel({ robotId, robot, mapSnapshot, scan, diagnostics, controlOnline, controlMode, runtimeState, mappingSessionId }: Props) {
+function MappingPanel({ robotId, robot: rawRobot, mapSnapshot, scan, diagnostics, controlOnline, controlMode, runtimeState, mappingSessionId }: Props) {
   const [maps, setMaps] = useState<LocalRobotMap[]>([]);
   const [selected, setSelected] = useState("");
   const [name, setName] = useState("");
@@ -107,7 +107,8 @@ function MappingPanel({ robotId, robot, mapSnapshot, scan, diagnostics, controlO
   const slamMap = runtimeState === "MAPPING" && mapSnapshot?.robot_id === robotId
     && mapSnapshot?.map_source === "SLAM_TOOLBOX"
     && (!mappingSessionId || mapSnapshot.mapping_session_id === mappingSessionId) ? mapSnapshot : null;
-  const robotPoseMatchesSlamMap = Boolean(slamMap && robot && robotPoseMatchesMap(robot, slamMap));
+  const robot = slamMap && rawRobot ? robotForDisplayedMap(rawRobot, slamMap) : undefined;
+  const robotPoseMatchesSlamMap = Boolean(slamMap && robot);
   const mapping = diagnostics?.mapping;
 
   const refresh = useCallback(async () => {
@@ -453,6 +454,7 @@ function PosePickerMap({ map, robot, scan = null, trajectory = [], showRobot = t
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const displayedRobot = robot?.id === map.robot_id ? robotForDisplayedMap(robot, map) : undefined;
   const [rasterState, setRasterState] = useState<{ map: RobotDetailMapSnapshot; raster: HTMLCanvasElement } | null>(() => {
     const raster = occupancyRasters.peek(map);
     return raster ? { map, raster } : null;
@@ -513,7 +515,7 @@ function PosePickerMap({ map, robot, scan = null, trajectory = [], showRobot = t
       });
       context.strokeStyle = "#f5a64a"; context.lineWidth = 2; context.globalAlpha = 0.85; context.stroke(); context.globalAlpha = 1;
     }
-    const currentRobot = robot?.id === map.robot_id && robotPoseMatchesMap(robot, map) ? robot : undefined;
+    const currentRobot = displayedRobot;
     if (showScan && scan?.frame_id === map.frame_id) {
       const origin = scan.sensor_pose ?? (currentRobot ? { x: currentRobot.position[0], y: currentRobot.position[2], yaw: currentRobot.heading } : null);
       context.fillStyle = "#27e0d0"; context.strokeStyle = "rgba(39,224,208,.16)"; context.lineWidth = 1;
@@ -529,13 +531,16 @@ function PosePickerMap({ map, robot, scan = null, trajectory = [], showRobot = t
     if (showPose) drawPose(context, transform, pose.x, pose.y, pose.yaw, "#f6cf4f");
     context.fillStyle = "#8aa4bf"; context.font = "10px JetBrains Mono, monospace";
     context.fillText(active ? "CLICK TO SET XY · YAW CONTROLS BELOW" : "MAP FRAME · METRES", 10, size.height - 10);
-  }, [active, bounds, map, pose, raster, rasterMap, robot, scan, showGrid, showPose, showRobot, showScan, size, trajectory, transform]);
+  }, [active, bounds, displayedRobot, map, pose, raster, rasterMap, scan, showGrid, showPose, showRobot, showScan, size, trajectory, transform]);
   const click = (event: MouseEvent<HTMLCanvasElement>) => {
     if (!active) return;
     const rect = event.currentTarget.getBoundingClientRect();
     onPick(screenToWorld({ x: event.clientX - rect.left, y: event.clientY - rect.top }, transform));
   };
-  return <div ref={hostRef} className={`local-pose-map ${active ? "is-picking" : ""}`}><canvas ref={canvasRef} onClick={click} aria-label="Select map frame initial robot position" /></div>;
+  return <div ref={hostRef} className={`local-pose-map ${active ? "is-picking" : ""}`}><canvas ref={canvasRef}
+    data-robot-id={showRobot ? displayedRobot?.id : undefined} data-pose-source={displayedRobot?.pose_source}
+    data-render-x={displayedRobot?.position[0]} data-render-y={displayedRobot?.position[2]} data-render-yaw={displayedRobot?.heading}
+    onClick={click} aria-label="Select map frame initial robot position" /></div>;
 }
 
 function drawMappingGrid(context: CanvasRenderingContext2D, width: number, height: number, transform: ReturnType<typeof createWorldTransform>, bounds: WorldBounds) {

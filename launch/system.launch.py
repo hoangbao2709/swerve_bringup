@@ -268,6 +268,7 @@ def generate_launch_description():
                   parameters=[os.path.join(get_package_share_directory('swerve_bridge'), 'config', 'bridge.yaml'),
                               {'use_sim_time': use_sim_time,
                                'robot_id': robot_id,
+                               'gazebo_model_name': 'swerve_base',
                                'namespace': namespace,
                                'runtime_state': mode,
                                'map_topic': '/map',

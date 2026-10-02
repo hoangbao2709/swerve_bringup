@@ -15,6 +15,7 @@ import { CameraGizmos } from "./Cameras";
 import { People } from "./People";
 import { Mezzanine, FLOOR_ELEV } from "./Mezzanine";
 import { canonicalFloorId, sameFloor } from "../../layout/types";
+import { robotForWarehouse } from "../../layout/robotPoseFrame";
 
 
 /** 相機聚焦動畫：focusTarget 改變時平滑移動 OrbitControls target */
@@ -23,6 +24,8 @@ function CameraRig({ controls }: { controls: React.RefObject<OrbitControlsImpl> 
   const focus = useStore((s) => s.focus);
   const selected = useStore((s) => s.selectedRobot);
   const robots = useStore((s) => s.twin.robots);
+  const runtimeMode = useStore((s) => s.runtimeMode);
+  const layoutRevision = useStore((s) => s.layoutRevision);
   const goal = useRef<THREE.Vector3 | null>(null);
   const camGoal = useRef<THREE.Vector3 | null>(null);
   const prevSel = useRef(selected);
@@ -31,13 +34,14 @@ function CameraRig({ controls }: { controls: React.RefObject<OrbitControlsImpl> 
   }, [focusTarget]);
   useEffect(() => {
     if (selected && selected !== prevSel.current) {
-      const r = robots[selected];
+      const raw = robots[selected];
+      const r = raw ? robotForWarehouse(raw, runtimeMode, layout.coordinate_system?.frame ?? "", layoutRevision) : undefined;
       if (r) { const ey = FLOOR_ELEV[r.floor] ?? 0;
         goal.current = new THREE.Vector3(r.position[0], ey + 0.5, r.position[2]); // 沿走道方向 (x 軸) 看過去，避免被前方貨架擋住
         camGoal.current = new THREE.Vector3(r.position[0] + 16, ey + 11, r.position[2] + 2.5); }
     }
     prevSel.current = selected;
-  }, [selected, robots]);
+  }, [selected, robots, runtimeMode, layoutRevision]);
   useFrame(({ camera }, dt) => {
     const c = controls.current; if (!c || !goal.current) return;
     const k = 1 - Math.pow(0.001, dt);

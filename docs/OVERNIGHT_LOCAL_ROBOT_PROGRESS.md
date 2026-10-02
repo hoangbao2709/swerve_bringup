@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: 339d49d
+Current HEAD: 7f04439 (T10 source checkpoint; ledger checkpoint follows)
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
@@ -17,7 +17,7 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 | T07 | Tag registry/navigation target | BLOCKED | 6208ea8 | `twin.tests.test_navigation_graph` (8/8); read-only active registry query: `WH-TEST-01`, revision 21, 30 enabled Tags | Authoritative source is the database `NavigationTag` registry synchronized from the active warehouse layout. Added authenticated robot-scoped registry API and shared `NavigationTarget` resolver; all required positive/negative resolution tests pass. Live API against a robot-confirmed active map remains unverified because T00 blocks starting/restarting the ROS/Gazebo/Web runtime. |
 | T08 | Tag dropdown UI | BLOCKED | 4f7ae83 | `waretwin/frontend/tests/robot_control_workflow.test.tsx` (24/24); `twin.tests.test_navigation_graph` (8/8) | Added Robot Control MAP POINT/TAG selector and authenticated robot-scoped Tag API client. Selection shows registry ID/label/type/map/revision/pose, highlights the resolved pose on canonical map, and sends no preview/goal. Loading, empty, backend failure, disabled, and map-incompatibility states are tested. Live authenticated Web/API acceptance remains unavailable under T00. |
 | T09 | Tag path preview | BLOCKED | 20ff08f | `.runtime/t09-tag-preview.json` | Shared resolver and source-bound preview authorization implemented; targeted checks pass, but live ComputePathToPose/Web acceptance is blocked by T00 storage health. |
-| T10 | Tag navigation runtime | RUNNING | - | - | Auditing the shared resolved-target → preview authorization → Nav2 command chain and available tests; live three-Tag acceptance remains gated by T00/T09 runtime availability. |
+| T10 | Tag navigation runtime | BLOCKED | 7f04439 | `.runtime/t10-tag-nav.json` | Static audit confirms the shared resolved-target/preview/NavigateToPose route; bridge tests pass. Three live Tag runs, arbiter ownership, Gazebo motion, and accuracy are blocked by T00. |
 | T11 | Navigation cancel/safety | PENDING | - | - | - |
 | T12 | Navigation repeatability/accuracy | PENDING | - | - | - |
 | T13 | Large-route mapping/loop closure | PENDING | - | - | - |
@@ -90,3 +90,9 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 - The server revalidates Tag identity, pose, Tag revision, registry revision, map/revision, and localization after Nav2 returns a path and again before Send Goal. Missing preview, stale revision, changed Tag, mismatched source, or changed resolved pose rejects navigation. Selecting a Tag only selects a destination; it sends no goal. The approved path is drawn and its status/length is surfaced in the UI.
 - Targeted checks passed: frontend workflow 25/25; backend navigation graph plus ROS bridge 32/32; TypeScript `--noEmit`; Django system check; `makemigrations --check --dry-run` (no changes); backend `compileall`; and `git diff --check`.
 - The live request/render/no-motion chain was not run, so T09 is not a runtime pass. First failing gate is T00 before ROS/Gazebo startup: the current boot still reports `/dev/sda` `DID_TIME_OUT` and read I/O errors. Production frontend build and live Web-to-bridge `ComputePathToPose` remain unverified. Runtime acceptance: BLOCKED, not failed source behavior. Evidence artifact: `.runtime/t09-tag-preview.json`.
+
+## T10 Tag navigation runtime evidence and blocker
+
+- Source audit confirms the common chain: Tag resolution and preview authorization remain in Django; the bridge computes the preview with `ComputePathToPose`; an approved resolved map pose is then sent through the ordinary `NAV_GOAL`/`NavigateToPose` path. No separate Tag-only action path is used for this workflow.
+- Added a bridge handoff regression test that checks the resolved Tag pose passed to both Nav2 actions, verifies preview alone does not send a navigation goal, and rejects a changed pose against the bridge approval. The complete bridge test suite passed 32/32; bridge Python compile and `git diff --check` passed.
+- No real Tag was navigated. The required three Web→Django→bridge→Nav2→arbiter→Gazebo samples and final map/Gazebo errors are absent. First failing gate is T00 before runtime startup; no software runtime divergence was observed. T10 remains BLOCKED, with no Tag navigation PASS claimed. Evidence artifact: `.runtime/t10-tag-nav.json`.

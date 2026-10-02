@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: bad4265 (T11 source checkpoint; ledger checkpoint follows)
+Current HEAD: 770513d
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
@@ -19,7 +19,7 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 | T09 | Tag path preview | BLOCKED | 20ff08f | `.runtime/t09-tag-preview.json` | Shared resolver and source-bound preview authorization implemented; targeted checks pass, but live ComputePathToPose/Web acceptance is blocked by T00 storage health. |
 | T10 | Tag navigation runtime | BLOCKED | 7f04439 | `.runtime/t10-tag-nav.json` | Static audit confirms the shared resolved-target/preview/NavigateToPose route; bridge tests pass. Three live Tag runs, arbiter ownership, Gazebo motion, and accuracy are blocked by T00. |
 | T11 | Navigation cancel/safety | BLOCKED | bad4265 | `.runtime/t11-navigation-safety.json`; prior E-STOP trace summarized in `docs/LOCAL_ROBOT_CONTROL_ACCEPTANCE.md` | Fixed late-accepted-goal cancellation and E-STOP clear race; bridge tests pass 36/36. Real active-Nav2 cancellation, zero/settle, and no-resume checks remain blocked by T00. |
-| T12 | Navigation repeatability/accuracy | PENDING | - | - | - |
+| T12 | Navigation repeatability/accuracy | RUNNING | - | - | Reconciling retained goal-error samples against the required three Map Point and three Tag runtime samples; no new Gazebo run is safe under T00. |
 | T13 | Large-route mapping/loop closure | PENDING | - | - | - |
 | T14 | Full integrated acceptance | PENDING | - | - | - |
 

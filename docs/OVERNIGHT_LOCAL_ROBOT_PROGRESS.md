@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: 084dbef (T12 audit checkpoint; ledger checkpoint follows)
+Current HEAD: 4b4a5b9
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
@@ -20,7 +20,7 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 | T10 | Tag navigation runtime | BLOCKED | 7f04439 | `.runtime/t10-tag-nav.json` | Static audit confirms the shared resolved-target/preview/NavigateToPose route; bridge tests pass. Three live Tag runs, arbiter ownership, Gazebo motion, and accuracy are blocked by T00. |
 | T11 | Navigation cancel/safety | BLOCKED | bad4265 | `.runtime/t11-navigation-safety.json`; prior E-STOP trace summarized in `docs/LOCAL_ROBOT_CONTROL_ACCEPTANCE.md` | Fixed late-accepted-goal cancellation and E-STOP clear race; bridge tests pass 36/36. Real active-Nav2 cancellation, zero/settle, and no-resume checks remain blocked by T00. |
 | T12 | Navigation repeatability/accuracy | BLOCKED | - | `.runtime/t12-navigation-accuracy.json` | Retained Map Point evidence is mixed (0.04826 m and 0.0699 m reported, plus a later 0.10297 m Gazebo miss); no Tag runtime sample series exists. Mean/median/max not computed from incomplete incomparable samples. T00 blocks retest. |
-| T13 | Large-route mapping/loop closure | PENDING | - | - | - |
+| T13 | Large-route mapping/loop closure | BLOCKED | - | `.runtime/t13-large-route.json`; current-boot kernel evidence in T00 | Required healthy-storage precondition is false: repeated `/dev/sda` timeouts/read errors and blocked jbd2/workers. No Gazebo route was launched; loop closure was not measured. |
 | T14 | Full integrated acceptance | PENDING | - | - | - |
 
 ## T00 preflight evidence
@@ -109,3 +109,8 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 - The retained successful Map Point run in `.runtime/local-map-workflow-acceptance-scale-final.json` has 0.0482557 m map-frame XY error and 0.0427296 m Gazebo XY error. Other retained observations are mixed: T06 records a 0.0699 m medium-goal error and a near-goal timeout with 2.09 rad yaw error; the later report records a 0.10297 m Gazebo XY miss. `.runtime/resume-web-navigation.json` has no numeric XY fields for its succeeded goal.
 - No comparable Tag-navigation runtime sample set was found; the three required real Tag goals are absent. Because the samples are incomplete and include different error fields/results, mean/median/max are deliberately not computed as if they were an acceptance series.
 - No new runtime run was attempted: T10 Tag navigation is blocked and T00 current-boot storage errors prohibit a safe Gazebo retest. T12 is BLOCKED; `NAV_REPEATABILITY` is not passed. Evidence artifact: `.runtime/t12-navigation-accuracy.json`.
+
+## T13 Large-route mapping and loop-closure gate
+
+- T13 is explicitly conditional on a healthy current boot. T00 still records repeated `/dev/sda` `DID_TIME_OUT`, read I/O errors, and blocked `jbd2`/worker tasks. Storage health therefore fails before route startup.
+- No multi-meter route was run. Route distance, known-cell deltas, map extents, loop-return consistency, and SLAM correction measurements are null. `LOOP_CLOSURE_EVENT=NOT_RUN` (not evidence that loop closure failed or was not triggered during a route). T13 is BLOCKED; no Gazebo stress was attempted. Evidence artifact: `.runtime/t13-large-route.json`.

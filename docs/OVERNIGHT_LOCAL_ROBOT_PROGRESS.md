@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: 7f04439 (T10 source checkpoint; ledger checkpoint follows)
+Current HEAD: e1078a3
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 
@@ -18,7 +18,7 @@ Last updated: 2026-10-03 02:06 (Asia/Ho_Chi_Minh)
 | T08 | Tag dropdown UI | BLOCKED | 4f7ae83 | `waretwin/frontend/tests/robot_control_workflow.test.tsx` (24/24); `twin.tests.test_navigation_graph` (8/8) | Added Robot Control MAP POINT/TAG selector and authenticated robot-scoped Tag API client. Selection shows registry ID/label/type/map/revision/pose, highlights the resolved pose on canonical map, and sends no preview/goal. Loading, empty, backend failure, disabled, and map-incompatibility states are tested. Live authenticated Web/API acceptance remains unavailable under T00. |
 | T09 | Tag path preview | BLOCKED | 20ff08f | `.runtime/t09-tag-preview.json` | Shared resolver and source-bound preview authorization implemented; targeted checks pass, but live ComputePathToPose/Web acceptance is blocked by T00 storage health. |
 | T10 | Tag navigation runtime | BLOCKED | 7f04439 | `.runtime/t10-tag-nav.json` | Static audit confirms the shared resolved-target/preview/NavigateToPose route; bridge tests pass. Three live Tag runs, arbiter ownership, Gazebo motion, and accuracy are blocked by T00. |
-| T11 | Navigation cancel/safety | PENDING | - | - | - |
+| T11 | Navigation cancel/safety | RUNNING | - | - | Auditing Map Point/Tag cancel and E-STOP behavior; a pending NavigateToPose acceptance may race a cancel/clear, so the bridge path is being tested and hardened. Live motion tests remain gated by T00. |
 | T12 | Navigation repeatability/accuracy | PENDING | - | - | - |
 | T13 | Large-route mapping/loop closure | PENDING | - | - | - |
 | T14 | Full integrated acceptance | PENDING | - | - | - |

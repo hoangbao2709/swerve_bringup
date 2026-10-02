@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: d65665a
+Current HEAD: 042ec1b
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 
@@ -12,7 +12,7 @@ Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 | T02 | 2D SLAM accumulated map | BLOCKED | a0d35e4 | `.runtime/mapping-browser-final.json`; `.runtime/mapping-browser-control-observer.json`; `.runtime/mapping-browser-control-verified.json` | Prior real SLAM Toolbox map snapshots grew v3→v4→v5: known cells 45,231→60,875→71,741; extent 431×598→440×598→446×598; one session `e71a0aa5f19e`; trajectory 1→8 and 624-point scan frames were observed. However, no synchronized Pose A/B/C plus per-map hashes/old-cell comparison was retained. Current-boot storage I/O errors block the requested controlled rerun. First failing gate: runtime evidence completeness, not evidence of a map-clearing defect. |
 | T03 | 3D accumulated SLAM cloud | BLOCKED | d431326, e06a0f1 | Prior mapping Web/ROS probe; `swerve_bridge/test/test_mapping_snapshot_handoff.py::test_3d_cloud_accumulates_in_slam_map_while_global_is_visible` | Prior probe: filtered cloud 11 messages/8 s; exact map←lidar TF available in 11/13 lookups; Web 3D remained at 0 points and no `LIDAR_MAP_3D` event was captured. First observed divergence is after filtered cloud/TF input and before a verified Web frame; exact sublayer is unresolved. Source uses exact-stamp TF with 2.5 s wait and bounded voxel accumulation; targeted regression now confirms a missing exact TF raises/drops the cloud without adding points. Test PASS (1/1); install/build and real Web/Gazebo retest blocked by T00. |
 | T04 | Robot pose/frame stability | BLOCKED | c9e0f9f, d65665a | `docs/ROBOT_POSE_ALIGNMENT_20261002.md#runtime-result`; frontend/backend frame contract tests | Static selectors reject wrong map/session/revision; canonical 2D/3D warehouse alignment and Mapping 2D alignment have three-position evidence. `active_map_pose` now labels telemetry/localization readouts; legacy generic pose is only used in LOCAL_SIM adapters or the explicit frame projection. Mapping 3D pose alignment is blocked because T03 produced no cloud frame/robot marker in Web. Tests: 31 frontend, 23 Django, TypeScript, Django system/migration checks, Python compile. |
-| T05 | Resume Mapping | PENDING | - | - | - |
+| T05 | Resume Mapping | BLOCKED | 58c4dc2 | `.runtime/local-map-slam-resume-acceptance.json` (`acceptance`, `initial_map_restoration_check`, `teleop_motion`, `mapping_extension`, `resumed_map_save_evidence`) | Prior restore proof: 60,875 saved known cells covered by 70,438 live cells; 99.977% class agreement. Web Teleop attempt moved 0.0607 m but did not maintain source continuity; map stayed 70,438 cells, same 440×598 extent/signature, zero newly known cells. Old map remained intact and a distinct resumed session was saved without promoting canonical. First failing layer: Web Teleop did not carry the robot into a verified new frontier; mapping did not extend. Current-boot storage errors block safe retest. |
 | T06 | Map Point navigation | PENDING | - | - | - |
 | T07 | Tag registry/navigation target | PENDING | - | - | - |
 | T08 | Tag dropdown UI | PENDING | - | - | - |
@@ -56,3 +56,10 @@ Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 - Marker retention is identity-scoped with a 2.5 s TTL; a persistent map/frame/revision/session change cannot reuse the previous pose. Robot map layers are keyed by robot ID, not telemetry packets. Existing three-pose report measured canonical 2D/3D and Mapping-canvas alignment within the stated 0.05 m / 0.05 rad thresholds.
 - The audit found legacy state/status and localization readouts using unlabelled `robot.position`/`heading`. They now use frame-tagged `active_map_pose`; LOCAL_SIM retains its single-frame compatibility adapter. Regression evidence: frontend focused tests 31/31, `npx tsc --noEmit` PASS, Django `test_ros_bridge` 23/23, `manage.py check` PASS, `makemigrations --check --dry-run` PASS, and Python compile PASS.
 - T04 cannot pass as a whole because the current real Mapping 3D view has no `LIDAR_MAP_3D` frame and therefore no observed SLAM robot marker to align. First failing dependency: T03 bridge/Web accumulated-cloud delivery. Real runtime retest remains blocked by the current boot's storage I/O errors.
+
+## T05 resume-mapping evidence and blocker
+
+- Saved-session restore independently passed: the 440×598 saved map had 60,875 known cells; live SLAM had 70,438; coverage was 100%, and saved/live cell-class agreement was 99.977%. SLAM Toolbox owned `map -> odom`; canonical geometry was not changed.
+- Post-resume readiness gates were all true before the attempted movement. The Web Teleop chain, however, was not continuous (`web_manual_source_continuous=false`) and the measured Gazebo displacement was only 0.060715 m. Map extension evidence shows 0 newly known cells, 0 cells outside the prior extent, unchanged 440×598 dimensions, 70,438 known cells and unchanged signature. Therefore `RESUMED_MAP_EXTENDS` and `RESUME_MAPPING` did not pass.
+- The run did preserve the old map and successfully saved a new, distinct resumed map/session (`de8b9ee8f35c4519bfad8ff3a2562723`), leaving the original registry entry and canonical map unchanged. These sub-gates do not override the missing frontier extension.
+- First diverging layer: Web Teleop source continuity/frontier traversal, followed by no `/map` growth. Current-boot `DID_TIME_OUT` and `/dev/sda` read errors prevent safe frontier selection and runtime retest, so T05 remains blocked.

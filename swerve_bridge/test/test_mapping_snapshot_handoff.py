@@ -292,6 +292,17 @@ def test_3d_cloud_accumulates_in_slam_map_while_global_is_visible(monkeypatch):
             stamp=SimpleNamespace(sec=stamp, nanosec=0)))
 
     bridge.latest_filtered_cloud = cloud(1)
+    bridge.tf_buffer.lookup_transform.side_effect = bridge_node.TransformException(
+        'exact cloud timestamp is not in the TF buffer')
+    with pytest.raises(bridge_node.TransformException, match='exact cloud timestamp'):
+        SwerveBridge._render_lidar_3d(bridge)
+    assert len(bridge.accumulated_slam_cloud) == 0
+    assert bridge.last_web_cloud_source_stamp is None
+    assert not bridge.lidar_frame_buffer.pending
+
+    # A later exact-stamp transform can process this same latest-only cloud;
+    # no cloud was queued or transformed with a substitute/latest TF.
+    bridge.tf_buffer.lookup_transform.side_effect = None
     SwerveBridge._render_lidar_3d(bridge)
     lookup = bridge.tf_buffer.lookup_transform.call_args
     assert lookup.args[:3] == ('map', 'lidar_link', SimpleNamespace(sec=1, nanosec=0))

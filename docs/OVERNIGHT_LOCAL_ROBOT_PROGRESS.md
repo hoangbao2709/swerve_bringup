@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: 4f7ae83
+Current HEAD: ca74db7
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 
@@ -16,7 +16,7 @@ Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 | T06 | Map Point navigation | BLOCKED | 2e6bf44, f94407b | `.runtime/local-map-workflow-acceptance-scale-final.json`; `.runtime/resume-web-navigation.json`; frontend/backend bridge test output | Map clicks now select only; PREVIEW PATH is explicit. Backend invalidates prior approvals on target change/cancel and binds previews to live TF pose frame/map/revision/provenance/freshness. Tests: frontend 21/21, TypeScript check, backend bridge 23/23, Django system check, Python compile, `git diff --check`. Runtime gate not met: available samples include a near-goal timeout/yaw error 2.09 rad and a medium goal with 0.0699 m XY error; required controlled near/medium/turning run is unsafe under T00 storage gate. |
 | T07 | Tag registry/navigation target | BLOCKED | 6208ea8 | `twin.tests.test_navigation_graph` (8/8); read-only active registry query: `WH-TEST-01`, revision 21, 30 enabled Tags | Authoritative source is the database `NavigationTag` registry synchronized from the active warehouse layout. Added authenticated robot-scoped registry API and shared `NavigationTarget` resolver; all required positive/negative resolution tests pass. Live API against a robot-confirmed active map remains unverified because T00 blocks starting/restarting the ROS/Gazebo/Web runtime. |
 | T08 | Tag dropdown UI | BLOCKED | 4f7ae83 | `waretwin/frontend/tests/robot_control_workflow.test.tsx` (24/24); `twin.tests.test_navigation_graph` (8/8) | Added Robot Control MAP POINT/TAG selector and authenticated robot-scoped Tag API client. Selection shows registry ID/label/type/map/revision/pose, highlights the resolved pose on canonical map, and sends no preview/goal. Loading, empty, backend failure, disabled, and map-incompatibility states are tested. Live authenticated Web/API acceptance remains unavailable under T00. |
-| T09 | Tag path preview | PENDING | - | - | - |
+| T09 | Tag path preview | RUNNING | - | - | Implementing one-use source-bound Nav2 path preview for Tags through the common resolver; selection remains non-moving. |
 | T10 | Tag navigation runtime | PENDING | - | - | - |
 | T11 | Navigation cancel/safety | PENDING | - | - | - |
 | T12 | Navigation repeatability/accuracy | PENDING | - | - | - |

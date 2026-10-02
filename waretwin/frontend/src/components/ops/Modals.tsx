@@ -2721,6 +2721,13 @@ function RobotDetail({ robotId }: { robotId: string }) {
   const robot =
     useStore((s) => s.twin.robots[robotId]);
 
+  const runtimeMode = useStore((s) => s.runtimeMode);
+
+  const activePose = robot?.active_map_pose ?? (runtimeMode === "LOCAL_SIM" && robot ? {
+    x: robot.position[0], y: robot.position[2], yaw: robot.heading,
+    frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
+  } : null);
+
   const task =
     useStore((s) =>
       robot?.current_task_id
@@ -3804,12 +3811,8 @@ function RobotDetail({ robotId }: { robotId: string }) {
             />
 
             <KV
-              k="Position"
-              v={`${robot.position[0].toFixed(
-                1,
-              )}, ${robot.position[2].toFixed(
-                1,
-              )}`}
+              k={activePose ? `Position (${activePose.frame_id}/${activePose.map_id})` : "Position (no frame)"}
+              v={activePose ? `${activePose.x.toFixed(1)}, ${activePose.y.toFixed(1)}` : "—"}
             />
           </div>
         </div>

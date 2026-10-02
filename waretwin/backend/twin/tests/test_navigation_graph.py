@@ -1,3 +1,7 @@
+from asgiref.sync import async_to_sync
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
 from django.test import TestCase
 from django.contrib.auth.models import User
 from django.test import Client
@@ -174,3 +178,110 @@ class NavigationTargetResolutionTests(TestCase):
 
         anonymous = Client().get('/api/robots/R01/navigation-tags')
         self.assertEqual(anonymous.status_code, 401)
+
+    def test_tag_preview_uses_common_nav2_pipeline_and_rejects_stale_or_wrong_source_tokens(self):
+        registry = navigation_tag_registry(self.active_map)
+        tag_record = next(item for item in registry['tags'] if item['tag_id'] == 1)
+        capture = SimpleNamespace(send_json=AsyncMock())
+        gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+        localization_state = {'frame_id': 'map', 'map_id': 'CANONICAL', 'map_revision': '7',
+                              'map_source': 'CANONICAL', 'pose_source': 'TF'}
+        request_counter = 0
+
+        def request_preview(*, tag_revision=None, registry_revision=None):
+            nonlocal request_counter
+            request_counter += 1
+            request_id = f'tag-preview-{request_counter}'
+            async_to_sync(runtime.handle_message)(capture, {
+                'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01', 'request_id': request_id,
+                'source_type': 'TAG', 'tag_id': 1,
+                'tag_revision': tag_revision or tag_record['tag_revision'],
+                'registry_revision': registry_revision or registry['registry_revision'], 'frame_id': 'map',
+                'active_map_id': 'CANONICAL', 'active_map_revision': '7',
+            }, None)
+            return request_id
+
+        def planner_result(request_id, goal=(2.0, 5.0, 0.25)):
+            async_to_sync(runtime.handle_ros_message)({
+                'type': 'PATH_PREVIEW_RESULT', 'robot_id': 'R01', 'request_id': request_id,
+                'status': 'VALID', 'path': [[0.0, 0.0], [goal[0], goal[1]]],
+                'goal': {'x': goal[0], 'y': goal[1], 'yaw': goal[2]},
+                'active_map_id': 'CANONICAL', 'active_map_revision': '7',
+            })
+
+        def send_goal(request_id, source_id='1', source_type='TAG', goal=(2.0, 5.0, 0.25)):
+            async_to_sync(runtime.handle_message)(capture, {
+                'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': goal[0], 'y': goal[1], 'yaw': goal[2],
+                'frame_id': 'map', 'preview_request_id': request_id,
+                'active_map_id': 'CANONICAL', 'active_map_revision': '7',
+                'source_type': source_type, 'source_id': source_id,
+            }, None)
+
+        with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
+                patch.object(runtime, 'operation_mode', 'NAVIGATION'), \
+                patch.object(runtime, 'active_map_state', return_value=self.active_map), \
+                patch.object(runtime, 'robot_bridge_online', return_value=True), \
+                patch.object(runtime, 'navigation_localization_state', return_value=localization_state), \
+                patch.object(runtime, 'gateway', return_value=gateway), \
+                patch.object(runtime, 'broadcast', new=AsyncMock()), \
+                patch.object(runtime, 'path_preview_requests', {}), \
+                patch.object(runtime, 'approved_path_previews', {}), \
+                patch.object(runtime, 'path_preview_results', {}), \
+                patch.object(runtime, 'expired_path_previews', {}), \
+                patch.object(runtime, 'path_preview_invalidations', {}):
+            async_to_sync(runtime.handle_message)(capture, {
+                'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 2.0, 'y': 5.0, 'yaw': 0.25,
+                'frame_id': 'map', 'active_map_id': 'CANONICAL', 'active_map_revision': '7',
+                'source_type': 'TAG', 'source_id': '1',
+            }, None)
+            self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_REQUIRED')
+            self.assertFalse(any(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list))
+
+            capture.send_json.reset_mock()
+            gateway.send_command.reset_mock()
+            stale_request = request_preview(tag_revision='stale-tag-revision')
+            self.assertEqual(capture.send_json.await_args.args[0]['status'], 'INVALID')
+            self.assertIn('TAG_REVISION_MISMATCH', capture.send_json.await_args.args[0]['reason'])
+            self.assertFalse(any(call.args[1] == 'PATH_PREVIEW' for call in gateway.send_command.await_args_list))
+
+            capture.send_json.reset_mock()
+            request_id = request_preview()
+            gateway.send_command.assert_awaited_with('R01', 'PATH_PREVIEW', {
+                'request_id': request_id, 'x': 2.0, 'y': 5.0, 'yaw': 0.25, 'frame_id': 'map',
+                'source_type': 'TAG', 'source_id': '1', 'tag_id': 1,
+                'tag_revision': tag_record['tag_revision'], 'registry_revision': registry['registry_revision'],
+                'active_map_id': 'CANONICAL', 'active_map_revision': '7', 'canonical_map_revision': 7,
+            })
+            self.assertFalse(any(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list))
+            planner_result(request_id)
+
+            capture.send_json.reset_mock()
+            send_goal(request_id, source_id='2')
+            self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_INVALID')
+            self.assertFalse(any(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list))
+
+            capture.send_json.reset_mock()
+            send_goal(request_id)
+            gateway.send_command.assert_awaited_with('R01', 'NAVIGATE', {
+                'x': 2.0, 'y': 5.0, 'yaw': 0.25, 'frame_id': 'map',
+                'source_type': 'TAG', 'source_id': '1', 'tag_id': 1,
+                'tag_revision': tag_record['tag_revision'], 'registry_revision': registry['registry_revision'],
+                'preview_request_id': request_id, 'active_map_id': 'CANONICAL',
+                'active_map_revision': '7', 'canonical_map_revision': 7,
+            })
+
+            tag = NavigationTag.objects.get(warehouse=self.warehouse_map.warehouse, tag_id=1)
+            tag.x = 2.25
+            tag.save(update_fields=['x', 'updated_at'])
+            updated_registry = navigation_tag_registry(self.active_map)
+            updated_tag = next(item for item in updated_registry['tags'] if item['tag_id'] == 1)
+            changed_request = request_preview(tag_revision=updated_tag['tag_revision'],
+                                              registry_revision=updated_registry['registry_revision'])
+            tag.x = 2.5
+            tag.save(update_fields=['x', 'updated_at'])
+            planner_result(changed_request, goal=(2.25, 5.0, 0.25))
+            self.assertEqual(runtime.path_preview_results[('R01', changed_request)]['status'], 'INVALID')
+            capture.send_json.reset_mock()
+            send_goal(changed_request, goal=(2.25, 5.0, 0.25))
+            self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_INVALID')
+            self.assertNotEqual(changed_request, request_id)

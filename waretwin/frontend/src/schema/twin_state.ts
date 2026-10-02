@@ -717,7 +717,12 @@ export type RobotDetailPathPreview = {
   path: RobotWorldPoint[];
   local_path?: RobotWorldPoint[];
   path_length_m: number | null;
-  goal: { x: number; y: number; yaw: number; frame_id?: string };
+  goal: { x: number; y: number; yaw: number; frame_id?: string } | null;
+  source_type?: "MAP_POINT" | "TAG";
+  source_id?: string | null;
+  tag_id?: number | null;
+  tag_revision?: string | null;
+  registry_revision?: string | null;
   local_goal?: { x: number; y: number; yaw: number } | null;
   timestamp?: string | null;
   active_map_id?: string | null;
@@ -836,7 +841,7 @@ export type ServerMessage =
   | { type: "NAV_GLOBAL_PATH"; path: RobotDetailPath }
   | { type: "NAV_LOCAL_PATH"; path: RobotDetailPath }
   | { type: "NAV_GOAL"; goal: RobotDetailGoal }
-  | { type: "PATH_PREVIEW_RESULT"; robot_id: RobotId; request_id: string; status: "VALID" | "INVALID" | "NO_PATH"; reason?: string | null; active_map_id?: string | null; active_map_revision?: string | null; canonical_map_revision?: string | number | null; frame_id?: "map"; path: RobotWorldPoint[]; local_path?: RobotWorldPoint[]; local_goal?: { x: number; y: number; yaw: number } | null; path_length_m: number | null; goal: { x: number; y: number; yaw: number; frame_id?: string }; timestamp?: string | null }
+  | { type: "PATH_PREVIEW_RESULT"; robot_id: RobotId; request_id: string; status: "VALID" | "INVALID" | "NO_PATH"; reason?: string | null; source_type?: "MAP_POINT" | "TAG"; source_id?: string | null; tag_id?: number | null; tag_revision?: string | null; registry_revision?: string | null; active_map_id?: string | null; active_map_revision?: string | null; canonical_map_revision?: string | number | null; frame_id?: "map"; path: RobotWorldPoint[]; local_path?: RobotWorldPoint[]; local_goal?: { x: number; y: number; yaw: number } | null; path_length_m: number | null; goal: { x: number; y: number; yaw: number; frame_id?: string } | null; timestamp?: string | null }
   | { type: "LOCAL_MAP_STATUS"; robot_id: RobotId; loaded: boolean; map_id?: string | null; map_revision?: string | null; active_map_revision?: string | null; canonical_map_revision?: string | number | null; map_sync_status?: string | null; frame_id?: string; timestamp?: string | null }
   | { type: "COMMAND_DIAGNOSTICS"; robot_id: RobotId } & RobotCommandDiagnostics
   | { type: "LIDAR_STREAM_DIAGNOSTICS"; robot_id: RobotId } & RobotLidarStreamDiagnostics
@@ -857,8 +862,8 @@ export type ClientMessage =
   | { type: "SELECT_ROBOT"; robot_id: RobotId | null }           // 讓後端提高該機器人更新頻率 (可選)
   | { type: "ROBOT_MODE"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS" }
   | { type: "ROBOT_MANUAL"; robot_id: RobotId; action: "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT" | "STOP" }
-  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string; preview_request_id?: string; active_map_id?: string; active_map_revision?: string }
-  | { type: "PATH_PREVIEW_REQUEST"; robot_id: RobotId; request_id: string; x: number; y: number; yaw: number; frame_id: "map"; active_map_id?: string; active_map_revision?: string }
+  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string; preview_request_id?: string; active_map_id?: string; active_map_revision?: string; source_type?: "MAP_POINT" | "TAG"; source_id?: string }
+  | { type: "PATH_PREVIEW_REQUEST"; robot_id: RobotId; request_id: string; x?: number; y?: number; yaw?: number; frame_id: "map"; active_map_id?: string; active_map_revision?: string; source_type?: "MAP_POINT" | "TAG"; tag_id?: number; tag_revision?: string; registry_revision?: string }
   | { type: "PATH_PREVIEW_INVALIDATE"; robot_id: RobotId }
   | { type: "ROBOT_DETAIL_VIEW"; robot_id: RobotId; view: RobotDetailView; request_id?: string; delivery_ack?: boolean }
   | { type: "ROBOT_DETAIL_FRAME_RECEIVED"; delivery_id: number }

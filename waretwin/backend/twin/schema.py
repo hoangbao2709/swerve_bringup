@@ -751,6 +751,8 @@ class CmdNavGoal(_Base):
     preview_request_id: Optional[str] = Field(default=None, max_length=64)
     active_map_id: Optional[str] = Field(default=None, max_length=128)
     active_map_revision: Optional[str] = Field(default=None, max_length=128)
+    source_type: Optional[Literal["MAP_POINT", "TAG"]] = None
+    source_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class CmdNavControl(_Base):
@@ -762,12 +764,16 @@ class CmdPathPreviewRequest(_Base):
     type: Literal["PATH_PREVIEW_REQUEST"] = "PATH_PREVIEW_REQUEST"
     robot_id: RobotId = Field(min_length=1, max_length=64)
     request_id: str = Field(min_length=1, max_length=64)
-    x: float = Field(ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
-    y: float = Field(ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
-    yaw: float = Field(ge=-1000, le=1000, allow_inf_nan=False)
+    x: Optional[float] = Field(default=None, ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
+    y: Optional[float] = Field(default=None, ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
+    yaw: Optional[float] = Field(default=None, ge=-1000, le=1000, allow_inf_nan=False)
     frame_id: Literal["map"] = "map"
     active_map_id: Optional[str] = Field(default=None, max_length=128)
     active_map_revision: Optional[str] = Field(default=None, max_length=128)
+    source_type: Literal["MAP_POINT", "TAG"] = "MAP_POINT"
+    tag_id: Optional[int] = Field(default=None, ge=0)
+    tag_revision: Optional[str] = Field(default=None, max_length=128)
+    registry_revision: Optional[str] = Field(default=None, max_length=128)
 
 
 class CmdPathPreviewInvalidate(_Base):

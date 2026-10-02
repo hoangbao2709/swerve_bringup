@@ -183,24 +183,30 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     x: robot.position[0], y: robot.position[2], yaw: robot.heading,
     frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
   } : null);
-  const candidatePreview = pathPreview?.request_id === latestPathRequest.current ? pathPreview : null;
-  const previewAgeMs = candidatePreview?.timestamp ? clockNow - Date.parse(candidatePreview.timestamp) : Infinity;
-  const previewTargetMatches = Boolean(candidatePreview && goalPreview
-    && Math.abs(candidatePreview.goal.x - goalPreview.x) <= 1e-4
-    && Math.abs(candidatePreview.goal.y - goalPreview.y) <= 1e-4
-    && Math.abs(candidatePreview.goal.yaw - goalPreview.yaw) <= 1e-4);
-  const approvedPreview: RobotDetailPathPreview | null = candidatePreview
-    && candidatePreview.status === "VALID" && candidatePreview.path.length > 0
-    && candidatePreview.active_map_id === activeMapId
-    && candidatePreview.active_map_revision === activeMapRevision
-    && previewTargetMatches && Number.isFinite(previewAgeMs)
-    && previewAgeMs >= -5_000 && previewAgeMs <= 120_000 ? candidatePreview : null;
   const selectedTag = tagRegistry?.tags.find((tag) => tag.tag_id === selectedTagId) ?? null;
   const compatibleTags = tagRegistry?.compatible ? tagRegistry.tags : [];
   const navigableTags = compatibleTags.filter((tag) => tag.navigable);
   const selectedMapTag = selectedTag && selectedTag.map_id === "CANONICAL"
     && selectedTag.map_revision === String(mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision)
     ? selectedTag : null;
+  const candidatePreview = pathPreview?.request_id === latestPathRequest.current ? pathPreview : null;
+  const previewAgeMs = candidatePreview?.timestamp ? clockNow - Date.parse(candidatePreview.timestamp) : Infinity;
+  const previewTargetMatches = Boolean(candidatePreview?.goal && goalPreview
+    && Math.abs(candidatePreview.goal.x - goalPreview.x) <= 1e-4
+    && Math.abs(candidatePreview.goal.y - goalPreview.y) <= 1e-4
+    && Math.abs(candidatePreview.goal.yaw - goalPreview.yaw) <= 1e-4);
+  const previewSourceMatches = targetMethod === "TAG"
+    ? Boolean(candidatePreview?.source_type === "TAG" && selectedTag
+      && candidatePreview.tag_id === selectedTag.tag_id
+      && candidatePreview.tag_revision === selectedTag.tag_revision
+      && candidatePreview.registry_revision === tagRegistry?.registry_revision)
+    : (candidatePreview?.source_type ?? "MAP_POINT") === "MAP_POINT";
+  const approvedPreview: RobotDetailPathPreview | null = candidatePreview
+    && candidatePreview.status === "VALID" && candidatePreview.path.length > 0
+    && candidatePreview.active_map_id === activeMapId
+    && candidatePreview.active_map_revision === activeMapRevision
+    && previewTargetMatches && previewSourceMatches && Number.isFinite(previewAgeMs)
+    && previewAgeMs >= -5_000 && previewAgeMs <= 120_000 ? candidatePreview : null;
 
   useEffect(() => {
     select(robotId);
@@ -410,11 +416,15 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [holdManual, stopManual]);
 
   const sendGoal = () => {
-    if (!goalPreview || !approvedPreview || approvedPreview.status !== "VALID") return;
+    const approvedGoal = approvedPreview?.goal;
+    if (!goalPreview || !approvedPreview || approvedPreview.status !== "VALID" || !approvedGoal) return;
     if (controlMode !== "AUTONOMOUS") { setError("Switch to AUTONOMOUS before sending a goal"); return; }
     if (!controlOnline) { setError("Navigation goal requires an online ROS bridge"); return; }
     if (!activeMapReady) { setError(`The selected robot active map is not confirmed (${activeMapStatus})`); return; }
-    if (!wsSend({ type: "NAV_GOAL", robot_id: robotId, x: goalPreview.x, y: goalPreview.y, yaw: goalPreview.yaw, frame_id: "map", preview_request_id: approvedPreview.request_id, active_map_id: activeMapId!, active_map_revision: activeMapRevision! })) {
+    if (!wsSend({ type: "NAV_GOAL", robot_id: robotId, x: approvedGoal.x, y: approvedGoal.y, yaw: approvedGoal.yaw,
+      frame_id: "map", preview_request_id: approvedPreview.request_id, active_map_id: activeMapId!,
+      active_map_revision: activeMapRevision!, source_type: approvedPreview.source_type ?? "MAP_POINT",
+      source_id: approvedPreview.source_id ?? undefined })) {
       setError("Navigation goal was not sent");
       return;
     }
@@ -455,7 +465,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
-    setGoalPreview(null);
+    setGoalPreview(tag?.navigation_pose ? { ...tag.navigation_pose } : null);
     setSelectedTagId(tagId);
     setRobotDetail(robotId, { pathPreview: null });
     setError("");
@@ -464,6 +474,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const requestPathPreview = useCallback((target: WorldGoal) => {
     setGoalPreview(target);
     setError("");
+    if (targetMethod === "TAG" && (!selectedTag?.navigable || !tagRegistry?.registry_revision)) {
+      latestPathRequest.current = "";
+      setPathRequestState("IDLE");
+      setRobotDetail(robotId, { pathPreview: null });
+      setError("Select a valid Tag from the current compatible registry before previewing");
+      return;
+    }
     if (!activeMapReady) {
       latestPathRequest.current = "";
       setPathRequestState("IDLE");
@@ -484,12 +501,18 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     latestPathRequest.current = requestId;
     setPathRequestState("PLANNING");
     setRobotDetail(robotId, { pathPreview: null });
-    if (!wsSend({ type: "PATH_PREVIEW_REQUEST", robot_id: robotId, request_id: requestId, x: target.x, y: target.y, yaw: target.yaw, frame_id: "map", active_map_id: activeMapId!, active_map_revision: activeMapRevision! })) {
+    const common = { type: "PATH_PREVIEW_REQUEST" as const, robot_id: robotId, request_id: requestId,
+      frame_id: "map" as const, active_map_id: activeMapId!, active_map_revision: activeMapRevision! };
+    const sent = targetMethod === "TAG" && selectedTag && tagRegistry?.registry_revision
+      ? wsSend({ ...common, source_type: "TAG", tag_id: selectedTag.tag_id,
+        tag_revision: selectedTag.tag_revision, registry_revision: tagRegistry.registry_revision })
+      : wsSend({ ...common, source_type: "MAP_POINT", x: target.x, y: target.y, yaw: target.yaw });
+    if (!sent) {
       latestPathRequest.current = "";
       setPathRequestState("IDLE");
       setError("Path preview request was not sent because the WebSocket is disconnected");
     }
-  }, [activeMapId, activeMapReady, activeMapRevision, activeMapStatus, controlMode, controlOnline, robotId, setRobotDetail]);
+  }, [activeMapId, activeMapReady, activeMapRevision, activeMapStatus, controlMode, controlOnline, robotId, selectedTag, setRobotDetail, tagRegistry?.registry_revision, targetMethod]);
 
   useEffect(() => {
     if (pathPreview?.request_id && pathPreview.request_id === latestPathRequest.current) setPathRequestState("IDLE");
@@ -608,11 +631,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             {visitedViews.current.has("LIDAR_3D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_3D" ? "is-active" : "")} data-view="LIDAR_3D" aria-hidden={detailView !== "LIDAR_3D"}><RobotLidar3DView active={detailView === "LIDAR_3D"} frame={currentSlam3dCloud} robot={robot} slamMap={currentSlam2dMap} /></div>}
           </div>
           <div className="robot-detail-goal-toolbar">
-            <span>{targetMethod === "TAG" ? selectedTag ? `TAG ${selectedTag.tag_id} SELECTED · PATH PREVIEW REQUIRED` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
-            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw - Math.PI / 12 })}>YAW −</button>
-            <button type="button" disabled={!goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw + Math.PI / 12 })}>YAW +</button>
-            <button type="button" disabled={targetMethod !== "MAP_POINT" || !goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
-            <button type="button" disabled={targetMethod !== "MAP_POINT" || !goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady || runtimeState !== "NAVIGATION"} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
+            <span>{targetMethod === "TAG" ? selectedTag ? `TAG ${selectedTag.tag_id} SELECTED · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : candidatePreview?.status === "INVALID" || candidatePreview?.status === "NO_PATH" ? candidatePreview.reason ?? candidatePreview.status : "PATH PREVIEW REQUIRED"}` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
+            <button type="button" disabled={targetMethod === "TAG" || !goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw - Math.PI / 12 })}>YAW −</button>
+            <button type="button" disabled={targetMethod === "TAG" || !goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw + Math.PI / 12 })}>YAW +</button>
+            <button type="button" disabled={(!goalPreview || targetMethod === "TAG" && !selectedTag?.navigable) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
+            <button type="button" disabled={!goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady || runtimeState !== "NAVIGATION"} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
             <button type="button" disabled={!goalPreview && selectedTagId === null} onClick={cancelPathPreview}>CANCEL</button>
           </div>
         </section>

@@ -222,6 +222,58 @@ describe("robot detail route stability", () => {
     expect(container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]')?.disabled).toBe(true);
   });
 
+  it("previews the selected Tag through the common resolver before Send Goal is enabled", async () => {
+    setOnlineRobot();
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    const registry: RobotNavigationTagRegistry = {
+      robot_id: "R01", source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY", warehouse_id: 1,
+      warehouse_code: "WH-TEST-01", map_id: "CANONICAL", map_revision: "21", frame_id: "map",
+      compatible: true, reason: null, registry_revision: "registry-current", tags: [{
+        id: 1, tag_id: 1301, label: "Right Storage", family: "APRILTAG", floor_id: "F1", lane_id: "A-01", zone_id: 2,
+        x: 2.5, y: 3.5, z: 0, yaw: 1.2, enabled: true, navigable: true, reason: null,
+        frame_id: "map", map_id: "CANONICAL", map_revision: "21", navigation_pose: { x: 2.5, y: 3.5, yaw: 1.2 },
+        navigation_pose_source: "REGISTERED_NAVIGATION_NODE", tag_revision: "tag-1301-rev1", metadata: {},
+      }],
+    };
+    vi.mocked(api.getRobotNavigationTags).mockResolvedValue(registry);
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { buttonNamed("TAG")?.click(); await settleUi(); });
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]')!;
+    await act(async () => {
+      select.value = "1301";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("NAV_GOAL");
+
+    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    const request = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
+    expect(request).toMatchObject({ type: "PATH_PREVIEW_REQUEST", robot_id: "R01", source_type: "TAG",
+      tag_id: 1301, tag_revision: "tag-1301-rev1", registry_revision: "registry-current",
+      active_map_id: "CANONICAL", active_map_revision: "21" });
+    expect(request && "x" in request).toBe(false);
+    expect(request && "y" in request).toBe(false);
+    expect(request && "yaw" in request).toBe(false);
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+
+    if (!request || request.type !== "PATH_PREVIEW_REQUEST") throw new Error("Tag path preview request was not emitted");
+    act(() => useStore.getState().setRobotDetail("R01", { pathPreview: {
+      robot_id: "R01", request_id: request.request_id, source_type: "TAG", source_id: "1301", tag_id: 1301,
+      tag_revision: "tag-1301-rev1", registry_revision: "registry-current", status: "VALID", frame_id: "map",
+      path: [[0, 0], [2.5, 3.5]], path_length_m: 4.3, goal: { x: 2.5, y: 3.5, yaw: 1.2 },
+      active_map_id: "CANONICAL", active_map_revision: "21", timestamp: new Date().toISOString(),
+    } }));
+    expect(container.textContent).toContain("PREVIEW VALID · 4.30 m");
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(false);
+    await act(async () => { buttonNamed("SEND GOAL")?.click(); });
+    const goalMessage = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .find((message) => message.type === "NAV_GOAL");
+    expect(goalMessage).toMatchObject({ type: "NAV_GOAL", robot_id: "R01", source_type: "TAG", source_id: "1301",
+      preview_request_id: request.request_id, x: 2.5, y: 3.5, yaw: 1.2,
+      active_map_id: "CANONICAL", active_map_revision: "21" });
+  });
+
   it("surfaces Tag registry failures and incompatible maps", async () => {
     setOnlineRobot();
     vi.mocked(api.getRobotNavigationTags).mockRejectedValueOnce(new Error("Unauthorized"));

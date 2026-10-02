@@ -280,6 +280,8 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 await request_preview('preview-valid')
                 gateway.send_command.assert_awaited_with('R01', 'PATH_PREVIEW', {
                     'request_id': 'preview-valid', 'x': 2.0, 'y': 3.0, 'yaw': 0.4,
+                    'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
+                    'tag_revision': None, 'registry_revision': None,
                     'frame_id': 'map', 'active_map_id': 'CANONICAL',
                     'active_map_revision': '21', 'canonical_map_revision': 21,
                 })
@@ -370,6 +372,8 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 self.assertEqual(len(navigation_calls()), 1)
                 self.assertEqual(gateway.send_command.await_args.args, ('R01', 'NAVIGATE', {
                     'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
+                    'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
+                    'tag_revision': None, 'registry_revision': None,
                     'preview_request_id': 'preview-approved',
                     'active_map_id': 'CANONICAL', 'active_map_revision': '21',
                     'canonical_map_revision': 21,

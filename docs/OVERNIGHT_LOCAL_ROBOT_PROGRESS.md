@@ -1,7 +1,7 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: 310e2be
+Current HEAD: 4f7ae83
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
 Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 
@@ -15,7 +15,7 @@ Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 | T05 | Resume Mapping | BLOCKED | 58c4dc2 | `.runtime/local-map-slam-resume-acceptance.json` (`acceptance`, `initial_map_restoration_check`, `teleop_motion`, `mapping_extension`, `resumed_map_save_evidence`) | Prior restore proof: 60,875 saved known cells covered by 70,438 live cells; 99.977% class agreement. Web Teleop attempt moved 0.0607 m but did not maintain source continuity; map stayed 70,438 cells, same 440×598 extent/signature, zero newly known cells. Old map remained intact and a distinct resumed session was saved without promoting canonical. First failing layer: Web Teleop did not carry the robot into a verified new frontier; mapping did not extend. Current-boot storage errors block safe retest. |
 | T06 | Map Point navigation | BLOCKED | 2e6bf44, f94407b | `.runtime/local-map-workflow-acceptance-scale-final.json`; `.runtime/resume-web-navigation.json`; frontend/backend bridge test output | Map clicks now select only; PREVIEW PATH is explicit. Backend invalidates prior approvals on target change/cancel and binds previews to live TF pose frame/map/revision/provenance/freshness. Tests: frontend 21/21, TypeScript check, backend bridge 23/23, Django system check, Python compile, `git diff --check`. Runtime gate not met: available samples include a near-goal timeout/yaw error 2.09 rad and a medium goal with 0.0699 m XY error; required controlled near/medium/turning run is unsafe under T00 storage gate. |
 | T07 | Tag registry/navigation target | BLOCKED | 6208ea8 | `twin.tests.test_navigation_graph` (8/8); read-only active registry query: `WH-TEST-01`, revision 21, 30 enabled Tags | Authoritative source is the database `NavigationTag` registry synchronized from the active warehouse layout. Added authenticated robot-scoped registry API and shared `NavigationTarget` resolver; all required positive/negative resolution tests pass. Live API against a robot-confirmed active map remains unverified because T00 blocks starting/restarting the ROS/Gazebo/Web runtime. |
-| T08 | Tag dropdown UI | RUNNING | - | - | Implementing robot-scoped authoritative Tag loading, selectable details, map highlight, and loading/empty/error/map-incompatibility states. |
+| T08 | Tag dropdown UI | BLOCKED | 4f7ae83 | `waretwin/frontend/tests/robot_control_workflow.test.tsx` (24/24); `twin.tests.test_navigation_graph` (8/8) | Added Robot Control MAP POINT/TAG selector and authenticated robot-scoped Tag API client. Selection shows registry ID/label/type/map/revision/pose, highlights the resolved pose on canonical map, and sends no preview/goal. Loading, empty, backend failure, disabled, and map-incompatibility states are tested. Live authenticated Web/API acceptance remains unavailable under T00. |
 | T09 | Tag path preview | PENDING | - | - | - |
 | T10 | Tag navigation runtime | PENDING | - | - | - |
 | T11 | Navigation cancel/safety | PENDING | - | - | - |
@@ -77,3 +77,9 @@ Last updated: 2026-10-03 (Asia/Ho_Chi_Minh)
 - Added `GET /api/robots/<robot_id>/navigation-tags`, returning database source, canonical map identity/revision, navigability/reason, per-Tag data hash, registry hash, and all registered Tag rows for the compatible active map. Added central `NavigationTarget` and `resolve_navigation_target()` for both `MAP_POINT` and `TAG`, binding robot/frame/map/revision/source metadata.
 - Targeted Django tests passed 8/8: valid Tag, shared target shape, explicit approach pose, non-finite pose rejection, unknown Tag, disabled Tag, wrong map, stale map revision, and authenticated robot-scoped API behavior. `manage.py check`, `makemigrations --check --dry-run`, Python compile, and `git diff --check` passed.
 - Runtime compatibility is not claimed: the API test supplies a controlled active-map state, and the live ROS bridge/Web session is not safe to start under T00. First unverified layer is current robot active-map telemetry feeding the authenticated registry API. T07 is blocked on that live integration check.
+
+## T08 Tag dropdown UI evidence and blocker
+
+- Robot Control now has a MAP POINT/TAG method control and an authoritative `getRobotNavigationTags(robotId)` request. The dropdown has no free-text path; incompatible registries and backend failures fail closed. Disabled/non-navigable rows remain visible as disabled options with their status.
+- Selecting a navigable Tag displays ID, label, family, map/revision and resolved X/Y/yaw, and draws a distinct selected-target marker on the GLOBAL canonical map. Selection clears/invalidate previews and does not emit `PATH_PREVIEW_REQUEST` or `NAV_GOAL`; Tag preview remains disabled pending T09's source-bound common preview flow.
+- Frontend tests passed 24/24; TypeScript `--noEmit` passed. Backend registry tests passed 8/8; Django system/migration checks, Python compile, and `git diff --check` passed. Production frontend build and real authenticated Web/API interaction were not run under the current-boot storage fault. First unverified layer: live browser-to-Django robot/map registry response. T08 remains blocked, with no runtime PASS claimed.

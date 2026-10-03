@@ -354,22 +354,25 @@ describe("robot detail route stability", () => {
     expect(container.querySelector('[role="status"]')?.textContent ?? "").not.toContain("CLEAR_ESTOP_APPLIED");
   });
 
-  it("pointer hold captures and release, cancel or leave sends STOP", () => {
-    useStore.setState({ runtimeMode: "GAZEBO_ROS", rosConnected: true, websocketState: "CONNECTED", connectedRobotIds: ["R01"] });
+  it("latches Mapping teleop on click and ignores pointer release until a second click", () => {
+    setOnlineRobot("MAPPING");
     renderNode(<RobotControlDetailPage robotId="R01" />);
     const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
-    const capture = vi.fn(); forward.setPointerCapture = capture;
-    for (const release of ["pointerup", "pointercancel", "pointerout"]) {
-      const down = new Event("pointerdown", { bubbles: true });
-      Object.defineProperty(down, "pointerId", { value: 42 });
-      act(() => forward.dispatchEvent(down));
-      expect(capture).toHaveBeenCalledWith(42);
-      expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+    expect(forward.disabled).toBe(false);
+    act(() => forward.click());
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+    expect(forward.getAttribute("aria-pressed")).toBe("true");
+    for (const release of ["pointerup", "pointercancel", "pointerout", "pointerleave"]) {
       act(() => forward.dispatchEvent(new Event(release, { bubbles: true })));
-      expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
     }
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+    expect(forward.getAttribute("aria-pressed")).toBe("true");
+
+    act(() => forward.click());
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+    expect(forward.getAttribute("aria-pressed")).toBe("false");
   });
-  it("routes manual hold refresh through the dedicated worker and stops it on release", async () => {
+  it("switches direction without an intermediate STOP and toggles the active worker command off", async () => {
     const postMessage = vi.fn();
     const terminate = vi.fn();
     const constructWorker = vi.fn();
@@ -390,21 +393,82 @@ describe("robot detail route stability", () => {
     expect(postMessage).toHaveBeenCalledWith({ type: "CONNECT", url: "ws://127.0.0.1:8001/ws", token: "test-access-token" });
 
     const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
-    const down = new Event("pointerdown", { bubbles: true });
-    Object.defineProperty(down, "pointerId", { value: 42 });
-    act(() => forward.dispatchEvent(down));
+    const left = container.querySelector<HTMLButtonElement>(".manual-key-left")!;
+    act(() => forward.click());
     expect(postMessage).toHaveBeenCalledWith({ type: "HOLD", robot_id: "R01", action: "FORWARD" });
     act(() => useStore.getState().setRobotDetail("R01", {
       appliedMode: "MANUAL", modeTransitionState: "APPLIED", modeRequestId: "manual-applied",
     }));
     expect(postMessage).not.toHaveBeenCalledWith({ type: "STOP", robot_id: "R01" });
-    act(() => forward.dispatchEvent(new Event("pointerup", { bubbles: true })));
+    act(() => left.click());
+    expect(postMessage).toHaveBeenCalledWith({ type: "HOLD", robot_id: "R01", action: "LEFT" });
+    expect(postMessage.mock.calls.filter(([request]) => request.type === "STOP")).toHaveLength(0);
+    act(() => left.click());
     expect(postMessage).toHaveBeenCalledWith({ type: "STOP", robot_id: "R01" });
     expect(wsManualCommand).not.toHaveBeenCalled();
 
     act(() => root.unmount());
     root = createRoot(container);
     expect(postMessage).toHaveBeenCalledWith({ type: "DISCONNECT", robot_id: "R01" });
+  });
+  it("toggles keyboard commands on discrete keydown edges and Space always stops", () => {
+    setOnlineRobot("MAPPING");
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    const down = (key: string, repeat = false) => window.dispatchEvent(new KeyboardEvent("keydown", { key, repeat, bubbles: true, cancelable: true }));
+    act(() => down("w"));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+    act(() => window.dispatchEvent(new KeyboardEvent("keyup", { key: "w", bubbles: true, cancelable: true })));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+    act(() => down("w", true));
+    expect(wsManualCommand).toHaveBeenCalledTimes(1);
+    act(() => down("w"));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+    act(() => down("a"));
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true })));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+  });
+  it("stops the latched command before mode change, page exit, disconnect, and E-STOP", async () => {
+    setOnlineRobot("MAPPING");
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
+    act(() => forward.click());
+    act(() => buttonNamed("AUTONOMOUS")?.click());
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+    expect(wsSetRobotMode).toHaveBeenCalledWith("R01", "AUTONOMOUS");
+
+    act(() => useStore.getState().setRobotDetail("R01", { appliedMode: "MANUAL", modeTransitionState: "APPLIED" }));
+    act(() => forward.click());
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+
+    act(() => useStore.getState().setRobotDetail("R01", { appliedMode: "MANUAL", modeTransitionState: "APPLIED" }));
+    act(() => forward.click());
+    act(() => buttonNamed("EMERGENCY STOP")?.click());
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+    expect(api.emergencyStop).toHaveBeenCalledWith("R01");
+
+    act(() => useStore.getState().setRobotDetail("R01", { appliedMode: "MANUAL", modeTransitionState: "APPLIED" }));
+    act(() => forward.click());
+    act(() => useStore.setState({ websocketState: "DISCONNECTED" }));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+  });
+  it("clears the latch on authoritative E-STOP and does not resume when the latch clears", () => {
+    setOnlineRobot("MAPPING");
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
+    act(() => forward.click());
+    expect(forward.getAttribute("aria-pressed")).toBe("true");
+    act(() => useStore.getState().setRobotDetail("R01", {
+      diagnostics: { command_ownership: { estop_active: true } } as never,
+    }));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+    expect(container.querySelector<HTMLButtonElement>(".manual-key-forward")?.getAttribute("aria-pressed")).toBe("false");
+    const countAfterStop = vi.mocked(wsManualCommand).mock.calls.length;
+    act(() => useStore.getState().setRobotDetail("R01", {
+      diagnostics: { command_ownership: { estop_active: false } } as never,
+    }));
+    expect(vi.mocked(wsManualCommand).mock.calls).toHaveLength(countAfterStop);
+    expect(container.querySelector<HTMLButtonElement>(".manual-key-forward")?.getAttribute("aria-pressed")).toBe("false");
   });
   it("renders the direct URL with null map/scan and disables manual motion while disconnected", () => {
     useStore.setState({ twin: null as never, rosDiagnostics: null, rosConnected: false, websocketState: "DISCONNECTED", robotDetail: {} });

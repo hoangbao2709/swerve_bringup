@@ -5,6 +5,7 @@ import { useStore, type TagGraph } from "../../state/store";
 import type { TwinState } from "../../schema/twin_state";
 import { clearEmergencyStop, emergencyStop, missionAction, navigationApi, startTagMission } from "../../services/api";
 import { wsManualCommand, wsSetRobotMode, type ManualAction } from "../../services/ws";
+import { MANUAL_COMMAND_REFRESH_MS, nextManualCommand, type ActiveManualCommand } from "../../services/manualCommand";
 
 const EMPTY_ROBOTS: TwinState["robots"] = {};
 const EMPTY_TAGS: TagGraph["tags"] = [];
@@ -66,6 +67,7 @@ function RobotControlContent() {
   const ros = useStore((state) => state.rosConnected);
   const connectedRobotIds = useStore((state) => state.connectedRobotIds);
   const runtimeMode = useStore((state) => state.runtimeMode);
+  const runtimeState = useStore((state) => state.runtimeState);
   const diagnostics = useStore((state) => state.rosDiagnostics);
   const websocketState = useStore((state) => state.websocketState);
   const tagGraph = useStore((state) => state.tagGraph);
@@ -82,8 +84,10 @@ function RobotControlContent() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [controlMode, setControlMode] = useState<"MANUAL" | "AUTONOMOUS">("AUTONOMOUS");
+  const [activeManualCommand, setActiveManualCommand] = useState<ActiveManualCommand | null>(null);
   const manualTimer = useRef<number | null>(null);
-  const manualActive = useRef(false);
+  const activeManualCommandRef = useRef<ActiveManualCommand | null>(null);
+  const activeManualRobotId = useRef<string | null>(null);
   const previousRobot = useRef<string | null>(null);
   const robotIds = useMemo(() => Object.keys(robots), [robots]);
   const robotId = selected ?? robotIds[0] ?? "";
@@ -99,13 +103,23 @@ function RobotControlContent() {
 
   const active = Boolean(mission && !["ARRIVED", "CANCELLED", "FAILED", "EMERGENCY_STOPPED"].includes(mission.status));
 
-  const stopManual = useCallback(() => {
+  const setManualCommand = useCallback((command: ActiveManualCommand | null) => {
+    activeManualCommandRef.current = command;
+    setActiveManualCommand(command);
+    activeManualRobotId.current = command ? robotId : null;
+  }, [robotId]);
+
+  const stopManual = useCallback((force = false) => {
+    const hadActiveCommand = activeManualCommandRef.current !== null;
+    const commandRobotId = activeManualRobotId.current ?? robotId;
     if (manualTimer.current !== null) {
       window.clearInterval(manualTimer.current);
       manualTimer.current = null;
     }
-    if (manualActive.current && robotId && controlOnline) wsManualCommand(robotId, "STOP");
-    manualActive.current = false;
+    activeManualCommandRef.current = null;
+    activeManualRobotId.current = null;
+    setActiveManualCommand(null);
+    if ((hadActiveCommand || force) && commandRobotId && controlOnline) wsManualCommand(commandRobotId, "STOP");
   }, [controlOnline, robotId]);
 
   useEffect(() => {
@@ -116,6 +130,32 @@ function RobotControlContent() {
   }, [robotId, robots, stopManual]);
 
   useEffect(() => () => stopManual(), [stopManual]);
+
+  const previousRuntime = useRef({ runtimeMode, runtimeState });
+  useEffect(() => {
+    const previous = previousRuntime.current;
+    previousRuntime.current = { runtimeMode, runtimeState };
+    if (previous.runtimeMode !== runtimeMode || previous.runtimeState !== runtimeState) stopManual();
+  }, [runtimeMode, runtimeState, stopManual]);
+
+  useEffect(() => {
+    if (controlMode !== "MANUAL") stopManual();
+  }, [controlMode, stopManual]);
+
+  useEffect(() => {
+    const stopBeforePageExit = () => stopManual();
+    window.addEventListener("pagehide", stopBeforePageExit);
+    window.addEventListener("beforeunload", stopBeforePageExit);
+    return () => {
+      window.removeEventListener("pagehide", stopBeforePageExit);
+      window.removeEventListener("beforeunload", stopBeforePageExit);
+    };
+  }, [stopManual]);
+
+  const estopActive = Boolean((diagnostics as { command_ownership?: { estop_active?: boolean } } | null)?.command_ownership?.estop_active);
+  useEffect(() => {
+    if (estopActive || mission?.status === "EMERGENCY_STOPPED") stopManual();
+  }, [estopActive, mission?.status, stopManual]);
 
   const setMode = (next: "MANUAL" | "AUTONOMOUS") => {
     if (next === controlMode) return;
@@ -132,29 +172,39 @@ function RobotControlContent() {
     setControlMode(next);
   };
 
-  const holdManual = useCallback((action: ManualAction) => {
+  const toggleManual = useCallback((action: ManualAction) => {
     if (action === "STOP") {
-      stopManual();
+      stopManual(true);
       return;
     }
     if (controlMode !== "MANUAL") {
       setError("Switch the robot to MANUAL before driving");
       return;
     }
+    if (estopActive) {
+      setError("Manual control is blocked while E-STOP is active");
+      return;
+    }
     if (!robotId || !controlOnline) {
       setError("Manual control requires a connected ROS bridge and WebSocket");
       return;
     }
-    if (!wsManualCommand(robotId, action)) {
-      setError("Manual command could not be sent");
+    const nextCommand = nextManualCommand(activeManualCommandRef.current, action);
+    if (!nextCommand) {
+      stopManual(true);
       return;
     }
     if (manualTimer.current !== null) window.clearInterval(manualTimer.current);
-    manualActive.current = true;
+    if (!wsManualCommand(robotId, nextCommand)) {
+      setError("Manual command could not be sent");
+      stopManual(true);
+      return;
+    }
+    setManualCommand(nextCommand);
     manualTimer.current = window.setInterval(() => {
-      if (!wsManualCommand(robotId, action)) stopManual();
-    }, 100);
-  }, [controlMode, controlOnline, robotId, stopManual]);
+      if (!wsManualCommand(robotId, nextCommand)) stopManual(true);
+    }, MANUAL_COMMAND_REFRESH_MS);
+  }, [controlMode, controlOnline, estopActive, robotId, setManualCommand, stopManual]);
 
   useEffect(() => {
     const keyActions: Record<string, ManualAction> = {
@@ -163,25 +213,22 @@ function RobotControlContent() {
       q: "ROTATE_LEFT", Q: "ROTATE_LEFT", e: "ROTATE_RIGHT", E: "ROTATE_RIGHT",
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+        stopManual(true);
+        return;
+      }
+      if (event.target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName)) return;
       const action = keyActions[event.key];
       if (!action || event.repeat) return;
       event.preventDefault();
-      holdManual(action);
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (keyActions[event.key]) {
-        event.preventDefault();
-        stopManual();
-      }
+      toggleManual(action);
     };
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      stopManual();
     };
-  }, [holdManual, stopManual]);
+  }, [stopManual, toggleManual]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -209,12 +256,7 @@ function RobotControlContent() {
     if (mission) void act(() => missionAction(mission.id, action));
   };
   const label = useMemo(() => target == null ? "Select tag" : `Tag ${target}`, [target]);
-  const buttonEvents = (action: ManualAction) => ({
-    onPointerDown: () => holdManual(action),
-    onPointerUp: stopManual,
-    onPointerLeave: stopManual,
-    onPointerCancel: stopManual,
-  });
+  const buttonEvents = (action: ManualAction) => ({ onClick: () => toggleManual(action) });
 
   return <div className="overview-shell wt-has-sidebar wt-control-page">
     <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((value) => !value)} />
@@ -226,7 +268,7 @@ function RobotControlContent() {
       <div className="control-strip">
         <select value={robotId} onChange={(event) => select(event.target.value)}><option value="">Robot</option>{robotIds.map((id) => <option key={id}>{id}</option>)}</select>
         <span className="control-mode-badge">{controlMode}</span><span>{mission?.status ?? "IDLE"}</span>
-        <button className="danger" disabled={busy || !robotId} onClick={() => robotId && void act(() => emergencyStop(robotId))}>EMERGENCY STOP</button>
+        <button className="danger" disabled={busy || !robotId} onClick={() => { stopManual(); robotId && void act(() => emergencyStop(robotId)); }}>EMERGENCY STOP</button>
         {mission?.status === "EMERGENCY_STOPPED" && <button className="control-clear-stop" disabled={busy || !robotId || !controlOnline} onClick={() => robotId && void act(() => clearEmergencyStop(robotId))}>CLEAR STOP</button>}
       </div>
       <div className="control-grid">
@@ -244,8 +286,8 @@ function RobotControlContent() {
         </aside>
       </div>
       <section className="manual-panel">
-        <div className="manual-header"><div><h3>ROBOT CONTROL</h3><p>Manual drive uses a 0.4 s dead-man timeout; release the key/button to stop.</p></div><div className="manual-mode-actions"><button className={controlMode === "MANUAL" ? "selected" : ""} disabled={!controlOnline || busy} onClick={() => setMode("MANUAL")}>MANUAL</button><button className={controlMode === "AUTONOMOUS" ? "selected" : ""} disabled={!controlOnline || busy} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button></div></div>
-        <div className="manual-body"><div className="manual-grid">{MANUAL_BUTTONS.map((button) => <button key={button.action} className={`manual-btn manual-${button.action.toLowerCase()}`} disabled={button.action !== "STOP" && (!controlOnline || controlMode !== "MANUAL")} title={button.title} {...buttonEvents(button.action)}>{button.label}</button>)}</div><div className="manual-help">Keyboard: W/A/S/D or arrow keys · Q/E rotate · STOP is always available in MANUAL mode.</div></div>
+        <div className="manual-header"><div><h3>ROBOT CONTROL</h3><p>Click/key press latches a command; release does not stop. The 0.4 s backend watchdog remains active.</p></div><div className="manual-mode-actions"><button className={controlMode === "MANUAL" ? "selected" : ""} disabled={!controlOnline || busy} onClick={() => setMode("MANUAL")}>MANUAL</button><button className={controlMode === "AUTONOMOUS" ? "selected" : ""} disabled={!controlOnline || busy} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button><span className="manual-active-command" aria-live="polite">{activeManualCommand ? `${activeManualCommand} LATCHED` : "STOPPED"}</span></div></div>
+        <div className="manual-body"><div className="manual-grid">{MANUAL_BUTTONS.map((button) => <button key={button.action} className={`manual-btn manual-${button.action.toLowerCase()}${activeManualCommand === button.action ? " is-active" : ""}`} aria-pressed={button.action !== "STOP" && activeManualCommand === button.action} disabled={!controlOnline || (button.action !== "STOP" && controlMode !== "MANUAL")} title={button.title} {...buttonEvents(button.action)}>{button.label}</button>)}</div><div className="manual-help">Keyboard: W/A/S/D or arrow keys · Q/E rotate · Space / STOP stops immediately.</div></div>
       </section>
       <div className="control-bottom">
         <section><h3>LOCALIZATION</h3><b>{localization.state}</b><p>Last tag {localization.lastTagId ?? "—"} · Expected {localization.expectedTagId ?? mission?.next_tag_id ?? "—"}</p><p>Tag visible {detection.visible ? "YES" : "NO"}</p></section>

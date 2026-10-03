@@ -17,8 +17,17 @@ vi.mock("../src/services/api", () => ({
   emergencyStop: vi.fn(),
   clearEmergencyStop: vi.fn(),
 }));
+vi.mock("../src/services/ws", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/ws")>();
+  return {
+    ...actual,
+    wsManualCommand: vi.fn(() => true),
+    wsSetRobotMode: vi.fn(() => true),
+  };
+});
 
 import { RobotControlPage } from "../src/components/control/RobotControlPage";
+import { wsManualCommand } from "../src/services/ws";
 
 const initialState = useStore.getState();
 let root: Root;
@@ -46,6 +55,7 @@ beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   window.history.replaceState({}, "", "/control");
   useStore.setState(initialState);
+  vi.clearAllMocks();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -56,6 +66,7 @@ afterEach(() => {
   container.remove();
   useStore.setState(initialState);
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("/control direct render", () => {
@@ -133,5 +144,58 @@ describe("control runtime configuration guards", () => {
   it("allows React Refresh to read Symbol properties from FLOOR_ELEV", () => {
     expect(() => Reflect.get(FLOOR_ELEV, Symbol.toStringTag)).not.toThrow();
     expect(() => Reflect.get(FLOOR_ELEV, Symbol.for("react.refresh"))).not.toThrow();
+  });
+});
+
+describe("latched manual control on the legacy control route", () => {
+  it("keeps the direction active through release, refreshes at 100 ms, and toggles with a second click", () => {
+    vi.useFakeTimers();
+    const robot = { ...r01(), control_mode: "MANUAL" as const };
+    renderControl({
+      twin: { ...initialState.twin, robots: { R01: robot } },
+      selectedRobot: "R01",
+      runtimeMode: "GAZEBO_ROS",
+      runtimeState: "MAPPING",
+      rosConnected: true,
+      connectedRobotIds: ["R01"],
+      websocketState: "CONNECTED",
+    });
+    const forward = container.querySelector<HTMLButtonElement>(".manual-forward")!;
+    expect(forward.disabled).toBe(false);
+    act(() => forward.click());
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+    expect(forward.getAttribute("aria-pressed")).toBe("true");
+    act(() => forward.dispatchEvent(new Event("pointerup", { bubbles: true })));
+    act(() => forward.dispatchEvent(new Event("pointerleave", { bubbles: true })));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+
+    act(() => vi.advanceTimersByTime(300));
+    expect(vi.mocked(wsManualCommand).mock.calls.filter(([, command]) => command === "FORWARD")).toHaveLength(4);
+    act(() => container.querySelector<HTMLButtonElement>(".manual-left")!.click());
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "LEFT");
+    expect(vi.mocked(wsManualCommand).mock.calls.some(([, command]) => command === "STOP")).toBe(false);
+    act(() => container.querySelector<HTMLButtonElement>(".manual-left")!.click());
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+    expect(forward.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("ignores keyboard release and OS repeat; Space stops immediately", () => {
+    const robot = { ...r01(), control_mode: "MANUAL" as const };
+    renderControl({
+      twin: { ...initialState.twin, robots: { R01: robot } },
+      selectedRobot: "R01",
+      runtimeMode: "GAZEBO_ROS",
+      rosConnected: true,
+      connectedRobotIds: ["R01"],
+      websocketState: "CONNECTED",
+    });
+    const keydown = (key: string, repeat = false) => window.dispatchEvent(new KeyboardEvent("keydown", { key, repeat, bubbles: true, cancelable: true }));
+    act(() => keydown("w"));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
+    act(() => window.dispatchEvent(new KeyboardEvent("keyup", { key: "w", bubbles: true, cancelable: true })));
+    act(() => keydown("w", true));
+    expect(wsManualCommand).toHaveBeenCalledTimes(1);
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true })));
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
   });
 });

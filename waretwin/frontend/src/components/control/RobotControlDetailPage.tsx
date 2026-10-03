@@ -1,6 +1,7 @@
 import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode, type MouseEvent as ReactMouseEvent } from "react";
 import { apiFetch, clearEmergencyStop, emergencyStop, getRobotNavigationTags, type RobotNavigationTag, type RobotNavigationTagRegistry } from "../../services/api";
 import { WS_URL, wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
+import { MANUAL_COMMAND_REFRESH_MS, nextManualCommand, type ActiveManualCommand } from "../../services/manualCommand";
 import { useSimulationRunner } from "../../simulation/runner";
 import { layout, useStore } from "../../state/store";
 import type { FramePose, RobotDetailError, RobotDetailGoal, RobotDetailMapSnapshot, RobotDetailPath, RobotDetailPathPreview, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
@@ -134,6 +135,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const layoutRevision = useStore((state) => state.layoutRevision);
   const robotMapSync = mapSync.robots[robotId];
   const [controlMode, setControlMode] = useState<"MANUAL" | "AUTONOMOUS">(robot?.control_mode ?? "AUTONOMOUS");
+  const [activeManualCommand, setActiveManualCommand] = useState<ActiveManualCommand | null>(null);
   const [activeTab, setActiveTab] = useState<LocalTab>("CONTROL");
   const [mapSource, setMapSource] = useState<MapSource>("GLOBAL");
   const [lidarDimension, setLidarDimension] = useState<LidarDimension>("2D");
@@ -151,12 +153,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const [host, setHost] = useState<HostStatus | null>(null);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const manualTimer = useRef<number | null>(null);
-  const manualActive = useRef(false);
+  const activeManualCommandRef = useRef<ActiveManualCommand | null>(null);
+  const activeManualRobotId = useRef<string | null>(null);
   const manualWorker = useRef<Worker | null>(null);
   const manualKeyboardHandlers = useRef<{
-    hold: (action: ManualAction) => void;
-    stop: () => void;
-  }>({ hold: () => undefined, stop: () => undefined });
+    activate: (action: ManualAction) => void;
+    stop: (force?: boolean) => void;
+  }>({ activate: () => undefined, stop: () => undefined });
 
   const robotBridgeOnline = connectedRobotIds.includes(robotId);
   const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && (runtimeMode === "LOCAL_SIM" || (robotBridgeOnline && rosConnected && websocketState === "CONNECTED")));
@@ -331,19 +334,51 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
-  const stopManual = useCallback(() => {
+  const setManualCommand = useCallback((command: ActiveManualCommand | null) => {
+    activeManualCommandRef.current = command;
+    setActiveManualCommand(command);
+    if (command) activeManualRobotId.current = robotId;
+    else activeManualRobotId.current = null;
+  }, [robotId]);
+
+  const stopManual = useCallback((force = false) => {
+    const hadActiveCommand = activeManualCommandRef.current !== null;
+    const commandRobotId = activeManualRobotId.current ?? robotId;
     if (manualTimer.current !== null) {
       window.clearInterval(manualTimer.current);
       manualTimer.current = null;
     }
-    if (manualActive.current && controlOnline) {
-      if (manualWorker.current) manualWorker.current.postMessage({ type: "STOP", robot_id: robotId });
-      else wsManualCommand(robotId, "STOP");
+    activeManualCommandRef.current = null;
+    activeManualRobotId.current = null;
+    setActiveManualCommand(null);
+    if ((hadActiveCommand || force) && controlOnline && commandRobotId) {
+      if (manualWorker.current) manualWorker.current.postMessage({ type: "STOP", robot_id: commandRobotId });
+      else wsManualCommand(commandRobotId, "STOP");
     }
-    manualActive.current = false;
   }, [controlOnline, robotId]);
 
   useEffect(() => () => stopManual(), [stopManual]);
+
+  const previousRuntime = useRef({ runtimeMode, runtimeState });
+  useEffect(() => {
+    const previous = previousRuntime.current;
+    previousRuntime.current = { runtimeMode, runtimeState };
+    if (previous.runtimeMode !== runtimeMode || previous.runtimeState !== runtimeState) stopManual();
+  }, [runtimeMode, runtimeState, stopManual]);
+
+  useEffect(() => {
+    if (controlMode !== "MANUAL") stopManual();
+  }, [controlMode, stopManual]);
+
+  useEffect(() => {
+    const stopBeforePageExit = () => stopManual();
+    window.addEventListener("pagehide", stopBeforePageExit);
+    window.addEventListener("beforeunload", stopBeforePageExit);
+    return () => {
+      window.removeEventListener("pagehide", stopBeforePageExit);
+      window.removeEventListener("beforeunload", stopBeforePageExit);
+    };
+  }, [stopManual]);
 
   useEffect(() => {
     if (!controlOnline || !authToken || typeof Worker === "undefined") return;
@@ -357,18 +392,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     manualWorker.current = worker;
     worker.onmessage = (event: MessageEvent<{ type?: string; message?: string }>) => {
       if (event.data?.type !== "ERROR") return;
-      if (manualTimer.current !== null) {
-        window.clearInterval(manualTimer.current);
-        manualTimer.current = null;
-      }
-      manualActive.current = false;
+      stopManual(true);
       setError(event.data.message || "Manual command refresh stopped safely");
     };
     worker.onerror = () => {
       if (manualWorker.current === worker) manualWorker.current = null;
-      if (manualActive.current) wsManualCommand(robotId, "STOP");
-      manualActive.current = false;
-      setError("Manual refresh worker failed; the dead-man stop is active");
+      stopManual(true);
+      setError("Manual refresh worker failed; the backend timeout stop is active");
     };
     worker.postMessage({ type: "CONNECT", url: WS_URL, token: authToken });
     return () => {
@@ -376,7 +406,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       worker.postMessage({ type: "DISCONNECT", robot_id: robotId });
       window.setTimeout(() => worker.terminate(), 150);
     };
-  }, [authToken, controlOnline, robotId]);
+  }, [authToken, controlOnline, robotId, stopManual]);
 
   const estopActive = Boolean(detailDiagnostics?.command_ownership?.estop_active
     ?? diagnostics?.command_ownership?.estop_active);
@@ -405,32 +435,37 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setError("");
   }, [controlOnline, robotId, setRobotDetail, stopManual]);
 
-  const holdManual = useCallback((action: ManualAction) => {
+  const toggleManual = useCallback((action: ManualAction) => {
     if (action === "STOP") {
-      const wasActive = manualActive.current;
-      stopManual();
-      if (!wasActive && controlOnline) {
-        if (manualWorker.current) manualWorker.current.postMessage({ type: "STOP", robot_id: robotId });
-        else wsManualCommand(robotId, "STOP");
-      }
+      stopManual(true);
       return;
     }
     if (controlMode !== "MANUAL" || modeTransitionState === "REQUESTED" || modeTransitionState === "FAILED") { setError("Wait for applied MANUAL mode before driving"); return; }
+    if (estopActive) { setError("Manual control is blocked while E-STOP is active"); return; }
     if (!controlOnline) { setError("Manual control is disabled while ROS bridge is disconnected"); return; }
-    if (manualWorker.current) {
-      manualWorker.current.postMessage({ type: "HOLD", robot_id: robotId, action });
-      manualActive.current = true;
+    const nextCommand = nextManualCommand(activeManualCommandRef.current, action);
+    if (!nextCommand) {
+      stopManual(true);
       return;
     }
-    if (!wsManualCommand(robotId, action)) { setError("Manual command was not sent"); return; }
+    if (manualWorker.current) {
+      manualWorker.current.postMessage({ type: "HOLD", robot_id: robotId, action: nextCommand });
+      setManualCommand(nextCommand);
+      return;
+    }
     if (manualTimer.current !== null) window.clearInterval(manualTimer.current);
-    manualActive.current = true;
+    if (!wsManualCommand(robotId, nextCommand)) {
+      setError("Manual command was not sent");
+      stopManual(true);
+      return;
+    }
+    setManualCommand(nextCommand);
     manualTimer.current = window.setInterval(() => {
-      if (!wsManualCommand(robotId, action)) stopManual();
-    }, 100);
-  }, [controlMode, controlOnline, modeTransitionState, robotId, stopManual]);
+      if (!wsManualCommand(robotId, nextCommand)) stopManual(true);
+    }, MANUAL_COMMAND_REFRESH_MS);
+  }, [controlMode, controlOnline, estopActive, modeTransitionState, robotId, setManualCommand, stopManual]);
 
-  manualKeyboardHandlers.current = { hold: holdManual, stop: stopManual };
+  manualKeyboardHandlers.current = { activate: toggleManual, stop: stopManual };
 
   useEffect(() => {
     const keyActions: Record<string, ManualAction> = {
@@ -439,27 +474,18 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.code === "Space") {
-        if (event.repeat || (event.target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName))) return;
         event.preventDefault();
-        manualKeyboardHandlers.current.hold("STOP");
+        manualKeyboardHandlers.current.stop(true);
         return;
       }
       const action = keyActions[event.key];
       if (!action || event.repeat || (event.target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName))) return;
       event.preventDefault();
-      manualKeyboardHandlers.current.hold(action);
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (event.code === "Space") { event.preventDefault(); return; }
-      if (!keyActions[event.key]) return;
-      event.preventDefault();
-      manualKeyboardHandlers.current.stop();
+      manualKeyboardHandlers.current.activate(action);
     };
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
       manualKeyboardHandlers.current.stop();
     };
   }, []);
@@ -611,15 +637,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   };
 
   const moveButtonEvents = useCallback((action: ManualAction) => ({
-    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-      holdManual(action);
-    },
-    onPointerUp: stopManual,
-    onPointerLeave: stopManual,
-    onPointerCancel: stopManual,
-    onLostPointerCapture: stopManual,
-  }), [holdManual, stopManual]);
+    onClick: () => toggleManual(action),
+  }), [toggleManual]);
 
   return (
     <div className="robot-detail-shell">
@@ -724,7 +743,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       }
 
       <footer className="robot-detail-bottom">
-        <ManualBar controlMode={controlMode} controlOnline={controlOnline} holdManual={holdManual} moveButtonEvents={moveButtonEvents} setMode={setMode} />
+        <ManualBar controlMode={controlMode} controlOnline={controlOnline} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} setMode={setMode} />
         <div className="robot-detail-nav-bar">
           <div><span>NAV STATUS</span><b>{safeText(navigationStatus ?? robot?.navigation_state, "N/A")}</b></div>
           <div><span>GOAL</span><b>{goal ? `${safeNumber(goal.x, 2)} / ${safeNumber(goal.y, 2)}` : "N/A"}</b></div>
@@ -842,10 +861,10 @@ function ErrorMessagesPanelContent({ errors }: { errors: RobotDetailError[] }) {
 
 const ManualBar = memo(ManualBarContent);
 
-function ManualBarContent({ controlMode, controlOnline, holdManual, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; holdManual: (action: ManualAction) => void; moveButtonEvents: (action: ManualAction) => Record<string, (event: React.PointerEvent<HTMLButtonElement>) => void>; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
+function ManualBarContent({ controlMode, controlOnline, activeManualCommand, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; activeManualCommand: ActiveManualCommand | null; moveButtonEvents: (action: ManualAction) => { onClick: () => void }; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
   return <section className="robot-detail-manual">
-    <div className="robot-detail-manual-head"><div><span className="robot-console-kicker">MANUAL CONTROL</span><b>DEAD-MAN ENABLED</b><small>Release key/button → STOP · W/S/A/D · Q/E · arrows · Space STOP</small></div><div className="robot-detail-manual-mode"><button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("MANUAL")}>MANUAL</button><button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button></div></div>
-    <div className="robot-detail-manual-pad">{MANUAL_ACTIONS.map((item) => <button type="button" key={item.action} className={`manual-key manual-key-${item.action.toLowerCase()}`} title={item.title} aria-label={item.title} disabled={!controlOnline || controlMode !== "MANUAL"} {...moveButtonEvents(item.action)} onClick={item.action === "STOP" ? () => holdManual("STOP") : undefined}>{item.label}<small>{item.action === "FORWARD" ? "W / ↑" : item.action === "BACKWARD" ? "S / ↓" : item.action === "LEFT" ? "A / ←" : item.action === "RIGHT" ? "D / →" : item.action === "ROTATE_LEFT" ? "Q" : item.action === "ROTATE_RIGHT" ? "E" : "STOP"}</small></button>)}</div>
+    <div className="robot-detail-manual-head"><div><span className="robot-console-kicker">MANUAL CONTROL</span><b>{activeManualCommand ? `${activeManualCommand} LATCHED` : "STOPPED"}</b><small>Click or key press toggles; release does not stop · Space / STOP to stop</small></div><div className="robot-detail-manual-mode"><button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("MANUAL")}>MANUAL</button><button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button></div></div>
+    <div className="robot-detail-manual-pad">{MANUAL_ACTIONS.map((item) => <button type="button" key={item.action} className={`manual-key manual-key-${item.action.toLowerCase()}${activeManualCommand === item.action ? " is-active" : ""}`} title={item.title} aria-label={item.title} aria-pressed={item.action !== "STOP" && activeManualCommand === item.action} disabled={!controlOnline || (item.action !== "STOP" && controlMode !== "MANUAL")} {...moveButtonEvents(item.action)}>{item.label}<small>{item.action === "FORWARD" ? "W / ↑" : item.action === "BACKWARD" ? "S / ↓" : item.action === "LEFT" ? "A / ←" : item.action === "RIGHT" ? "D / →" : item.action === "ROTATE_LEFT" ? "Q" : item.action === "ROTATE_RIGHT" ? "E" : "STOP"}</small></button>)}</div>
   </section>;
 }
 

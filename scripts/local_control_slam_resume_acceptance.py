@@ -1928,6 +1928,8 @@ def main() -> int:
             'OLD_MAP_PRESERVED_AFTER_EXTENSION': bool(
                 extended_check.get('passed')
                 and int(extended_check.get('covered_saved_cells') or 0) >= saved_cells
+                and int(extended_check.get('matched_occupied_cells') or 0)
+                    >= int(extended_check.get('saved_occupied_cells') or 0)
                 and float(extended_check.get('cell_class_agreement_ratio') or 0.0) >= 0.995),
             'RESUMED_MAP_SAVE': resumed_save_passed,
             'MAP_ODOM_OWNER_SLAM_TOOLBOX': bool(

@@ -1,5 +1,6 @@
 import json
 import base64
+import math
 from copy import deepcopy
 import tempfile
 import zlib
@@ -43,6 +44,43 @@ class LocalMapRegistryTests(TestCase):
     def tearDown(self):
         self.settings.disable()
         self.tempdir.cleanup()
+
+    def _restoration_fixture(self, name, width, height, *, saved_occupied=(), saved_free=(),
+                             live_width=None, live_height=None, live_origin=(0, 0, 0),
+                             live_resolution=None, live_occupied=(), live_free=(),
+                             saved_resolution=0.05):
+        prefix = map_output_prefix('R01', name)
+        pixels = bytearray([205] * (width * height))
+        for row, col in saved_free:
+            pixels[(height - row - 1) * width + col] = 254
+        for row, col in saved_occupied:
+            pixels[(height - row - 1) * width + col] = 0
+        prefix.with_suffix('.pgm').write_bytes(
+            f'P5\n{width} {height}\n255\n'.encode('ascii') + bytes(pixels))
+        prefix.with_suffix('.yaml').write_text(
+            f'image: {name}.pgm\nresolution: {saved_resolution}\norigin: [0, 0, 0]\n'
+            'negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n', encoding='utf-8')
+        record = register_saved_map('R01', name, prefix.with_suffix('.yaml'))
+        live_width = width if live_width is None else live_width
+        live_height = height if live_height is None else live_height
+        live_resolution = saved_resolution if live_resolution is None else live_resolution
+        encoded = bytearray([0] * (live_width * live_height))
+        for row, col in live_free:
+            encoded[row * live_width + col] = 1
+        for row, col in live_occupied:
+            encoded[row * live_width + col] = 101
+        known_cells = sum(value != 0 for value in encoded)
+        map_data = {
+            'map_source': 'SLAM_TOOLBOX', 'mapping_session_id': 'resume-test-session',
+            'width': live_width, 'height': live_height, 'resolution': live_resolution,
+            'known_cells': known_cells,
+            'origin': {'x': live_origin[0], 'y': live_origin[1], 'yaw': live_origin[2]},
+            'data_encoding': 'zlib-base64-offset1',
+            'data_zlib_base64': base64.b64encode(zlib.compress(encoded)).decode('ascii'),
+        }
+        evidence = slam_map_restoration_evidence(
+            record, prefix.with_suffix('.yaml'), prefix.with_suffix('.pgm'), map_data)
+        return evidence
 
     def test_names_are_safe_and_robot_scoped_maps_never_expose_host_paths(self):
         with self.assertRaises(ValueError):
@@ -165,6 +203,68 @@ class LocalMapRegistryTests(TestCase):
         self.assertEqual(evidence['saved_known_cells'], 3)
         self.assertEqual(evidence['matched_saved_cells'], 3)
         self.assertEqual(evidence['cell_class_agreement_ratio'], 1.0)
+
+    def test_restoration_preserves_identical_occupancy_grid(self):
+        evidence = self._restoration_fixture(
+            'identical_grid', 2, 2, saved_occupied={(0, 0)}, saved_free={(0, 1)},
+            live_occupied={(0, 0)}, live_free={(0, 1)})
+        self.assertTrue(evidence['passed'], evidence)
+        self.assertEqual(evidence['saved_occupied_cells'], 1)
+        self.assertEqual(evidence['matched_occupied_cells'], 1)
+        self.assertEqual(evidence['missing_occupied_cells'], 0)
+
+    def test_restoration_matches_same_geometry_after_subcell_origin_shift(self):
+        evidence = self._restoration_fixture(
+            'subcell_origin', 2, 2, saved_occupied={(0, 0)}, saved_free={(0, 1)},
+            live_origin=(0.02, 0.02, 0), live_occupied={(0, 0)}, live_free={(0, 1)})
+        self.assertTrue(evidence['passed'], evidence)
+        self.assertEqual(evidence['matched_occupied_cells'], 1)
+        self.assertLessEqual(evidence['max_occupied_match_distance_m'], math.sqrt(2) * 0.05 / 2)
+
+    def test_restoration_matches_boundary_occupied_cell_in_neighboring_live_cell(self):
+        evidence = self._restoration_fixture(
+            'boundary_neighbor', 1, 1, saved_occupied={(0, 0)},
+            live_origin=(0.015, -0.03, 0), live_occupied={(0, 0)})
+        self.assertTrue(evidence['passed'], evidence)
+        self.assertEqual(evidence['covered_saved_cells'], 1)
+        self.assertEqual(evidence['matched_occupied_cells'], 1)
+        self.assertLessEqual(evidence['max_occupied_match_distance_m'], math.sqrt(2) * 0.05 / 2)
+
+    def test_restoration_fails_when_occupied_wall_is_deleted(self):
+        evidence = self._restoration_fixture(
+            'deleted_wall', 1, 1, saved_occupied={(0, 0)}, live_width=1, live_height=1)
+        self.assertFalse(evidence['passed'])
+        self.assertEqual(evidence['missing_occupied_cells'], 1)
+
+    def test_restoration_fails_when_occupied_becomes_free(self):
+        evidence = self._restoration_fixture(
+            'occupied_to_free', 2, 1, saved_occupied={(0, 0)}, saved_free={(0, 1)},
+            live_free={(0, 0), (0, 1)})
+        self.assertFalse(evidence['passed'])
+        self.assertEqual(evidence['matched_occupied_cells'], 0)
+        self.assertEqual(evidence['missing_occupied_cells'], 1)
+
+    def test_restoration_fails_when_occupied_becomes_unknown_without_neighboring_occupied(self):
+        evidence = self._restoration_fixture(
+            'occupied_to_unknown', 1, 1, saved_occupied={(0, 0)})
+        self.assertFalse(evidence['passed'])
+        self.assertEqual(evidence['matched_occupied_cells'], 0)
+        self.assertEqual(evidence['missing_occupied_cells'], 1)
+
+    def test_restoration_rejects_incompatible_map_resolution(self):
+        evidence = self._restoration_fixture(
+            'incompatible_resolution', 1, 1, saved_occupied={(0, 0)},
+            live_resolution=0.1, live_occupied={(0, 0)})
+        self.assertFalse(evidence['passed'])
+        self.assertIn('not compatible', evidence['reason'])
+
+    def test_restoration_rejects_large_unregistered_origin_shift(self):
+        evidence = self._restoration_fixture(
+            'large_origin_shift', 1, 1, saved_occupied={(0, 0)},
+            live_origin=(0.2, 0, 0), live_occupied={(0, 0)})
+        self.assertFalse(evidence['passed'])
+        self.assertEqual(evidence['matched_occupied_cells'], 0)
+        self.assertEqual(evidence['missing_occupied_cells'], 1)
 
 
 class Vda5050ConfigurationTests(TestCase):

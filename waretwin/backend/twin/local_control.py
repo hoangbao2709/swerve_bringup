@@ -316,6 +316,14 @@ def slam_map_restoration_evidence(record: dict[str, Any], yaml_path: Path,
         saved_cos, saved_sin = math.cos(saved_yaw), math.sin(saved_yaw)
         live_cos, live_sin = math.cos(origin_yaw), math.sin(origin_yaw)
         saved_known = compared = live_known = matched = 0
+        saved_occupied = matched_occupied = 0
+        occupied_match_distances: list[float] = []
+        missing_occupied: list[dict[str, Any]] = []
+        # Two equal-resolution square grids can have arbitrary phase offsets.
+        # The nearest phase-equivalent centers differ by at most half a cell
+        # on each axis, so their Euclidean correspondence bound is the half
+        # diagonal: sqrt((r/2)^2 + (r/2)^2) = r/sqrt(2).
+        raster_tolerance = math.sqrt(2.0) * max(saved_resolution, resolution) / 2.0
         for image_y in range(saved_height):
             map_y = saved_height - image_y - 1
             row = image_y * saved_width
@@ -339,18 +347,58 @@ def slam_map_restoration_evidence(record: dict[str, Any], yaml_path: Path,
                 dx, dy = world_x - origin_x, world_y - origin_y
                 local_x = live_cos * dx + live_sin * dy
                 local_y = -live_sin * dx + live_cos * dy
-                cell_x, cell_y = math.floor(local_x / resolution), math.floor(local_y / resolution)
-                if not (0 <= cell_x < width and 0 <= cell_y < height):
+                containing_x = math.floor(local_x / resolution)
+                containing_y = math.floor(local_y / resolution)
+                candidates: list[tuple[float, int, int, int, int]] = []
+                # A half-diagonal search can reach only the containing cell or
+                # one of its immediate neighbors on either axis.
+                for cell_y in range(containing_y - 1, containing_y + 2):
+                    if not 0 <= cell_y < height:
+                        continue
+                    for cell_x in range(containing_x - 1, containing_x + 2):
+                        if not 0 <= cell_x < width:
+                            continue
+                        live_local_x = (cell_x + 0.5) * resolution
+                        live_local_y = (cell_y + 0.5) * resolution
+                        live_world_x = origin_x + live_cos * live_local_x - live_sin * live_local_y
+                        live_world_y = origin_y + live_sin * live_local_x + live_cos * live_local_y
+                        distance = math.hypot(live_world_x - world_x, live_world_y - world_y)
+                        if distance <= raster_tolerance:
+                            value = occupancy_bytes[cell_y * width + cell_x] - 1
+                            probability = value / 100.0 if value >= 0 else -1.0
+                            actual = (1 if probability > occupied_thresh else
+                                      0 if probability >= 0 and probability < free_thresh else -1)
+                            candidates.append((distance, cell_x, cell_y, value, actual))
+                if not candidates:
+                    if expected == 1:
+                        saved_occupied += 1
+                        missing_occupied.append({
+                            'saved_row': map_y, 'saved_col': map_x,
+                            'world_x': world_x, 'world_y': world_y,
+                        })
                     continue
                 compared += 1
-                value = occupancy_bytes[cell_y * width + cell_x] - 1
-                if value < 0:
-                    continue
-                live_known += 1
-                probability = value / 100.0
-                actual = 1 if probability > occupied_thresh else 0 if probability < free_thresh else -1
-                if actual == expected:
+                nearest = min(candidates)
+                if any(value >= 0 for _, _, _, value, _ in candidates):
+                    live_known += 1
+                if any(actual == expected for _, _, _, _, actual in candidates):
                     matched += 1
+                if expected == 1:
+                    saved_occupied += 1
+                    occupied_matches = [candidate for candidate in candidates if candidate[4] == 1]
+                    if occupied_matches:
+                        matched_occupied += 1
+                        occupied_match_distances.append(min(occupied_matches)[0])
+                    else:
+                        missing_occupied.append({
+                            'saved_row': map_y, 'saved_col': map_x,
+                            'world_x': world_x, 'world_y': world_y,
+                            'nearest_live_value': nearest[3],
+                            'nearest_live_class': (
+                                'UNKNOWN' if nearest[3] < 0 else
+                                'FREE' if nearest[4] == 0 else 'AMBIGUOUS'),
+                            'nearest_center_distance_m': nearest[0],
+                        })
 
         coverage = compared / saved_known if saved_known else 0.0
         known_overlap = live_known / compared if compared else 0.0
@@ -369,15 +417,27 @@ def slam_map_restoration_evidence(record: dict[str, Any], yaml_path: Path,
             'saved_coverage_ratio': coverage,
             'known_overlap_ratio': known_overlap,
             'cell_class_agreement_ratio': agreement,
+            'raster_correspondence_tolerance_m': raster_tolerance,
+            'raster_correspondence_tolerance_derivation': (
+                'equal-resolution square-grid phase: sqrt((resolution/2)^2 + '
+                '(resolution/2)^2) = resolution/sqrt(2)'),
+            'saved_occupied_cells': saved_occupied,
+            'matched_occupied_cells': matched_occupied,
+            'missing_occupied_cells': saved_occupied - matched_occupied,
+            'max_occupied_match_distance_m': max(occupied_match_distances, default=None),
+            'missing_occupied_examples': missing_occupied[:25],
             'live_grid_sha256': hashlib.sha256(
                 f'{width}:{height}:{resolution:.9f}:{origin_x:.6f}:{origin_y:.6f}:{origin_yaw:.6f}'.encode()
                 + occupancy_bytes).hexdigest(),
         })
         evidence['passed'] = bool(
             saved_known > 0 and live_known_cells >= expected_known * 0.9
-            and coverage >= 0.9 and known_overlap >= 0.9 and agreement >= 0.9)
+            and coverage >= 0.9 and known_overlap >= 0.9 and agreement >= 0.9
+            and saved_occupied == matched_occupied)
         if not evidence['passed']:
-            evidence['reason'] = 'live SLAM map does not yet preserve enough saved-map cell content'
+            evidence['reason'] = (
+                'live SLAM map does not preserve saved-map world-space geometry '
+                'or one or more saved occupied cells have no occupied correspondence')
         return evidence
     except Exception as exc:
         evidence['reason'] = f'map restoration comparison failed: {type(exc).__name__}'

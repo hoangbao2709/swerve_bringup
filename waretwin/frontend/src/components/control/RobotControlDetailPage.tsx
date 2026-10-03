@@ -153,6 +153,10 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const manualTimer = useRef<number | null>(null);
   const manualActive = useRef(false);
   const manualWorker = useRef<Worker | null>(null);
+  const manualKeyboardHandlers = useRef<{
+    hold: (action: ManualAction) => void;
+    stop: () => void;
+  }>({ hold: () => undefined, stop: () => undefined });
 
   const robotBridgeOnline = connectedRobotIds.includes(robotId);
   const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && (runtimeMode === "LOCAL_SIM" || (robotBridgeOnline && rosConnected && websocketState === "CONNECTED")));
@@ -426,6 +430,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     }, 100);
   }, [controlMode, controlOnline, modeTransitionState, robotId, stopManual]);
 
+  manualKeyboardHandlers.current = { hold: holdManual, stop: stopManual };
+
   useEffect(() => {
     const keyActions: Record<string, ManualAction> = {
       w: "FORWARD", W: "FORWARD", ArrowUp: "FORWARD", s: "BACKWARD", S: "BACKWARD", ArrowDown: "BACKWARD",
@@ -435,24 +441,28 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       if (event.code === "Space") {
         if (event.repeat || (event.target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName))) return;
         event.preventDefault();
-        holdManual("STOP");
+        manualKeyboardHandlers.current.hold("STOP");
         return;
       }
       const action = keyActions[event.key];
       if (!action || event.repeat || (event.target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName))) return;
       event.preventDefault();
-      holdManual(action);
+      manualKeyboardHandlers.current.hold(action);
     };
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code === "Space") { event.preventDefault(); return; }
       if (!keyActions[event.key]) return;
       event.preventDefault();
-      stopManual();
+      manualKeyboardHandlers.current.stop();
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
-    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); stopManual(); };
-  }, [holdManual, stopManual]);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      manualKeyboardHandlers.current.stop();
+    };
+  }, []);
 
   const sendGoal = () => {
     const approvedGoal = approvedPreview?.goal;

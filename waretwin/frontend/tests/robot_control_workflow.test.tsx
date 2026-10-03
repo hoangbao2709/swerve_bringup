@@ -394,6 +394,10 @@ describe("robot detail route stability", () => {
     Object.defineProperty(down, "pointerId", { value: 42 });
     act(() => forward.dispatchEvent(down));
     expect(postMessage).toHaveBeenCalledWith({ type: "HOLD", robot_id: "R01", action: "FORWARD" });
+    act(() => useStore.getState().setRobotDetail("R01", {
+      appliedMode: "MANUAL", modeTransitionState: "APPLIED", modeRequestId: "manual-applied",
+    }));
+    expect(postMessage).not.toHaveBeenCalledWith({ type: "STOP", robot_id: "R01" });
     act(() => forward.dispatchEvent(new Event("pointerup", { bubbles: true })));
     expect(postMessage).toHaveBeenCalledWith({ type: "STOP", robot_id: "R01" });
     expect(wsManualCommand).not.toHaveBeenCalled();

@@ -1,16 +1,16 @@
 # Overnight Local Robot Completion
 
 Current branch: web-simulation
-Current HEAD: c4b81c36b2ebe9ea651cf01a684fdf418492b8dc
-origin HEAD: c4b81c36b2ebe9ea651cf01a684fdf418492b8dc
+Current HEAD: 4e4494b7c0f53c33fdd1b31ab448111f017b3a5c
+origin HEAD: 4e4494b7c0f53c33fdd1b31ab448111f017b3a5c
 origin/web-simulation...HEAD: 0 0 (behind ahead)
-Worktree status: ledger checkpoint modified; source worktree otherwise clean
+Worktree status: source worktree clean before this ledger update
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
-Last updated: 2026-10-03 07:10 (Asia/Ho_Chi_Minh)
+Last updated: 2026-10-03 07:12 (Asia/Ho_Chi_Minh)
 
 | ID | Task | Status | Commit | Runtime evidence | Notes |
 |---|---|---|---|---|---|
-| T00 | Preflight/recovery | BLOCKED | - | Current-boot `journalctl -k -b` checked 2026-10-03 07:10 local | `BLOCKED_ENVIRONMENT`: current boot contains repeated `/dev/sda` `DID_TIME_OUT`, read I/O errors, `jbd2/sda3-8` and worker blocked warnings (Oct 2 22:02; further I/O errors Oct 3 00:25). Capacity expansion is present (100G device; `/` 98G, 39G free), but does not clear active-boot storage faults. No Gazebo/heavy build started. |
+| T00 | Preflight/recovery | BLOCKED | 4e4494b | Current-boot `journalctl -k -b` checked 2026-10-03 07:10 local | `BLOCKED_ENVIRONMENT`: current boot contains repeated `/dev/sda` `DID_TIME_OUT`, read I/O errors, `jbd2/sda3-8` and worker blocked warnings (Oct 2 22:02; further I/O errors Oct 3 00:25). Capacity expansion is present (100G device; `/` 98G, 39G free), but does not clear active-boot storage faults. No Gazebo/heavy build started. |
 | T01 | Global warehouse regression | PASS | d431326 | `docs/ROBOT_POSE_ALIGNMENT_20261002.md#runtime-result`; `docs/evidence/web_pose_alignment_20261002.json`; `.runtime/pose-alignment-AqoPO6/p1-2d.png`, `p2-3d.png`, `p3-2d.png` | Existing runtime: canonical warehouse visible in Mapping at three poses; 2D/3D position errors max < 0.000001 m and yaw errors max < 0.000009 rad. Prior 30 s motion probe: marker visible in 316/316 100 ms samples; 9 unique Gazebo pose samples; source `CANONICAL_WAREHOUSE`, pose `GAZEBO_MODEL_STATES`, revision 21. Later source commits only tagged non-map telemetry pose readouts; the canvas frame selectors/renderers are unchanged. |
 | T02 | 2D SLAM accumulated map | BLOCKED | a0d35e4 | `.runtime/mapping-browser-final.json`; `.runtime/mapping-browser-control-observer.json`; `.runtime/mapping-browser-control-verified.json` | Prior real SLAM Toolbox map snapshots grew v3→v4→v5: known cells 45,231→60,875→71,741; extent 431×598→440×598→446×598; one session `e71a0aa5f19e`; trajectory 1→8 and 624-point scan frames were observed. However, no synchronized Pose A/B/C plus per-map hashes/old-cell comparison was retained. Current-boot storage I/O errors block the requested controlled rerun. First failing gate: runtime evidence completeness, not evidence of a map-clearing defect. |
 | T03 | 3D accumulated SLAM cloud | BLOCKED | d431326, e06a0f1 | Prior mapping Web/ROS probe; `swerve_bridge/test/test_mapping_snapshot_handoff.py::test_3d_cloud_accumulates_in_slam_map_while_global_is_visible` | Prior probe: filtered cloud 11 messages/8 s; exact map←lidar TF available in 11/13 lookups; Web 3D remained at 0 points and no `LIDAR_MAP_3D` event was captured. First observed divergence is after filtered cloud/TF input and before a verified Web frame; exact sublayer is unresolved. Source uses exact-stamp TF with 2.5 s wait and bounded voxel accumulation; targeted regression now confirms a missing exact TF raises/drops the cloud without adding points. Test PASS (1/1); install/build and real Web/Gazebo retest blocked by T00. |
@@ -33,6 +33,14 @@ Last updated: 2026-10-03 07:10 (Asia/Ho_Chi_Minh)
 - `free -h`: 7.7GiB total RAM, 5.3GiB available; 2GiB swap, 1.8GiB free.
 - Current-boot `journalctl -k -b` still contains repeated SCSI `hostbyte=DID_TIME_OUT`, `/dev/sda` read I/O errors, and `jbd2/sda3-8`/worker blocked warnings. Events include Oct 2 22:02 and read errors Oct 3 00:25 local. The check ran at 2026-10-03 07:10 local; kernel history for this boot remains unhealthy despite the larger disk and adequate free capacity.
 - Decision: `CURRENT_BOOT_STORAGE_HEALTH=UNHEALTHY`; `T00=BLOCKED` (`BLOCKED_ENVIRONMENT`). Do not launch or repeatedly restart Gazebo/RViz or run heavy builds until a healthy boot is verified. Safe source/test work may continue without claiming runtime acceptance.
+
+## Required source-gap gates (before runtime)
+
+| Gate | Status | Evidence / next action |
+|---|---|---|
+| 4A Local-map Map Point selection | RUNNING | Audit displayed-map identity through click, preview, and send; preserve canonical and local frame/revision validation. |
+| 4B Tag semantics on LOCAL_ONLY | RUNNING | Audit authoritative Tag model for explicit versioned map registration; absent registration must remain informational/non-navigable with `TAG_MAP_REGISTRATION_REQUIRED`. |
+| 4C CLEAR E-STOP acknowledgement | RUNNING | Trace request/response through bridge/backend/UI; transport send is not application acknowledgement. |
 
 ## T01 runtime evidence
 

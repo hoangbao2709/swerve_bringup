@@ -3,10 +3,10 @@
 Current branch: web-simulation
 User-provided resume-point HEAD: 5bc185a5201279adc63e909c81b972046143792b
 Observed HEAD/origin during T05 resume diagnosis: 89160aba5c1196a1346446a6f1503ae7ed9805d6 (`docs: record T05 frontier resume outcome`)
-Latest verified HEAD/origin before the M3 health recheck: ba38a0e886d1571295b60844605904d82f395006, ahead/behind 0/0; worktree clean.
+Latest pushed HEAD/origin before the unified-runtime audit: 480c3cfb85a7152084965c3a6a532d3793358a1b, ahead/behind 0/0; worktree clean.
 Latest pushed T05A source/test checkpoint: c36d821 (`fix: compare resumed SLAM geometry in world space`)
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
-Last updated: 2026-10-03 19:06 (Asia/Ho_Chi_Minh)
+Last updated: 2026-10-03 19:19 (Asia/Ho_Chi_Minh)
 
 | ID | Task | Status | Commit | Runtime evidence | Notes |
 |---|---|---|---|---|---|
@@ -172,3 +172,22 @@ Last updated: 2026-10-03 19:06 (Asia/Ho_Chi_Minh)
 - `M2_WORKER_TESTS=PASS`: focused manual worker/UI suites passed (4 files, 51 tests), including immediate HOLD, configured refresh cadence, direction switching, STOP/DISCONNECT timer cancellation, close/reconnect no-resume, send failure, backpressure ERROR feedback, auth-worker replacement, and E-STOP clear no-resume. Full frontend suite passed (17 files, 141 tests); `npx tsc --noEmit` passed; `npm run build` passed (Vite emitted a >500 kB bundle-size advisory); `git diff --check` passed for this checkpoint.
 - These are source/test/build results only. M4-M6 Web/ROS/Gazebo mapping movement, command-rate, displacement, stop-latency, watchdog, SLAM, and safety runtime gates remain `BLOCKED_ENVIRONMENT` because current-boot storage faults persist. No direct ROS command injection or Gazebo runtime was used.
 - Source/test checkpoint `9d1b694` (`fix: harden latched manual worker lifecycle`) was pushed to `origin/web-simulation`; this ledger-only follow-up records the later health recheck and does not change source acceptance.
+
+## UNIFIED_RUNTIME
+
+Checkpoint sequence: U01 architecture audit; U02 unified launch; U03 single TF owner; U04 Nav2 live-map integration; U05 backend capabilities; U06 unified Web UI; U07 manual+SLAM runtime; U08 Nav2+SLAM runtime; U09 same-stack mode switching; U10 final same-stack acceptance.
+
+### U01 architecture audit
+
+- `U01_ARCHITECTURE=PASS` for the source audit at clean starting HEAD `480c3cfb85a7152084965c3a6a532d3793358a1b`. This checkpoint does not claim unified source implementation or runtime acceptance. The first unfinished checkpoint is U02.
+- `scripts/start_stack.sh` defaults to `mapping`, accepts only `mapping|navigation`, stores that mode in `.runtime/stack.env`, and asks `system.launch.py` to start only one side. `system.launch.py` conditions SLAM on Mapping and Nav2 on Navigation; Navigation also starts the point-cloud/scan pipeline and simulated V30E localization. The ROS supervisor's MAPPING↔NAVIGATION path stops/restarts its child launch, which includes Gazebo, then respawns and reruns readiness. Current Map Save/Load and SLAM Resume paths also depend on these exclusive runtime modes.
+- `swerve_navigation/launch/navigation.launch.py` always creates `map_server` and includes it in the lifecycle manager's `node_names`; `system.launch.py` passes the selected saved/canonical YAML map. Installed Humble Nav2 params configure the static layer with `map_subscribe_transient_local: True`; installed `nav2_costmap_2d/static_layer.hpp` exposes update-subscription state, so U04 must validate the installed static-layer interface and the exact SLAM `/map` publication behavior before selecting parameters. No second `/map` publisher is acceptable.
+- TF source split: `slam.launch.py` runs SLAM Toolbox with `transform_publish_period=0.02` in Mapping; Navigation disables SLAM and starts `launch/v30e_sim.launch.py`, whose `ekf_v30e` is the separate localization path described as the `map→odom` owner. Running both without changing ownership would create a conflicting transform.
+- Backend currently uses `runtime.operation_mode` for both stack availability and mapping-vs-navigation capabilities: path preview and `NAV_GOAL` require `NAVIGATION`; Mapping start/save requires `MAPPING`; saved-map load and supervisor transition change runtime modes; Tag API reports Tags unavailable during Mapping. The ROS bridge also treats one `runtime_state` as both map/SLAM state and Nav2 availability, marks SLAM map/pose active only in `MAPPING`, rejects path preview outside `NAVIGATION`, and rejects mapping services outside `MAPPING`.
+- Web `RobotControlDetailPage` chooses SLAM map, disables `activeMapReady`, clears previews, hides paths, and disables SEND GOAL based on `runtimeState === MAPPING`; its Mapping panel exposes `SWITCH TO NAVIGATION`. Diagnostics label Nav2/SLAM active vs available from the same split. These conditions need explicit runtime capabilities rather than just changing labels.
+- Static evidence only: no ROS/Gazebo process was started during this audit. The current boot still has the previously preserved `/dev/sda DID_TIME_OUT`/READ I/O and blocked jbd2/worker evidence in `.runtime/manual-latched-environment-block.json`; no production runtime checkpoint may run until a fresh current-boot health query is clean.
+
+### U02–U10 status
+
+- `U02_UNIFIED_LAUNCH=QUEUED`; `U03_SINGLE_TF_OWNER=QUEUED`; `U04_NAV2_LIVE_MAP=QUEUED`; `U05_BACKEND_CAPABILITIES=QUEUED`; `U06_FRONTEND_UNIFIED_UI=QUEUED`.
+- `U07_MANUAL_SLAM`, `U08_NAV2_SLAM`, `U09_MODE_SWITCH_SAME_STACK`, and `U10_FINAL` remain `BLOCKED_ENVIRONMENT` pending implementation and the current-boot storage gate. No same-stack Mapping→Navigation sequence is claimed.

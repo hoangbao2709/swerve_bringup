@@ -250,26 +250,27 @@ The local costmap uses a VoxelLayer with `/lidar/points_filtered` as
 `PointCloud2` (`marking: true`, `clearing: true`) and `/scan` as an additional
 observation. Its obstacle height is limited to `0.05..1.30 m`, so rack points
 above the robot clearance do not automatically block the 2D planner. The
-global costmap uses the selected static Nav2 `/map` plus `/scan` updates.
+global costmap consumes the live SLAM Toolbox `/map` plus `/scan` updates in
+the production unified runtime; Nav2 does not start a second `map_server`.
 
-Start in this order:
+Start the complete production stack once:
 
 ```bash
-./scripts/start_stack.sh mapping
-./scripts/start_stack.sh navigation --map /absolute/path/to/saved_map.yaml
+./scripts/start_stack.sh unified --gui --rviz
 ```
 
-The navigation launch starts the static `map_server`, controller, planner,
-behavior, BT navigator, waypoint follower and lifecycle manager. Nav2 publishes
-to `/cmd_vel_nav`; `command_arbiter` selects it only in AUTONOMOUS mode. Direct
-ROS manual commands use `/cmd_vel`, while Django bridge teleop uses the leased
-`/cmd_vel_manual` input. The swerve controller converts the selected
-`/cmd_vel_selected` values to steering and drive commands. SLAM Toolbox is not
-started in navigation mode; the selected saved map plus the V30E/tag
-localization filter own the `map -> odom` correction. Navigation still starts
-the LiDAR preprocessing and point-cloud-to-scan stages so
-`/lidar/points_filtered` and `/scan` remain live; only SLAM Toolbox is
-disabled in this mode.
+Unified mode keeps SLAM Toolbox and Nav2 available together. SLAM Toolbox is
+the sole `map -> odom` owner; Nav2 consumes its live `/map` without a second
+`map_server`. Use MANUAL to explore unknown space and grow the map, then switch
+to AUTONOMOUS for preview/navigation through mapped, traversable space.
+Changing control mode must not restart Gazebo, ROS, Django, or the frontend.
+
+Nav2 publishes to `/cmd_vel_nav`; `command_arbiter` selects it only in
+AUTONOMOUS mode. Django bridge teleop uses the leased `/cmd_vel_manual` input.
+The swerve controller converts `/cmd_vel_selected` to steering and drive
+commands. Unknown cells are not traversable to the planner. The legacy
+`mapping` and `navigation` startup arguments remain compatibility/test aliases;
+they are not the production operator workflow.
 
 Navigation checks:
 

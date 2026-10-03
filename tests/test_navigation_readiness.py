@@ -101,6 +101,27 @@ def test_mapping_authority_requires_slam_as_the_only_map_publisher(readiness_mod
     assert 'ekf_v30e' in detail
 
 
+def test_unified_nav2_lifecycle_contract_omits_static_map_server(readiness_module):
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.mode = 'unified'
+    probe.nav2_lifecycle_nodes = readiness_module.NAV2_LIVE_SLAM_LIFECYCLE_NODES
+    probe._nav2_graph_counts = lambda: {
+        'map_server': 0,
+        'lifecycle_manager_navigation': 1,
+        'lifecycle_manager_mapping_map': 0,
+    }
+    probe._read_nav2_manager_configuration = lambda _deadline: ({
+        'autostart': False,
+        'node_names': list(readiness_module.NAV2_LIVE_SLAM_LIFECYCLE_NODES),
+    }, None)
+    probe._read_map_yaml_parameter = lambda _deadline: pytest.fail(
+        'LIVE_SLAM readiness must not query an absent map_server')
+
+    ready, error = probe._deferred_nav2_contract(time.monotonic() + 1.0)
+
+    assert ready, error
+
+
 def test_mapping_readiness_sensor_rate_requires_real_receive_samples(readiness_module):
     probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
     assert probe._sample_hz([1.0]) is None
@@ -299,7 +320,7 @@ def test_nav2_startup_claim_is_persisted_and_single_shot(readiness_module, tmp_p
 def test_nav2_lifecycle_transition_states_are_not_considered_settled(readiness_module):
     settled = {
         name: {'id': 1, 'label': 'unconfigured'}
-        for name in readiness_module.NAV2_LIFECYCLE_NODES
+        for name in readiness_module.NAV2_STATIC_MAP_LIFECYCLE_NODES
     }
     assert readiness_module.Readiness._lifecycle_states_settled(settled)
 

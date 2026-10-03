@@ -37,20 +37,16 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
-# navigation.launch.py owns exactly these Nav2 lifecycle nodes.  The project
-# deliberately uses the V30E/tag localization filter for map->odom, so AMCL
-# is not part of this launch contract and must not be invented as a readiness
-# dependency.  If that launch is changed to include AMCL, add it here with its
-# lifecycle entry at the same time.
-NAV2_LIFECYCLE_NODES = (
-    'map_server',
+# In UNIFIED, SLAM Toolbox owns the live /map topic, so Nav2 intentionally
+# excludes map_server. The legacy static-map mode keeps its historical node.
+NAV2_LIVE_SLAM_LIFECYCLE_NODES = (
     'planner_server',
     'controller_server',
     'behavior_server',
     'bt_navigator',
     'waypoint_follower',
 )
-NAV2_REQUIRED_NODES = NAV2_LIFECYCLE_NODES + ('lifecycle_manager_navigation',)
+NAV2_STATIC_MAP_LIFECYCLE_NODES = ('map_server', *NAV2_LIVE_SLAM_LIFECYCLE_NODES)
 NAV2_SETTLED_STATE_LABELS = {'unconfigured', 'inactive', 'active', 'finalized'}
 NAV2_TRANSITION_STATE_LABELS = {
     'configuring', 'cleaningup', 'shuttingdown', 'activating',
@@ -216,8 +212,19 @@ class Readiness(Node):
             raise RuntimeError('FAIL: readiness probe use_sim_time is false')
         self.model = model
         self.mode = str(mode).lower()
-        if self.mode not in ('mapping', 'navigation'):
+        if self.mode not in ('mapping', 'navigation', 'unified'):
             raise ValueError(f'unsupported readiness mode: {mode}')
+        self.mapping_required = self.mode in ('mapping', 'unified')
+        self.navigation_required = self.mode in ('navigation', 'unified')
+        self.nav2_lifecycle_nodes = (
+            NAV2_STATIC_MAP_LIFECYCLE_NODES if self.mode == 'navigation'
+            else NAV2_LIVE_SLAM_LIFECYCLE_NODES if self.mode == 'unified'
+            else ()
+        )
+        self.nav2_required_nodes = (
+            self.nav2_lifecycle_nodes + ('lifecycle_manager_navigation',)
+            if self.navigation_required else ()
+        )
         self.expected_map_file = os.path.realpath(map_file) if map_file else None
         self.robot_id = str(robot_id)
         self.backend_url = backend_url
@@ -286,7 +293,7 @@ class Readiness(Node):
             lambda msg: self._odom_cb('filtered_odom_seen', msg), sensor_qos)
         self.readiness_subscriptions['scan'] = self.create_subscription(
             LaserScan, '/scan', self._scan_cb, sensor_qos)
-        if self.mode == 'mapping':
+        if self.mapping_required:
             self.readiness_subscriptions['map'] = self.create_subscription(
                 OccupancyGrid, '/map', self._map_cb, MAP_QOS)
         self.readiness_subscriptions['points'] = self.create_subscription(
@@ -302,17 +309,18 @@ class Readiness(Node):
         self.controllers = self.create_client(ListControllers, '/controller_manager/list_controllers')
         self.hardware = self.create_client(
             ListHardwareInterfaces, '/controller_manager/list_hardware_interfaces')
-        names = NAV2_LIFECYCLE_NODES if self.mode == 'navigation' else ()
+        names = self.nav2_lifecycle_nodes
         self.lifecycle = {name: self.create_client(GetState, f'/{name}/get_state') for name in names}
         self.nav_lifecycle_manager = (
             self.create_client(ManageLifecycleNodes, '/lifecycle_manager_navigation/manage_nodes')
-            if self.mode == 'navigation' else None)
+            if self.navigation_required else None)
         self.nav_lifecycle_manager_parameters = (
             self.create_client(GetParameters, '/lifecycle_manager_navigation/get_parameters')
-            if self.mode == 'navigation' else None)
-        self.map_parameters = self.create_client(GetParameters, '/map_server/get_parameters')
+            if self.navigation_required else None)
+        self.map_parameters = (self.create_client(GetParameters, '/map_server/get_parameters')
+                               if self.mode == 'navigation' else None)
         self.slam_parameters = (self.create_client(GetParameters, '/slam_toolbox/get_parameters')
-                                if self.mode == 'mapping' else None)
+                                if self.mapping_required else None)
         self.bridge_parameters = self.create_client(GetParameters, '/swerve_bridge/get_parameters')
         self.action = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.tf = Buffer()
@@ -1016,6 +1024,11 @@ class Readiness(Node):
 
     def _print_required_status_summary(self, result):
         """Emit one concise, independently reported startup result per layer."""
+        mode = getattr(self, 'mode', 'navigation')
+        required_nodes = getattr(
+            self, 'nav2_required_nodes',
+            NAV2_STATIC_MAP_LIFECYCLE_NODES + ('lifecycle_manager_navigation',),
+        )
         groups = (
             ('GAZEBO_READY', ('GAZEBO_PROCESS_READY', 'CLOCK_READY',
                               'GAZEBO_FACTORY_READY', 'GAZEBO_WORLD_READY')),
@@ -1029,8 +1042,10 @@ class Readiness(Node):
             ('ODOM_READY', ('ODOM_READY',)),
             ('LIDAR_READY', ('LIDAR_RAW_READY', 'LIDAR_FILTERED_READY', 'SCAN_READY')),
             ('TF_READY', ('TF_READY',)),
-            ('NAV2_READY', tuple(f'NODE_{name.upper()}_READY' for name in NAV2_REQUIRED_NODES)
-             + ('NAV2_LIFECYCLE_READY', 'MAP_FILE_READY', 'ACTION_SERVER_READY')),
+            ('NAV2_READY', tuple(f'NODE_{name.upper()}_READY' for name in required_nodes)
+             + ('NAV2_LIFECYCLE_READY',
+                'MAP_READY' if mode == 'unified' else 'MAP_FILE_READY',
+                'ACTION_SERVER_READY')),
             ('BRIDGE_READY', ('ROS_BRIDGE_R01_READY',)),
         )
         for summary_name, stages in groups:
@@ -1191,7 +1206,8 @@ class Readiness(Node):
         graph_counts = self._nav2_graph_counts()
         print('NAV2_LIFECYCLE_GRAPH=' + ','.join(
             f'{name}={count}' for name, count in graph_counts.items()), flush=True)
-        if (graph_counts['map_server'] != 1
+        expected_map_server_count = 1 if self.mode == 'navigation' else 0
+        if (graph_counts['map_server'] != expected_map_server_count
                 or graph_counts['lifecycle_manager_navigation'] != 1
                 or graph_counts['lifecycle_manager_mapping_map'] != 0):
             return False, f'invalid_nav2_lifecycle_graph:{graph_counts}'
@@ -1199,18 +1215,18 @@ class Readiness(Node):
         if error:
             return False, error
         print('NAV2_LIFECYCLE_MANAGER_CONFIG=' + json.dumps(manager, sort_keys=True), flush=True)
-        expected_names = [
-            'map_server', 'controller_server', 'planner_server', 'behavior_server',
-            'bt_navigator', 'waypoint_follower',
-        ]
+        expected_names = list(self.nav2_lifecycle_nodes)
         if manager['autostart']:
             return False, 'deferred_nav2_contract_violated:autostart=true'
         if manager['node_names'] != expected_names:
             return False, f'nav2_lifecycle_manager_node_names_mismatch:{manager["node_names"]}'
-        map_yaml, error = self._read_map_yaml_parameter(deadline)
-        if error:
-            return False, error
-        print(f'MAP_SERVER_YAML=PASS path={map_yaml}', flush=True)
+        if self.mode == 'navigation':
+            map_yaml, error = self._read_map_yaml_parameter(deadline)
+            if error:
+                return False, error
+            print(f'MAP_SERVER_YAML=PASS path={map_yaml}', flush=True)
+        else:
+            print('NAV2_MAP_SOURCE=LIVE_SLAM topic=/map map_server=absent', flush=True)
         return True, None
 
     def _ensure_nav2_lifecycle_ready(self, result, deadline):
@@ -1251,7 +1267,7 @@ class Readiness(Node):
             result['stages']['NAV2_STARTUP_STATE'] = 'ACTIVE'
             self._report_stage(
                 result, 'NAV2_LIFECYCLE_READY', True,
-                success_detail=' active=' + ','.join('/' + name for name in NAV2_LIFECYCLE_NODES),
+                success_detail=' active=' + ','.join('/' + name for name in self.nav2_lifecycle_nodes),
             )
             print('NAV2_STARTUP_STATE=ACTIVE', flush=True)
             return True, states, None
@@ -1338,7 +1354,7 @@ class Readiness(Node):
             result['stages']['NAV2_STARTUP_STATE'] = 'ACTIVE'
             self._report_stage(
                 result, 'NAV2_LIFECYCLE_READY', True,
-                success_detail=' active=' + ','.join('/' + name for name in NAV2_LIFECYCLE_NODES),
+                success_detail=' active=' + ','.join('/' + name for name in self.nav2_lifecycle_nodes),
             )
             print('NAV2_STARTUP_STATE=ACTIVE', flush=True)
             return True, states, None
@@ -1559,7 +1575,7 @@ class Readiness(Node):
             'tf_unavailable:odom->base_footprint->base_link',
         ):
             return self._finish(result, 'required local TF odom->base_footprint->base_link unavailable')
-        if self.mode == 'mapping':
+        if self.mapping_required:
             if not self._topic_stage(result, 'MAP_READY', '/map', 'map_seen'):
                 return self._finish(result, 'no valid message on /map')
             if not self._stage(
@@ -1594,11 +1610,10 @@ class Readiness(Node):
                 self._print_mapping_sensor_inputs()
                 return self._finish(result, f'mapping TF invalid: {self.mapping_tf_error}')
             self._print_mapping_sensor_inputs()
-        else:
-            # The V30E simulation owns map->odom in navigation mode. Wait for
-            # that live transform and the local odom chain before activating
-            # Nav2, so its costmaps never enter their lifecycle transition
-            # without the robot's required TF being available.
+        if self.navigation_required:
+            # In UNIFIED, mapping readiness above has already verified that
+            # SLAM Toolbox owns the live /map and map->odom chain. Legacy
+            # Navigation retains its separate localization contract.
             if not self._stage(
                 result, 'GLOBAL_TF_READY',
                 lambda: tf_exists('map', 'odom') and tf_exists('map', 'base_link'),
@@ -1608,7 +1623,7 @@ class Readiness(Node):
             self._report_stage(result, 'TF_READY', True,
                                success_detail=' frames=odom->base_footprint,map->base_link')
             nav_nodes_ok = True
-            for name in NAV2_REQUIRED_NODES:
+            for name in self.nav2_required_nodes:
                 node_ok = self._stage(
                     result, f'NODE_{name.upper()}_READY', lambda name=name: self._node_present(name),
                     f'Nav2 {name}', f'node_missing:/{name}',
@@ -1620,19 +1635,27 @@ class Readiness(Node):
                 result, deadline)
             if not lifecycle_ok:
                 return self._finish(result, f'Nav2 lifecycle not READY: {lifecycle_error}')
-            map_file_ok = self._wait_map_file(deadline)
-            if map_file_ok:
+            if self.mode == 'unified':
+                map_file_ok = self.map_seen and self._node_present('slam_toolbox')
                 self._report_stage(
-                    result, 'MAP_FILE_READY', True,
-                    success_detail=f' yaml_filename={self.expected_map_file}' if self.expected_map_file else None,
+                    result, 'LIVE_SLAM_MAP_READY', map_file_ok,
+                    None if map_file_ok else 'live_slam_map_unavailable',
+                    success_detail=' publisher=/slam_toolbox topic=/map map_server=absent' if map_file_ok else None,
                 )
             else:
-                self._report_stage(
-                    result, 'MAP_FILE_READY', False,
-                    f'map_server_yaml_filename_mismatch:expected={self.expected_map_file}',
-                )
+                map_file_ok = self._wait_map_file(deadline)
+                if map_file_ok:
+                    self._report_stage(
+                        result, 'MAP_FILE_READY', True,
+                        success_detail=f' yaml_filename={self.expected_map_file}' if self.expected_map_file else None,
+                    )
+                else:
+                    self._report_stage(
+                        result, 'MAP_FILE_READY', False,
+                        f'map_server_yaml_filename_mismatch:expected={self.expected_map_file}',
+                    )
             if not map_file_ok:
-                return self._finish(result, 'map_server yaml_filename does not match requested map')
+                return self._finish(result, 'Nav2 map source is not ready')
             if not self._stage(result, 'ACTION_SERVER_READY',
                                lambda: self.action.wait_for_server(timeout_sec=0.0),
                                '/navigate_to_pose action server',
@@ -1650,7 +1673,9 @@ class Readiness(Node):
         result['startup_wall_time'] = time.monotonic() - started
         result['startup_sim_time'] = self.get_clock().now().nanoseconds * 1e-9
         result['nav_ready'] = True
-        ready_label = 'Mapping stack READY' if self.mode == 'mapping' else 'Navigation stack READY'
+        ready_label = ('Unified SLAM + Nav2 runtime READY' if self.mode == 'unified'
+                       else 'Mapping stack READY' if self.mode == 'mapping'
+                       else 'Navigation stack READY')
         print(ready_label, flush=True)
         print('NAV_READY PASS', flush=True)
         self._print_required_status_summary(result)
@@ -1672,7 +1697,7 @@ def main(argv=None):
     parser.add_argument('--timeout', type=float, default=120.0)
     parser.add_argument('--model', default='swerve_base')
     parser.add_argument('--robot-id', default='R01')
-    parser.add_argument('--mode', choices=('mapping', 'navigation'), default='navigation')
+    parser.add_argument('--mode', choices=('unified', 'mapping', 'navigation'), default='unified')
     parser.add_argument('--map-file')
     parser.add_argument('--backend-url')
     parser.add_argument('--log-path')

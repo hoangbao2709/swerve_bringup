@@ -194,21 +194,24 @@ acknowledged loading. Missions are blocked otherwise; Emergency Stop is not.
 
 ## Runtime and development startup
 
-`./scripts/start_stack.sh mapping` and `navigation` read the active published
-revision from Django, verify the complete bundle for the selected robot, and
-log the warehouse/revision/frame/artifact paths/spawn/ROS domain. Navigation
-selects the Nav2 map for the spawn pose's floor. A missing or invalid published
-bundle fails before ROS starts. The packaged demonstration world/map can only
-be selected explicitly with `--allow-dev-world` (or
-`WARETWIN_ALLOW_DEV_WORLD=true`); explicit `--world`/`--map` are also treated
-as development assets and require that opt-in.
+`./scripts/start_stack.sh unified --gui --rviz` reads the active published
+revision from Django, verifies the complete bundle for the selected robot, and
+logs the warehouse/revision/frame/artifact paths/spawn/ROS domain. Unified mode
+starts SLAM Toolbox and Nav2 together; Nav2's global static layer subscribes to
+the live SLAM `/map`, and no second `map_server` is launched. A missing or
+invalid published warehouse bundle fails before ROS starts. The packaged
+demonstration world/map can only be selected explicitly with
+`--allow-dev-world` (or `WARETWIN_ALLOW_DEV_WORLD=true`); explicit `--world`/
+`--map` are also treated as development assets and require that opt-in.
 
-Mapping startup runs the SLAM point-cloud-to-scan pipeline and SLAM Toolbox;
-the live `/map` must be published by SLAM Toolbox alone, with no mapping-mode
-map_server or V30E/tag `map -> odom` owner. The readiness gate verifies actual
-SLAM parameters, `/map` ownership, scan/filtered-odometry frames and timestamped
-TF. Navigation additionally requires its selected map/localization and active
-planner, controller, behavior-tree and waypoint lifecycle servers.
+Unified startup runs the shared LiDAR pipeline, SLAM Toolbox, and deferred
+Nav2 lifecycle nodes. SLAM Toolbox must be the only `/map` publisher and the
+only `map -> odom` owner; Nav2 waits for live map/TF/sensor/controller
+readiness before its single lifecycle startup. The readiness gate verifies
+SLAM parameters, map ownership, scan/filtered-odometry frames and timestamped
+TF, then verifies the Nav2 lifecycle manager without expecting an absent
+`map_server`. Legacy `mapping` and `navigation` modes remain compatibility
+aliases only.
 
 ## Troubleshooting
 

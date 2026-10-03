@@ -51,8 +51,12 @@ def generate_launch_description():
     defer_nav2_start = LaunchConfiguration('defer_nav2_start')
     nav2_autostart = PythonExpression([
         "'false' if '", defer_nav2_start, "' == 'true' else 'true'"])
-    mapping_mode = IfCondition(PythonExpression(["'", mode, "' == 'mapping'"]))
-    navigation_mode = IfCondition(PythonExpression(["'", mode, "' == 'navigation'"]))
+    mapping_mode = IfCondition(PythonExpression([
+        "'", mode, "' in ('mapping', 'unified')"]))
+    navigation_mode = IfCondition(PythonExpression([
+        "'", mode, "' in ('navigation', 'unified')"]))
+    legacy_navigation_mode = IfCondition(PythonExpression([
+        "'", mode, "' == 'navigation'"]))
     simulated_navigation_mode = IfCondition(PythonExpression([
         "'", use_sim, "' == 'true' and '", mode, "' == 'navigation'"]))
     require_canonical_map = ParameterValue(PythonExpression([
@@ -80,11 +84,12 @@ def generate_launch_description():
 
     def validate_mode(context):
         selected = LaunchConfiguration('mode').perform(context).strip().lower()
-        if selected not in ('mapping', 'navigation'):
+        if selected not in ('mapping', 'navigation', 'unified'):
             raise RuntimeError(
-                f'Unsupported mode={selected!r}; choose exactly mapping or navigation '
-                '(SLAM and Nav2 are mutually exclusive)')
-        return [LogInfo(msg=f'WareTwin runtime mode: {selected.upper()}')]
+                f'Unsupported mode={selected!r}; choose unified, mapping, or navigation')
+        if selected == 'unified':
+            return [LogInfo(msg='WareTwin runtime mode: UNIFIED (SLAM Toolbox + Nav2 share the live SLAM map)')]
+        return [LogInfo(msg=f'WareTwin legacy runtime mode: {selected.upper()}')]
 
     def validate_map_bundle(context):
         if LaunchConfiguration('use_sim').perform(context).lower() != 'true':
@@ -251,17 +256,20 @@ def generate_launch_description():
                                    }.items(),
                                    condition=mapping_mode)
     # The point-cloud preprocessor and 2D projection are needed by Nav2 too.
-    # Only SLAM itself is mapping-only; navigation gets the same /scan
-    # contract while V30E owns map -> odom.
+    # Legacy navigation has no SLAM and uses its saved map/localizer; unified
+    # starts this sensor pipeline together with SLAM above.
     navigation_lidar = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'slam.launch.py')),
         launch_arguments={'use_sim_time': use_sim_time, 'input_topic': lidar_topic,
                           'start_slam': 'false'}.items(),
-        condition=navigation_mode)
+        condition=legacy_navigation_mode)
     nav = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'navigation.launch.py')),
                                   launch_arguments={'use_sim_time': use_sim_time,
                                                     'autostart': nav2_autostart,
                                                     'map_file': map_file,
+                                                    'map_source': PythonExpression([
+                                                        "'LIVE_SLAM' if '", mode,
+                                                        "' == 'unified' else 'STATIC_MAP'"]),
                                                     'allow_dev_map': allow_dev_world}.items(),
                                   condition=navigation_mode)
     bridge = Node(package='swerve_bridge', executable='swerve_bridge_node', name='swerve_bridge', output='screen',
@@ -310,8 +318,8 @@ def generate_launch_description():
         DeclareLaunchArgument('v30e_initial_y', default_value='0.0'),
         DeclareLaunchArgument('v30e_initial_yaw', default_value='0.0'),
         DeclareLaunchArgument('use_sim_time', default_value='true', description='Use Gazebo clock; set false for real robot'),
-        DeclareLaunchArgument('mode', default_value='mapping',
-                              description='Mapping uses SLAM Toolbox as the map->odom owner and publishes the accumulated map on /map. Navigation uses the selected saved/canonical map and simulation tag localization.'),
+        DeclareLaunchArgument('mode', default_value='unified',
+                              description='Unified starts SLAM Toolbox and Nav2 together; legacy mapping/navigation modes remain for compatibility.'),
         DeclareLaunchArgument('slam_session_file', default_value='',
                               description='Optional local SLAM Toolbox session prefix, supplied only by the supervised Resume SLAM Session workflow.'),
         DeclareLaunchArgument('slam_start_at_dock', default_value='false',

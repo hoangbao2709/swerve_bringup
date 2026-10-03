@@ -132,16 +132,16 @@ def command_for_mode(base: Sequence[str], mode: str, *,
                      slam_session_file: str | None = None) -> list[str]:
     """Return the same launch command with one explicit runtime mode."""
     mode = str(mode).strip().lower()
-    if mode not in ('mapping', 'navigation'):
-        raise ValueError('mode must be mapping or navigation')
+    if mode not in ('unified', 'mapping', 'navigation'):
+        raise ValueError('mode must be unified, mapping, or navigation')
     command = [arg for arg in base if not arg.startswith('mode:=')
                and not arg.startswith('defer_nav2_start:=')
                and not arg.startswith('slam_session_file:=')
                and not arg.startswith('slam_start_at_dock:=')]
-    if slam_session_file and mode != 'mapping':
-        raise ValueError('a saved SLAM session can only start in mapping mode')
+    if slam_session_file and mode not in ('mapping', 'unified'):
+        raise ValueError('a saved SLAM session requires a mapping-capable runtime')
     command.append(f'mode:={mode}')
-    if mode == 'navigation':
+    if mode in ('navigation', 'unified'):
         command.append('defer_nav2_start:=true')
     if slam_session_file:
         command.extend((f'slam_session_file:={slam_session_file}',
@@ -215,7 +215,7 @@ def _reset_nav2_lifecycle_state(state_file: str | Path | None, mode: str) -> Non
     if not state_file:
         return
     path = Path(state_file)
-    if mode != 'navigation':
+    if mode not in ('navigation', 'unified'):
         path.unlink(missing_ok=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -247,7 +247,7 @@ def _run_readiness(root: Path, mode: str, robot_id: str, backend_url: str | None
         if mode == 'navigation' and map_file:
             args.extend(('--map-file', map_file))
         lifecycle_state_file = (env or os.environ).get('WARETWIN_NAV2_LIFECYCLE_STATE_FILE')
-        if mode == 'navigation' and lifecycle_state_file:
+        if mode in ('navigation', 'unified') and lifecycle_state_file:
             args.extend(('--lifecycle-state-file', lifecycle_state_file))
         try:
             result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True,
@@ -303,7 +303,7 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
     active_revision = initial_revision
     command = list(base_command)
     active_mode = str(initial_mode or next(
-        (arg.split(':=', 1)[1] for arg in command if arg.startswith('mode:=')), 'navigation')).lower()
+        (arg.split(':=', 1)[1] for arg in command if arg.startswith('mode:=')), 'unified')).lower()
     readiness_root = (readiness_root or Path(__file__).resolve().parent.parent).resolve()
     child: subprocess.Popen | None = None
     stopping = False
@@ -334,12 +334,16 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                 target_mode = str(mode_request.get('mode') or '').lower()
                 if str(mode_request.get('robot_id') or '') != robot_id:
                     raise ValueError('mode transition request robot_id does not match the active stack')
-                if target_mode not in ('mapping', 'navigation'):
-                    raise ValueError('mode transition target must be mapping or navigation')
+                if target_mode not in ('unified', 'mapping', 'navigation'):
+                    raise ValueError('mode transition target must be unified, mapping, or navigation')
                 slam_session_file = mode_request.get('slam_session_file')
+                if active_mode == 'unified' and (target_mode != 'unified' or slam_session_file):
+                    raise ValueError(
+                        'the UNIFIED stack cannot be switched or resumed by restarting ROS/Gazebo; '
+                        'use control-mode and in-process SLAM transition APIs')
                 if slam_session_file:
-                    if target_mode != 'mapping' or mode_request.get('force_restart') is not True:
-                        raise ValueError('saved SLAM resume requires a forced Mapping runtime restart')
+                    if target_mode not in ('mapping', 'unified') or mode_request.get('force_restart') is not True:
+                        raise ValueError('saved SLAM restore requires a validated mapping-capable launch')
                     slam_session_file = validate_slam_session_prefix(
                         str(slam_session_file), robot_id, command, readiness_root)
                 elif mode_request.get('force_restart'):
@@ -438,7 +442,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument('--robot-id', required=True)
     parser.add_argument('--mode-request-file', type=Path)
     parser.add_argument('--mode-status-file', type=Path)
-    parser.add_argument('--initial-mode', choices=('mapping', 'navigation'))
+    parser.add_argument('--initial-mode', choices=('unified', 'mapping', 'navigation'))
     parser.add_argument('--stack-env-file', type=Path)
     parser.add_argument('--readiness-root', type=Path)
     parser.add_argument('--backend-url')

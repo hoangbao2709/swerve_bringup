@@ -6,7 +6,7 @@ Observed HEAD/origin during T05 resume diagnosis: 89160aba5c1196a1346446a6f1503a
 Latest pushed HEAD/origin before the unified-runtime audit: 480c3cfb85a7152084965c3a6a532d3793358a1b, ahead/behind 0/0; worktree clean.
 Latest pushed T05A source/test checkpoint: c36d821 (`fix: compare resumed SLAM geometry in world space`)
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
-Last updated: 2026-10-03 19:19 (Asia/Ho_Chi_Minh)
+Last updated: 2026-10-03 19:41 (Asia/Ho_Chi_Minh)
 
 | ID | Task | Status | Commit | Runtime evidence | Notes |
 |---|---|---|---|---|---|
@@ -189,5 +189,17 @@ Checkpoint sequence: U01 architecture audit; U02 unified launch; U03 single TF o
 
 ### U02–U10 status
 
-- `U02_UNIFIED_LAUNCH=QUEUED`; `U03_SINGLE_TF_OWNER=QUEUED`; `U04_NAV2_LIVE_MAP=QUEUED`; `U05_BACKEND_CAPABILITIES=QUEUED`; `U06_FRONTEND_UNIFIED_UI=QUEUED`.
+- `U02_UNIFIED_LAUNCH=SOURCE_IMPLEMENTED; RUNTIME_BLOCKED_ENVIRONMENT`; `U03_SINGLE_TF_OWNER=SOURCE_IMPLEMENTED; RUNTIME_BLOCKED_ENVIRONMENT`; `U04_NAV2_LIVE_MAP=SOURCE_IMPLEMENTED; RUNTIME_BLOCKED_ENVIRONMENT`.
+- `U05_BACKEND_CAPABILITIES=QUEUED`; `U06_FRONTEND_UNIFIED_UI=QUEUED`.
 - `U07_MANUAL_SLAM`, `U08_NAV2_SLAM`, `U09_MODE_SWITCH_SAME_STACK`, and `U10_FINAL` remain `BLOCKED_ENVIRONMENT` pending implementation and the current-boot storage gate. No same-stack Mapping→Navigation sequence is claimed.
+
+### U02–U04 unified launch integration — source checkpoint only
+
+- Production `start_stack.sh` now defaults to `MODE=unified`; both `./scripts/start_stack.sh unified --gui --rviz` and `./scripts/start_stack.sh --gui --rviz` select the same mode. `system.launch.py` starts the SLAM LiDAR/map pipeline and Nav2 together. Its legacy Navigation-only LiDAR include and V30E localization include are not used in Unified mode.
+- Unified Nav2 uses `map_source=LIVE_SLAM`. Its launch omits `map_server` and omits `map_server` from `lifecycle_manager_navigation.node_names`; startup readiness requires the live SLAM map/TF before issuing the existing one-shot Nav2 lifecycle startup. Legacy mapping/navigation aliases remain available for compatibility.
+- Unified readiness accepts only `slam_toolbox` as `/map` publisher and rejects `map_server`, `ekf_v30e`, V30E simulation, and the legacy tag-route planner. The existing odometry EKF is configured with `world_frame=odom`; SLAM Toolbox is therefore the intended map→odom owner in this path. Runtime publisher count/owner remains unverified until a clean live run.
+- Nav2 Humble StaticLayer parameters are checked against installed `static_layer.hpp` and the Humble implementation: `map_topic=/map`, transient-local OccupancyGrid subscription enabled, and OccupancyGridUpdate subscription disabled. The planner now rejects unknown space (`allow_unknown=false`) so preview cannot deliberately route through unexplored cells.
+- Unified runtime mode is accepted by the ROS bridge for simultaneous SLAM snapshots, mapping controls, map saves, and Nav2 preview/goal ingress. The supervisor refuses legacy mapping/navigation mode requests while Unified is active rather than restarting Gazebo/ROS; control-mode switching still needs its backend/UI capability work in U05/U06.
+- Production startup documentation in `README.md` and `docs/MAP_SYNC_ARCHITECTURE.md` now uses the single Unified command and describes the live-SLAM Nav2 map source. Historical runtime/evidence documents remain unchanged.
+- Focused tests: `tests/test_navigation_readiness.py`, `scripts/test_map_sync_runtime.py`, `tests/test_unified_launch_contract.py`, `tests/test_controller_startup_launch.py`, and `tests/test_stack_startup_logs.py` passed 32/32. `bash -n scripts/start_stack.sh`, Python AST parsing for changed Python entrypoints, and `git diff --check` passed. No ROS build or live runtime acceptance was run.
+- Fresh current-boot query at 19:41 local still returns the 17:08–17:11 `jbd2`/worker blocked events, `/dev/sda DID_TIME_OUT`, and READ I/O errors. `df` shows 37 GiB free and `free` 5.8 GiB available RAM; these do not clear the storage gate. No Gazebo/ROS/Web stack was started. U02–U04 runtime acceptance is `BLOCKED_ENVIRONMENT`, not PASS. Evidence remains in `.runtime/manual-latched-environment-block.json`.

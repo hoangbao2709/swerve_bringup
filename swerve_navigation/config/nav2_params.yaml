@@ -132,7 +132,11 @@ global_costmap:
       plugins: [static_layer, obstacle_layer, inflation_layer]
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
+        map_topic: /map
         map_subscribe_transient_local: true
+        # SLAM Toolbox publishes full OccupancyGrid snapshots, not
+        # map_msgs/OccupancyGridUpdate messages.
+        subscribe_to_updates: false
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
@@ -163,7 +167,7 @@ planner_server:
       plugin: nav2_navfn_planner/NavfnPlanner
       tolerance: 0.05
       use_astar: false
-      allow_unknown: true
+      allow_unknown: false
 
 bt_navigator:
   ros__parameters:

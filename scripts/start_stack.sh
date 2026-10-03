@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: start_stack.sh {mapping|navigation} [--map PATH] [--gui] [--rviz]
+# Usage: start_stack.sh [unified|mapping|navigation] [--map PATH] [--gui] [--rviz]
 # GUI and RViz default to off; --headless and the --no-* switches remain aliases.
 set -euo pipefail
 
@@ -15,13 +15,16 @@ source "$ROOT_DIR/scripts/stack_common.sh"
 NAV2_LIFECYCLE_STATE_FILE="$STACK_RUNTIME_DIR/nav2-lifecycle-startup.json"
 export WARETWIN_NAV2_LIFECYCLE_STATE_FILE="$NAV2_LIFECYCLE_STATE_FILE"
 
-MODE="${1:-mapping}"
+MODE=unified
+if (($#)) && [[ "$1" != -* ]]; then
+  MODE="$1"
+  shift
+fi
 if [[ "$MODE" == "-h" || "$MODE" == "--help" ]]; then
   sed -n '1,125p' "$0"
   exit 0
 fi
-[[ "$MODE" == mapping || "$MODE" == navigation ]] || { echo "Usage: $0 {mapping|navigation} [options]" >&2; exit 2; }
-shift || true
+[[ "$MODE" == unified || "$MODE" == mapping || "$MODE" == navigation ]] || { echo "Usage: $0 [unified|mapping|navigation] [options]" >&2; exit 2; }
 
 GUI_ARG=false
 RVIZ_ARG=false
@@ -356,10 +359,10 @@ if ! stack_wait_http "$FRONTEND_URL" 30; then
 fi
 
 ROS_ARGS=(use_sim:=true use_sim_time:=true mode:="$MODE" gui:="$GUI_ARG" start_rviz:="$RVIZ_ARG" robot_id:="$ROBOT_ID" bridge_ws_url:="$ROS_WS_URL_SELECTED" allow_dev_world:="$ALLOW_DEV_WORLD_ARG")
-if [[ "$MODE" == navigation ]]; then
-  # Let the readiness probe start Nav2 only after Gazebo, ros2_control, TF,
-  # and sensor data are live; autostart during a cold VMware world load can
-  # strand controller_server's costmap activation before odom/TF exists.
+if [[ "$MODE" == navigation || "$MODE" == unified ]]; then
+  # Let the readiness probe start Nav2 only after Gazebo, ros2_control, SLAM,
+  # TF, and sensor data are live; autostart during cold world load can strand
+  # controller_server's costmap activation before its live map/TF exists.
   ROS_ARGS+=(defer_nav2_start:=true)
 fi
 [[ -n "$NAMESPACE" ]] && ROS_ARGS+=(namespace:="$NAMESPACE")
@@ -505,7 +508,7 @@ while (( SECONDS < ready_deadline )); do
   if ! stack_owned_pid ros && ! stack_owned_group ros; then
     break
   fi
-  if [[ "$MODE" == navigation && -f "$NAV2_LIFECYCLE_STATE_FILE" ]] \
+  if [[ ( "$MODE" == navigation || "$MODE" == unified ) && -f "$NAV2_LIFECYCLE_STATE_FILE" ]] \
     && rg -q '"state"[[:space:]]*:[[:space:]]*"FAILED"' "$NAV2_LIFECYCLE_STATE_FILE"; then
     echo '[FAIL] Nav2 lifecycle startup failed; refusing another STARTUP request for this launch.' >&2
     break
@@ -539,8 +542,10 @@ EOF
 mv -f "$MODE_SWITCH_STATUS_FILE.tmp" "$MODE_SWITCH_STATUS_FILE"
 printf '%s\n' "$last_ros_report"
 echo
-if [[ "$MODE" == mapping ]]; then
-  echo '[OK] Mapping stack READY'
+if [[ "$MODE" == unified ]]; then
+  echo '[OK] Unified SLAM + Nav2 stack READY'
+elif [[ "$MODE" == mapping ]]; then
+  echo '[OK] Legacy Mapping stack READY'
 else
   echo '[OK] Navigation stack READY'
 fi

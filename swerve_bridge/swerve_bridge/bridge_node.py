@@ -129,7 +129,7 @@ class SwerveBridge(Node):
         self.runtime_state = str(self.get_parameter('runtime_state').value).upper()
         self.require_nav2_map = bool(self.get_parameter('require_nav2_map').value)
         self.require_tag_map = bool(self.get_parameter('require_tag_map').value)
-        if self.runtime_state not in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'ERROR'):
+        if self.runtime_state not in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'UNIFIED', 'ERROR'):
             self.get_logger().warning(f'Unknown runtime_state={self.runtime_state}; using MAPPING')
             self.runtime_state = 'MAPPING'
         configured_ws_url = str(self.get_parameter('django_ws_url').value).strip()
@@ -253,7 +253,7 @@ class SwerveBridge(Node):
         self.active_vda_order = None
         self.slam_paused = False
         self.slam_mapping_elapsed_s = 0.0
-        self.slam_mapping_started_monotonic = time.monotonic() if self.runtime_state == 'MAPPING' else None
+        self.slam_mapping_started_monotonic = time.monotonic() if self.runtime_state in ('MAPPING', 'UNIFIED') else None
         self.loaded_local_map_id = None
         self.loaded_local_map_revision = None
         self.local_map_load_pending = False
@@ -548,9 +548,9 @@ class SwerveBridge(Node):
             content_signature = self.latest_map_signature[7]
         else:
             content_signature = occupancy_content_signature(msg.data)
-        identity_revision = (self.mapping_session_id if self.runtime_state == 'MAPPING'
+        identity_revision = (self.mapping_session_id if self.runtime_state in ('MAPPING', 'UNIFIED')
                              else self.ros_map_revision)
-        if self.runtime_state == 'MAPPING':
+        if self.runtime_state in ('MAPPING', 'UNIFIED'):
             map_source = 'SLAM_TOOLBOX'
             active_map_id = f'SLAM-{self.mapping_session_id}'
             active_map_revision = content_signature[:12]
@@ -576,7 +576,7 @@ class SwerveBridge(Node):
         self.latest_map_signature = signature
         self.processed_map = msg
         self.processed_map_generation = generation
-        if self.runtime_state == 'MAPPING':
+        if self.runtime_state in ('MAPPING', 'UNIFIED'):
             self.mapping_map_revision = content_signature[:12]
         self._confirm_local_map_if_ready()
 
@@ -606,7 +606,7 @@ class SwerveBridge(Node):
             self.send_control_status(True)
 
     def active_map_identity(self):
-        if self.runtime_state == 'MAPPING':
+        if self.runtime_state in ('MAPPING', 'UNIFIED'):
             return {
                 'active_map_id': f'SLAM-{self.mapping_session_id}',
                 'active_map_revision': self.mapping_map_revision,
@@ -628,7 +628,7 @@ class SwerveBridge(Node):
         }
 
     def active_map_source(self):
-        if self.runtime_state == 'MAPPING':
+        if self.runtime_state in ('MAPPING', 'UNIFIED'):
             return 'SLAM_TOOLBOX'
         if self.loaded_local_map_id:
             return 'LOCAL_MAP'
@@ -870,7 +870,7 @@ class SwerveBridge(Node):
         t = msg.twist.twist
         try:
             pose, base_frame = self._lookup_robot_pose()
-            if self.runtime_state == 'MAPPING':
+            if self.runtime_state in ('MAPPING', 'UNIFIED'):
                 point = (float(pose['x']), float(pose['y']))
                 previous = self.slam_trajectory[-1] if self.slam_trajectory else None
                 now = time.monotonic()
@@ -899,7 +899,7 @@ class SwerveBridge(Node):
                        'map_source': self.active_map_source(),
                        'pose_source': 'TF',
                        'canonical_pose': canonical_pose,
-                       'mapping_session_id': self.mapping_session_id if self.runtime_state == 'MAPPING' else None,
+                       'mapping_session_id': self.mapping_session_id if self.runtime_state in ('MAPPING', 'UNIFIED') else None,
                        'base_frame_id': base_frame, **pose,
                        'vx': t.linear.x, 'vy': t.linear.y, 'wz': t.angular.z,
                        'navigation_state': self.nav_state,
@@ -958,8 +958,8 @@ class SwerveBridge(Node):
         self.send({'type': 'HEARTBEAT', 'robot_id': self.robot_id,
                    'nav2_state': self.nav_state, 'bridge_state': 'CONNECTED',
                    'runtime_state': self.runtime_state, 'control_mode': self.applied_mode,
-                   'mapping_state': ('PAUSED' if self.slam_paused else 'MAPPING') if self.runtime_state == 'MAPPING' else 'INACTIVE',
-                   'mapping_session_id': self.mapping_session_id if self.runtime_state == 'MAPPING' else None,
+                   'mapping_state': ('PAUSED' if self.slam_paused else 'MAPPING') if self.runtime_state in ('MAPPING', 'UNIFIED') else 'INACTIVE',
+                   'mapping_session_id': self.mapping_session_id if self.runtime_state in ('MAPPING', 'UNIFIED') else None,
                    'mapping_elapsed_s': self._mapping_elapsed_s(),
                    'timestamp': self.now()})
         # Do not let graph discovery / map validation delay manual/control
@@ -1090,7 +1090,7 @@ class SwerveBridge(Node):
         if source_frame != target_frame:
             timeout = (Duration(seconds=max(0.05, float(self.get_parameter(
                 'mapping_sensor_tf_timeout_s').value)))
-                if self.runtime_state == 'MAPPING'
+                if self.runtime_state in ('MAPPING', 'UNIFIED')
                 and target_frame == str(self.get_parameter('map_frame').value or 'map')
                 else Duration(seconds=0.05))
             transform = self.tf_buffer.lookup_transform(
@@ -1125,7 +1125,7 @@ class SwerveBridge(Node):
             'frame_id': target_frame,
             'source_frame_id': source_frame,
             'mapping_session_id': (self.mapping_session_id
-                                   if self.runtime_state == 'MAPPING' else None),
+                                   if self.runtime_state in ('MAPPING', 'UNIFIED') else None),
             'sensor_pose': sensor_pose,
             'trajectory': [[x, y] for x, y in self.slam_trajectory],
             'timestamp': datetime.now(timezone.utc).isoformat(),
@@ -1229,7 +1229,7 @@ class SwerveBridge(Node):
         filtered_is_fresh = (self.latest_filtered_cloud is not None
                              and self.latest_filtered_cloud_monotonic is not None
                              and time.monotonic() - self.latest_filtered_cloud_monotonic <= 1.0)
-        if self.runtime_state != 'MAPPING' or not filtered_is_fresh:
+        if self.runtime_state not in ('MAPPING', 'UNIFIED') or not filtered_is_fresh:
             return
         source = self.latest_filtered_cloud
         stamp = source.header.stamp
@@ -1348,9 +1348,9 @@ class SwerveBridge(Node):
             self.latest_map_statistics = statistics
             self.processed_map_payload = {'type': 'MAP_SNAPSHOT', 'map': {
                 'robot_id': self.robot_id, 'frame_id': str(msg.header.frame_id or ''),
-                'map_source': ('SLAM_TOOLBOX' if self.runtime_state == 'MAPPING'
+                'map_source': ('SLAM_TOOLBOX' if self.runtime_state in ('MAPPING', 'UNIFIED')
                                else 'LOCAL_MAP' if self.loaded_local_map_id else 'NAV2_MAP'),
-                'mapping_session_id': self.mapping_session_id if self.runtime_state == 'MAPPING' else None,
+                'mapping_session_id': self.mapping_session_id if self.runtime_state in ('MAPPING', 'UNIFIED') else None,
                 'map_revision': self.ros_map_revision,
                 **self.active_map_identity(),
                 'map_version': self.mapping_map_version,
@@ -1381,7 +1381,7 @@ class SwerveBridge(Node):
         if self.last_detail_callback_wall is not None:
             self.detail_callback_intervals.append(wall - self.last_detail_callback_wall)
         self.last_detail_callback_wall = wall
-        mapping_view = self.runtime_state == 'MAPPING'
+        mapping_view = self.runtime_state in ('MAPPING', 'UNIFIED')
         scan_view = self.detail_view in ('GLOBAL', 'LIDAR_2D')
         scan_due = (self.latest_scan is not None
                     and time.monotonic() - self.last_scan_publish_monotonic
@@ -1541,7 +1541,7 @@ class SwerveBridge(Node):
         tf = self.tf_status and self._scoped_topic('/tf') in topic_names
         lidar = lidar_age is not None and lidar_age <= 3.0
         slam_state = ('PAUSED' if self.slam_paused else
-                      'ACTIVE' if self.runtime_state == 'MAPPING' and slam else
+                      'ACTIVE' if self.runtime_state in ('MAPPING', 'UNIFIED') and slam else
                       'INACTIVE')
         map_grid = self.processed_map
         map_statistics = self.latest_map_statistics or {}
@@ -1549,7 +1549,7 @@ class SwerveBridge(Node):
         mapping_status = {
             'slam_state': slam_state,
             'mapping_session_id': (self.mapping_session_id
-                                   if self.runtime_state == 'MAPPING' else None),
+                                   if self.runtime_state in ('MAPPING', 'UNIFIED') else None),
             'scan_live': scan_age is not None and scan_age <= 3.0,
             'scan_hz': self._frequency(self.scan_intervals),
             'scan_frame': self.last_scan_frame_id,
@@ -1580,7 +1580,7 @@ class SwerveBridge(Node):
                                  * float(map_grid.info.resolution) ** 2
                                  if map_grid is not None else None),
             'map_age_s': map_age,
-            'map_odom_owner': ('SLAM_TOOLBOX' if self.runtime_state == 'MAPPING' and slam
+            'map_odom_owner': ('SLAM_TOOLBOX' if self.runtime_state in ('MAPPING', 'UNIFIED') and slam
                                and not any(name.rstrip('/').endswith('/ekf_v30e')
                                            or name.rstrip('/') == 'ekf_v30e'
                                            or name.rstrip('/').endswith('/map_server')
@@ -1604,7 +1604,7 @@ class SwerveBridge(Node):
                 'local_active_map_id': self.loaded_local_map_id,
                 'local_active_map_revision': self.loaded_local_map_revision,
                 'canonical_map_revision': self.ros_map_revision,
-                'map_sync_status': ('LOCAL_ONLY' if self.runtime_state == 'MAPPING'
+                'map_sync_status': ('LOCAL_ONLY' if self.runtime_state in ('MAPPING', 'UNIFIED')
                                     or self.loaded_local_map_id else self.map_sync_status),
             },
             'mapping': mapping_status,
@@ -1650,7 +1650,7 @@ class SwerveBridge(Node):
         })
 
     def _refresh_map_sync_status(self):
-        if self.runtime_state == 'MAPPING':
+        if self.runtime_state in ('MAPPING', 'UNIFIED'):
             self.map_sync_status = 'LOCAL_ONLY'
             self.map_sync_error = None
             return
@@ -2319,7 +2319,7 @@ class SwerveBridge(Node):
                 error=None if result['ok'] else result['message'])
             return
         if operation in ('MAPPING_START', 'MAPPING_STOP'):
-            if self.runtime_state != 'MAPPING':
+            if self.runtime_state not in ('MAPPING', 'UNIFIED'):
                 self._send_local_control_result(data, False, error='SLAM Toolbox is not active in this runtime')
                 return
             if not self.slam_pause_client.service_is_ready():
@@ -2334,7 +2334,7 @@ class SwerveBridge(Node):
                 completed, data, wanted_paused))
             return
         if operation == 'MAP_SAVE':
-            if self.runtime_state != 'MAPPING':
+            if self.runtime_state not in ('MAPPING', 'UNIFIED'):
                 self._send_local_control_result(data, False, error='map saving requires SLAM Toolbox mapping mode')
                 return
             if not self.slam_save_client.service_is_ready():
@@ -2365,7 +2365,7 @@ class SwerveBridge(Node):
                 completed, data, prefix, session_prefix))
             return
         if operation == 'MAP_LOAD':
-            if self.runtime_state != 'NAVIGATION':
+            if self.runtime_state not in ('NAVIGATION', 'UNIFIED'):
                 self._send_local_control_result(data, False, error='map loading requires the active Nav2 navigation runtime')
                 return
             if (self.emergency_stop_active or self.control_mode != 'MANUAL' or not self._robot_is_stopped()

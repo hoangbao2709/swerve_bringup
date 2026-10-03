@@ -101,9 +101,17 @@ def test_mode_transition_command_preserves_stack_args_and_sets_nav2_readiness_mo
     fresh = command_for_mode(resumed, 'mapping')
     assert not any(arg.startswith('slam_session_file:=') for arg in fresh)
     assert not any(arg.startswith('slam_start_at_dock:=') for arg in fresh)
-    with pytest.raises(ValueError, match='only start in mapping'):
+    with pytest.raises(ValueError, match='mapping-capable'):
         command_for_mode(mapping, 'navigation', slam_session_file='/maps/session')
-    with pytest.raises(ValueError, match='mapping or navigation'):
+    unified = command_for_mode(base, 'unified')
+    assert 'mode:=unified' in unified
+    assert 'defer_nav2_start:=true' in unified
+    assert 'world:=warehouse.world' in unified
+    resumed_unified = command_for_mode(unified, 'unified',
+                                       slam_session_file='/maps/local/R02/session')
+    assert 'slam_session_file:=/maps/local/R02/session' in resumed_unified
+    assert 'slam_start_at_dock:=true' in resumed_unified
+    with pytest.raises(ValueError, match='unified'):
         command_for_mode(base, 'local_sim')
 
 

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import layoutJson from "../layout/warehouse_layout.json";
 import type { WarehouseLayout, LayoutLocation } from "../layout/types";
-import type { TwinState, RobotId, HeatmapLayer, TagNavigationState, RosDiagnostics, RuntimeState, RobotDetailState } from "../schema/twin_state";
+import type { TwinState, RobotId, HeatmapLayer, TagNavigationState, RosDiagnostics, RuntimeState, RobotRuntimeCapabilities, RobotDetailState } from "../schema/twin_state";
 import { RUNTIME_MODE, type RuntimeMode } from "../config";
 
 export type ViewTab = "3D" | "MAP" | "TRAFFIC" | "HEATMAP";
@@ -110,6 +110,8 @@ interface Store {
   setRuntimeMode: (mode: RuntimeMode) => void;
   runtimeState: RuntimeState;
   setRuntimeState: (state: RuntimeState) => void;
+  robotCapabilities: Record<RobotId, RobotRuntimeCapabilities>;
+  setRobotCapabilities: (capabilities: Record<RobotId, RobotRuntimeCapabilities>) => void;
   bridgeState: string;
   setBridgeState: (state: string) => void;
   connectedRobotIds: string[];
@@ -264,6 +266,8 @@ export const useStore = create<Store>((set) => ({
   setRuntimeMode: (runtimeMode) => set({ runtimeMode }),
   runtimeState: RUNTIME_MODE === "LOCAL_SIM" ? "SIMULATION" : "IDLE",
   setRuntimeState: (runtimeState) => set({ runtimeState }),
+  robotCapabilities: {},
+  setRobotCapabilities: (robotCapabilities) => set({ robotCapabilities }),
   bridgeState: RUNTIME_MODE === "LOCAL_SIM" ? "LOCAL" : "DISCONNECTED",
   setBridgeState: (bridgeState) => set({ bridgeState }),
   connectedRobotIds: [],
@@ -271,7 +275,7 @@ export const useStore = create<Store>((set) => ({
   websocketState: "DISCONNECTED",
   setWebsocketState: (websocketState) => set({
     websocketState,
-    ...(websocketState === "CONNECTED" ? {} : { connectedRobotIds: [] }),
+    ...(websocketState === "CONNECTED" ? {} : { connectedRobotIds: [], robotCapabilities: {} }),
   }),
   rosDiagnostics: null,
   setRosDiagnostics: (rosDiagnostics) => set({ rosDiagnostics }),

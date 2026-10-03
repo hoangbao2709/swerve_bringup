@@ -292,6 +292,7 @@ function handle(msg: ServerMessage) {
     case "RUNTIME_STATUS":
       st.setRuntimeMode(msg.runtime_mode);
       if (msg.runtime_state) st.setRuntimeState(msg.runtime_state);
+      st.setRobotCapabilities(msg.robot_capabilities ?? {});
       if (msg.bridge_state) st.setBridgeState(msg.bridge_state);
       st.setRosConnected(msg.ros_connected);
       st.setConnectedRobotIds(Array.isArray(msg.connected_robot_ids) ? msg.connected_robot_ids : []);

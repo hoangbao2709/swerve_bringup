@@ -5,18 +5,13 @@ import {
   getVda5050Configuration,
   initializeLocalRobotPose,
   loadLocalRobotMap,
-  resumeLocalRobotSlamSession,
   saveLocalRobotMap,
-  getLocalRuntimeMode,
-  requestLocalRuntimeMode,
   setMappingState,
   testVda5050Connection,
   type LocalRobotMap,
-  type LocalRuntimeModeStatus,
   type Vda5050Configuration,
 } from "../../services/api";
-import { wsSetRobotMode } from "../../services/ws";
-import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
+import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotRuntimeCapabilities, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
 import { occupancyRasterKey, occupancyRasters } from "./occupancyRaster";
 import { displayedFramePose, useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
@@ -38,6 +33,7 @@ type Props = {
   controlMode: "MANUAL" | "AUTONOMOUS";
   runtimeMode: string;
   runtimeState: string;
+  runtimeCapabilities: RobotRuntimeCapabilities | null;
   localization: unknown;
   websocketState: string;
   mapRevision: number | null;
@@ -55,10 +51,6 @@ function valueText(value: unknown, fallback = "N/A") {
 function valueNumber(value: unknown, digits = 2, suffix = "") {
   const number = Number(value);
   return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : "N/A";
-}
-
-function wait(milliseconds: number) {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function classForStatus(value: unknown) {
@@ -92,7 +84,7 @@ export function LocalRobotSection(props: Props) {
   return <DiagnosticsPanel {...props} />;
 }
 
-function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, controlOnline, controlMode, runtimeState, mappingSessionId }: Props) {
+function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, controlOnline, controlMode, runtimeState, runtimeCapabilities, mappingSessionId }: Props) {
   const [maps, setMaps] = useState<LocalRobotMap[]>([]);
   const [selected, setSelected] = useState("");
   const [name, setName] = useState("");
@@ -103,12 +95,12 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [operationState, setOperationState] = useState("READY");
-  const [modeTransition, setModeTransition] = useState<LocalRuntimeModeStatus | null>(null);
   const [trajectory, setTrajectory] = useState<RobotWorldPoint[]>([]);
   const [layers, setLayers] = useState({ robot: true, scan: true, trajectory: true, grid: false });
   const trajectoryRef = useRef<{ mapId: string; points: RobotWorldPoint[]; lastAt: number }>({ mapId: "", points: [], lastAt: 0 });
 
-  const slamMap = runtimeState === "MAPPING" && slam2dMap?.robot_id === robotId
+  const slamRuntimeActive = runtimeState === "MAPPING" || runtimeState === "UNIFIED";
+  const slamMap = slamRuntimeActive && !activeLocalMapId && slam2dMap?.robot_id === robotId
     && slam2dMap?.map_source === "SLAM_TOOLBOX"
     && (!mappingSessionId || slam2dMap.mapping_session_id === mappingSessionId) ? slam2dMap : null;
   const slamPose = slamMap && rawRobot ? displayedFramePose(rawRobot, slamMap) : undefined;
@@ -135,16 +127,6 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     return () => { active = false; window.clearInterval(timer); };
   }, [controlOnline, refresh]);
 
-  useEffect(() => {
-    let active = true;
-    const refreshMode = () => getLocalRuntimeMode(robotId).then((result) => {
-      if (active) setModeTransition(result.transition);
-    }).catch(() => undefined);
-    void refreshMode();
-    const timer = window.setInterval(() => { void refreshMode(); }, 2000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [robotId]);
-
   const run = async (action: () => Promise<unknown>, success: (result: unknown) => string, pendingState: string) => {
     setOperationState(pendingState);
     setBusy(true); setError(""); setNotice("");
@@ -158,110 +140,16 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     setName(""); setSelected(result.map.id);
     return `SAVE SUCCESS · ${result.map.name} · revision ${result.map.revision}`;
   }, "SAVING");
-  const selectedMap = maps.find((map) => map.id === selected) ?? null;
-  const resumeSession = () => {
-    if (!selectedMap || selectedMap.slam_session_state?.status !== "AVAILABLE") return;
-    if (!window.confirm(`Restart ${robotId} in Mapping mode and resume the saved SLAM Toolbox session for ${selectedMap.name}? The simulator will respawn at its configured dock.`)) return;
-    setOperationState("RESUMING SLAM SESSION"); setBusy(true); setError(""); setNotice("");
-    void (async () => {
-      const deadline = Date.now() + 20 * 60 * 1000;
-      try {
-        let result = await resumeLocalRobotSlamSession(robotId, selectedMap.id);
-        while (result.status === "TRANSITIONING" && Date.now() < deadline) {
-          if (result.transition) {
-            setModeTransition(result.transition);
-            if (["ERROR", "ROLLED_BACK"].includes(result.transition.status)) {
-              throw new Error(result.transition.message || "Saved SLAM session restart failed");
-            }
-          }
-          if (result.mapping_state) setMappingStateValue(result.mapping_state);
-          await wait(1500);
-          result = await resumeLocalRobotSlamSession(robotId, selectedMap.id);
-        }
-        if (result.status !== "RESUMED" || !result.restore_evidence?.passed) {
-          throw new Error(Date.now() >= deadline
-            ? "Saved SLAM session did not restore before the runtime timeout"
-            : result.message || "Live SLAM map did not verify the saved session");
-        }
-        setMappingStateValue("MAPPING"); setActiveLocalMapId(null);
-        const evidence = result.restore_evidence;
-        setNotice(`SLAM SESSION RESTORED · ${result.map?.name ?? selectedMap.name} · ${evidence.live_known_cells ?? "—"} live known cells · saved-map overlap ${((evidence.known_overlap_ratio ?? 0) * 100).toFixed(1)}%`);
-        await refresh();
-        setOperationState("READY");
-      } catch (caught) {
-        setOperationState("ERROR");
-        setError(caught instanceof Error ? caught.message : "Saved SLAM session resume failed");
-      } finally { setBusy(false); }
-    })();
-  };
   const load = () => {
-    if (!selected) return;
-    setOperationState("LOADING"); setBusy(true); setError(""); setNotice("");
-    void (async () => {
-      const waitForNavigation = async (requestId: string) => {
-        const deadline = Date.now() + 20 * 60 * 1000;
-        while (Date.now() < deadline) {
-          const status = await getLocalRuntimeMode(robotId);
-          setModeTransition(status.transition);
-          if (status.transition.request_id && status.transition.request_id !== requestId) {
-            throw new Error("Runtime mode transition was replaced by another request");
-          }
-          if (["ERROR", "ROLLED_BACK"].includes(status.transition.status)) {
-            throw new Error(status.transition.message || "Navigation runtime failed its readiness gate");
-          }
-          if (status.current_mode === "NAVIGATION"
-              && status.transition.status === "READY"
-              && status.transition.mode?.toLowerCase() === "navigation") return;
-          await wait(2000);
-        }
-        throw new Error("Navigation runtime did not become ready within 20 minutes");
-      };
-
-      const waitForManualStop = async () => {
-        if (!wsSetRobotMode(robotId, "MANUAL")) {
-          throw new Error("Robot control channel is disconnected; Navigation started but map loading is waiting for MANUAL mode");
-        }
-        const deadline = Date.now() + 30_000;
-        while (Date.now() < deadline) {
-          const status = await getLocalRobotMaps(robotId);
-          if (status.robot_control_mode === "MANUAL" && status.robot_stopped) return;
-          await wait(500);
-        }
-        throw new Error("Navigation started, but the robot did not confirm stopped MANUAL mode for map loading");
-      };
-
-      try {
-        let result = await loadLocalRobotMap(robotId, selected);
-        let manualRequested = false;
-        while (result.status === "TRANSITIONING") {
-          if (!result.request_id) throw new Error("Map load transition did not include its supervisor request ID");
-          setModeTransition(result.transition ?? {
-            robot_id: robotId, request_id: result.request_id,
-            mode: "navigation", status: "REQUESTED", message: result.message,
-          });
-          if (result.mapping_state) setMappingStateValue(result.mapping_state);
-          await waitForNavigation(result.request_id);
-          if (!manualRequested) {
-            await waitForManualStop();
-            manualRequested = true;
-          }
-          result = await loadLocalRobotMap(robotId, selected);
-          if (result.status === "TRANSITIONING") await wait(1000);
-        }
-        if (!result.active_map || result.map_sync_status !== "LOCAL_ONLY") {
-          throw new Error("ROS did not confirm the selected saved map as the active local navigation map");
-        }
-        setActiveLocalMapId(result.active_map.id);
-        setNotice(`MAP LOADED · ${result.active_map.name} · ${result.message}`);
-        await refresh();
-        setOperationState("READY");
-      } catch (caught) {
-        setOperationState("ERROR");
-        setError(caught instanceof Error ? caught.message : "Saved map load failed");
-      } finally {
-        setBusy(false);
+    if (!selected || runtimeState !== "NAVIGATION") return;
+    void run(() => loadLocalRobotMap(robotId, selected), (raw) => {
+      const result = raw as { active_map?: LocalRobotMap; map_sync_status?: string; message?: string };
+      if (!result.active_map || result.map_sync_status !== "LOCAL_ONLY") {
+        throw new Error("ROS did not confirm the selected saved map as the active local navigation map");
       }
-    })();
+      setActiveLocalMapId(result.active_map.id);
+      return `MAP LOADED · ${result.active_map.name} · ${result.message ?? "local map active"}`;
+    }, "LOADING");
   };
   const changeMapping = (action: "start" | "stop") => void run(
     () => setMappingState(robotId, action),
@@ -272,33 +160,13 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     }, action === "start" ? "STARTING" : "STOPPING",
   );
 
-  const switchRuntimeMode = async () => {
-    const target = "NAVIGATION";
-    if (!window.confirm(`Switch ${robotId} to ${target}? The selected runtime adapter will transition SLAM/Nav2 after a stopped MANUAL handoff.`)) return;
-    setBusy(true); setError(""); setNotice("");
-    try {
-      const result = await requestLocalRuntimeMode(robotId, target);
-      setModeTransition({ robot_id: robotId, request_id: result.request_id, mode: target, status: result.status, message: result.message });
-      setNotice(`MODE CHANGE REQUESTED · ${target} · waiting for stack readiness`);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Runtime mode change was not accepted"); }
-    finally { setBusy(false); }
-  };
-
-  const isMapping = runtimeState === "MAPPING";
+  const isUnified = runtimeState === "UNIFIED";
+  const isMapping = runtimeState === "MAPPING"
+    || (isUnified && (runtimeCapabilities?.mapping_available ?? Boolean(diagnostics?.slam)));
   const paused = mappingState === "PAUSED";
   const startMapping = async () => {
-    if (isMapping) {
-      changeMapping("start");
-      return;
-    }
-    if (!window.confirm(`Start a fresh SLAM Toolbox mapping session for ${robotId}? The runtime supervisor will switch modes after the MANUAL handoff.`)) return;
-    setBusy(true); setError(""); setNotice("");
-    try {
-      const result = await requestLocalRuntimeMode(robotId, "MAPPING");
-      setModeTransition({ robot_id: robotId, request_id: result.request_id, mode: "MAPPING", status: result.status, message: result.message });
-      setNotice("MAPPING START REQUESTED · waiting for SLAM Toolbox and mapping readiness");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Mapping runtime was not accepted"); }
-    finally { setBusy(false); }
+    if (isMapping) { changeMapping("start"); return; }
+    setError(isUnified ? "SLAM is not currently available in this Unified runtime. Wait for SLAM readiness before mapping." : "SLAM mapping requires the Unified runtime. Start one stack with ./scripts/start_stack.sh unified --gui --rviz.");
   };
   useEffect(() => {
     const mapId = `${robotId}:${slamMap?.active_map_id ?? "waiting"}`;
@@ -320,12 +188,14 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     setTrajectory(points);
   }, [isMapping, mapping?.tf_valid, paused, slamPose?.x, slamPose?.y, slamPose?.timestamp, slamMap]);
   return <SectionFrame>
-    <SectionPanel title="MAPPING SESSION" className="local-mapping-state">
+    <SectionPanel title={isUnified ? "UNIFIED MAPPING + NAVIGATION" : "MAPPING SESSION"} className="local-mapping-state">
       <div className="local-status-grid">
         <Metric label="ROBOT" value={robotId} mono />
         <Metric label="RUNTIME MODE" value={runtimeState} />
-        <Metric label="MAPPING STATE" value={isMapping ? mappingState : "INACTIVE · NAVIGATION MODE"} />
+        <Metric label="MAPPING STATE" value={isMapping ? mappingState : isUnified ? "WAITING FOR SLAM" : "INACTIVE · UNIFIED RUNTIME REQUIRED"} />
         <Metric label="SLAM TOOLBOX" value={mapping?.slam_state ?? "UNKNOWN"} />
+        <Metric label="NAV2" value={runtimeCapabilities?.nav2_ready || diagnostics?.nav2_ready ? "READY" : diagnostics?.nav2 ? "STARTING" : runtimeState === "UNIFIED" ? "UNAVAILABLE" : "INACTIVE"} />
+        <Metric label="CONTROL MODE" value={controlMode} />
         <Metric label="LIVE LIDAR · /scan" value={mapping?.scan_live ? `LIVE · ${valueNumber(mapping.scan_hz, 2, " Hz")} · ${mapping.scan_frame ?? "frame unknown"}` : "WAITING"} />
         <Metric label="ODOMETRY" value={mapping?.odom_live ? `LIVE · ${valueNumber(mapping.odom_hz, 2, " Hz")} · ${mapping.odom_frame ?? "?"} → ${mapping.base_frame ?? "?"}` : "WAITING"} />
         <Metric label="TF · map ← lidar" value={mapping?.tf_lidar_to_map_valid ? "OK" : mapping?.tf_error ?? "WAITING / INVALID"} />
@@ -348,19 +218,17 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
         <Metric label="AVAILABLE MAPS" value={maps.length} mono />
       </div>
       <div className="local-action-row">
-        {isMapping && <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !["READY", "ROLLED_BACK", "ERROR"].includes(modeTransition?.status ?? "")} onClick={() => void switchRuntimeMode()}>SWITCH TO NAVIGATION</button>}
-        <button type="button" className="robot-console-primary" disabled={!controlOnline || controlMode !== "MANUAL" || busy || (isMapping && mappingState === "MAPPING")} onClick={() => void startMapping()}>{isMapping && mappingState === "MAPPING" ? "MAPPING ACTIVE" : paused ? "RESUME MAPPING" : "START MAPPING"}</button>
+        <button type="button" className="robot-console-primary" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !isMapping || (isMapping && mappingState === "MAPPING")} onClick={() => void startMapping()}>{isMapping && mappingState === "MAPPING" ? "MAPPING ACTIVE" : paused ? "RESUME MAPPING" : isMapping ? "START MAPPING" : isUnified ? "SLAM UNAVAILABLE" : "UNIFIED RUNTIME REQUIRED"}</button>
         <button type="button" disabled={!controlOnline || !isMapping || busy || paused} onClick={() => changeMapping("stop")}>STOP MAPPING</button>
-        <span className="local-help">The runtime adapter owns SLAM/Nav2 transitions. Confirmed runtime state is shown only after backend/ROS acknowledgement.</span>
+        <span className="local-help">SLAM and Nav2 stay available together in Unified. Use MANUAL/AUTONOMOUS for control ownership; this panel never restarts the stack.</span>
       </div>
-      {modeTransition && modeTransition.status !== "READY" && <div className={`local-feedback ${["ERROR", "ROLLED_BACK"].includes(modeTransition.status) ? "error" : "warning"}`} role="status">MODE TRANSITION · {modeTransition.status} · {modeTransition.message ?? "waiting for runtime readiness"}</div>}
     </SectionPanel>
     <SectionPanel title="SAVE NAVIGATION MAP + SLAM SESSION">
       <div className="local-form-row">
         <label className="local-field local-field-grow"><span>MAP NAME</span><input value={name} maxLength={64} onChange={(event) => setName(event.target.value)} placeholder="warehouse_floor_1" /></label>
         <button type="button" className="robot-console-primary" disabled={!controlOnline || !isMapping || !paused || !slamMap || busy || !name.trim()} onClick={save}>SAVE MAP</button>
       </div>
-      <p className="local-help">Stop Mapping first. Save creates Nav2 YAML + PGM and SLAM Toolbox pose-graph + sensor-data files as separate products. The registry exposes opaque IDs, not disk paths. This remains a local saved map and never promotes or overwrites the canonical Fleet map.</p>
+      <p className="local-help">Pause SLAM first. Save creates Nav2 YAML + PGM and SLAM Toolbox pose-graph + sensor-data files as separate products while Gazebo, Nav2, and the Web stack remain running. The registry exposes opaque IDs, not disk paths. This remains local and never overwrites the canonical Fleet map.</p>
     </SectionPanel>
     <SectionPanel title="AVAILABLE MAPS · THIS ROBOT">
       {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list">
@@ -370,11 +238,11 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
         </button>)}
       </div>}
       <div className="local-action-row">
-        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || !["MAPPING", "NAVIGATION"].includes(runtimeState) || busy || !selected} onClick={load}>LOAD SAVED MAP FOR NAVIGATION</button>
-        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || !["MAPPING", "NAVIGATION"].includes(runtimeState) || busy || selectedMap?.slam_session_state?.status !== "AVAILABLE"} onClick={resumeSession}>RESUME SAVED SLAM SESSION</button>
+        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || runtimeState !== "NAVIGATION" || busy || !selected} onClick={load}>LOAD SAVED MAP</button>
+        <button type="button" disabled title="In-process SLAM pose-graph restore is not implemented yet">RESUME SAVED SLAM SESSION</button>
         {activeLocalMapId && <Status value="LOCAL_ONLY · LOCAL NAVIGATION ENABLED" />}
       </div>
-      <p className="local-help">LOAD FOR NAVIGATION switches to map_server and loads only YAML + image. RESUME SAVED SLAM SESSION is a separate supervised Mapping restart that restores the pose graph at the configured simulation dock, verifies the old cells on live /map, and then continues mapping. Neither action promotes the map to canonical.</p>
+      {isUnified && <p className="local-help" role="status">In-place saved-map localization and SLAM pose-graph restore are unavailable in this Unified build. These actions stay disabled instead of restarting Gazebo or the ROS stack.</p>}
     </SectionPanel>
     <SectionPanel title="ACCUMULATED SLAM MAP · /map + CURRENT /scan">
       <div className="local-map-toggles" role="group" aria-label="Mapping map layers">
@@ -813,8 +681,8 @@ function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtime
         <Metric label="ROS BRIDGE" value={controlOnline ? "CONNECTED · R01" : "DISCONNECTED"} />
         <Metric label="WEBSOCKET" value={websocketState} />
         <Metric label="CONTROLLER MANAGER" value={diagnostics?.controller_manager ? "ACTIVE" : "UNKNOWN"} />
-        <Metric label="NAV2" value={diagnostics?.nav2 ? runtimeState === "NAVIGATION" ? "ACTIVE" : "AVAILABLE" : "INACTIVE"} />
-        <Metric label="SLAM TOOLBOX" value={diagnostics?.slam ? runtimeState === "MAPPING" ? "ACTIVE" : "AVAILABLE" : "INACTIVE"} />
+        <Metric label="NAV2" value={diagnostics?.nav2_ready ? "READY" : diagnostics?.nav2 ? "STARTING" : "INACTIVE"} />
+        <Metric label="SLAM TOOLBOX" value={diagnostics?.mapping?.slam_state === "ACTIVE" && diagnostics.mapping.map_live ? "LIVE" : diagnostics?.mapping?.slam_state ?? (diagnostics?.slam ? "STARTING" : "INACTIVE")} />
         <Metric label="LOCALIZATION" value={localization} />
         <Metric label="TF MAP → BASE" value={diagnostics?.tf ? "AVAILABLE" : "UNAVAILABLE"} />
         <Metric label="LIDAR" value={diagnostics?.lidar ? "ACTIVE" : "UNAVAILABLE"} />

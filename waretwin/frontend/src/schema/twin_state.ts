@@ -553,10 +553,20 @@ export interface TagNavigationState {
   route_index: number; progress_percent: number; failure_reason: string; started_at?: string | null;
 }
 
-export type RuntimeState = "IDLE" | "SIMULATION" | "MAPPING" | "NAVIGATION" | "ERROR";
+export type RuntimeState = "IDLE" | "SIMULATION" | "MAPPING" | "NAVIGATION" | "UNIFIED" | "ERROR";
+export type RobotRuntimeCapabilities = {
+  mapping_available: boolean;
+  mapping_active: boolean;
+  nav2_available: boolean;
+  nav2_ready: boolean;
+  manual_available: boolean;
+  goal_available: boolean;
+  map_ready: boolean;
+  tag_navigation_available: boolean;
+};
 export type RosDiagnostics = {
   ros: boolean; gazebo: boolean; controller_manager: boolean; slam: boolean;
-  nav2: boolean; tf: boolean; lidar: boolean;
+  nav2: boolean; nav2_ready?: boolean; tf: boolean; lidar: boolean;
   nodes: string[]; topics: string[]; controllers: Array<{ name: string; state: string }>;
   simulation_time: number | null; last_update_at: string | null;
   metrics?: Record<string, number | string | null>;
@@ -825,7 +835,7 @@ export type ServerMessage =
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
   | { type: "map.published"; warehouse_id: number | string; revision: number; published_version: number; map_revision: number; artifact_manifest?: unknown }
   | { type: "SCHEDULE_UPDATED"; source: string }
-  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }>; local_active_maps?: Record<string, RobotLocalMapDiagnostics & { active_map_id?: string | null; active_map_revision?: string | null }>; robot_mapping_sessions?: Record<string, string | null> }
+  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }>; local_active_maps?: Record<string, RobotLocalMapDiagnostics & { active_map_id?: string | null; active_map_revision?: string | null; map_source?: string | null }>; robot_capabilities?: Record<RobotId, RobotRuntimeCapabilities>; robot_mapping_sessions?: Record<string, string | null> }
   | { type: "ROBOT_CONTROL_STATUS"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS"; accepted: boolean; requested_mode?: "MANUAL" | "AUTONOMOUS"; applied_mode?: "MANUAL" | "AUTONOMOUS"; mode_transition_state?: "REQUESTED" | "APPLIED" | "FAILED"; request_id?: string | null; reason?: string | null; timestamp?: string }
   | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
   | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }

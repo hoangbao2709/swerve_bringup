@@ -190,8 +190,8 @@ Checkpoint sequence: U01 architecture audit; U02 unified launch; U03 single TF o
 ### U02–U10 status
 
 - `U02_UNIFIED_LAUNCH=SOURCE_IMPLEMENTED; RUNTIME_BLOCKED_ENVIRONMENT`; `U03_SINGLE_TF_OWNER=SOURCE_IMPLEMENTED; RUNTIME_BLOCKED_ENVIRONMENT`; `U04_NAV2_LIVE_MAP=SOURCE_IMPLEMENTED; RUNTIME_BLOCKED_ENVIRONMENT`.
-- `U05_BACKEND_CAPABILITIES=SOURCE_PASS; RUNTIME_BLOCKED_ENVIRONMENT`; `U06_FRONTEND_UNIFIED_UI=QUEUED`.
-- `U07_MANUAL_SLAM`, `U08_NAV2_SLAM`, `U09_MODE_SWITCH_SAME_STACK`, and `U10_FINAL` remain `BLOCKED_ENVIRONMENT` pending frontend completion and a clean current-boot storage gate. No same-stack Mapping→Navigation sequence is claimed.
+- `U05_BACKEND_CAPABILITIES=SOURCE_PASS; RUNTIME_BLOCKED_ENVIRONMENT`; `U06_FRONTEND_UNIFIED_UI=SOURCE_PASS; RUNTIME_BLOCKED_ENVIRONMENT`.
+- `U07_MANUAL_SLAM`, `U08_NAV2_SLAM`, `U09_MODE_SWITCH_SAME_STACK`, and `U10_FINAL` remain `BLOCKED_ENVIRONMENT` because the current boot still has storage I/O faults. No same-stack Manual→Nav2→Manual sequence is claimed.
 
 ### U02–U04 unified launch integration — source checkpoint only
 
@@ -212,3 +212,12 @@ Checkpoint sequence: U01 architecture audit; U02 unified launch; U03 single TF o
 - SLAM pause/resume and map+pose-graph save are accepted in Unified without stack-mode changes. Saved localization-map load and saved pose-graph restore are explicitly rejected with `UNIFIED_MAP_TRANSITION_UNAVAILABLE` / `UNIFIED_SLAM_RESTORE_UNAVAILABLE`: the current bridge still depends on absent `map_server` or a supervisor restart, and no in-process restore API has been implemented. This is an open product requirement, not a PASS.
 - Focused checks: Django backend suites `test_unified_runtime_capabilities`, `test_navigation_graph`, `test_local_control`, and `test_ros_bridge` passed 73/73; bridge target-handoff suite passed 7/7; changed Python modules compiled and `git diff --check` passed. No frontend tests/build or runtime acceptance is included in U05.
 - Current-boot kernel query remains unhealthy: available unprivileged `journalctl -k -b` still reports blocked `jbd2`/workers and `/dev/sda DID_TIME_OUT` with READ I/O errors at 17:08–17:11; no fresh sudo authorization was available. `df` shows 37 GiB free and `free` 5.8 GiB available RAM. Do not start Gazebo; U05 production behavior remains `BLOCKED_ENVIRONMENT`. Runtime evidence remains in `.runtime/manual-latched-environment-block.json`.
+
+### U06 unified Web UI — source checkpoint only
+
+- The frontend contract/store now consumes the backend's per-robot Unified capabilities (`mapping_available/active`, `nav2_available/ready`, `manual_available`, `goal_available`, `map_ready`, and `tag_navigation_available`) and clears cached capabilities on WebSocket disconnect.
+- The production `/control` entry routes Unified mode into the selected robot's `/robots/<id>/control` detail flow. That keeps Map Point and Tag targets on the shared preview/authorization/Nav2 path and prevents the legacy Tag mission page from being the Unified entry point; compatibility modes retain the old route.
+- The robot detail page renders live SLAM `/map` and accumulated 3D cloud while Unified is active, shows independent `SLAM LIVE` and `NAV2 READY` states, and gates preview/send on backend goal capability, online bridge, active-map identity, and AUTONOMOUS control. The Mapping panel no longer offers a full-stack `SWITCH TO NAVIGATION`; saving remains available with Mapping paused.
+- Global warehouse paths remain hidden for Unified SLAM-frame goals so canonical pixels are not mixed with local SLAM coordinates. In-place saved-map localization and pose-graph restore are explicitly disabled with an explanatory notice because U05 confirmed those minimum-component transitions are not yet implemented; no fake restart workflow is presented.
+- Focused route/workflow suites passed 44/44; full frontend suite passed 143/143; `npx tsc --noEmit` passed; production Vite build passed (existing >500 kB bundle advisory); `git diff --check` passed. These are source/UI checks, not live robot acceptance.
+- Fresh current-boot health check still reports blocked `jbd2`/workers and `/dev/sda` `DID_TIME_OUT`/READ I/O errors. Disk headroom is 37 GiB and available RAM 5.7 GiB but do not clear the storage gate. No Gazebo/ROS stack was started. Current check evidence is `.runtime/unified-runtime-storage-block.json`; U07–U10 remain `BLOCKED_ENVIRONMENT`.

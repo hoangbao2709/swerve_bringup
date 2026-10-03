@@ -103,6 +103,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const tagMission = useStore((state) => state.tagNavigation);
   const runtimeMode = useStore((state) => state.runtimeMode);
   const runtimeState = useStore((state) => state.runtimeState);
+  const runtimeCapabilities = useStore((state) => state.robotCapabilities[robotId] ?? null);
   const rosConnected = useStore((state) => state.rosConnected);
   const connectedRobotIds = useStore((state) => state.connectedRobotIds);
   const websocketState = useStore((state) => state.websocketState);
@@ -125,7 +126,9 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const activeLocalMapId = useStore((state) => state.robotDetail[robotId]?.activeLocalMapId ?? null);
   const activeLocalMapRevision = useStore((state) => state.robotDetail[robotId]?.activeLocalMapRevision ?? null);
   const localMapSyncStatus = useStore((state) => state.robotDetail[robotId]?.localMapSyncStatus ?? null);
-  const activeMapSnapshot = runtimeState === "MAPPING" ? slam2dMap : runtimeMapSnapshot;
+  const slamRuntimeActive = runtimeState === "MAPPING" || runtimeState === "UNIFIED";
+  const useLiveSlamMap = slamRuntimeActive && !activeLocalMapId;
+  const activeMapSnapshot = useLiveSlamMap ? slam2dMap : runtimeMapSnapshot;
   const setRobotDetail = useStore((state) => state.setRobotDetail);
   const authToken = useStore((state) => state.authToken);
   const appliedMode = useStore((state) => state.robotDetail[robotId]?.appliedMode);
@@ -166,24 +169,29 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const controlOnline = Boolean(robotOnline && runtimeMode !== "LOCAL_SIM" && robotBridgeOnline && rosConnected && websocketState === "CONNECTED");
   const localization = diagnostics?.localization ?? rawLocalization?.state ?? null;
   const canonicalMapReady = !activeLocalMapId && (robotMapSync?.status ?? mapSync.status) === "SYNCED";
-  const activeMappingSnapshot = runtimeState === "MAPPING" && slam2dMap?.map_source === "SLAM_TOOLBOX"
+  const activeMappingSnapshot = useLiveSlamMap && slam2dMap?.map_source === "SLAM_TOOLBOX"
     && slam2dMap.frame_id === "map" && Boolean(slam2dMap.mapping_session_id)
     && slam2dMap.active_map_id === `SLAM-${slam2dMap.mapping_session_id}`
     && (!mappingSessionId || slam2dMap.mapping_session_id === mappingSessionId) ? slam2dMap : null;
-  const activeMapId = runtimeState === "MAPPING" ? activeMappingSnapshot?.active_map_id ?? null
+  const activeMapId = useLiveSlamMap ? activeMappingSnapshot?.active_map_id ?? null
     : activeLocalMapId ?? (canonicalMapReady ? "CANONICAL" : activeMapSnapshot?.active_map_id ?? null);
-  const activeMapRevision = runtimeState === "MAPPING" ? activeMappingSnapshot?.active_map_revision ?? null
+  const activeMapRevision = useLiveSlamMap ? activeMappingSnapshot?.active_map_revision ?? null
     : activeLocalMapRevision ?? activeMapSnapshot?.active_map_revision
       ?? (robotMapSync?.rosRevision ?? mapSync.rosRevision)?.toString() ?? null;
-  const activeMapStatus = runtimeState === "MAPPING" ? activeMappingSnapshot ? "SLAM · GOALS DISABLED" : "WAITING FOR SLAM MAP"
+  const activeMapStatus = useLiveSlamMap ? activeMappingSnapshot ? "SLAM · LIVE · LOCAL_ONLY" : "WAITING FOR SLAM MAP"
     : activeLocalMapId
       ? localMapSyncStatus ?? (activeLocalMapRevision ? "LOCAL_ONLY" : "LOADING")
       : canonicalMapReady ? "CANONICAL" : robotMapSync?.status ?? mapSync.status;
-  const activeMapReady = runtimeState !== "MAPPING" && Boolean(activeMapId && activeMapRevision
-    && ["CANONICAL", "LOCAL_ONLY"].includes(activeMapStatus ?? ""));
+  const activeMapReady = Boolean(activeMapId && activeMapRevision && (
+    useLiveSlamMap ? Boolean(activeMappingSnapshot)
+      : ["CANONICAL", "LOCAL_ONLY"].includes(activeMapStatus ?? "")
+  ));
+  const navigationUiAvailable = runtimeState === "UNIFIED"
+    ? Boolean(runtimeCapabilities?.goal_available && controlMode === "AUTONOMOUS" && controlOnline)
+    : runtimeState === "NAVIGATION" && activeMapReady;
   const canonicalMapRevision = mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision;
   const currentSlam2dMap = activeMappingSnapshot;
-  const currentSlam3dCloud = runtimeState === "MAPPING" && slam3dAccumulatedCloud?.accumulated
+  const currentSlam3dCloud = useLiveSlamMap && slam3dAccumulatedCloud?.accumulated
     && slam3dAccumulatedCloud.accumulation_mode === "SLAM_VISUALIZATION_VOXEL_MAP"
     && slam3dAccumulatedCloud.frame_id === "map"
     && slam3dAccumulatedCloud.slam_pose?.valid
@@ -228,7 +236,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     && previewTargetMatches && previewSourceMatches && Number.isFinite(previewAgeMs)
     && previewAgeMs >= -5_000 && previewAgeMs <= 120_000 ? candidatePreview : null;
 
-  const activeMap2dSnapshot = runtimeState === "MAPPING" ? currentSlam2dMap
+  const activeMap2dSnapshot = useLiveSlamMap ? currentSlam2dMap
     : runtimeMapSnapshot?.active_map_id === activeMapId
       && String(runtimeMapSnapshot.active_map_revision ?? "") === String(activeMapRevision ?? "")
       ? runtimeMapSnapshot : null;
@@ -295,7 +303,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     canonical_revision: canonicalMapRevision, map_snapshot: activeMap2dSnapshot,
   });
   const displayedMapPointPickIdentity = targetMethod === "MAP_POINT" && activeMapReady
-    && runtimeState === "NAVIGATION" ? displayedNavigationMapIdentity : null;
+    && navigationUiAvailable && controlMode === "AUTONOMOUS" ? displayedNavigationMapIdentity : null;
   const visitedViews = useRef(new Set<string>());
   visitedViews.current.add(detailView);
   const viewFresh = detailView === "GLOBAL" || (detailView === "LIDAR_2D" && Boolean(activeMap2dSnapshot))
@@ -495,6 +503,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const sendGoal = () => {
     const approvedGoal = approvedPreview?.goal;
     if (!goalPreview || !approvedPreview || approvedPreview.status !== "VALID" || !approvedGoal) return;
+    if (!navigationUiAvailable) { setError("Nav2 is not ready for this active map and control mode"); return; }
     if (controlMode !== "AUTONOMOUS") { setError("Switch to AUTONOMOUS before sending a goal"); return; }
     if (!controlOnline) { setError("Navigation goal requires an online ROS bridge"); return; }
     if (!activeMapReady) { setError(`The selected robot active map is not confirmed (${activeMapStatus})`); return; }
@@ -588,6 +597,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       setError("Switch to online AUTONOMOUS mode to request a Nav2 path preview");
       return;
     }
+    if (!navigationUiAvailable) {
+      latestPathRequest.current = "";
+      setPathRequestState("IDLE");
+      setRobotDetail(robotId, { pathPreview: null });
+      setError("Nav2 is not ready for this active map and control mode");
+      return;
+    }
     const requestId = typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -609,7 +625,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       setPathRequestState("IDLE");
       setError("Path preview request was not sent because the WebSocket is disconnected");
     }
-  }, [activeMapId, activeMapReady, activeMapRevision, activeMapStatus, controlMode, controlOnline, robotId, selectedTag, setRobotDetail, tagRegistry?.registry_revision, targetMethod]);
+  }, [activeMapId, activeMapReady, activeMapRevision, activeMapStatus, controlMode, controlOnline, navigationUiAvailable, robotId, selectedTag, setRobotDetail, tagRegistry?.registry_revision, targetMethod]);
 
   useEffect(() => {
     if (pathPreview?.request_id && pathPreview.request_id === latestPathRequest.current) setPathRequestState("IDLE");
@@ -651,6 +667,10 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
           <StatusValue value={robotOnline ? "ONLINE" : "OFFLINE"} />
           <span className="robot-detail-mode">{controlMode}{modeTransitionState === "REQUESTED" ? ` → ${requestedMode} REQUESTED` : modeTransitionState === "FAILED" ? " TRANSITION FAILED" : " APPLIED"}</span>
           <span className="robot-detail-runtime">{runtimeState} / {safeText(robot?.navigation_state, "N/A")}</span>
+          {runtimeState === "UNIFIED" && <>
+            <span className="robot-detail-runtime" data-testid="slam-runtime-state">SLAM {diagnostics?.mapping?.slam_state === "ACTIVE" && diagnostics?.mapping?.map_live ? "LIVE" : safeText(diagnostics?.mapping?.slam_state, "STARTING")}</span>
+            <span className="robot-detail-runtime" data-testid="nav2-runtime-state">NAV2 {runtimeCapabilities?.nav2_ready ? "READY" : diagnostics?.nav2 ? "STARTING" : "UNAVAILABLE"}</span>
+          </>}
           <span className="robot-detail-mission">{currentMission ? `${currentMission.id} · ${currentMission.status}` : "mission N/A"}</span>
           <span className="robot-detail-latency">connection latency {safeNumber(diagnostics?.websocket_latency_ms, 0, " ms")}</span>
         </div>
@@ -667,7 +687,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       </nav>
 
       {activeTab !== "CONTROL" ? <main className="robot-detail-section-main">
-        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : runtimeState === "MAPPING" ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} />
+        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} />
       </main> : <main className="robot-detail-main">
         <aside className="robot-detail-column robot-detail-left">
           <SystemInputsPanel robotId={robotId} robot={robot} controlMode={controlMode} runtimeMode={runtimeMode} goal={goalPreview ?? goal} mission={tagMission?.robot_id === robotId ? tagMission : null} />
@@ -682,8 +702,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
               <button type="button" role="tab" aria-selected={mapSource === "LIDAR" && lidarDimension === "3D"} className={mapSource === "LIDAR" && lidarDimension === "3D" ? "is-active" : ""} onClick={() => { setMapSource("LIDAR"); setLidarDimension("3D"); }}>MAP VIEW 3D</button>
             </div>
             <span className="map-sync-warning" data-view-state={viewFresh ? "FRESH" : viewStatus?.state ?? "REQUESTED"}>{viewFresh ? "LIVE" : "WAITING FOR FRESH FRAME"}</span>
-            <span className={`map-sync-warning ${activeMapReady ? "map-sync-warning-ready" : ""}`}>{activeMapId ? `${activeMapId} · r${activeMapRevision ?? "—"} · ${activeMapStatus}` : `MAP ${activeMapStatus} · LOCAL GOALS BLOCKED`}</span>
-            {activeLocalMapId && runtimeState !== "MAPPING" && <span className="map-sync-warning">LOCAL MAP DIFFERS FROM CANONICAL r{mapSync.publishedRevision ?? "—"} · LOCAL NAV ONLY</span>}
+            <span className={`map-sync-warning ${activeMapReady ? "map-sync-warning-ready" : ""}`}>{activeMapId ? `${activeMapId} · r${activeMapRevision ?? "—"} · ${activeMapStatus}` : `MAP ${activeMapStatus}`}</span>
+            {activeLocalMapId && <span className="map-sync-warning">LOCAL MAP DIFFERS FROM CANONICAL r{mapSync.publishedRevision ?? "—"} · LOCAL NAV ONLY</span>}
           </div>
           <div className="robot-detail-target-toolbar">
             <span>NAVIGATION TARGET</span>
@@ -730,8 +750,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             <span>{targetMethod === "TAG" ? selectedTag ? `TAG ${selectedTag.tag_id} SELECTED · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : candidatePreview?.status === "INVALID" || candidatePreview?.status === "NO_PATH" ? candidatePreview.reason ?? candidatePreview.status : "PATH PREVIEW REQUIRED"}` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
-            <button type="button" disabled={(!goalPreview || targetMethod === "TAG" && !selectedTag?.navigable) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
-            <button type="button" disabled={!goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady || runtimeState !== "NAVIGATION"} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
+            <button type="button" disabled={!navigationUiAvailable || (!goalPreview || targetMethod === "TAG" && !selectedTag?.navigable) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
+            <button type="button" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
             <button type="button" disabled={!goalPreview && selectedTagId === null} onClick={cancelPathPreview}>CANCEL</button>
           </div>
         </section>
@@ -938,7 +958,9 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const canonicalPaths = runtimeState === "MAPPING" ? false : showPaths;
+    // GLOBAL is always the canonical warehouse frame. Unified SLAM/Nav2 paths
+    // use the active SLAM map frame and are rendered only in the SLAM views.
+    const canonicalPaths = runtimeState === "MAPPING" || runtimeState === "UNIFIED" ? false : showPaths;
     drawDetailMap(ctx, size.width, size.height, transform, bounds, null, null, displayedPose, robot,
       canonicalPaths ? globalPath : null, canonicalPaths ? localPath : null, canonicalPaths ? goal : null,
       canonicalPaths ? goalPreview : null, canonicalPaths ? pathPreview : null,

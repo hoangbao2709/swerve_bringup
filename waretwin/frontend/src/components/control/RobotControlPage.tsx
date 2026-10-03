@@ -6,6 +6,7 @@ import type { TwinState } from "../../schema/twin_state";
 import { clearEmergencyStop, emergencyStop, missionAction, navigationApi, startTagMission } from "../../services/api";
 import { wsManualCommand, wsSetRobotMode, type ManualAction } from "../../services/ws";
 import { MANUAL_COMMAND_REFRESH_MS, nextManualCommand, type ActiveManualCommand } from "../../services/manualCommand";
+import { RobotControlDetailPage } from "./RobotControlDetailPage";
 
 const EMPTY_ROBOTS: TwinState["robots"] = {};
 const EMPTY_TAGS: TagGraph["tags"] = [];
@@ -306,4 +307,17 @@ function RobotControlContent() {
 /** Error boundary for the complete route, including sidebar and control panels. */
 export function RobotControlPage() {
   return <RobotControlBoundary><RobotControlContent /></RobotControlBoundary>;
+}
+
+/** Keep the legacy control screen for compatibility aliases, but route the
+ * production Unified runtime through the per-robot shared Nav2 preview path. */
+export function RuntimeAwareRobotControlPage() {
+  const runtimeState = useStore((state) => state.runtimeState);
+  const selectedRobot = useStore((state) => state.selectedRobot);
+  const robots = useStore((state) => state.twin?.robots);
+  if (runtimeState !== "UNIFIED") return <RobotControlPage />;
+  const robotId = selectedRobot && robots?.[selectedRobot]
+    ? selectedRobot : Object.keys(robots ?? {})[0];
+  return robotId ? <RobotControlDetailPage robotId={robotId} />
+    : <div className="auth-shell" role="status">UNIFIED RUNTIME · WAITING FOR ROBOT TELEMETRY</div>;
 }

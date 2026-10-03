@@ -10,6 +10,9 @@ import { resolveBackendUrls } from "../src/services/ws";
 vi.mock("../src/components/views/MapView2D", () => ({
   MapView2D: () => <div data-testid="warehouse-map">Warehouse map</div>,
 }));
+vi.mock("../src/components/control/RobotControlDetailPage", () => ({
+  RobotControlDetailPage: ({ robotId }: { robotId: string }) => <div data-testid="unified-detail-control">Unified detail control · {robotId}</div>,
+}));
 vi.mock("../src/services/api", () => ({
   navigationApi: () => new Promise(() => undefined),
   startTagMission: vi.fn(),
@@ -26,7 +29,7 @@ vi.mock("../src/services/ws", async (importOriginal) => {
   };
 });
 
-import { RobotControlPage } from "../src/components/control/RobotControlPage";
+import { RobotControlPage, RuntimeAwareRobotControlPage } from "../src/components/control/RobotControlPage";
 import { wsManualCommand } from "../src/services/ws";
 
 const initialState = useStore.getState();
@@ -98,6 +101,16 @@ describe("/control direct render", () => {
     });
     expect(container.textContent).toContain("R01");
     expect(container.textContent).toContain("CONNECTED");
+  });
+
+  it("routes the Unified /control entry to the shared per-robot navigation pipeline", () => {
+    act(() => {
+      useStore.setState({ ...initialState, runtimeState: "UNIFIED",
+        twin: { ...initialState.twin, robots: { R01: r01() } }, selectedRobot: "R01" });
+      root.render(<RuntimeAwareRobotControlPage />);
+    });
+    expect(container.querySelector('[data-testid="unified-detail-control"]')?.textContent).toBe("Unified detail control · R01");
+    expect(container.textContent).not.toContain("MISSION");
   });
 
   it("does not enable manual control for a robot without its own bridge", () => {

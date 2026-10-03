@@ -17,7 +17,7 @@ import { WarehouseManagementPage } from "./components/admin/WarehouseManagementP
 import { OverviewPage } from "./components/overview/OverviewPage";
 import { bootstrapAuth } from "./services/auth";
 import { DEMO_MODE, DEMO_USER } from "./config";
-import { RobotControlPage } from "./components/control/RobotControlPage";
+import { RuntimeAwareRobotControlPage } from "./components/control/RobotControlPage";
 import { RobotControlDetailPage } from "./components/control/RobotControlDetailPage";
 import { DiagnosticsPage } from "./components/diagnostics/DiagnosticsPage";
 
@@ -203,7 +203,7 @@ export default function App() {
       return <AdminPage />;
     }
     if (path === "/operations") return <NarrowScreenGate><Console /></NarrowScreenGate>;
-    if (path === "/control") return <NarrowScreenGate><RobotControlPage /></NarrowScreenGate>;
+    if (path === "/control") return <NarrowScreenGate><RuntimeAwareRobotControlPage /></NarrowScreenGate>;
     if (detailRobotId) return <NarrowScreenGate><RobotControlDetailPage robotId={detailRobotId} /></NarrowScreenGate>;
     if (path === "/diagnostics") return <DiagnosticsPage />;
     return <OverviewPage />;
@@ -226,7 +226,7 @@ export default function App() {
     return <AdminPage />;
   }
   if (path === "/operations") return <NarrowScreenGate><Console /></NarrowScreenGate>;
-  if (path === "/control") return <NarrowScreenGate><RobotControlPage /></NarrowScreenGate>;
+  if (path === "/control") return <NarrowScreenGate><RuntimeAwareRobotControlPage /></NarrowScreenGate>;
   if (detailRobotId) return <NarrowScreenGate><RobotControlDetailPage robotId={detailRobotId} /></NarrowScreenGate>;
   if (path === "/diagnostics") return <DiagnosticsPage />;
   return <OverviewPage />;

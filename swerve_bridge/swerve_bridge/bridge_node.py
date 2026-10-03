@@ -2143,7 +2143,10 @@ class SwerveBridge(Node):
                 elif kind == 'EMERGENCY_STOP':
                     self.emergency_stop(data)
                 elif kind == 'CLEAR_EMERGENCY_STOP':
-                    self.clear_emergency_stop(data)
+                    result = self.clear_emergency_stop(data)
+                    if data.get('request_id'):
+                        self._send_local_control_result(data, result['ok'], result=result,
+                            error=None if result['ok'] else result['message'])
             except Exception as exc:
                 self.get_logger().error(f'ROS bridge command {kind} failed: {exc}')
                 self.send({'type': 'BRIDGE_ERROR', 'code': 'COMMAND_FAILED',
@@ -2310,6 +2313,11 @@ class SwerveBridge(Node):
 
     def local_control(self, data):
         operation = str(data.get('operation') or '').upper()
+        if operation == 'CLEAR_ESTOP':
+            result = self.clear_emergency_stop(data)
+            self._send_local_control_result(data, result['ok'], result=result,
+                error=None if result['ok'] else result['message'])
+            return
         if operation in ('MAPPING_START', 'MAPPING_STOP'):
             if self.runtime_state != 'MAPPING':
                 self._send_local_control_result(data, False, error='SLAM Toolbox is not active in this runtime')
@@ -2617,11 +2625,14 @@ class SwerveBridge(Node):
         if (self.goal_request_pending or self.active_pose_goal is not None
                 or self.active_goal is not None or self.cancel_pending):
             self.cmd_pub.publish(Twist())
+            message = 'E-STOP remains active until the pre-stop Nav2 goal is terminal'
             self.send_nav_status(
                 {'robot_id': self.robot_id}, 'EMERGENCY_STOPPED',
-                'E-STOP remains active until the pre-stop Nav2 goal is terminal',
+                message,
             )
-            return False
+            return {'ok': False, 'code': 'CLEAR_ESTOP_REJECTED_GOAL_PENDING',
+                    'emergency_stop_active': True, 'pre_stop_navigation_terminal': False,
+                    'message': message}
         self.emergency_stop_active = False
         self.estop_pub.publish(Bool(data=False))
         self.pending_cancel_state = None
@@ -2630,6 +2641,9 @@ class SwerveBridge(Node):
         self.manual_twist = Twist()
         self.manual_deadline = 0.0
         self.send_nav_status({'robot_id': self.robot_id}, 'IDLE', 'emergency stop cleared')
+        return {'ok': True, 'code': 'CLEAR_ESTOP_APPLIED',
+                'emergency_stop_active': False, 'pre_stop_navigation_terminal': True,
+                'message': 'emergency stop latch cleared after pre-stop navigation became terminal'}
 
     def send_control_status(self, accepted: bool, reason=None, manual_refresh=False):
         payload = {

@@ -751,6 +751,8 @@ class CmdNavGoal(_Base):
     preview_request_id: Optional[str] = Field(default=None, max_length=64)
     active_map_id: Optional[str] = Field(default=None, max_length=128)
     active_map_revision: Optional[str] = Field(default=None, max_length=128)
+    map_id: Optional[str] = Field(default=None, max_length=128)
+    map_revision: Optional[str] = Field(default=None, max_length=128)
     source_type: Optional[Literal["MAP_POINT", "TAG"]] = None
     source_id: Optional[str] = Field(default=None, max_length=128)
 
@@ -770,6 +772,8 @@ class CmdPathPreviewRequest(_Base):
     frame_id: Literal["map"] = "map"
     active_map_id: Optional[str] = Field(default=None, max_length=128)
     active_map_revision: Optional[str] = Field(default=None, max_length=128)
+    map_id: Optional[str] = Field(default=None, max_length=128)
+    map_revision: Optional[str] = Field(default=None, max_length=128)
     source_type: Literal["MAP_POINT", "TAG"] = "MAP_POINT"
     tag_id: Optional[int] = Field(default=None, ge=0)
     tag_revision: Optional[str] = Field(default=None, max_length=128)

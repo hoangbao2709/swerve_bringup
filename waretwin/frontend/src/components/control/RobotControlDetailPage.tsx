@@ -7,12 +7,14 @@ import type { FramePose, RobotDetailError, RobotDetailGoal, RobotDetailMapSnapsh
 import type { WarehouseLayout } from "../../layout/types";
 import { createWorldTransform, floorBoundary, screenToWorld, worldToScreen, type WorldBounds, type WorldTransform } from "../../layout/coordinates";
 import { useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
-import { AccumulatedSlamMap2DView, LocalRobotSection } from "./LocalRobotSections";
+import { ActiveNavigationMap2DView, LocalRobotSection } from "./LocalRobotSections";
 import { RobotLidar3DView } from "./RobotLidarViews";
 import { occupancyRasters } from "./occupancyRaster";
 import { detailPerformance } from "./detailPerformance";
+import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, mapPointTarget, sameNavigationMapIdentity, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
 
 type WorldGoal = { x: number; y: number; yaw: number };
+type GoalSelection = WorldGoal & Partial<NavigationMapIdentity>;
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
 type LocalTab = "CONTROL" | "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type MapSource = "GLOBAL" | "LIDAR";
@@ -31,6 +33,10 @@ const MANUAL_ACTIONS: Array<{ action: ManualAction; label: string; title: string
 ];
 
 const EMPTY_ERRORS: RobotDetailError[] = [];
+
+function isMapPointTarget(target: GoalSelection | null): target is MapPointNavigationTarget {
+  return Boolean(target && target.frame_id === "map" && target.map_id && target.map_revision);
+}
 
 function pushRoute(path: string) {
   window.history.pushState({}, "", path);
@@ -136,10 +142,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const [tagRegistryState, setTagRegistryState] = useState<"IDLE" | "LOADING" | "READY" | "ERROR">("IDLE");
   const [tagRegistryError, setTagRegistryError] = useState("");
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
-  const [goalPreview, setGoalPreview] = useState<WorldGoal | null>(null);
+  const [goalPreview, setGoalPreview] = useState<GoalSelection | null>(null);
   const [pathRequestState, setPathRequestState] = useState<"IDLE" | "PLANNING">("IDLE");
   const latestPathRequest = useRef("");
   const [error, setError] = useState("");
+  const [safetyNotice, setSafetyNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [host, setHost] = useState<HostStatus | null>(null);
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -167,6 +174,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       : canonicalMapReady ? "CANONICAL" : robotMapSync?.status ?? mapSync.status;
   const activeMapReady = runtimeState !== "MAPPING" && Boolean(activeMapId && activeMapRevision
     && ["CANONICAL", "LOCAL_ONLY"].includes(activeMapStatus ?? ""));
+  const canonicalMapRevision = mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision;
   const currentSlam2dMap = activeMappingSnapshot;
   const currentSlam3dCloud = runtimeState === "MAPPING" && slam3dAccumulatedCloud?.accumulated
     && slam3dAccumulatedCloud.accumulation_mode === "SLAM_VISUALIZATION_VOXEL_MAP"
@@ -183,9 +191,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     x: robot.position[0], y: robot.position[2], yaw: robot.heading,
     frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
   } : null);
-  const selectedTag = tagRegistry?.tags.find((tag) => tag.tag_id === selectedTagId) ?? null;
-  const compatibleTags = tagRegistry?.compatible ? tagRegistry.tags : [];
-  const navigableTags = compatibleTags.filter((tag) => tag.navigable);
+  const informationalTagRegistry = tagRegistry?.reason === "TAG_MAP_REGISTRATION_REQUIRED";
+  const compatibleTags = tagRegistry?.compatible || informationalTagRegistry ? tagRegistry.tags : [];
+  const selectedTag = compatibleTags.find((tag) => tag.tag_id === selectedTagId) ?? null;
+  const navigableTags = compatibleTags.filter((tag) => tag.navigable
+    && tag.map_id === activeMapId && tag.map_revision === activeMapRevision);
   const selectedMapTag = selectedTag && selectedTag.map_id === "CANONICAL"
     && selectedTag.map_revision === String(mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision)
     ? selectedTag : null;
@@ -205,8 +215,18 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     && candidatePreview.status === "VALID" && candidatePreview.path.length > 0
     && candidatePreview.active_map_id === activeMapId
     && candidatePreview.active_map_revision === activeMapRevision
+    && (targetMethod === "TAG" || Boolean(isMapPointTarget(goalPreview)
+      && goalPreview.frame_id === "map" && goalPreview.map_id === activeMapId
+      && goalPreview.map_revision === activeMapRevision))
     && previewTargetMatches && previewSourceMatches && Number.isFinite(previewAgeMs)
     && previewAgeMs >= -5_000 && previewAgeMs <= 120_000 ? candidatePreview : null;
+
+  const activeMap2dSnapshot = runtimeState === "MAPPING" ? currentSlam2dMap
+    : runtimeMapSnapshot?.active_map_id === activeMapId
+      && String(runtimeMapSnapshot.active_map_revision ?? "") === String(activeMapRevision ?? "")
+      ? runtimeMapSnapshot : null;
+  const activeNavigationMapKey = JSON.stringify([robotId, activeMapId, activeMapRevision, activeMapReady]);
+  const previousActiveNavigationMapKey = useRef(activeNavigationMapKey);
 
   useEffect(() => {
     select(robotId);
@@ -215,6 +235,17 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
   }, [robotId, select, setRobotDetail]);
+
+  useEffect(() => {
+    if (previousActiveNavigationMapKey.current === activeNavigationMapKey) return;
+    previousActiveNavigationMapKey.current = activeNavigationMapKey;
+    wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
+    latestPathRequest.current = "";
+    setPathRequestState("IDLE");
+    setGoalPreview(null);
+    setSelectedTagId(null);
+    setRobotDetail(robotId, { pathPreview: null });
+  }, [activeNavigationMapKey, robotId, setRobotDetail]);
 
   useEffect(() => {
     if (targetMethod !== "TAG") return;
@@ -251,9 +282,16 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, []);
 
   const detailView: "GLOBAL" | "LIDAR_2D" | "LIDAR_3D" = mapSource === "GLOBAL" ? "GLOBAL" : `LIDAR_${lidarDimension}`;
+  const displayedNavigationMapIdentity = getDisplayedNavigationMapIdentity({
+    view: detailView,
+    active_map_id: activeMapId, active_map_revision: activeMapRevision,
+    canonical_revision: canonicalMapRevision, map_snapshot: activeMap2dSnapshot,
+  });
+  const displayedMapPointPickIdentity = targetMethod === "MAP_POINT" && activeMapReady
+    && runtimeState === "NAVIGATION" ? displayedNavigationMapIdentity : null;
   const visitedViews = useRef(new Set<string>());
   visitedViews.current.add(detailView);
-  const viewFresh = detailView === "GLOBAL" || (detailView === "LIDAR_2D" && Boolean(currentSlam2dMap))
+  const viewFresh = detailView === "GLOBAL" || (detailView === "LIDAR_2D" && Boolean(activeMap2dSnapshot))
     || (detailView === "LIDAR_3D" && Boolean(currentSlam3dCloud))
     || (viewStatus?.requested_view === detailView && viewStatus.state === "FRESH");
   useEffect(() => {
@@ -264,13 +302,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [detailView, robotBridgeOnline, robotId, websocketState, setRobotDetail]);
   useLayoutEffect(() => {
     const cached = detailView === "GLOBAL" ? layout.floors.length > 0
-      : detailView === "LIDAR_2D" ? occupancyRasters.peek(slam2dMap) : slam3dAccumulatedCloud;
+      : detailView === "LIDAR_2D" ? occupancyRasters.peek(activeMap2dSnapshot) : slam3dAccumulatedCloud;
     if (!cached) return;
     const paint = requestAnimationFrame(() => detailPerformance("view_render", { view: detailView, robot_id: robotId, useful: true, cached: true }));
     return () => cancelAnimationFrame(paint);
     // This measures a cached canvas becoming visible, not a newly received frame.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailView, robotId]);
+  }, [activeMap2dSnapshot, detailView, robotId, slam3dAccumulatedCloud]);
 
   useEffect(() => {
     let cancelled = false;
@@ -345,6 +383,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const runAction = useCallback(async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
+    setSafetyNotice("");
     try { await fn(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Request failed"); }
     finally { setBusy(false); }
@@ -423,7 +462,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     if (!activeMapReady) { setError(`The selected robot active map is not confirmed (${activeMapStatus})`); return; }
     if (!wsSend({ type: "NAV_GOAL", robot_id: robotId, x: approvedGoal.x, y: approvedGoal.y, yaw: approvedGoal.yaw,
       frame_id: "map", preview_request_id: approvedPreview.request_id, active_map_id: activeMapId!,
-      active_map_revision: activeMapRevision!, source_type: approvedPreview.source_type ?? "MAP_POINT",
+      active_map_revision: activeMapRevision!, map_id: approvedPreview.active_map_id!,
+      map_revision: approvedPreview.active_map_revision!, source_type: approvedPreview.source_type ?? "MAP_POINT",
       source_id: approvedPreview.source_id ?? undefined })) {
       setError("Navigation goal was not sent");
       return;
@@ -435,7 +475,12 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setError("");
   };
 
-  const selectMapPoint = useCallback((target: WorldGoal) => {
+  const selectMapPoint = useCallback((target: MapPointNavigationTarget) => {
+    if (target.frame_id !== "map" || target.map_id !== activeMapId
+        || target.map_revision !== activeMapRevision) {
+      setError("Map point selection belongs to a map that is no longer active");
+      return;
+    }
     setSelectedTagId(null);
     wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
     setGoalPreview(target);
@@ -443,7 +488,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
     setError("");
-  }, [robotId, setRobotDetail]);
+  }, [activeMapId, activeMapRevision, robotId, setRobotDetail]);
 
   const selectTargetMethod = (method: NavigationTargetMethod) => {
     if (method === targetMethod) return;
@@ -471,7 +516,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setError("");
   };
 
-  const requestPathPreview = useCallback((target: WorldGoal) => {
+  const requestPathPreview = useCallback((target: GoalSelection) => {
     setGoalPreview(target);
     setError("");
     if (targetMethod === "TAG" && (!selectedTag?.navigable || !tagRegistry?.registry_revision)) {
@@ -488,6 +533,16 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       setError(`Path planning is blocked: the selected robot active map is not confirmed (${activeMapStatus})`);
       return;
     }
+    const pointIdentity: NavigationMapIdentity | null = targetMethod === "MAP_POINT" && isMapPointTarget(target)
+      ? { frame_id: target.frame_id, map_id: target.map_id, map_revision: target.map_revision } : null;
+    if (targetMethod === "MAP_POINT" && (!pointIdentity || pointIdentity.frame_id !== "map"
+        || pointIdentity.map_id !== activeMapId || pointIdentity.map_revision !== activeMapRevision)) {
+      latestPathRequest.current = "";
+      setPathRequestState("IDLE");
+      setRobotDetail(robotId, { pathPreview: null });
+      setError("Map point preview is blocked because the selected point belongs to a different map or revision");
+      return;
+    }
     if (!controlOnline || controlMode !== "AUTONOMOUS") {
       latestPathRequest.current = "";
       setPathRequestState("IDLE");
@@ -502,7 +557,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setPathRequestState("PLANNING");
     setRobotDetail(robotId, { pathPreview: null });
     const common = { type: "PATH_PREVIEW_REQUEST" as const, robot_id: robotId, request_id: requestId,
-      frame_id: "map" as const, active_map_id: activeMapId!, active_map_revision: activeMapRevision! };
+      frame_id: "map" as const,
+      active_map_id: pointIdentity?.map_id ?? activeMapId!,
+      active_map_revision: pointIdentity?.map_revision ?? activeMapRevision!,
+      map_id: pointIdentity?.map_id ?? activeMapId!,
+      map_revision: pointIdentity?.map_revision ?? activeMapRevision! };
     const sent = targetMethod === "TAG" && selectedTag && tagRegistry?.registry_revision
       ? wsSend({ ...common, source_type: "TAG", tag_id: selectedTag.tag_id,
         tag_revision: selectedTag.tag_revision, registry_revision: tagRegistry.registry_revision })
@@ -530,6 +589,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const navCommand = (type: "NAV_CANCEL" | "NAV_PAUSE" | "NAV_RESUME") => {
     if (!controlOnline) { setError("Navigation control requires an online ROS bridge"); return; }
     if (!wsSend({ type, robot_id: robotId })) setError("Navigation command was not sent");
+  };
+
+  const adjustSelectedMapPointYaw = (delta: number) => {
+    if (!isMapPointTarget(goalPreview)) return;
+    selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw + delta });
   };
 
   const changeRobot = (next: string) => {
@@ -599,11 +663,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             {targetMethod === "TAG" && <label className="robot-detail-tag-select">
               <span>DESTINATION TAG</span>
               <select aria-label="Destination Tag" value={selectedTagId ?? ""}
-                disabled={tagRegistryState !== "READY" || !tagRegistry?.compatible || compatibleTags.length === 0}
+                disabled={tagRegistryState !== "READY" || (!tagRegistry?.compatible && !informationalTagRegistry) || compatibleTags.length === 0}
                 onChange={(event) => selectTag(event.currentTarget.value)}>
                 <option value="">{tagRegistryState === "LOADING" ? "Loading Tags…" : "Select a Tag…"}</option>
                 {compatibleTags.map((tag) => <option key={tag.tag_id} value={tag.tag_id} disabled={!tag.navigable}>
-                  {tag.tag_id} — {tag.label}{tag.navigable ? "" : " · DISABLED"}
+                  {tag.tag_id} — {tag.label}{tag.navigable ? "" : ` · ${tag.reason ?? "DISABLED"}`}
                 </option>)}
               </select>
             </label>}
@@ -611,7 +675,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
           {targetMethod === "TAG" && <div className="robot-detail-tag-status" role="status" aria-live="polite">
             {tagRegistryState === "LOADING" && <span>Loading authoritative Tags for {activeMapId ?? "the active map"}…</span>}
             {tagRegistryState === "ERROR" && <span className="is-error">Tag registry unavailable: {tagRegistryError}</span>}
-            {tagRegistryState === "READY" && !tagRegistry?.compatible && <span className="is-error">Tags unavailable: {tagRegistry?.reason ?? "active map is incompatible"}</span>}
+            {tagRegistryState === "READY" && informationalTagRegistry && <span className="is-error">Canonical Tags are informational only on this local map. Navigation is disabled: TAG_MAP_REGISTRATION_REQUIRED.</span>}
+            {tagRegistryState === "READY" && !tagRegistry?.compatible && !informationalTagRegistry && <span className="is-error">Tags unavailable: {tagRegistry?.reason ?? "active map is incompatible"}</span>}
             {tagRegistryState === "READY" && tagRegistry?.compatible && compatibleTags.length === 0 && <span>No Tags are registered for this active map.</span>}
             {tagRegistryState === "READY" && tagRegistry?.compatible && compatibleTags.length > 0 && navigableTags.length === 0 && <span className="is-error">No enabled, valid Tags are navigable on this map.</span>}
             {selectedTag && selectedTag.navigation_pose && <div className="robot-detail-tag-summary" data-testid="selected-navigation-tag" data-tag-id={selectedTag.tag_id}>
@@ -626,14 +691,14 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             </div>}
           </div>}
           <div className="robot-detail-view-stack" key={robotId}>
-            <div className={"robot-detail-view-layer " + (detailView === "GLOBAL" ? "is-active" : "")} data-view="GLOBAL" aria-hidden={detailView !== "GLOBAL"}><DetailMapCanvas active={detailView === "GLOBAL"} robotId={robotId} robot={robot} canonicalRevision={mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} selectedTag={selectedMapTag} onGoalSelect={selectMapPoint} canPick={targetMethod === "MAP_POINT" && runtimeState !== "MAPPING" && activeMapId === "CANONICAL" && !activeLocalMapId} /></div>
-            {visitedViews.current.has("LIDAR_2D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_2D" ? "is-active" : "")} data-view="LIDAR_2D" aria-hidden={detailView !== "LIDAR_2D"}><AccumulatedSlamMap2DView map={currentSlam2dMap} robot={robot} scan={mappingScan} /></div>}
+            <div className={"robot-detail-view-layer " + (detailView === "GLOBAL" ? "is-active" : "")} data-view="GLOBAL" aria-hidden={detailView !== "GLOBAL"}><DetailMapCanvas active={detailView === "GLOBAL"} robotId={robotId} robot={robot} canonicalRevision={canonicalMapRevision} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} selectedTag={selectedMapTag} onGoalSelect={selectMapPoint} pickMapIdentity={detailView === "GLOBAL" ? displayedMapPointPickIdentity : null} /></div>
+            {visitedViews.current.has("LIDAR_2D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_2D" ? "is-active" : "")} data-view="LIDAR_2D" aria-hidden={detailView !== "LIDAR_2D"}><ActiveNavigationMap2DView map={activeMap2dSnapshot} robot={robot} scan={mappingScan} target={isMapPointTarget(goalPreview) ? goalPreview : null} navigationPath={approvedPreview?.path ?? []} canPick={detailView === "LIDAR_2D" && Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} /></div>}
             {visitedViews.current.has("LIDAR_3D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_3D" ? "is-active" : "")} data-view="LIDAR_3D" aria-hidden={detailView !== "LIDAR_3D"}><RobotLidar3DView active={detailView === "LIDAR_3D"} frame={currentSlam3dCloud} robot={robot} slamMap={currentSlam2dMap} /></div>}
           </div>
           <div className="robot-detail-goal-toolbar">
             <span>{targetMethod === "TAG" ? selectedTag ? `TAG ${selectedTag.tag_id} SELECTED · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : candidatePreview?.status === "INVALID" || candidatePreview?.status === "NO_PATH" ? candidatePreview.reason ?? candidatePreview.status : "PATH PREVIEW REQUIRED"}` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
-            <button type="button" disabled={targetMethod === "TAG" || !goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw - Math.PI / 12 })}>YAW −</button>
-            <button type="button" disabled={targetMethod === "TAG" || !goalPreview || pathRequestState === "PLANNING"} onClick={() => goalPreview && selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw + Math.PI / 12 })}>YAW +</button>
+            <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
+            <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
             <button type="button" disabled={(!goalPreview || targetMethod === "TAG" && !selectedTag?.navigable) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
             <button type="button" disabled={!goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady || runtimeState !== "NAVIGATION"} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
             <button type="button" disabled={!goalPreview && selectedTagId === null} onClick={cancelPathPreview}>CANCEL</button>
@@ -657,8 +722,14 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
           <button type="button" disabled={!controlOnline || controlMode !== "AUTONOMOUS"} onClick={() => navCommand("NAV_PAUSE")}>PAUSE</button>
           <button type="button" disabled={!controlOnline || controlMode !== "AUTONOMOUS"} onClick={() => navCommand("NAV_RESUME")}>RESUME</button>
           <button type="button" className="robot-console-danger-outline" disabled={!controlOnline} onClick={() => navCommand("NAV_CANCEL")}>CANCEL NAV</button>
-          <button type="button" disabled={busy || !robotId} onClick={() => void runAction(() => clearEmergencyStop(robotId))}>CLEAR STOP</button>
+          <button type="button" disabled={busy || !robotId} onClick={() => void runAction(async () => {
+            const result = await clearEmergencyStop(robotId);
+            if (result.code !== "CLEAR_ESTOP_APPLIED" || result.emergency_stop_active
+                || !result.pre_stop_navigation_terminal) throw new Error("CLEAR_ESTOP_UNCONFIRMED: runtime did not confirm the stop latch is clear");
+            setSafetyNotice("CLEAR_ESTOP_APPLIED · bridge confirmed latch clear and prior navigation terminal");
+          })}>CLEAR STOP</button>
         </div>
+        {safetyNotice && <div className="robot-detail-command-notice" role="status">{safetyNotice}</div>}
         {error && <div className="robot-detail-command-error" role="alert">{error}</div>}
       </footer>
     </div>
@@ -778,9 +849,9 @@ function MetricContent({ label, value, mono = false, status = false }: { label: 
   return <div className="robot-detail-metric"><span>{label}</span>{status ? <StatusValue value={value} /> : <b className={mono ? "mono" : ""}>{safeText(value)}</b>}</div>;
 }
 
-type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; canonicalRevision: string | number; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; selectedTag: RobotNavigationTag | null; onGoalSelect: (goal: WorldGoal) => void; canPick: boolean };
+type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; canonicalRevision: string | number; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; selectedTag: RobotNavigationTag | null; onGoalSelect: (goal: MapPointNavigationTarget) => void; pickMapIdentity: NavigationMapIdentity | null };
 
-function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, globalPath, localPath, goal, goalPreview, pathPreview, selectedTag, onGoalSelect, canPick }: MapCanvasProps) {
+function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, globalPath, localPath, goal, goalPreview, pathPreview, selectedTag, onGoalSelect, pickMapIdentity }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -816,6 +887,12 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
     active_map_revision: canonicalRevision,
     map_source: "CANONICAL",
   }), [canonicalRevision, layoutRevision]);
+  const clickMapIdentity: NavigationMapIdentity = {
+    frame_id: displayedMapIdentity.frame_id ?? "map",
+    map_id: displayedMapIdentity.active_map_id ?? "CANONICAL",
+    map_revision: String(displayedMapIdentity.active_map_revision ?? ""),
+  };
+  const canPick = sameNavigationMapIdentity(pickMapIdentity, clickMapIdentity);
   const displayedPose = useStableDisplayedFramePose(robot, displayedMapIdentity);
   const transform = useMemo(() => makeTransform(size.width, size.height, bounds, zoom, center, follow, displayedPose), [bounds, center, follow, displayedPose, size.height, size.width, zoom]);
 
@@ -844,7 +921,7 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
     const rect = event.currentTarget.getBoundingClientRect();
     const point = transform.toWorld(event.clientX - rect.left, event.clientY - rect.top);
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
-    onGoalSelect({ x: point.x, y: point.y, yaw: displayedPose?.yaw ?? 0 });
+    onGoalSelect(mapPointTarget(clickMapIdentity, { x: point.x, y: point.y, yaw: displayedPose?.yaw ?? 0 }));
     setFollow(false);
   };
 

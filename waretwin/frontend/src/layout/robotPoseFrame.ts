@@ -75,7 +75,7 @@ export const ROBOT_POSE_HOLD_TTL_MS = 2500;
 
 export function displayedPoseIdentity(map: MapPoseIdentity): string {
   const session = map.map_source === "SLAM_TOOLBOX" ? map.mapping_session_id ?? "" : "";
-  const revision = map.active_map_id === "CANONICAL" ? String(map.active_map_revision ?? "") : "";
+  const revision = map.map_source === "SLAM_TOOLBOX" ? "" : String(map.active_map_revision ?? "");
   return [map.frame_id ?? "", map.active_map_id ?? "", map.map_source ?? "", session, revision].join("|");
 }
 
@@ -84,7 +84,7 @@ export type RetainedFramePose = { identity: string; acceptedAt: number; pose: Fr
 
 export function displayedFramePose(robot: RobotState, map: MapPoseIdentity): FramePose | undefined {
   const pose = map.active_map_id === "CANONICAL" ? robot.canonical_pose
-    : map.map_source === "SLAM_TOOLBOX" ? robot.slam_pose : undefined;
+    : map.map_source === "SLAM_TOOLBOX" ? robot.slam_pose : robot.active_map_pose;
   if (!pose?.valid || robot.status === "OFFLINE" || ![pose.x, pose.y, pose.yaw].every(Number.isFinite)) return undefined;
   const age = Date.now() - Date.parse(pose.timestamp);
   if (!Number.isFinite(age) || age < -1000 || age > 3000) return undefined;
@@ -100,6 +100,9 @@ export function displayedFramePose(robot: RobotState, map: MapPoseIdentity): Fra
       && pose.map_source === "SLAM_TOOLBOX" && Boolean(map.mapping_session_id)
       && pose.mapping_session_id === map.mapping_session_id
       && map.active_map_id === "SLAM-" + map.mapping_session_id) return pose;
+  if (map.active_map_id !== "CANONICAL" && map.map_source !== "SLAM_TOOLBOX"
+      && pose.pose_source === "TF" && pose.map_source === map.map_source
+      && sameRevision(pose.map_revision, map.active_map_revision)) return pose;
   return undefined;
 }
 

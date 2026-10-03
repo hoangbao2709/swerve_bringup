@@ -113,6 +113,15 @@ class NavigationTargetResolutionTests(TestCase):
                          (tag['frame_id'], tag['map_id'], tag['map_revision']))
         self.assertEqual((point['source_type'], point['source_id']), ('MAP_POINT', None))
 
+    def test_map_point_resolves_in_the_active_local_map_without_coordinate_reinterpretation(self):
+        local_map = {**self.active_map, 'active_map_id': 'local-R01-map',
+                     'active_map_revision': 'local-rev-3', 'map_sync_status': 'LOCAL_ONLY'}
+        point = resolve_navigation_target(robot_id='R01', source_type='MAP_POINT', active_map=local_map,
+            x=1.25, y=-0.5, yaw=0.3)
+        self.assertEqual((point['frame_id'], point['map_id'], point['map_revision']),
+                         ('map', 'local-R01-map', 'local-rev-3'))
+        self.assertEqual((point['x'], point['y'], point['yaw']), (1.25, -0.5, 0.3))
+
     def test_explicit_approach_pose_is_used_without_an_invented_offset(self):
         tag = NavigationTag.objects.get(warehouse=self.warehouse_map.warehouse, tag_id=1)
         tag.metadata = {'approach_pose': {'x': 1.5, 'y': 4.0, 'yaw': -0.2, 'frame_id': 'map', 'map_revision': '7'}}
@@ -143,12 +152,30 @@ class NavigationTargetResolutionTests(TestCase):
         local_map = {**self.active_map, 'active_map_id': 'local-R01-map', 'map_sync_status': 'LOCAL_ONLY'}
         with self.assertRaises(NavigationTargetError) as wrong_map:
             self.resolve(1, local_map)
-        self.assertEqual(wrong_map.exception.code, 'TAG_MAP_MISMATCH')
+        self.assertEqual(wrong_map.exception.code, 'TAG_MAP_REGISTRATION_REQUIRED')
 
         stale_map = {**self.active_map, 'active_map_revision': '6'}
         with self.assertRaises(NavigationTargetError) as stale:
             self.resolve(1, stale_map)
         self.assertEqual(stale.exception.code, 'TAG_MAP_REVISION_MISMATCH')
+
+    def test_local_map_tag_registry_is_informational_until_versioned_registration_exists(self):
+        local_map = {**self.active_map, 'active_map_id': 'local-R01-map',
+                     'active_map_revision': 'local-rev-3', 'map_sync_status': 'LOCAL_ONLY'}
+        registry = navigation_tag_registry(local_map)
+        self.assertFalse(registry['compatible'])
+        self.assertEqual(registry['reason'], 'TAG_MAP_REGISTRATION_REQUIRED')
+        self.assertTrue(registry['registration_required'])
+        self.assertEqual((registry['map_id'], registry['map_revision']), ('CANONICAL', '7'))
+        self.assertEqual((registry['active_map_id'], registry['active_map_revision']),
+                         ('local-R01-map', 'local-rev-3'))
+        self.assertEqual([tag['tag_id'] for tag in registry['tags']], [1, 2])
+        self.assertTrue(all(not tag['navigable'] and tag['reason'] == 'TAG_MAP_REGISTRATION_REQUIRED'
+                            and tag['map_id'] == 'CANONICAL' and tag['map_revision'] == '7'
+                            for tag in registry['tags']))
+        with self.assertRaises(NavigationTargetError) as blocked:
+            self.resolve(1, local_map)
+        self.assertEqual(blocked.exception.code, 'TAG_MAP_REGISTRATION_REQUIRED')
 
     def test_robot_tag_api_is_authenticated_and_returns_only_map_compatible_registry(self):
         user = User.objects.create_user(username='tag-registry-test', password='test-only-password')
@@ -168,7 +195,9 @@ class NavigationTargetResolutionTests(TestCase):
         with patch.object(runtime, 'active_map_state', return_value=wrong_map):
             response = client.get('/api/robots/R01/navigation-tags')
         self.assertFalse(response.json()['compatible'])
-        self.assertEqual(response.json()['tags'], [])
+        self.assertEqual(response.json()['reason'], 'TAG_MAP_REGISTRATION_REQUIRED')
+        self.assertEqual([tag['tag_id'] for tag in response.json()['tags']], [1, 2])
+        self.assertTrue(all(not tag['navigable'] for tag in response.json()['tags']))
 
         with patch.object(runtime, 'active_map_state', return_value=self.active_map), \
                 patch.object(runtime, 'operation_mode', 'MAPPING'):

@@ -1559,8 +1559,13 @@ class TwinRuntime:
             if not active.get('active_map_id') or not active.get('active_map_revision'):
                 await preview_failure('INVALID', 'the robot active map is not confirmed')
                 return
+            requested_map_id = str(getattr(msg, 'map_id', '') or getattr(msg, 'active_map_id', '') or '')
+            requested_map_revision = str(getattr(msg, 'map_revision', '')
+                                         or getattr(msg, 'active_map_revision', '') or '')
             if (str(getattr(msg, 'active_map_id', '') or '') != active['active_map_id']
-                    or str(getattr(msg, 'active_map_revision', '') or '') != active['active_map_revision']):
+                    or str(getattr(msg, 'active_map_revision', '') or '') != active['active_map_revision']
+                    or requested_map_id != active['active_map_id']
+                    or requested_map_revision != active['active_map_revision']):
                 await preview_failure('INVALID', 'PATH_PREVIEW_MAP_MISMATCH: active map changed')
                 return
             if active['map_sync_status'] not in ('CANONICAL', 'LOCAL_ONLY'):
@@ -1681,7 +1686,11 @@ class TwinRuntime:
                 active = self.active_map_state(msg.robot_id)
                 if (not active.get('active_map_id') or not active.get('active_map_revision')
                         or str(getattr(msg, 'active_map_id', '') or '') != active['active_map_id']
-                        or str(getattr(msg, 'active_map_revision', '') or '') != active['active_map_revision']):
+                        or str(getattr(msg, 'active_map_revision', '') or '') != active['active_map_revision']
+                        or (getattr(msg, 'map_id', None) is not None
+                            and str(msg.map_id) != active['active_map_id'])
+                        or (getattr(msg, 'map_revision', None) is not None
+                            and str(msg.map_revision) != active['active_map_revision'])):
                     await consumer.send_json({
                         'type': 'ERROR', 'code': 'PATH_PREVIEW_MAP_MISMATCH',
                         'message': 'the requested active map does not match the robot runtime map',

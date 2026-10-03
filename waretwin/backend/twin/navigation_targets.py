@@ -158,28 +158,60 @@ def _tag_record(tag: NavigationTag, map_id: str, map_revision: str, map_error: s
 
 
 def navigation_tag_registry(active_map: dict[str, Any]) -> dict[str, Any]:
-    """Return the authoritative Tag registry with explicit map compatibility."""
+    """Return canonical Tag data and fail closed across unregistered local maps.
+
+    Tags synchronized from warehouse layout are canonical landmarks. A
+    robot-local saved map is a different coordinate registration, even though
+    both ROS frames are named ``map``. Without an explicit, versioned map
+    registration, local-map responses are informational and never navigable.
+    """
     map_id = str(active_map.get('active_map_id') or '')
     map_revision = str(active_map.get('active_map_revision') or '')
-    warehouse_map, map_error = _canonical_map(active_map)
+    local_only = map_id != 'CANONICAL' and str(active_map.get('map_sync_status') or '') == 'LOCAL_ONLY'
+    if local_only:
+        try:
+            canonical_revision = int(str(active_map.get('canonical_map_revision') or ''))
+        except (TypeError, ValueError):
+            canonical_revision = None
+        warehouse_map = (WarehouseMap.objects.select_related('warehouse')
+                         .filter(is_active=True).order_by('id').first())
+        map_error = None
+        if warehouse_map is None:
+            map_error = 'no active canonical warehouse map is registered'
+        elif canonical_revision is None or int(warehouse_map.revision) != canonical_revision:
+            warehouse_map = None
+            map_error = 'the local map canonical revision does not match the active warehouse registry'
+    else:
+        warehouse_map, map_error = _canonical_map(active_map)
     if warehouse_map is None:
         return {
             'source': 'WAREHOUSE_NAVIGATION_TAG_REGISTRY',
             'warehouse_id': None,
             'map_id': map_id or None,
             'map_revision': map_revision or None,
+            'active_map_id': map_id or None,
+            'active_map_revision': map_revision or None,
             'frame_id': 'map',
             'compatible': False,
             'reason': map_error,
             'registry_revision': None,
             'tags': [],
         }
-    tags = [_tag_record(tag, 'CANONICAL', map_revision)
+
+    source_revision = str(warehouse_map.revision)
+    tags = [_tag_record(tag, 'CANONICAL', source_revision)
             for tag in NavigationTag.objects.filter(warehouse=warehouse_map.warehouse).order_by('tag_id')]
+    if local_only:
+        for tag in tags:
+            tag['navigable'] = False
+            tag['reason'] = 'TAG_MAP_REGISTRATION_REQUIRED'
     registry_revision = _digest({
         'warehouse_id': warehouse_map.warehouse_id,
         'map_id': 'CANONICAL',
-        'map_revision': map_revision,
+        'map_revision': source_revision,
+        'active_map_id': map_id,
+        'active_map_revision': map_revision,
+        'navigation_policy': 'REGISTRATION_REQUIRED' if local_only else 'CANONICAL',
         'tags': [tag['tag_revision'] for tag in tags],
     })
     return {
@@ -187,10 +219,15 @@ def navigation_tag_registry(active_map: dict[str, Any]) -> dict[str, Any]:
         'warehouse_id': warehouse_map.warehouse_id,
         'warehouse_code': warehouse_map.warehouse.code,
         'map_id': 'CANONICAL',
-        'map_revision': map_revision,
+        'map_revision': source_revision,
+        'active_map_id': map_id,
+        'active_map_revision': map_revision,
         'frame_id': 'map',
-        'compatible': True,
-        'reason': None,
+        'compatible': not local_only,
+        'reason': 'TAG_MAP_REGISTRATION_REQUIRED' if local_only else None,
+        'registration_required': local_only,
+        'transform_source': None,
+        'registration_revision': None,
         'registry_revision': registry_revision,
         'tags': tags,
     }
@@ -223,7 +260,8 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
         raise NavigationTargetError('SOURCE_TYPE_INVALID', 'source_type must be MAP_POINT or TAG')
 
     registry = navigation_tag_registry(active_map)
-    if not registry['compatible']:
+    registration_required = registry.get('reason') == 'TAG_MAP_REGISTRATION_REQUIRED'
+    if not registry['compatible'] and not registration_required:
         code = 'TAG_MAP_REVISION_MISMATCH' if 'revision' in str(registry.get('reason') or '').lower() else 'TAG_MAP_MISMATCH'
         raise NavigationTargetError(code, str(registry.get('reason') or 'Tag registry is incompatible with the robot map'))
     try:
@@ -233,9 +271,14 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
     tag = NavigationTag.objects.filter(warehouse_id=registry['warehouse_id'], tag_id=resolved_tag_id).first()
     if tag is None:
         raise NavigationTargetError('TAG_UNKNOWN', f'tag {resolved_tag_id} is not in the active warehouse registry')
-    record = _tag_record(tag, map_id, map_revision)
+    record_map_id = 'CANONICAL' if registration_required else map_id
+    record_revision = str(registry.get('map_revision') or map_revision) if registration_required else map_revision
+    record = _tag_record(tag, record_map_id, record_revision)
     if not tag.enabled:
         raise NavigationTargetError('TAG_DISABLED', f'tag {resolved_tag_id} is disabled')
+    if registration_required:
+        raise NavigationTargetError('TAG_MAP_REGISTRATION_REQUIRED',
+            'canonical Tag navigation is disabled on this local map until a versioned map registration is configured')
     if not record['navigable']:
         raise NavigationTargetError('TAG_NOT_NAVIGABLE', str(record['reason'] or 'Tag is not navigable'))
     target_pose = record['navigation_pose']

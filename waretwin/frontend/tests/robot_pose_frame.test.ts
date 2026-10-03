@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { robotPoseMatchesMap, robotForWarehouse, robotForDisplayedMap, stabilizeDisplayedFramePose,
+import { displayedFramePose, robotPoseMatchesMap, robotForWarehouse, robotForDisplayedMap, stabilizeDisplayedFramePose,
   ROBOT_POSE_HOLD_TTL_MS, type MapPoseIdentity, type RobotPoseIdentity, type RetainedFramePose } from "../src/layout/robotPoseFrame";
 import type { RobotState, FramePose } from "../src/schema/twin_state";
 
@@ -49,6 +49,19 @@ describe("robot pose and displayed map identity", () => {
   });
   it("accepts the live TF pose for the same SLAM session as /map", () => {
     expect(robotPoseMatchesMap(slamPose, slamMap)).toBe(true);
+  });
+
+  it("uses the active map pose only for the matching saved local map identity", () => {
+    const localMap: MapPoseIdentity = { frame_id: "map", active_map_id: "saved-R01-1",
+      active_map_revision: "artifact-1", map_source: "LOCAL_MAP" };
+    const localPose: FramePose = { x: 2, y: 3, yaw: 0.4, frame_id: "map", map_id: "saved-R01-1",
+      map_revision: "artifact-1", map_source: "LOCAL_MAP", pose_source: "TF", valid: true,
+      timestamp: new Date().toISOString() };
+    const localRobot = { ...robot, active_map_pose: localPose,
+      canonical_pose: { ...canonical, x: 100, y: 100 }, slam_pose: { ...slamPose, x: 200, y: 200 } };
+    expect(displayedFramePose(localRobot, localMap)).toBe(localPose);
+    expect(displayedFramePose({ ...localRobot, active_map_pose: { ...localPose, map_id: "saved-other" } }, localMap)).toBeUndefined();
+    expect(displayedFramePose({ ...localRobot, active_map_pose: { ...localPose, map_revision: "old" } }, localMap)).toBeUndefined();
   });
 
   it("rejects a different SLAM session even when both frames are named map", () => {

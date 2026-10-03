@@ -10,7 +10,8 @@ vi.mock("../src/services/api", () => ({
   apiFetch: vi.fn(() => Promise.resolve({ ok: false, status: 503 })),
   getRobotNavigationTags: vi.fn(() => Promise.reject(new Error("Tag registry unavailable"))),
   emergencyStop: vi.fn(() => Promise.resolve({ ok: true })),
-  clearEmergencyStop: vi.fn(() => Promise.resolve({ ok: true })),
+  clearEmergencyStop: vi.fn(() => Promise.resolve({ ok: true, code: "CLEAR_ESTOP_APPLIED",
+    robot_id: "R01", emergency_stop_active: false, pre_stop_navigation_terminal: true })),
   getLocalRobotMaps: vi.fn(() => Promise.resolve({ maps: [], mapping_state: "MAPPING", active_local_map_id: null })),
   getLocalRuntimeMode: vi.fn(() => Promise.resolve({
     robot_id: "R01", current_mode: "MAPPING",
@@ -54,6 +55,7 @@ vi.mock("../src/simulation/runner", () => ({ useSimulationRunner: () => undefine
 
 import { RobotQuickDetailModal } from "../src/components/robot/RobotQuickDetailModal";
 import { RobotControlDetailPage } from "../src/components/control/RobotControlDetailPage";
+import { occupancyRasters } from "../src/components/control/occupancyRaster";
 import * as api from "../src/services/api";
 import { wsSend, wsManualCommand, wsSetRobotMode } from "../src/services/ws";
 import type { LocalRobotMap } from "../src/services/api";
@@ -89,7 +91,7 @@ function renderNode(node: ReactNode) {
 
 function setOnlineRobot(runtimeState = "NAVIGATION") {
   const mapSnapshot = {
-    robot_id: "R01", frame_id: "map", map_revision: 21, active_map_id: "CANONICAL",
+    robot_id: "R01", frame_id: "map", map_source: "NAV2_MAP" as const, map_revision: 21, active_map_id: "CANONICAL",
     active_map_revision: "21", canonical_map_revision: 21,
     width: 10, height: 10, resolution: 1, origin: { x: -5, y: -5, yaw: 0 }, data: Array(100).fill(0),
   };
@@ -126,6 +128,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  vi.spyOn(occupancyRasters, "get").mockResolvedValue(document.createElement("canvas"));
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(640);
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(360);
   vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect").mockReturnValue({
@@ -292,6 +295,40 @@ describe("robot detail route stability", () => {
     expect(container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]')?.disabled).toBe(true);
   });
 
+  it("shows canonical Tags as informational on a local map and blocks their navigation", async () => {
+    setOnlineRobot();
+    useStore.getState().setRobotDetail("R01", { activeLocalMapId: "saved-R01-1",
+      activeLocalMapRevision: "local-r3", localMapSyncStatus: "LOCAL_ONLY" });
+    vi.mocked(api.getRobotNavigationTags).mockResolvedValueOnce({
+      robot_id: "R01", source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY", warehouse_id: 1,
+      map_id: "CANONICAL", map_revision: "21", active_map_id: "saved-R01-1",
+      active_map_revision: "local-r3", frame_id: "map", compatible: false,
+      reason: "TAG_MAP_REGISTRATION_REQUIRED", registration_required: true,
+      transform_source: null, registration_revision: null, registry_revision: "registry-local-r3",
+      tags: [{ id: 1, tag_id: 1301, label: "Right Storage", family: "APRILTAG", floor_id: "F1",
+        lane_id: "A-01", zone_id: null, x: 2.5, y: 3.5, z: 0, yaw: 1.2, enabled: true,
+        navigable: false, reason: "TAG_MAP_REGISTRATION_REQUIRED", frame_id: "map",
+        map_id: "CANONICAL", map_revision: "21", navigation_pose: { x: 2.5, y: 3.5, yaw: 1.2 },
+        navigation_pose_source: "REGISTERED_NAVIGATION_NODE", tag_revision: "tag-1301", metadata: {} }],
+    });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { buttonNamed("TAG")?.click(); await settleUi(); });
+
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]');
+    expect(select?.disabled).toBe(false);
+    expect(Array.from(select?.options ?? []).find((option) => option.value === "1301")?.disabled).toBe(true);
+    expect(Array.from(select?.options ?? []).find((option) => option.value === "1301")?.textContent)
+      .toContain("TAG_MAP_REGISTRATION_REQUIRED");
+    expect(container.textContent).toContain("Canonical Tags are informational only on this local map");
+    expect(buttonNamed("PREVIEW PATH")?.disabled).toBe(true);
+    await act(async () => {
+      if (select) { select.value = "1301"; select.dispatchEvent(new Event("change", { bubbles: true })); }
+    });
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type))
+      .not.toContain("PATH_PREVIEW_REQUEST");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("NAV_GOAL");
+  });
+
   it("keeps applied mode while a requested transition is pending", () => {
     useStore.setState({ runtimeMode: "GAZEBO_ROS", rosConnected: true, websocketState: "CONNECTED", connectedRobotIds: ["R01"] });
     renderNode(<RobotControlDetailPage robotId="R01" />);
@@ -300,6 +337,21 @@ describe("robot detail route stability", () => {
     expect(container.querySelector(".robot-detail-mode")?.textContent).toContain("MANUAL → AUTONOMOUS REQUESTED");
     act(() => useStore.getState().setRobotDetail("R01", { appliedMode: "AUTONOMOUS", modeTransitionState: "APPLIED" }));
     expect(container.querySelector(".robot-detail-mode")?.textContent).toContain("AUTONOMOUS APPLIED");
+  });
+
+  it("shows CLEAR STOP as applied only after the correlated runtime result", async () => {
+    setOnlineRobot();
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    vi.mocked(api.clearEmergencyStop).mockResolvedValueOnce({ ok: true, code: "CLEAR_ESTOP_APPLIED",
+      robot_id: "R01", emergency_stop_active: false, pre_stop_navigation_terminal: true });
+    await act(async () => { buttonNamed("CLEAR STOP")?.click(); await settleUi(); });
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toContain("CLEAR_ESTOP_APPLIED · bridge confirmed latch clear");
+
+    vi.mocked(api.clearEmergencyStop).mockRejectedValueOnce(new Error("CLEAR_ESTOP_REJECTED_GOAL_PENDING"));
+    await act(async () => { buttonNamed("CLEAR STOP")?.click(); await settleUi(); });
+    expect(container.textContent).toContain("CLEAR_ESTOP_REJECTED_GOAL_PENDING");
+    expect(container.querySelector('[role="status"]')?.textContent ?? "").not.toContain("CLEAR_ESTOP_APPLIED");
   });
 
   it("pointer hold captures and release, cancel or leave sends STOP", () => {
@@ -547,6 +599,54 @@ describe("robot detail route stability", () => {
       pathPreview: { ...approvedReplacement, timestamp: new Date(Date.now() - 121_000).toISOString() },
     }));
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+  });
+
+  it("picks and previews directly on the active saved local map, then clears selection if its identity changes", async () => {
+    setOnlineRobot();
+    const localMap = { robot_id: "R01", frame_id: "map", map_source: "LOCAL_MAP" as const,
+      active_map_id: "saved-R01-1", active_map_revision: "artifact-1", width: 20, height: 20,
+      resolution: 0.1, origin: { x: -1, y: -1, yaw: 0 }, data: Array(400).fill(0) };
+    const localPose = { x: 0.25, y: 0.5, yaw: 0.4, frame_id: "map", map_id: "saved-R01-1",
+      map_revision: "artifact-1", map_source: "LOCAL_MAP", pose_source: "TF", valid: true,
+      timestamp: new Date().toISOString() };
+    useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: localMap,
+      activeLocalMapId: "saved-R01-1", activeLocalMapRevision: "artifact-1", localMapSyncStatus: "LOCAL_ONLY" });
+    useStore.setState({ twin: { ...useStore.getState().twin!, robots: {
+      ...useStore.getState().twin!.robots, R01: { ...r01(), control_mode: "AUTONOMOUS", active_map_pose: localPose },
+    } } });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+
+    const canonicalCanvas = container.querySelector<HTMLCanvasElement>('[aria-label="Canonical warehouse and robot pose map"]');
+    await act(async () => { canonicalCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.textContent).not.toContain("TARGET ");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
+
+    await act(async () => { buttonNamed("MAP VIEW 2D")?.click(); });
+    const localCanvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas');
+    expect(localCanvas?.dataset.mapId).toBe("saved-R01-1");
+    await act(async () => { localCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.textContent).toContain("TARGET ");
+    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    const request = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
+    expect(request).toMatchObject({ type: "PATH_PREVIEW_REQUEST", frame_id: "map",
+      map_id: "saved-R01-1", map_revision: "artifact-1",
+      active_map_id: "saved-R01-1", active_map_revision: "artifact-1" });
+    if (!request || request.type !== "PATH_PREVIEW_REQUEST") throw new Error("local path preview request was not emitted");
+
+    const approved = { robot_id: "R01", request_id: request.request_id, status: "VALID" as const,
+      frame_id: "map" as const, path: [[0, 0], [1, 1]] as Array<[number, number]>, path_length_m: 1.4,
+      goal: { x: request.x!, y: request.y!, yaw: request.yaw! }, timestamp: new Date().toISOString(),
+      active_map_id: "saved-R01-1", active_map_revision: "artifact-1" };
+    act(() => useStore.getState().setRobotDetail("R01", { pathPreview: approved }));
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(false);
+
+    const replacementMap = { ...localMap, active_map_id: "saved-R01-2", active_map_revision: "artifact-2" };
+    await act(async () => { useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: replacementMap,
+      activeLocalMapId: "saved-R01-2", activeLocalMapRevision: "artifact-2" }); await settleUi(); });
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+    expect(container.textContent).not.toContain("TARGET ");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type).filter((type) => type === "PATH_PREVIEW_INVALIDATE").length).toBeGreaterThan(0);
   });
 
   it("runs the mapping lifecycle and routes save/list/load to robot-scoped APIs", async () => {

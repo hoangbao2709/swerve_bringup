@@ -862,8 +862,8 @@ export type ClientMessage =
   | { type: "SELECT_ROBOT"; robot_id: RobotId | null }           // 讓後端提高該機器人更新頻率 (可選)
   | { type: "ROBOT_MODE"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS" }
   | { type: "ROBOT_MANUAL"; robot_id: RobotId; action: "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT" | "STOP" }
-  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string; preview_request_id?: string; active_map_id?: string; active_map_revision?: string; source_type?: "MAP_POINT" | "TAG"; source_id?: string }
-  | { type: "PATH_PREVIEW_REQUEST"; robot_id: RobotId; request_id: string; x?: number; y?: number; yaw?: number; frame_id: "map"; active_map_id?: string; active_map_revision?: string; source_type?: "MAP_POINT" | "TAG"; tag_id?: number; tag_revision?: string; registry_revision?: string }
+  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string; preview_request_id?: string; active_map_id?: string; active_map_revision?: string; map_id?: string; map_revision?: string; source_type?: "MAP_POINT" | "TAG"; source_id?: string }
+  | { type: "PATH_PREVIEW_REQUEST"; robot_id: RobotId; request_id: string; x?: number; y?: number; yaw?: number; frame_id: "map"; active_map_id?: string; active_map_revision?: string; map_id?: string; map_revision?: string; source_type?: "MAP_POINT" | "TAG"; tag_id?: number; tag_revision?: string; registry_revision?: string }
   | { type: "PATH_PREVIEW_INVALIDATE"; robot_id: RobotId }
   | { type: "ROBOT_DETAIL_VIEW"; robot_id: RobotId; view: RobotDetailView; request_id?: string; delivery_ack?: boolean }
   | { type: "ROBOT_DETAIL_FRAME_RECEIVED"; delivery_id: number }

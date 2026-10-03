@@ -385,6 +385,88 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 else:
                     setattr(runtime, key, value)
 
+    async def test_local_map_point_preview_and_send_stay_on_exact_active_identity(self):
+        active = {'value': {'active_map_id': 'saved-R01-1', 'active_map_revision': 'artifact-1',
+            'canonical_map_revision': 21, 'map_sync_status': 'LOCAL_ONLY'}}
+        capture = SimpleNamespace(send_json=AsyncMock())
+        gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+
+        def request_preview(request_id, map_id, revision):
+            return {'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01', 'request_id': request_id,
+                'x': 1.25, 'y': -0.5, 'yaw': 0.3, 'frame_id': 'map',
+                'map_id': map_id, 'map_revision': revision,
+                'active_map_id': map_id, 'active_map_revision': revision}
+
+        def planner_result(request_id, map_id, revision):
+            return {'type': 'PATH_PREVIEW_RESULT', 'robot_id': 'R01', 'request_id': request_id,
+                'status': 'VALID', 'path': [[0.0, 0.0], [1.25, -0.5]],
+                'goal': {'x': 1.25, 'y': -0.5, 'yaw': 0.3},
+                'active_map_id': map_id, 'active_map_revision': revision}
+
+        def send_goal(request_id, map_id, revision):
+            return {'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 1.25, 'y': -0.5, 'yaw': 0.3,
+                'frame_id': 'map', 'preview_request_id': request_id,
+                'map_id': map_id, 'map_revision': revision,
+                'active_map_id': map_id, 'active_map_revision': revision}
+
+        with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
+                patch.object(runtime, 'operation_mode', 'NAVIGATION'), \
+                patch.object(runtime, 'active_map_state', side_effect=lambda _rid: active['value']), \
+                patch.object(runtime, 'robot_bridge_online', return_value=True), \
+                patch.object(runtime, 'navigation_localization_state', side_effect=lambda _rid, state: state['active_map_id']), \
+                patch.object(runtime, 'gateway', return_value=gateway), \
+                patch.object(runtime, 'broadcast', new=AsyncMock()), \
+                patch.object(runtime, 'path_preview_requests', {}), \
+                patch.object(runtime, 'approved_path_previews', {}), \
+                patch.object(runtime, 'path_preview_results', {}), \
+                patch.object(runtime, 'expired_path_previews', {}), \
+                patch.object(runtime, 'path_preview_invalidations', {}):
+            wrong_map = request_preview('local-wrong-map', 'saved-R01-1', 'artifact-1')
+            wrong_map['map_id'] = 'CANONICAL'
+            await runtime.handle_message(capture, wrong_map, None)
+            self.assertEqual(capture.send_json.await_args.args[0]['status'], 'INVALID')
+            self.assertIn('PATH_PREVIEW_MAP_MISMATCH', capture.send_json.await_args.args[0]['reason'])
+            self.assertFalse(any(call.args[1] == 'PATH_PREVIEW' for call in gateway.send_command.await_args_list))
+
+            capture.send_json.reset_mock()
+            wrong_revision = request_preview('local-wrong-revision', 'saved-R01-1', 'artifact-1')
+            wrong_revision['map_revision'] = 'artifact-other'
+            await runtime.handle_message(capture, wrong_revision, None)
+            self.assertEqual(capture.send_json.await_args.args[0]['status'], 'INVALID')
+            self.assertIn('PATH_PREVIEW_MAP_MISMATCH', capture.send_json.await_args.args[0]['reason'])
+            self.assertFalse(any(call.args[1] == 'PATH_PREVIEW' for call in gateway.send_command.await_args_list))
+
+            capture.send_json.reset_mock()
+            await runtime.handle_message(capture, request_preview('local-old', 'saved-R01-1', 'artifact-1'), None)
+            self.assertEqual(gateway.send_command.await_args.args, ('R01', 'PATH_PREVIEW', {
+                'request_id': 'local-old', 'x': 1.25, 'y': -0.5, 'yaw': 0.3,
+                'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
+                'tag_revision': None, 'registry_revision': None, 'frame_id': 'map',
+                'active_map_id': 'saved-R01-1', 'active_map_revision': 'artifact-1',
+                'canonical_map_revision': 21,
+            }))
+            await runtime.handle_ros_message(planner_result('local-old', 'saved-R01-1', 'artifact-1'))
+            self.assertEqual(runtime.path_preview_results[('R01', 'local-old')]['status'], 'VALID')
+
+            active['value'] = {**active['value'], 'active_map_id': 'saved-R01-2',
+                'active_map_revision': 'artifact-2'}
+            await runtime.handle_message(capture, send_goal('local-old', 'saved-R01-1', 'artifact-1'), None)
+            self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_MAP_MISMATCH')
+            self.assertFalse(any(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list))
+
+            capture.send_json.reset_mock()
+            await runtime.handle_message(capture, request_preview('local-current', 'saved-R01-2', 'artifact-2'), None)
+            await runtime.handle_ros_message(planner_result('local-current', 'saved-R01-2', 'artifact-2'))
+            await runtime.handle_message(capture, send_goal('local-current', 'saved-R01-2', 'artifact-2'), None)
+            self.assertEqual(gateway.send_command.await_args.args, ('R01', 'NAVIGATE', {
+                'x': 1.25, 'y': -0.5, 'yaw': 0.3, 'frame_id': 'map',
+                'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
+                'tag_revision': None, 'registry_revision': None,
+                'preview_request_id': 'local-current', 'active_map_id': 'saved-R01-2',
+                'active_map_revision': 'artifact-2', 'canonical_map_revision': 21,
+            }))
+            self.assertEqual(sum(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list), 1)
+
     async def test_gateway_does_not_publish_without_bridge(self):
         previous = registry.consumer
         registry.consumer = None

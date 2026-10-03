@@ -51,9 +51,14 @@ export type RobotNavigationTagRegistry = {
   warehouse_code?: string;
   map_id: string | null;
   map_revision: string | null;
+  active_map_id?: string | null;
+  active_map_revision?: string | null;
   frame_id: "map";
   compatible: boolean;
   reason: string | null;
+  registration_required?: boolean;
+  transform_source?: string | null;
+  registration_revision?: string | null;
   registry_revision: string | null;
   tags: RobotNavigationTag[];
 };
@@ -77,10 +82,23 @@ export const emergencyStop = async (robotId: string) => {
   if (!response.ok) throw new Error(await responseError(response));
   return response.json();
 };
-export const clearEmergencyStop = async (robotId: string) => {
+export type ClearEmergencyStopResult = {
+  ok: true;
+  code: "CLEAR_ESTOP_APPLIED";
+  robot_id: string;
+  emergency_stop_active: false;
+  pre_stop_navigation_terminal: true;
+  message?: string;
+};
+export const clearEmergencyStop = async (robotId: string): Promise<ClearEmergencyStopResult> => {
   const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/clear-emergency-stop`, { method: "POST" });
-  if (!response.ok) throw new Error(await responseError(response));
-  return response.json();
+  const body = await response.json().catch(() => ({})) as Partial<ClearEmergencyStopResult> & { code?: string; error?: string };
+  if (!response.ok) throw new Error(`${body.code ?? "CLEAR_ESTOP_REJECTED"}: ${body.error ?? `HTTP ${response.status}`}`);
+  if (body.ok !== true || body.code !== "CLEAR_ESTOP_APPLIED" || body.emergency_stop_active !== false
+      || body.pre_stop_navigation_terminal !== true) {
+    throw new Error("CLEAR_ESTOP_UNCONFIRMED: backend did not confirm that the E-STOP latch was cleared");
+  }
+  return body as ClearEmergencyStopResult;
 };
 
 export type LocalRobotMap = {

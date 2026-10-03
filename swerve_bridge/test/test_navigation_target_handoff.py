@@ -53,6 +53,7 @@ def _nav_safety_bridge():
     bridge.estop_pub = SimpleNamespace(publish=Mock())
     bridge.send = Mock()
     bridge.send_nav_status = Mock()
+    bridge.now = lambda: '2026-10-03T00:00:00Z'
     return bridge
 
 
@@ -176,14 +177,18 @@ def test_estop_during_pending_nav2_acceptance_cancels_goal_and_blocks_clear_unti
     bridge.emergency_stop({'stop_id': 'estop-1'})
     assert bridge.emergency_stop_active
     assert bridge.pending_cancel_state == 'EMERGENCY_STOPPED'
-    assert bridge.clear_emergency_stop({}) is False
+    rejected = bridge.clear_emergency_stop({})
+    assert rejected['code'] == 'CLEAR_ESTOP_REJECTED_GOAL_PENDING'
+    assert rejected['emergency_stop_active'] is True
+    assert rejected['pre_stop_navigation_terminal'] is False
     assert bridge.estop_pub.publish.call_count == 1
 
     handle, cancel_future, result_future = _accepted_pose_handle()
     bridge.pose_goal_response(SimpleNamespace(result=lambda: handle), context)
     handle.cancel_goal_async.assert_called_once_with()
     assert bridge.cancel_pending
-    assert bridge.clear_emergency_stop({}) is False
+    rejected = bridge.clear_emergency_stop({})
+    assert rejected['code'] == 'CLEAR_ESTOP_REJECTED_GOAL_PENDING'
     assert bridge.emergency_stop_active
     assert bridge.estop_pub.publish.call_count == 1
 
@@ -197,7 +202,10 @@ def test_estop_during_pending_nav2_acceptance_cancels_goal_and_blocks_clear_unti
     assert bridge.active_pose_goal is None
     assert not bridge.cancel_pending
     assert bridge.emergency_stop_active
-    assert bridge.clear_emergency_stop({}) is None
+    applied = bridge.clear_emergency_stop({})
+    assert applied['code'] == 'CLEAR_ESTOP_APPLIED'
+    assert applied['emergency_stop_active'] is False
+    assert applied['pre_stop_navigation_terminal'] is True
     assert not bridge.emergency_stop_active
     assert bridge.pending_cancel_state is None
     assert bridge.estop_pub.publish.call_count == 2
@@ -212,7 +220,8 @@ def test_estop_on_active_nav2_goal_does_not_clear_before_cancel_result():
 
     bridge.emergency_stop({'stop_id': 'estop-active'})
     handle.cancel_goal_async.assert_called_once_with()
-    assert bridge.clear_emergency_stop({}) is False
+    rejected = bridge.clear_emergency_stop({})
+    assert rejected['code'] == 'CLEAR_ESTOP_REJECTED_GOAL_PENDING'
     callback = cancel_future.add_done_callback.call_args.args[0]
     callback(SimpleNamespace(result=lambda: SimpleNamespace(goals_canceling=[1])))
     assert bridge.cancel_pending
@@ -223,6 +232,34 @@ def test_estop_on_active_nav2_goal_does_not_clear_before_cancel_result():
     )
     assert bridge.active_pose_goal is None
     assert not bridge.cancel_pending
-    assert bridge.clear_emergency_stop({}) is None
+    applied = bridge.clear_emergency_stop({})
+    assert applied['code'] == 'CLEAR_ESTOP_APPLIED'
     assert not bridge.emergency_stop_active
     assert handle.cancel_goal_async.call_count == 1
+
+
+def test_clear_estop_local_control_returns_correlated_applied_or_pending_result():
+    bridge = _nav_safety_bridge()
+    bridge.emergency_stop_active = True
+    bridge.goal_request_pending = True
+    request = {'operation': 'CLEAR_ESTOP', 'request_id': 'clear-pending'}
+
+    bridge.local_control(request)
+    rejected = bridge.send.call_args.args[0]
+    assert rejected['type'] == 'LOCAL_CONTROL_RESULT'
+    assert rejected['request_id'] == 'clear-pending'
+    assert rejected['ok'] is False
+    assert rejected['result']['code'] == 'CLEAR_ESTOP_REJECTED_GOAL_PENDING'
+    assert rejected['result']['emergency_stop_active'] is True
+
+    bridge.send.reset_mock()
+    bridge.goal_request_pending = False
+    applied = {'operation': 'CLEAR_ESTOP', 'request_id': 'clear-terminal'}
+    bridge.local_control(applied)
+    result = bridge.send.call_args.args[0]
+    assert result['type'] == 'LOCAL_CONTROL_RESULT'
+    assert result['request_id'] == 'clear-terminal'
+    assert result['ok'] is True
+    assert result['result']['code'] == 'CLEAR_ESTOP_APPLIED'
+    assert result['result']['emergency_stop_active'] is False
+    assert result['result']['pre_stop_navigation_terminal'] is True

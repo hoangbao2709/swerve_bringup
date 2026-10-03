@@ -178,11 +178,35 @@ def emergency_stop(request, robot_id: str):
 @require_http_methods(['POST'])
 def clear_emergency_stop(request, robot_id: str):
     """Clear the ROS stop latch without resuming a mission automatically."""
-    result = async_to_sync(runtime.gateway().send_command)(robot_id, 'CLEAR_EMERGENCY_STOP', {})
+    result = async_to_sync(runtime.gateway().request_control)(
+        robot_id, 'CLEAR_ESTOP', {}, timeout=5.0)
+    applied = result.get('result') if isinstance(result.get('result'), dict) else {}
+    code = str(applied.get('code') or '')
     if not result.get('ok'):
-        return _error('ROS bridge is offline; emergency stop remains active', 503)
+        if code == 'CLEAR_ESTOP_REJECTED_GOAL_PENDING':
+            status = 409
+            message = str(applied.get('message') or 'E-STOP remains active until navigation is terminal')
+        elif 'timed out' in str(result.get('error') or '').lower():
+            code = 'CLEAR_ESTOP_TIMEOUT'
+            status = 504
+            message = 'bridge did not confirm that the E-STOP latch was cleared before the timeout'
+        else:
+            code = code or 'CLEAR_ESTOP_UNAVAILABLE'
+            status = 503
+            message = str(result.get('error') or 'ROS bridge did not acknowledge the E-STOP clear request')
+        return JsonResponse({'ok': False, 'code': code, 'error': message,
+            'emergency_stop_active': applied.get('emergency_stop_active', True),
+            'pre_stop_navigation_terminal': applied.get('pre_stop_navigation_terminal', False)}, status=status)
+    if (code != 'CLEAR_ESTOP_APPLIED' or applied.get('emergency_stop_active') is not False
+            or applied.get('pre_stop_navigation_terminal') is not True):
+        return JsonResponse({'ok': False, 'code': 'CLEAR_ESTOP_UNCONFIRMED',
+            'error': 'bridge response did not confirm an applied clear and terminal pre-stop navigation',
+            'emergency_stop_active': applied.get('emergency_stop_active', True)}, status=502)
     runtime.engine.emit('EMERGENCY_STOP_CLEARED', 'USER', 'HIGH', f'Emergency stop cleared for {robot_id}', robot_id=robot_id)
-    return JsonResponse({'ok': True, 'robot_id': robot_id, 'mission': mission_snapshot(current_mission(robot_id)) if current_mission(robot_id) else None})
+    return JsonResponse({'ok': True, 'code': code, 'robot_id': robot_id,
+        'emergency_stop_active': False, 'pre_stop_navigation_terminal': True,
+        'message': applied.get('message'),
+        'mission': mission_snapshot(current_mission(robot_id)) if current_mission(robot_id) else None})
 
 
 @_auth

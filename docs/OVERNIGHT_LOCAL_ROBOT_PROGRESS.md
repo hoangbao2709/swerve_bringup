@@ -6,7 +6,7 @@ Observed HEAD/origin during T05 resume diagnosis: 89160aba5c1196a1346446a6f1503a
 Latest verified HEAD/origin before the M3 health recheck: ba38a0e886d1571295b60844605904d82f395006, ahead/behind 0/0; worktree clean.
 Latest pushed T05A source/test checkpoint: c36d821 (`fix: compare resumed SLAM geometry in world space`)
 Started: 2026-10-03 (Asia/Ho_Chi_Minh)
-Last updated: 2026-10-03 18:48 (Asia/Ho_Chi_Minh)
+Last updated: 2026-10-03 19:06 (Asia/Ho_Chi_Minh)
 
 | ID | Task | Status | Commit | Runtime evidence | Notes |
 |---|---|---|---|---|---|
@@ -163,3 +163,10 @@ Last updated: 2026-10-03 18:48 (Asia/Ho_Chi_Minh)
 - Rechecked at 2026-10-03 18:48 local before any Gazebo launch. `sudo -n journalctl -k -b --no-pager` could not run because sudo requires a password; the unprivileged current-boot journal query was readable and still contains the 17:08 blocked `jbd2`/worker events and 17:11 `/dev/sda` `DID_TIME_OUT`/READ I/O errors.
 - `free -h`: 5.1 GiB available RAM; swap: 490 MiB / 2 GiB used; `df -h /`: 37 GiB available. These do not override kernel storage faults. `pgrep` found no project Gazebo/ROS/Web processes to stop.
 - `M3_STORAGE_HEALTH=BLOCKED_ENVIRONMENT`; M4-M6 production runtime gates remain blocked and unattempted. Evidence is preserved in ignored `.runtime/manual-latched-environment-block.json`. No Gazebo start was attempted.
+
+## M1 manual worker hardening and M2 worker tests
+
+- `M1_MANUAL_HARDENING=PASS` for source behavior: the dedicated manual worker now delegates its lease/action lifecycle to a testable session state machine. Backpressure, transport send failure, and backend rejection clear the action and refresh timer, report one error per connection, and close the control channel; an ERROR-to-STOP reply is suppressed after fail-closed handling, preventing recursive error loops. Socket close clears the active action, and reconnect opens stopped.
+- The worker imports `MANUAL_COMMAND_REFRESH_MS` (100 ms) as the sole refresh-period constant; the backend/ROS 0.40 s dead-man lease was not changed. The legacy `/control` route retains the same latch/toggle semantics and now stops/clears the latch on auth-token rotation; `/robots/R01/control` stops the old worker and clears its UI latch before replacement.
+- `M2_WORKER_TESTS=PASS`: focused manual worker/UI suites passed (4 files, 51 tests), including immediate HOLD, configured refresh cadence, direction switching, STOP/DISCONNECT timer cancellation, close/reconnect no-resume, send failure, backpressure ERROR feedback, auth-worker replacement, and E-STOP clear no-resume. Full frontend suite passed (17 files, 141 tests); `npx tsc --noEmit` passed; `npm run build` passed (Vite emitted a >500 kB bundle-size advisory); `git diff --check` passed for this checkpoint.
+- These are source/test/build results only. M4-M6 Web/ROS/Gazebo mapping movement, command-rate, displacement, stop-latency, watchdog, SLAM, and safety runtime gates remain `BLOCKED_ENVIRONMENT` because current-boot storage faults persist. No direct ROS command injection or Gazebo runtime was used.

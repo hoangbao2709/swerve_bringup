@@ -1,5 +1,8 @@
 /// <reference lib="webworker" />
 
+import { ManualCommandWorkerSession } from "./manualCommandWorkerSession";
+import type { ManualWorkerSocket } from "./manualCommandWorkerSession";
+
 type MotionAction = "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT";
 type WorkerRequest =
   | { type: "CONNECT"; url: string; token: string }
@@ -12,45 +15,33 @@ let socket: WebSocket | null = null;
 let socketUrl = "";
 let token = "";
 let robotId = "";
-let activeAction: MotionAction | null = null;
-let refreshTimer: number | null = null;
 let reconnectTimer: number | null = null;
 let reconnectDelayMs = 250;
 let disconnecting = false;
 
-function stopRefresh() {
-  if (refreshTimer !== null) {
-    clearInterval(refreshTimer);
-    refreshTimer = null;
-  }
+const session = new ManualCommandWorkerSession(
+  () => socket as ManualWorkerSocket | null,
+  {
+    setInterval: (callback, delayMs) => self.setInterval(callback, delayMs),
+    clearInterval: (timer) => self.clearInterval(timer as number),
+  },
+  (message) => scope.postMessage({ type: "ERROR", message }),
+);
+
+function clearReconnectTimer() {
+  if (reconnectTimer === null) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
 }
 
-function notifyError(message: string) {
-  scope.postMessage({ type: "ERROR", message });
-}
-
-function send(action: MotionAction | "STOP") {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-  if (socket.bufferedAmount > 8192) {
-    stopRefresh();
-    activeAction = null;
-    notifyError("manual command channel is backpressured; command hold stopped");
-    return false;
-  }
-  socket.send(JSON.stringify({ type: "ROBOT_MANUAL", robot_id: robotId, action }));
-  return true;
-}
-
-function startRefresh() {
-  stopRefresh();
-  if (!activeAction || !socket || socket.readyState !== WebSocket.OPEN) return;
-  if (!send(activeAction)) return;
-  refreshTimer = self.setInterval(() => {
-    if (!activeAction || !send(activeAction)) {
-      stopRefresh();
-      activeAction = null;
-    }
-  }, 100);
+function scheduleReconnect() {
+  if (disconnecting || !socketUrl || !token || reconnectTimer !== null) return;
+  const delay = reconnectDelayMs;
+  reconnectDelayMs = Math.min(5000, reconnectDelayMs * 2);
+  reconnectTimer = self.setTimeout(() => {
+    reconnectTimer = null;
+    openSocket();
+  }, delay);
 }
 
 function openSocket() {
@@ -60,73 +51,63 @@ function openSocket() {
   const connection = new WebSocket(url);
   socket = connection;
   connection.onopen = () => {
+    if (socket !== connection) return;
     reconnectDelayMs = 250;
+    session.onOpen();
     scope.postMessage({ type: "READY" });
-    startRefresh();
   };
   connection.onmessage = (event) => {
+    if (socket !== connection) return;
     try {
       const message = JSON.parse(String(event.data)) as { type?: string; code?: string; message?: string };
       if (message.type === "ERROR") {
-        stopRefresh();
-        activeAction = null;
-        notifyError(message.message || message.code || "manual command was rejected");
+        session.onBackendError(message.message || message.code || "manual command was rejected");
       }
     } catch {
       // No other server frame is required on this restricted channel.
     }
   };
   connection.onerror = () => {
-    notifyError("manual command channel is unavailable");
+    if (socket === connection) session.onTransportError("manual command channel is unavailable; motion latch cleared");
   };
   connection.onclose = () => {
-    if (socket === connection) socket = null;
-    stopRefresh();
-    if (activeAction) {
-      activeAction = null;
-      notifyError("manual refresh channel disconnected; the dead-man stop is active");
-    }
-    if (!disconnecting) {
-      const delay = reconnectDelayMs;
-      reconnectDelayMs = Math.min(5000, reconnectDelayMs * 2);
-      reconnectTimer = self.setTimeout(openSocket, delay);
-    }
+    if (socket !== connection) return;
+    socket = null;
+    session.onClose();
+    scheduleReconnect();
   };
 }
 
 scope.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
   if (request.type === "CONNECT") {
+    const credentialsChanged = Boolean(token && (token !== request.token || socketUrl !== request.url));
+    if (credentialsChanged) {
+      disconnecting = true;
+      clearReconnectTimer();
+      session.disconnect(robotId);
+    }
     socketUrl = request.url;
     token = request.token;
     disconnecting = false;
+    clearReconnectTimer();
     if (!socket || socket.readyState === WebSocket.CLOSED) openSocket();
     return;
   }
   if (request.type === "HOLD") {
     robotId = request.robot_id;
-    activeAction = request.action;
-    if (socket?.readyState === WebSocket.OPEN) startRefresh();
+    session.setAction(request.robot_id, request.action);
     return;
   }
   if (request.type === "STOP") {
     robotId = request.robot_id;
-    stopRefresh();
-    activeAction = null;
-    send("STOP");
+    session.stop(request.robot_id);
     return;
   }
   if (request.type === "DISCONNECT") {
     robotId = request.robot_id;
     disconnecting = true;
-    stopRefresh();
-    activeAction = null;
-    if (reconnectTimer !== null) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    send("STOP");
-    socket?.close();
-    socket = null;
+    clearReconnectTimer();
+    session.disconnect(request.robot_id);
   }
 };

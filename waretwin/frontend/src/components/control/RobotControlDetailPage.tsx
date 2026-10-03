@@ -357,7 +357,9 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     }
   }, [controlOnline, robotId]);
 
-  useEffect(() => () => stopManual(), [stopManual]);
+  // Auth refresh replaces the dedicated control worker; stop the old owner's
+  // command before its socket is closed and never carry the latch into the new worker.
+  useEffect(() => () => stopManual(), [authToken, stopManual]);
 
   const previousRuntime = useRef({ runtimeMode, runtimeState });
   useEffect(() => {

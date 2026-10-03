@@ -35,7 +35,8 @@ def tags(request):
 @require_http_methods(['GET'])
 def robot_tags(request, robot_id: str):
     active_map = runtime.active_map_state(robot_id)
-    if runtime.operation_mode == 'MAPPING':
+    mode = str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode).upper()
+    if mode == 'MAPPING':
         return JsonResponse({
             'robot_id': robot_id,
             'source': 'WAREHOUSE_NAVIGATION_TAG_REGISTRY',
@@ -44,7 +45,7 @@ def robot_tags(request, robot_id: str):
             'map_revision': active_map.get('active_map_revision'),
             'frame_id': 'map',
             'compatible': False,
-            'reason': 'Tag navigation is unavailable while the robot uses its live SLAM map',
+            'reason': 'Tag navigation is unavailable on an unregistered live SLAM map',
             'registry_revision': None,
             'tags': [],
         })
@@ -102,6 +103,10 @@ def start(request):
     if any(key in body for key in ('x', 'y', 'yaw')): return _error('coordinates are not accepted; use target_tag_id')
     robot_id = str(body.get('robot_id', '')).strip()
     if not robot_id or body.get('target_tag_id') is None: return _error('robot_id and target_tag_id are required')
+    robot_mode = str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode).upper()
+    if robot_mode == 'UNIFIED':
+        return _error('Tag navigation must use the shared NavigationTarget preview and Nav2 pipeline', 409,
+                      {'code': 'TAG_NAVIGATION_SINGLE_PIPELINE_REQUIRED'})
     if not runtime.ros_bridge_connected and runtime.is_external: return _error('ROS bridge is offline', 409)
     sync_error = _map_sync_error(robot_id)
     if sync_error: return _error(sync_error, 409)
@@ -118,6 +123,10 @@ def start(request):
 def _action(request, mission_id: int, action: str, status: str):
     try: mission = RobotNavigationMission.objects.select_related('target_tag').get(pk=mission_id)
     except RobotNavigationMission.DoesNotExist: return _error('mission not found', 404)
+    robot_mode = str(runtime.robot_runtime_modes.get(mission.robot_id) or runtime.operation_mode).upper()
+    if robot_mode == 'UNIFIED' and action in ('RESUME_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION'):
+        return _error('Tag navigation must use the shared NavigationTarget preview and Nav2 pipeline', 409,
+                      {'code': 'TAG_NAVIGATION_SINGLE_PIPELINE_REQUIRED'})
     if action in ('RESUME_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION'):
         sync_error = _map_sync_error(mission.robot_id)
         if sync_error: return _error(sync_error, 409)

@@ -1528,8 +1528,10 @@ class SwerveBridge(Node):
         )
         slam = any('slam_toolbox' in name.lower() for name in node_names)
         nav2_nodes = ('map_server', 'amcl', 'controller_server', 'planner_server',
-                      'bt_navigator', 'lifecycle_manager_navigation')
+                      'behavior_server', 'bt_navigator', 'waypoint_follower',
+                      'lifecycle_manager_navigation')
         nav2 = any(any(marker in name for marker in nav2_nodes) for name in node_names)
+        nav2_ready = bool(nav2 and self.nav2_action_servers_ready())
         self.nav2_revision = self._loaded_nav2_revision(nav2)
         tag_nodes_ready = all(any(name.rstrip('/').endswith('/' + suffix)
                                   or name.rstrip('/') == suffix
@@ -1594,6 +1596,7 @@ class SwerveBridge(Node):
             'controller_manager': controller_manager,
             'slam': slam,
             'nav2': nav2,
+            'nav2_ready': nav2_ready,
             'tf': tf,
             'lidar': lidar,
             'nodes': node_names[:200],
@@ -1630,6 +1633,14 @@ class SwerveBridge(Node):
                 'lidar_dropped_messages': None,
             },
         }
+
+    def nav2_action_servers_ready(self):
+        """Nav2 readiness requires both path preview and NavigateToPose actions."""
+        try:
+            return bool(self.path_preview_client.server_is_ready()
+                        and self.nav_pose_client.server_is_ready())
+        except Exception:
+            return False
 
     def send_map_revision_status(self):
         self._refresh_map_sync_status()

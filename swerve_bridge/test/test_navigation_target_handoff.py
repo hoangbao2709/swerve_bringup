@@ -68,6 +68,20 @@ def _accepted_pose_handle():
     return handle, cancel_future, result_future
 
 
+def test_nav2_readiness_requires_both_path_and_navigation_action_servers():
+    bridge = object.__new__(SwerveBridge)
+    bridge.path_preview_client = SimpleNamespace(server_is_ready=lambda: True)
+    bridge.nav_pose_client = SimpleNamespace(server_is_ready=lambda: True)
+    assert bridge.nav2_action_servers_ready()
+
+    bridge.path_preview_client = SimpleNamespace(server_is_ready=lambda: False)
+    assert not bridge.nav2_action_servers_ready()
+
+    bridge.path_preview_client = SimpleNamespace(server_is_ready=lambda: True)
+    bridge.nav_pose_client = SimpleNamespace(server_is_ready=lambda: False)
+    assert not bridge.nav2_action_servers_ready()
+
+
 def test_tag_resolved_pose_uses_shared_compute_path_and_navigate_to_pose_actions(monkeypatch):
     map_identity = {
         'active_map_id': 'CANONICAL',

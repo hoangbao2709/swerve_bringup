@@ -349,6 +349,10 @@ def local_runtime_mode(request, robot_id: str):
         return _error('mapping/navigation transition requires a connected robot runtime', 409)
     if not runtime.robot_bridge_online(robot_id):
         return _error(f'authenticated ROS bridge for {robot_id} is offline', 503)
+    current = str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode).upper()
+    if current == 'UNIFIED':
+        return _error('the Unified stack mode is fixed for this process; switch MANUAL/AUTONOMOUS control mode instead',
+                      409, {'code': 'UNIFIED_RUNTIME_MODE_FIXED'})
     target = str(_body(request).get('mode') or '').strip().upper()
     if target not in ('MAPPING', 'NAVIGATION'):
         return _error('mode must be MAPPING or NAVIGATION')
@@ -391,11 +395,11 @@ def mapping_command(request, robot_id: str, action: str):
     problem = _robot_available(robot_id)
     if problem:
         return problem
-    if runtime.operation_mode != 'MAPPING':
+    mode = str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode).upper()
+    if mode not in ('MAPPING', 'UNIFIED'):
         return _error(
-            'SLAM Toolbox is not active in this runtime. Select mapping mode when starting the ROS stack; '
-            'the current launch keeps SLAM and Nav2 mutually exclusive.', 409,
-            {'runtime_mode': runtime.operation_mode},
+            'SLAM Toolbox is not active in this stack runtime.', 409,
+            {'runtime_mode': mode},
         )
     if robot_id in getattr(runtime, 'pending_slam_session_resumes', {}):
         return _error('mapping controls are blocked while a saved SLAM session is restoring', 409)
@@ -420,7 +424,8 @@ def save_robot_map(request, robot_id: str):
     problem = _robot_available(robot_id)
     if problem:
         return problem
-    if runtime.operation_mode != 'MAPPING':
+    mode = str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode).upper()
+    if mode not in ('MAPPING', 'UNIFIED'):
         return _error('map save requires the active SLAM mapping runtime', 409)
     if robot_id in getattr(runtime, 'pending_slam_session_resumes', {}):
         return _error('map save is blocked until the saved SLAM session has been verified', 409)
@@ -496,7 +501,10 @@ def load_robot_map(request, robot_id: str):
     if pending and pending.get('map_id') != map_id:
         return _error('another saved local map is still loading for this robot', 409)
 
-    mode = str(runtime.operation_mode or '').upper()
+    mode = str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode or '').upper()
+    if mode == 'UNIFIED':
+        return _error('loading a saved localization map is not available in-place in Unified mode; the live SLAM map remains active',
+                      409, {'code': 'UNIFIED_MAP_TRANSITION_UNAVAILABLE'})
     if mode == 'MAPPING':
         if pending:
             adapter = _runtime_adapter(runtime.runtime_mode)
@@ -646,6 +654,9 @@ def resume_robot_slam_session(request, robot_id: str):
             return problem
     if runtime.runtime_mode != 'GAZEBO_ROS':
         return _error('saved-session resume currently requires the supervised Gazebo/ROS runtime', 409)
+    if str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode).upper() == 'UNIFIED':
+        return _error('saved SLAM session restore has no in-process deserialize service yet; Unified remains running unchanged',
+                      409, {'code': 'UNIFIED_SLAM_RESTORE_UNAVAILABLE'})
     body = _body(request)
     map_id = str(body.get('map_id') or '').strip()
     try:

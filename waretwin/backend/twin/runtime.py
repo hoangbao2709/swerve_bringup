@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 TICK_S = SIM['TICK_S']
 HEATMAP_EVERY = 30
 client_adapter: TypeAdapter[Any] = TypeAdapter(ClientMessage)
+MAPPING_CAPABLE_MODES = frozenset({'MAPPING', 'UNIFIED'})
+NAVIGATION_CAPABLE_MODES = frozenset({'NAVIGATION', 'UNIFIED'})
 
 
 def _persist_events(run_id: str, events: list[dict[str, Any]]) -> None:
@@ -118,6 +120,7 @@ class TwinRuntime:
             'nodes': [], 'topics': [], 'controllers': [],
             'simulation_time': None, 'last_update_at': None,
         }
+        self.ros_diagnostics_received_monotonic: float | None = None
         self.published_map_revision: int | None = None
         self.published_map_version: int = 0
         self.ros_map_revision: int | None = None
@@ -142,6 +145,7 @@ class TwinRuntime:
         self.robot_mapping_elapsed_s: dict[str, float] = {}
         self.robot_mapping_sessions: dict[str, str] = {}
         self.robot_runtime_modes: dict[str, str] = {}
+        self.robot_command_diagnostics: dict[str, dict[str, Any]] = {}
         self.path_preview_requests: dict[tuple[str, str], dict[str, Any]] = {}
         self.approved_path_previews: dict[tuple[str, str], dict[str, Any]] = {}
         self.path_preview_results: dict[tuple[str, str], dict[str, Any]] = {}
@@ -202,6 +206,28 @@ class TwinRuntime:
                 'local_active_map_id': local_id,
                 'local_active_map_revision': revision,
                 'canonical_map_revision': canonical_revision,
+                'map_source': 'LOCAL_MAP',
+                'map_sync_status': 'LOCAL_ONLY' if ready else 'LOADING',
+            }
+
+        robot_mode = str(self.robot_runtime_modes.get(rid) or self.operation_mode).upper()
+        if robot_mode in MAPPING_CAPABLE_MODES:
+            session_id = str(self.robot_mapping_sessions.get(rid) or '')
+            snapshot = self.robot_slam_map_snapshots.get(rid, {})
+            map_data = snapshot.get('map') if isinstance(snapshot, dict) else {}
+            map_data = map_data if isinstance(map_data, dict) else {}
+            snapshot_session = str(map_data.get('mapping_session_id') or '')
+            map_id = (f'SLAM-{session_id}' if session_id else
+                      str(map_data.get('active_map_id') or ''))
+            revision = str(map_data.get('active_map_revision') or '')
+            ready = bool(session_id and snapshot_session == session_id and map_id and revision)
+            return {
+                'active_map_id': map_id or None,
+                'active_map_revision': revision or None,
+                'local_active_map_id': None,
+                'local_active_map_revision': None,
+                'canonical_map_revision': canonical_revision,
+                'map_source': 'SLAM_TOOLBOX',
                 'map_sync_status': 'LOCAL_ONLY' if ready else 'LOADING',
             }
 
@@ -235,7 +261,109 @@ class TwinRuntime:
             'local_active_map_revision': None,
             'canonical_map_revision': canonical_revision,
             'map_sync_status': status,
+            'map_source': 'CANONICAL' if ros_revision is not None else None,
         }
+
+    def robot_capabilities(self, robot_id: str) -> dict[str, bool]:
+        """Compute capabilities from runtime mode plus measured bridge state."""
+        rid = str(robot_id or '').strip()
+        mode = str(self.robot_runtime_modes.get(rid) or self.operation_mode).upper()
+        diagnostics = self.ros_diagnostics
+        mapping_diag = diagnostics.get('mapping') if isinstance(diagnostics.get('mapping'), dict) else {}
+        command_state = self.robot_command_diagnostics.get(rid, {})
+        command_fresh = bool(
+            command_state.get('received_monotonic') is not None
+            and time.monotonic() - float(command_state['received_monotonic'])
+            <= float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        )
+        diagnostics_fresh = bool(
+            self.ros_diagnostics_received_monotonic is not None
+            and time.monotonic() - self.ros_diagnostics_received_monotonic
+            <= float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        )
+        mapping_available = bool(
+            self.is_external and self.robot_bridge_online(rid)
+            and diagnostics_fresh and mode in MAPPING_CAPABLE_MODES and diagnostics.get('slam')
+        )
+        mapping_active = bool(
+            mapping_available and str(mapping_diag.get('slam_state') or '').upper() == 'ACTIVE'
+            and mapping_diag.get('map_live') is True
+            and str(self.robot_mapping_state.get(rid) or 'MAPPING').upper() == 'MAPPING'
+        )
+        nav2_available = bool(
+            self.is_external and self.robot_bridge_online(rid)
+            and diagnostics_fresh and mode in NAVIGATION_CAPABLE_MODES and diagnostics.get('nav2')
+        )
+        nav2_ready = bool(nav2_available and diagnostics.get('nav2_ready') is True)
+        active_map = self.active_map_state(rid)
+        map_ready = bool(
+            active_map.get('active_map_id') and active_map.get('active_map_revision')
+            and active_map.get('map_sync_status') in ('CANONICAL', 'LOCAL_ONLY')
+            and (active_map.get('map_source') != 'SLAM_TOOLBOX' or mapping_diag.get('map_live') is True)
+        )
+        robot = self.engine.state.get('robots', {}).get(rid, {})
+        control_mode = str(robot.get('control_mode') or '').upper()
+        control_request = getattr(self, 'control_mode_requests', {}).get(rid, {})
+        command_state = self.robot_command_diagnostics.get(rid, {})
+        applied_mode = str(command_state.get('active_control_mode') or '').upper()
+        estop_clear = command_fresh and command_state.get('estop_active') is False
+        control_applied = bool(
+            command_fresh and applied_mode == control_mode
+            and control_request.get('mode_transition_state') != 'REQUESTED'
+            and control_request.get('applied_mode') in (None, applied_mode)
+        )
+        manual_available = bool(
+            mapping_available and control_mode == 'MANUAL' and control_applied and estop_clear
+        )
+        goal_available = bool(
+            nav2_ready and map_ready and control_mode == 'AUTONOMOUS'
+            and control_applied and estop_clear and rid not in self.local_map_transitions
+            and self.navigation_localization_state(rid, active_map) is not None
+        )
+        tag_navigation_available = bool(
+            goal_available and active_map.get('active_map_id') == 'CANONICAL'
+            and active_map.get('map_sync_status') == 'CANONICAL'
+        )
+        return {
+            'mapping_available': mapping_available,
+            'mapping_active': mapping_active,
+            'nav2_available': nav2_available,
+            'nav2_ready': nav2_ready,
+            'manual_available': manual_available,
+            'goal_available': goal_available,
+            'map_ready': map_ready,
+            'tag_navigation_available': tag_navigation_available,
+        }
+
+    def unified_navigation_blocker(self, robot_id: str) -> str | None:
+        """Return a fail-closed reason when the unified Nav2 path is not ready."""
+        rid = str(robot_id or '').strip()
+        mode = str(self.robot_runtime_modes.get(rid) or self.operation_mode).upper()
+        if mode != 'UNIFIED':
+            return None
+        capabilities = self.robot_capabilities(rid)
+        if not capabilities['nav2_ready']:
+            return 'NAV2_NOT_READY: Nav2 lifecycle or required action servers are not ready'
+        if rid in self.local_map_transitions:
+            return 'MAP_TRANSITION: navigation is blocked while the active map is changing'
+        command = self.robot_command_diagnostics.get(rid, {})
+        command_received = command.get('received_monotonic')
+        timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        if command_received is None or time.monotonic() - float(command_received) > timeout:
+            return 'COMMAND_STATE_STALE: fresh command arbiter mode and E-STOP diagnostics are required'
+        robot = self.engine.state.get('robots', {}).get(rid, {})
+        request = getattr(self, 'control_mode_requests', {}).get(rid, {})
+        if (str(robot.get('control_mode') or '').upper() != 'AUTONOMOUS'
+                or str(command.get('active_control_mode') or '').upper() != 'AUTONOMOUS'
+                or request.get('mode_transition_state') == 'REQUESTED'):
+            return 'CONTROL_MODE_NOT_AUTONOMOUS: apply AUTONOMOUS before requesting a Nav2 path'
+        if command.get('estop_active') is not False:
+            return 'ESTOP_STATE_UNCONFIRMED: Nav2 is blocked until runtime confirms E-STOP is clear'
+        if not capabilities['map_ready']:
+            return 'SLAM_MAP_NOT_READY: the active live map is not available'
+        if self.navigation_localization_state(rid, self.active_map_state(rid)) is None:
+            return 'LOCALIZATION_NOT_READY: a fresh active-map TF pose is required'
+        return None
 
     def navigation_localization_state(self, robot_id: str, active_map: dict[str, Any]) -> dict[str, str] | None:
         rid = str(robot_id)
@@ -440,6 +568,10 @@ class TwinRuntime:
                 rid: self.active_map_state(rid)
                 for rid in sorted(self.connected_robot_ids | set(self.local_map_overrides))
             },
+            'robot_capabilities': {
+                rid: self.robot_capabilities(rid)
+                for rid in sorted(self.connected_robot_ids | set(self.local_map_overrides))
+            },
             'robot_mapping_sessions': {
                 rid: self.robot_mapping_sessions.get(rid)
                 for rid in sorted(self.connected_robot_ids)
@@ -465,6 +597,8 @@ class TwinRuntime:
         if robot_id:
             rid = str(robot_id)
             self.connected_robot_ids.add(rid)
+            self.robot_command_diagnostics.pop(rid, None)
+            self.command_ownership.pop(rid, None)
             self.robot_bridge_heartbeats[rid] = time.monotonic()
             self.robot_pose_heartbeats.pop(rid, None)
             self.robot_map_sync.pop(rid, None)
@@ -482,12 +616,16 @@ class TwinRuntime:
         if robot_id:
             rid = str(robot_id)
             self.connected_robot_ids.discard(rid)
+            self.robot_command_diagnostics.pop(rid, None)
+            self.command_ownership.pop(rid, None)
             self.robot_bridge_heartbeats.pop(rid, None)
             self.robot_pose_heartbeats.pop(rid, None)
             self.robot_map_sync.pop(rid, None)
             self._aggregate_robot_map_sync()
         else:
             self.connected_robot_ids.clear()
+            self.robot_command_diagnostics.clear()
+            self.command_ownership.clear()
             self.robot_bridge_heartbeats.clear()
             self.robot_pose_heartbeats.clear()
             self.robot_map_sync.clear()
@@ -672,7 +810,8 @@ class TwinRuntime:
         # ROBOT_STATE is emitted only after the bridge resolves map -> base via tf2.
         # The fallback labels older bridge payloads while retaining frame/map identity.
         pose_source = str(data.get('pose_source') or 'TF')
-        if self.operation_mode == 'MAPPING':
+        robot_mode = str(self.robot_runtime_modes.get(rid) or self.operation_mode).upper()
+        if robot_mode in MAPPING_CAPABLE_MODES:
             # Mapping poses are display-only in the live SLAM frame. They are
             # accepted only from the authenticated bridge's SLAM session and
             # never treated as canonical-map or navigation authorization.
@@ -720,7 +859,7 @@ class TwinRuntime:
                        'timestamp': now_iso, 'valid': True}
         canonical_pose = validated_canonical_pose(data.get('canonical_pose'),
                                                   self.published_map_revision, self.runtime_mode)
-        if self.operation_mode != 'MAPPING' and reported_map_id == 'CANONICAL' and pose_source == 'TF':
+        if robot_mode not in MAPPING_CAPABLE_MODES and reported_map_id == 'CANONICAL' and pose_source == 'TF':
             canonical_pose = active_pose
         nav = str(data.get('navigation_state') or 'IDLE').upper()
         control_mode = str(data.get('control_mode') or robot.get('control_mode') or 'AUTONOMOUS').upper()
@@ -807,14 +946,14 @@ class TwinRuntime:
             cached_slam_snapshot = self.robot_slam_map_snapshots.get(robot_id, {})
             cached_slam_map = cached_slam_snapshot.get('map') if isinstance(cached_slam_snapshot, dict) else {}
             current_session_snapshot = (
-                incoming_mode == 'MAPPING'
+                incoming_mode in MAPPING_CAPABLE_MODES
                 and isinstance(cached_slam_map, dict)
                 and cached_slam_map.get('map_source') == 'SLAM_TOOLBOX'
                 and mapping_session
                 and cached_slam_map.get('mapping_session_id') == mapping_session
             )
             if (previous_mode != incoming_mode
-                    or (incoming_mode == 'MAPPING'
+                    or (incoming_mode in MAPPING_CAPABLE_MODES
                         and mapping_session and mapping_session != previous_mapping_session)) \
                     and not current_session_snapshot:
                 # Never replay a map snapshot from the previous runtime/map
@@ -824,9 +963,9 @@ class TwinRuntime:
                 self.robot_slam_map_snapshots.pop(robot_id, None)
                 self.robot_map_geometry.pop(robot_id, None)
             self.robot_runtime_modes[robot_id] = incoming_mode
-            if incoming_mode == 'MAPPING' and mapping_session:
+            if incoming_mode in MAPPING_CAPABLE_MODES and mapping_session:
                 self.robot_mapping_sessions[robot_id] = mapping_session
-            elif incoming_mode != 'MAPPING':
+            elif incoming_mode not in MAPPING_CAPABLE_MODES:
                 self.robot_mapping_sessions.pop(robot_id, None)
             self.operation_mode = incoming_mode
             if data.get('mapping_state'):
@@ -835,7 +974,7 @@ class TwinRuntime:
                 self.robot_mapping_elapsed_s[robot_id] = max(0.0, float(data.get('mapping_elapsed_s', 0.0)))
             except (TypeError, ValueError):
                 self.robot_mapping_elapsed_s[robot_id] = 0.0
-            if self.operation_mode not in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'ERROR'):
+            if self.operation_mode not in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'UNIFIED', 'ERROR'):
                 self.operation_mode = 'SIMULATION' if self.is_external else self.operation_mode
             self.ros_diagnostics['ros'] = True
             self.ros_diagnostics['last_update_at'] = data.get('timestamp')
@@ -1043,12 +1182,18 @@ class TwinRuntime:
         elif kind == 'COMMAND_DIAGNOSTICS':
             robot_id = str(data.get('robot_id') or '')
             if robot_id:
-                self.command_ownership[robot_id] = {
+                diagnostics = {
                     key: data.get(key) for key in (
                         'active_command_source', 'active_control_mode', 'last_command_age',
                         'manual_source_active', 'nav_source_active', 'tag_source_active',
                         'estop_active',
                     )
+                }
+                diagnostics['received_monotonic'] = time.monotonic()
+                self.robot_command_diagnostics[robot_id] = diagnostics
+                self.command_ownership[robot_id] = {
+                    key: value for key, value in diagnostics.items()
+                    if key != 'received_monotonic'
                 }
             await self.broadcast(data)
         elif kind == 'LIDAR_STREAM_DIAGNOSTICS':
@@ -1069,7 +1214,7 @@ class TwinRuntime:
                 return
             self.bridge_status = str(data.get('state') or 'ERROR').upper()
             runtime_state = str(data.get('runtime_state') or '').upper()
-            if runtime_state in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'ERROR'):
+            if runtime_state in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'UNIFIED', 'ERROR'):
                 self.operation_mode = runtime_state
             await self.broadcast_runtime_status()
         elif kind in ('MAP_REVISION_STATUS', 'MAP_REVISION_ACK'):
@@ -1092,7 +1237,7 @@ class TwinRuntime:
     async def handle_ros_diagnostics(self, data: dict[str, Any]) -> None:
         """Accept measured ROS graph/sensor/controller state from the bridge."""
         values = data.get('diagnostics') if isinstance(data.get('diagnostics'), dict) else data
-        for key in ('ros', 'gazebo', 'controller_manager', 'slam', 'nav2', 'tf', 'lidar'):
+        for key in ('ros', 'gazebo', 'controller_manager', 'slam', 'nav2', 'nav2_ready', 'tf', 'lidar'):
             if key in values:
                 self.ros_diagnostics[key] = bool(values[key])
         for key in ('nodes', 'topics', 'controllers'):
@@ -1107,6 +1252,7 @@ class TwinRuntime:
         if values.get('simulation_time') is not None:
             self.ros_diagnostics['simulation_time'] = values.get('simulation_time')
         self.ros_diagnostics['last_update_at'] = data.get('timestamp') or datetime.now(timezone.utc).isoformat()
+        self.ros_diagnostics_received_monotonic = time.monotonic()
         if self.operation_mode == 'ERROR' and self.ros_diagnostics.get('ros'):
             self.operation_mode = 'SIMULATION' if self.is_external else self.operation_mode
         await self.broadcast_runtime_status()
@@ -1550,8 +1696,13 @@ class TwinRuntime:
             if msg.robot_id in self.local_map_transitions:
                 await preview_failure('INVALID', 'a local Nav2 map transition is in progress')
                 return
-            if self.operation_mode != 'NAVIGATION':
-                await preview_failure('INVALID', 'path preview is available only in NAVIGATION runtime mode')
+            robot_mode = str(self.robot_runtime_modes.get(msg.robot_id) or self.operation_mode).upper()
+            if robot_mode not in NAVIGATION_CAPABLE_MODES:
+                await preview_failure('INVALID', 'Nav2 path preview is unavailable in the current stack runtime')
+                return
+            blocker = self.unified_navigation_blocker(msg.robot_id)
+            if blocker:
+                await preview_failure('INVALID', blocker)
                 return
             if not self.is_external or not self.robot_bridge_online(msg.robot_id):
                 await preview_failure('NO_PATH', 'robot ROS bridge is offline')
@@ -1670,12 +1821,21 @@ class TwinRuntime:
                     'message': 'navigation is blocked while the selected robot map is loading',
                 })
                 return
-            if t in ('NAV_GOAL', 'NAV_RESUME') and self.operation_mode != 'NAVIGATION':
-                await consumer.send_json({
-                    'type': 'ERROR', 'code': 'NAVIGATION_UNAVAILABLE',
-                    'message': 'Nav2 goals are only available in NAVIGATION runtime mode',
-                })
-                return
+            if t in ('NAV_GOAL', 'NAV_RESUME'):
+                robot_mode = str(self.robot_runtime_modes.get(msg.robot_id) or self.operation_mode).upper()
+                if robot_mode not in NAVIGATION_CAPABLE_MODES:
+                    await consumer.send_json({
+                        'type': 'ERROR', 'code': 'NAVIGATION_UNAVAILABLE',
+                        'message': 'Nav2 goals are unavailable in the current stack runtime',
+                    })
+                    return
+                blocker = self.unified_navigation_blocker(msg.robot_id)
+                if blocker:
+                    await consumer.send_json({
+                        'type': 'ERROR', 'code': blocker.split(':', 1)[0],
+                        'message': blocker,
+                    })
+                    return
             if t == 'NAV_GOAL':
                 if msg.frame_id != 'map':
                     await consumer.send_json({

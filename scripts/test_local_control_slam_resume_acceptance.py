@@ -18,11 +18,14 @@ from gazebo_msgs.msg import ModelStates
 from geometry_msgs.msg import Pose
 
 from local_control_slam_resume_acceptance import (
+    RESUME_READINESS_GATE_NAMES,
     ResumeMotionProbe,
     ResumeReadinessGate,
     map_extension_evidence,
     resumed_map_save_gate,
     resume_tf_qos_profiles,
+    teleop_readiness_lease_evidence,
+    web_manual_teleop_evidence,
 )
 import end_to_end_acceptance as acceptance
 
@@ -57,6 +60,80 @@ def _snapshot(width, height, values):
         'origin': [0.0, 0.0, 0.0],
         'data_zlib_base64': base64.b64encode(zlib.compress(payload)).decode('ascii'),
     }
+
+
+def _teleop_lease_marker(age_ms=346, state='APPROVED'):
+    command_at_ms = 1791004050949
+    return {
+        'at_ms': command_at_ms,
+        'readiness_gate_state': state,
+        'readiness_gate_updated_at_ms': command_at_ms - age_ms,
+        'readiness_gates': {name: True for name in RESUME_READINESS_GATE_NAMES},
+    }
+
+
+def test_teleop_lease_is_validated_at_captured_command_time():
+    evidence = teleop_readiness_lease_evidence(_teleop_lease_marker(age_ms=346))
+
+    assert evidence['passed'] is True
+    assert evidence['lease_age_ms'] == 346
+    assert evidence['gate_count'] == 15
+    assert evidence['failed_gates'] == []
+
+
+def test_teleop_lease_keeps_exact_500ms_limit_and_rejects_expired_or_future():
+    assert teleop_readiness_lease_evidence(_teleop_lease_marker(age_ms=500))['passed'] is True
+
+    expired = teleop_readiness_lease_evidence(_teleop_lease_marker(age_ms=501))
+    future = teleop_readiness_lease_evidence(_teleop_lease_marker(age_ms=-1))
+    assert expired['passed'] is False
+    assert 'lease_not_fresh_at_command' in expired['reasons']
+    assert future['passed'] is False
+    assert 'lease_not_fresh_at_command' in future['reasons']
+
+
+def test_teleop_lease_rejects_nonapproved_or_incomplete_gate_snapshot():
+    waiting = teleop_readiness_lease_evidence(_teleop_lease_marker(state='WAITING'))
+    incomplete_marker = _teleop_lease_marker()
+    incomplete_marker['readiness_gates'].pop('TF_LIDAR_FRESH')
+    incomplete = teleop_readiness_lease_evidence(incomplete_marker)
+
+    assert waiting['passed'] is False
+    assert 'lease_state_not_approved' in waiting['reasons']
+    assert incomplete['passed'] is False
+    assert 'TF_LIDAR_FRESH' in incomplete['missing_gates']
+    assert 'TF_LIDAR_FRESH' in incomplete['failed_gates']
+
+
+def test_web_teleop_continuity_uses_outbound_refresh_frames_and_stop():
+    frames = [
+        {'at_ms': at_ms, 'message': {'type': 'ROBOT_MANUAL', 'action': 'FORWARD'}}
+        for at_ms in range(1050, 4951, 100)
+    ]
+    frames.append({'at_ms': 4990,
+                   'message': {'type': 'ROBOT_MANUAL', 'action': 'STOP'}})
+
+    evidence = web_manual_teleop_evidence(
+        frames, {'at_ms': 1000, 'hold_s': 4.0}, {'at_ms': 5000})
+
+    assert evidence['passed'] is True
+    assert evidence['forward_frame_count'] == 40
+    assert evidence['max_gap_ms'] == 100
+    assert evidence['stop_frame_count'] == 1
+
+
+def test_web_teleop_continuity_fails_on_late_start_gaps_short_hold_or_no_stop():
+    frames = [
+        {'at_ms': at_ms, 'message': {'type': 'ROBOT_MANUAL', 'action': 'FORWARD'}}
+        for at_ms in (1000, 1100, 1701, 1801, 1901, 2001)
+    ]
+    evidence = web_manual_teleop_evidence(
+        frames, {'at_ms': 1000, 'hold_s': 4.0}, {'at_ms': 5000})
+
+    assert evidence['passed'] is False
+    assert evidence['checks']['refresh_gaps_within_bound'] is False
+    assert evidence['checks']['hold_duration_covered'] is False
+    assert evidence['checks']['web_stop_after_forward'] is False
 
 
 def test_stationary_restored_map_does_not_need_stamp_or_content_progress():

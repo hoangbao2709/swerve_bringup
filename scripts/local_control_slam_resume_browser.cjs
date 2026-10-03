@@ -132,6 +132,20 @@ const waitForFreshReadinessLease = async timeoutMs => {
         throw Error('prior Web resume response does not contain positive live-map restoration evidence');
       }
     }
+    let continuedActiveMapping = false;
+    if (skipResumeRequest) {
+      const resumeMapping = page.getByRole('button', { name: 'RESUME MAPPING', exact: true });
+      if (await resumeMapping.count()) {
+        if (await resumeMapping.isDisabled()) {
+          throw Error('the active restored SLAM session is paused but Web RESUME MAPPING is disabled');
+        }
+        await resumeMapping.click();
+        await page.waitForFunction(() => [...document.querySelectorAll('button')]
+          .some(button => button.textContent?.trim() === 'MAPPING ACTIVE' && button.disabled),
+        null, { timeout: 30000 });
+        continuedActiveMapping = true;
+      }
+    }
     const mapDeadline = Date.now() + 90000;
     let initialSnapshot = null;
     while (Date.now() < mapDeadline) {
@@ -146,6 +160,7 @@ const waitForFreshReadinessLease = async timeoutMs => {
     }
     writeJson('session-restored.json', { restored_notice: restoredNotice,
       resume_response: resumed || restorationCarryover,
+      continued_active_mapping: continuedActiveMapping,
       initial_map_snapshot: initialSnapshot,
       screenshot: path.join(dir, 'session-restored.png') });
     await page.screenshot({ path: path.join(dir, 'session-restored.png'), fullPage: true });
@@ -228,11 +243,22 @@ const waitForFreshReadinessLease = async timeoutMs => {
     if (!hasFreshReadinessLease(gate)) {
       throw Error('post-resume readiness lease expired immediately before Forward');
     }
-    const holdS = Math.max(2, Math.min(5, Number(process.env.SLAM_RESUME_TELEOP_HOLD_S || 3.5)));
-    writeJson('teleop-start.json', { at_ms: Date.now(), action: 'FORWARD', hold_s: holdS,
+    // Keep each dead-man press bounded while allowing a measured approach to a
+    // verified unmapped frontier; key-up and the explicit Web STOP remain required.
+    const holdS = Math.max(2, Math.min(20, Number(process.env.SLAM_RESUME_TELEOP_HOLD_S || 3.5)));
+    const commandAtMs = Date.now();
+    const leaseAgeMs = commandAtMs - Number(gate.updated_at_ms || 0);
+    if (gate.state !== 'APPROVED' || leaseAgeMs < 0 || leaseAgeMs > 500
+        || readinessGateNames.length !== Object.keys(gate.gates || {}).length
+        || !readinessGateNames.every(name => gate.gates?.[name] === true)) {
+      throw Error('post-resume readiness lease expired immediately before Forward');
+    }
+    writeJson('teleop-start.json', { at_ms: commandAtMs, action: 'FORWARD', hold_s: holdS,
       initial_map_known_cells: initialSnapshot.known_cells,
       mapping_session_id: initialSnapshot.mapping_session_id,
+      readiness_gate_state: gate.state,
       readiness_gate_updated_at_ms: gate.updated_at_ms,
+      readiness_lease_age_ms: leaseAgeMs,
       readiness_gates: gate.gates });
     await page.keyboard.down('ArrowUp');
     await sleep(holdS * 1000);

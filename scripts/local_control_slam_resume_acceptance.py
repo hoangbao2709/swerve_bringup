@@ -1138,6 +1138,124 @@ def saved_session_artifact_evidence(record: dict, map_root: Path) -> dict:
     return evidence
 
 
+RESUME_READINESS_GATE_NAMES = (
+    'CLOCK_FRESH', 'GAZEBO_PHYSICS_ACTIVE', 'CONTROLLERS_ACTIVE',
+    'COMMAND_ARBITER_READY', 'SWERVE_CONTROLLER_READY', 'JOINT_STATES_FRESH',
+    'ODOM_FRESH', 'ODOM_TF_FRESH', 'MAP_ODOM_TF_FRESH', 'MAP_BASE_TF_FRESH',
+    'TF_LIDAR_FRESH', 'SCAN_FRESH', 'SLAM_ACTIVE', 'SLAM_INPUT_FRESH', 'MAP_LIVE',
+)
+
+
+def teleop_readiness_lease_evidence(command_marker, max_age_ms=500):
+    """Validate the approved lease as captured immediately before Web key-down."""
+    marker = command_marker if isinstance(command_marker, dict) else {}
+    issued_at_ms = marker.get('readiness_gate_updated_at_ms')
+    command_at_ms = marker.get('at_ms')
+    try:
+        if isinstance(issued_at_ms, bool) or isinstance(command_at_ms, bool):
+            raise ValueError('boolean timestamp')
+        issued_at_ms = int(issued_at_ms)
+        command_at_ms = int(command_at_ms)
+        lease_age_ms = command_at_ms - issued_at_ms
+    except (TypeError, ValueError, OverflowError):
+        issued_at_ms = command_at_ms = lease_age_ms = None
+
+    gates = marker.get('readiness_gates')
+    gates = gates if isinstance(gates, dict) else {}
+    required = set(RESUME_READINESS_GATE_NAMES)
+    missing = sorted(required - set(gates))
+    unexpected = sorted(set(gates) - required)
+    failed = [name for name in RESUME_READINESS_GATE_NAMES
+              if gates.get(name) is not True]
+    reasons = []
+    if marker.get('readiness_gate_state') != 'APPROVED':
+        reasons.append('lease_state_not_approved')
+    if lease_age_ms is None or lease_age_ms < 0 or lease_age_ms > max_age_ms:
+        reasons.append('lease_not_fresh_at_command')
+    if missing or unexpected or failed:
+        reasons.append('readiness_gates_incomplete_or_failed')
+    return {
+        'passed': not reasons,
+        'state': marker.get('readiness_gate_state'),
+        'issued_at_ms': issued_at_ms,
+        'command_at_ms': command_at_ms,
+        'lease_age_ms': lease_age_ms,
+        'max_age_ms': max_age_ms,
+        'gate_count': len(gates),
+        'missing_gates': missing,
+        'unexpected_gates': unexpected,
+        'failed_gates': failed,
+        'gates': gates,
+        'reasons': reasons,
+    }
+
+
+def web_manual_teleop_evidence(sent_frames, command_marker, end_marker,
+                               max_gap_ms=500):
+    """Measure command refresh continuity from the authenticated WebSocket frames."""
+    sent_frames = sent_frames if isinstance(sent_frames, list) else []
+    command_marker = command_marker if isinstance(command_marker, dict) else {}
+    end_marker = end_marker if isinstance(end_marker, dict) else {}
+    try:
+        start_ms = int(command_marker['at_ms'])
+        end_ms = int(end_marker['at_ms'])
+        hold_s = float(command_marker['hold_s'])
+        if (isinstance(command_marker['at_ms'], bool)
+                or isinstance(end_marker['at_ms'], bool)
+                or not math.isfinite(hold_s) or hold_s <= 0.0):
+            raise ValueError('invalid command timing')
+    except (KeyError, TypeError, ValueError, OverflowError):
+        start_ms = end_ms = None
+        hold_s = None
+
+    rows = []
+    for row in sent_frames:
+        message = row.get('message') if isinstance(row, dict) else None
+        if not isinstance(message, dict) or message.get('type') != 'ROBOT_MANUAL':
+            continue
+        try:
+            at_ms = int(row.get('at_ms'))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if start_ms is None or end_ms is None or not start_ms <= at_ms <= end_ms:
+            continue
+        rows.append((at_ms, message.get('action')))
+    rows.sort(key=lambda item: item[0])
+    forward_times = [at_ms for at_ms, action in rows if action == 'FORWARD']
+    stop_times = [at_ms for at_ms, action in rows if action == 'STOP']
+    gaps_ms = [right - left for left, right in zip(forward_times, forward_times[1:])]
+    duration_s = ((forward_times[-1] - forward_times[0]) / 1000.0
+                  if len(forward_times) >= 2 else 0.0)
+    first_delay_ms = (forward_times[0] - start_ms
+                      if forward_times and start_ms is not None else None)
+    required_duration_s = max(0.5, hold_s - 1.0) if hold_s is not None else None
+    checks = {
+        'forward_frames_present': len(forward_times) >= 5,
+        'first_frame_within_bound': first_delay_ms is not None
+                                   and 0 <= first_delay_ms <= max_gap_ms,
+        'refresh_gaps_within_bound': bool(gaps_ms)
+                                     and max(gaps_ms) <= max_gap_ms,
+        'hold_duration_covered': required_duration_s is not None
+                                  and duration_s >= required_duration_s,
+        'web_stop_after_forward': any(at_ms >= forward_times[-1]
+                                      for at_ms in stop_times) if forward_times else False,
+    }
+    return {
+        'passed': all(checks.values()),
+        'checks': checks,
+        'forward_frame_count': len(forward_times),
+        'stop_frame_count': len(stop_times),
+        'first_frame_delay_ms': first_delay_ms,
+        'duration_s': duration_s,
+        'required_duration_s': required_duration_s,
+        'max_gap_ms': max(gaps_ms) if gaps_ms else None,
+        'max_gap_limit_ms': max_gap_ms,
+        'gaps_over_limit': sum(gap > max_gap_ms for gap in gaps_ms),
+        'start_at_ms': start_ms,
+        'end_at_ms': end_ms,
+    }
+
+
 def main() -> int:
     robot_id = os.environ.get('ROBOT_ID', 'R01')
     map_name = os.environ.get('SAVED_MAP_NAME', 'slam_accumulated_20261001_01')
@@ -1442,13 +1560,13 @@ def main() -> int:
                     if marker.is_file():
                         teleop_start = json.loads(marker.read_text(encoding='utf-8'))
                         teleop_start_monotonic = time.monotonic()
-                        gate_file = json.loads(teleop_gate_path.read_text(encoding='utf-8'))
-                        result['teleop_gate_at_command'] = gate_file
-                        if (gate_file.get('state') != 'APPROVED'
-                                or int(time.time() * 1000) - int(gate_file.get('updated_at_ms') or 0) > 500
-                                or not all(gate_file.get('gates', {}).values())):
+                        lease_evidence = teleop_readiness_lease_evidence(teleop_start)
+                        result['teleop_gate_at_command'] = lease_evidence
+                        if not lease_evidence['passed']:
                             stop_browser_process(browser)
-                            raise RuntimeError('post-resume readiness lease expired before Web Teleop')
+                            raise RuntimeError(
+                                'post-resume readiness lease was invalid at Web Teleop: '
+                                + ','.join(lease_evidence['reasons']))
                         start_selected_index = len(probe.selected_cmd_events)
                         start_owner_index = len(probe.command_owner_events)
                         start_drive_index = len(probe.drive_events)
@@ -1603,7 +1721,23 @@ def main() -> int:
             raise RuntimeError(result['failure_reason'])
 
         try:
-            settled = probe.wait_mechanical_settling(ws, timeout=15.0, wall_timeout=60.0)
+            if ws is None:
+                settled = probe.wait_mechanical_settling(
+                    None, timeout=15.0, wall_timeout=60.0)
+            else:
+                try:
+                    settled = probe.wait_mechanical_settling(
+                        ws, timeout=15.0, wall_timeout=60.0)
+                except (OSError, websocket.WebSocketException) as exc:
+                    result['observer_websocket_disconnect_during_settling'] = (
+                        f'{type(exc).__name__}: {exc}')
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+                    ws = None
+                    settled = probe.wait_mechanical_settling(
+                        None, timeout=15.0, wall_timeout=60.0)
         except Exception as exc:
             settled = {'passed': False, 'reason': f'{type(exc).__name__}: {exc}'}
         final_gazebo_pose = probe.gazebo_pose
@@ -1640,9 +1774,17 @@ def main() -> int:
         manual_owner_max_gap = (max((right - left for left, right in
                                      zip(manual_owner_times, manual_owner_times[1:])),
                                     default=None))
-        manual_source_continuous = (len(manual_owner_times) >= 5
-                                    and manual_owner_max_gap is not None
-                                    and manual_owner_max_gap <= 0.50)
+        manual_owner_sample_continuous = (len(manual_owner_times) >= 5
+                                          and manual_owner_max_gap is not None
+                                          and manual_owner_max_gap <= 0.50)
+        try:
+            websocket_manual_frames = json.loads(
+                (evidence_dir / 'websocket-manual-frames.json').read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            websocket_manual_frames = []
+        web_manual_outbound = web_manual_teleop_evidence(
+            websocket_manual_frames, browser_result.get('teleop_start'),
+            browser_result.get('teleop_end'))
         result['teleop_motion'] = {
             'action': 'FORWARD', 'start_gazebo_pose': start_pose,
             'final_gazebo_pose': final_gazebo_pose,
@@ -1658,7 +1800,9 @@ def main() -> int:
             'web_manual_owner_seen': any(owner == 'WEB_MANUAL' for _, owner in direct_owners),
             'web_manual_owner_samples': len(manual_owner_times),
             'web_manual_owner_max_gap_s': manual_owner_max_gap,
-            'web_manual_source_continuous': manual_source_continuous,
+            'web_manual_owner_sample_continuous': manual_owner_sample_continuous,
+            'web_manual_source_continuous': web_manual_outbound['passed'],
+            'web_manual_outbound_frames': web_manual_outbound,
             'direct_command_sample_count': len(direct_selected),
             'direct_command_owner_sample_count': len(direct_owners),
             'drive_command_active': any(any(abs(value) > 1e-4 for value in row[1:]) for row in drives),
@@ -1686,6 +1830,7 @@ def main() -> int:
         gates_at_command = gate_at_command.get('gates') or {}
         resume_web_teleop = bool(
             result['teleop_motion']['web_manual_source_continuous']
+            and result['teleop_motion']['web_manual_owner_seen']
             and result['teleop_motion']['selected_nonzero_samples'] > 0
             and result['teleop_motion']['drive_command_active']
             and result['teleop_motion']['joint_positions_changed']

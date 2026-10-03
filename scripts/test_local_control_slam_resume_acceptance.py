@@ -284,6 +284,61 @@ def test_scan_tf_accepts_only_exact_or_tightly_bounded_latest_lookup():
     assert stale_edge['passed'] is False
 
 
+def test_recent_exact_scan_tf_lookup_uses_bounded_fresh_candidates():
+    gate = ResumeReadinessGate.__new__(ResumeReadinessGate)
+    queried_stamps = []
+
+    def lookup(target, source, sim_now, query_stamp_s, timeout_s):
+        queried_stamps.append(query_stamp_s)
+        return {
+            'available': True,
+            'fresh': query_stamp_s == 99.9,
+            'stamp_s': query_stamp_s,
+            'query_stamp_s': query_stamp_s,
+            'lookup_wait_s': timeout_s,
+        }
+
+    gate._lookup_stats = lookup
+    candidates = [
+        (48.0, 'lidar_link', 99.5),
+        (49.6, 'lidar_link', 99.9),
+        (49.9, 'lidar_link', 100.0),
+    ]
+    result = gate._recent_exact_scan_tf_lookup(
+        candidates, 'lidar_link', 100.0, 100.1, 50.0, 2.0)
+
+    assert result['fresh'] is True
+    assert result['matched_scan_stamp_s'] == 99.9
+    assert result['matched_scan_wall_age_s'] == pytest.approx(0.4)
+    assert queried_stamps == [99.9]
+
+    queried_stamps.clear()
+    stale = gate._recent_exact_scan_tf_lookup(
+        candidates, 'lidar_link', 100.0, 100.1, 50.0, 0.3)
+    assert stale['fresh'] is False
+    assert queried_stamps == []
+
+
+def test_recent_exact_scan_tf_lookup_caps_candidate_window():
+    gate = ResumeReadinessGate.__new__(ResumeReadinessGate)
+    queried_stamps = []
+
+    def lookup(target, source, sim_now, query_stamp_s, timeout_s):
+        queried_stamps.append(query_stamp_s)
+        return {'available': False, 'fresh': False}
+
+    gate._lookup_stats = lookup
+    candidates = [(50.0 - i * 0.1, 'lidar_link', 100.0 - i * 0.1)
+                  for i in range(10)]
+    result = gate._recent_exact_scan_tf_lookup(
+        candidates, 'lidar_link', 100.0, 100.1, 50.0, 2.0)
+
+    assert result['candidate_count'] == gate.RECENT_SCAN_TF_CANDIDATE_LIMIT
+    assert result['candidate_limit'] == 5
+    assert len(queried_stamps) == gate.RECENT_SCAN_TF_CANDIDATE_LIMIT
+    assert 100.0 not in queried_stamps
+
+
 def test_empty_model_pose_or_twist_array_waits_without_indexerror():
     probe = ResumeMotionProbe.__new__(ResumeMotionProbe)
     probe.malformed_model_state_samples = 0

@@ -144,6 +144,7 @@ class ResumeReadinessGate:
     MAX_TF_WALL_AGE_S = 3.5
     MAX_DYNAMIC_TOPIC_WALL_AGE_S = 3.5
     MAX_SCAN_TF_STAMP_SKEW_S = 0.05
+    RECENT_SCAN_TF_CANDIDATE_LIMIT = 5
     MIN_RATE_HZ = 1.0
     MIN_RATE_HZ_BY_TOPIC = {
         'clock': 3.0,
@@ -618,6 +619,60 @@ class ResumeReadinessGate:
                     'fresh': False, 'query_stamp_s': query_stamp_s,
                     'reason': f'{type(exc).__name__}: {exc}'}
 
+    def _recent_exact_scan_tf_lookup(self, candidates, latest_frame,
+                                     latest_scan_stamp_s, sim_now, now,
+                                     max_wall_age_s):
+        """Try recent exact scan timestamps without relaxing TF freshness."""
+        attempted = []
+        latest_stamp = (float(latest_scan_stamp_s)
+                        if latest_scan_stamp_s is not None else None)
+        try:
+            max_wall_age = float(max_wall_age_s)
+        except (TypeError, ValueError, OverflowError):
+            max_wall_age = math.nan
+        if (latest_stamp is None or not math.isfinite(latest_stamp)
+                or not math.isfinite(max_wall_age) or max_wall_age < 0.0):
+            return {
+                'available': False, 'fresh': False,
+                'reason': 'invalid latest scan stamp or freshness bound',
+                'candidate_count': 0,
+                'candidate_limit': self.RECENT_SCAN_TF_CANDIDATE_LIMIT,
+                'attempted_candidates': attempted,
+            }
+
+        for received, frame, stamp_s in reversed(list(candidates)):
+            if len(attempted) >= self.RECENT_SCAN_TF_CANDIDATE_LIMIT:
+                break
+            stamp_s = float(stamp_s)
+            wall_age_s = max(0.0, float(now) - float(received))
+            if (self._frame(frame) != self._frame(latest_frame)
+                    or math.isclose(stamp_s, latest_stamp, rel_tol=0.0,
+                                    abs_tol=1e-9)
+                    or wall_age_s > max_wall_age):
+                continue
+            attempted.append({
+                'scan_stamp_s': stamp_s,
+                'scan_wall_age_s': wall_age_s,
+            })
+            lookup = self._lookup_stats(
+                'map', self._frame(frame), sim_now, stamp_s, timeout_s=0.0)
+            if lookup.get('fresh'):
+                return {
+                    **lookup,
+                    'matched_scan_stamp_s': stamp_s,
+                    'matched_scan_wall_age_s': wall_age_s,
+                    'candidate_count': len(attempted),
+                    'candidate_limit': self.RECENT_SCAN_TF_CANDIDATE_LIMIT,
+                    'attempted_candidates': attempted,
+                }
+        return {
+            'available': False, 'fresh': False,
+            'reason': 'no exact transform for a recent fresh scan candidate',
+            'candidate_count': len(attempted),
+            'candidate_limit': self.RECENT_SCAN_TF_CANDIDATE_LIMIT,
+            'attempted_candidates': attempted,
+        }
+
     @staticmethod
     def _endpoint_rows(rows):
         return [{'node': row.node_name, 'namespace': row.node_namespace,
@@ -734,6 +789,31 @@ class ResumeReadinessGate:
         scan_tf_readiness = self._scan_tf_readiness(
             scan_fresh, scan_stamp_s, lidar_lookup, latest_lidar_lookup,
             odom_base_tf.get('fresh', False), map_odom_tf.get('fresh', False))
+        recent_exact_lookup = {
+            'available': False, 'fresh': False,
+            'reason': 'latest scan exact-time TF or bounded latest TF already passed',
+            'candidate_count': 0,
+            'candidate_limit': self.RECENT_SCAN_TF_CANDIDATE_LIMIT,
+            'attempted_candidates': [],
+        }
+        if (not scan_tf_readiness['passed'] and scan_fresh and scan_frame
+                and scan_stamp_s is not None):
+            recent_exact_lookup = self._recent_exact_scan_tf_lookup(
+                scan_tf_candidates, scan_frame, scan_stamp_s, sim_now, now,
+                stats['scan'].get('max_wall_age_s', self.MAX_WALL_AGE_S))
+            if recent_exact_lookup.get('fresh'):
+                scan_tf_readiness.update({
+                    'passed': True,
+                    'bounded_recent_exact_scan_lookup_passed': True,
+                    'matched_scan_stamp_s': recent_exact_lookup.get(
+                        'matched_scan_stamp_s'),
+                    'matched_scan_wall_age_s': recent_exact_lookup.get(
+                        'matched_scan_wall_age_s'),
+                    'recent_candidate_count': recent_exact_lookup.get(
+                        'candidate_count'),
+                })
+        else:
+            scan_tf_readiness['bounded_recent_exact_scan_lookup_passed'] = False
         lidar_lookup.update({
             'query_frame': f'map -> {scan_frame}' if scan_frame else None,
             'scan_frame': scan_frame,
@@ -752,6 +832,7 @@ class ResumeReadinessGate:
                 and scan_stamp_s is not None
                 and math.isclose(float(scan_stamp_s), float(newest_scan_candidate[2]),
                                  rel_tol=0.0, abs_tol=1e-9)),
+            'bounded_recent_exact_scan_lookup': recent_exact_lookup,
             'scan_tf_readiness': scan_tf_readiness,
         })
 

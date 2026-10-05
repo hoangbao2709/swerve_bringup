@@ -215,8 +215,15 @@ class SwerveBridge(Node):
             max_points=int(self.get_parameter('lidar_max_3d_accumulated_points').value),
             voxel_size=float(self.get_parameter('lidar_3d_voxel_size').value))
         self.accumulated_slam_cloud_session = self.mapping_session_id
-        self.mapping_map_revision = None
+        # Navigation identity is immutable for one bridge-owned SLAM session.
+        # Occupancy content changes independently and is exposed as
+        # ``map_content_revision``; it must never revoke a goal/preview merely
+        # because SLAM explored another cell.
+        self.mapping_map_revision = f'session-{self.mapping_session_id}'
+        self.mapping_map_content_revision = None
         self.mapping_map_version = 0
+        self.last_logged_map_identity = None
+        self.last_logged_map_content_revision = None
         self.latest_map_statistics = None
         self.latest_global_path = None
         self.latest_local_path = None
@@ -547,13 +554,22 @@ class SwerveBridge(Node):
             # content hash here instead of hashing a large OccupancyGrid again.
             content_signature = self.latest_map_signature[7]
         else:
-            content_signature = occupancy_content_signature(msg.data)
+            cells_signature = occupancy_content_signature(msg.data)
+            content_signature = hashlib.sha256(json.dumps({
+                'frame_id': str(msg.header.frame_id or 'map'),
+                'width': int(msg.info.width), 'height': int(msg.info.height),
+                'resolution': float(msg.info.resolution),
+                'origin_x': float(msg.info.origin.position.x),
+                'origin_y': float(msg.info.origin.position.y),
+                'origin_yaw': yaw_from_quaternion(msg.info.origin.orientation),
+                'cells_sha256': cells_signature,
+            }, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
         identity_revision = (self.mapping_session_id if self.runtime_state in ('MAPPING', 'UNIFIED')
                              else self.ros_map_revision)
         if self.runtime_state in ('MAPPING', 'UNIFIED'):
             map_source = 'SLAM_TOOLBOX'
             active_map_id = f'SLAM-{self.mapping_session_id}'
-            active_map_revision = content_signature[:12]
+            active_map_revision = self._stable_slam_revision()
         else:
             active_identity = self.active_map_identity()
             map_source = 'LOCAL_MAP' if self.loaded_local_map_id else 'NAV2_MAP'
@@ -573,11 +589,20 @@ class SwerveBridge(Node):
             return
         if signature != self.latest_map_signature:
             self.mapping_map_version += 1
+        map_identity = (active_map_id, active_map_revision)
+        if map_identity != self.last_logged_map_identity:
+            self.get_logger().info(
+                f'ACTIVE_MAP_IDENTITY_CHANGED old={self.last_logged_map_identity} new={map_identity}')
+            self.last_logged_map_identity = map_identity
+        content_revision = content_signature[:12]
+        if content_revision != self.last_logged_map_content_revision:
+            self.get_logger().info(
+                f'MAP_CONTENT_REVISION_CHANGED map={active_map_id}@{active_map_revision} content={content_revision}')
+            self.last_logged_map_content_revision = content_revision
         self.latest_map_signature = signature
         self.processed_map = msg
         self.processed_map_generation = generation
-        if self.runtime_state in ('MAPPING', 'UNIFIED'):
-            self.mapping_map_revision = content_signature[:12]
+        self.mapping_map_content_revision = content_revision
         self._confirm_local_map_if_ready()
 
     def command_diagnostics_cb(self, msg):
@@ -609,7 +634,8 @@ class SwerveBridge(Node):
         if self.runtime_state in ('MAPPING', 'UNIFIED'):
             return {
                 'active_map_id': f'SLAM-{self.mapping_session_id}',
-                'active_map_revision': self.mapping_map_revision,
+                'active_map_revision': self._stable_slam_revision(),
+                'map_content_revision': self.mapping_map_content_revision,
                 'canonical_map_revision': (str(self.ros_map_revision)
                                            if self.ros_map_revision is not None else None),
             }
@@ -617,6 +643,7 @@ class SwerveBridge(Node):
             return {
                 'active_map_id': self.loaded_local_map_id,
                 'active_map_revision': str(self.loaded_local_map_revision or ''),
+                'map_content_revision': self.mapping_map_content_revision,
                 'canonical_map_revision': (str(self.ros_map_revision)
                                            if self.ros_map_revision is not None else None),
             }
@@ -624,6 +651,7 @@ class SwerveBridge(Node):
         return {
             'active_map_id': 'CANONICAL' if revision is not None else None,
             'active_map_revision': revision,
+            'map_content_revision': self.mapping_map_content_revision,
             'canonical_map_revision': revision,
         }
 
@@ -633,6 +661,11 @@ class SwerveBridge(Node):
         if self.loaded_local_map_id:
             return 'LOCAL_MAP'
         return 'CANONICAL' if self.ros_map_revision is not None else None
+
+    def _stable_slam_revision(self):
+        revision = f'session-{self.mapping_session_id}'
+        self.mapping_map_revision = revision
+        return revision
 
     def set_detail_view(self, view, request=None):
         view = str(view or '').upper()
@@ -882,7 +915,7 @@ class SwerveBridge(Node):
                     'x': point[0], 'y': point[1], 'yaw': float(pose['yaw']),
                     'frame_id': str(self.get_parameter('map_frame').value),
                     'map_id': f'SLAM-{self.mapping_session_id}',
-                    'map_revision': self.mapping_map_revision,
+                    'map_revision': self._stable_slam_revision(),
                     'map_source': 'SLAM_TOOLBOX', 'pose_source': 'TF',
                     'mapping_session_id': self.mapping_session_id,
                     'timestamp': self.now(), 'valid': True,
@@ -1360,6 +1393,7 @@ class SwerveBridge(Node):
                 'map_revision': self.ros_map_revision,
                 **self.active_map_identity(),
                 'map_version': self.mapping_map_version,
+                'map_content_revision': self.mapping_map_content_revision,
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
                 'width': int(msg.info.width), 'height': int(msg.info.height),
@@ -1580,6 +1614,7 @@ class SwerveBridge(Node):
             'origin_x': float(map_grid.info.origin.position.x) if map_grid is not None else None,
             'origin_y': float(map_grid.info.origin.position.y) if map_grid is not None else None,
             'map_version': self.mapping_map_version,
+            'map_content_revision': self.mapping_map_content_revision,
             **map_statistics,
             'unknown_cells': (int(map_grid.info.width) * int(map_grid.info.height)
                               - int(map_statistics.get('known_cells', 0))
@@ -2206,6 +2241,12 @@ class SwerveBridge(Node):
             self.send({
                 'type': 'PATH_PREVIEW_RESULT', 'robot_id': self.robot_id,
                 'request_id': request_id, 'status': status, 'reason': reason,
+                'source_type': data.get('source_type'),
+                'source_id': data.get('source_id'),
+                'source_map_id': data.get('source_map_id'),
+                'source_map_revision': data.get('source_map_revision'),
+                'registration_revision': data.get('registration_revision'),
+                'registration_source': data.get('registration_source'),
                 **active_map,
                 'frame_id': 'map', 'path': points, 'local_path': local_points,
                 'local_goal': local_goal,
@@ -2854,6 +2895,12 @@ class SwerveBridge(Node):
             'preview_request_id': data.get('preview_request_id'),
             'active_map_id': data.get('active_map_id'),
             'active_map_revision': data.get('active_map_revision'),
+            'map_content_revision': data.get('map_content_revision'),
+            'source_type': data.get('source_type'),
+            'source_map_id': data.get('source_map_id'),
+            'source_map_revision': data.get('source_map_revision'),
+            'registration_revision': data.get('registration_revision'),
+            'registration_source': data.get('registration_source'),
         }
         vda_context = data.get('vda_order_context')
         if isinstance(vda_context, dict):
@@ -2997,6 +3044,10 @@ class SwerveBridge(Node):
             return
         self.pending_cancel_state = None
         self.nav_state = 'NAVIGATING'
+        self.get_logger().info(
+            f'NAV_GOAL_ACCEPTED robot={self.robot_id} preview={context.get("preview_request_id")} '
+            f'active_map={context.get("active_map_id")}@{context.get("active_map_revision")} '
+            f'target=({context["x"]:.3f},{context["y"]:.3f},{context["yaw"]:.3f})')
         self.send({'type': 'NAV_GOAL', 'goal': {
             **context, 'status': 'ACTIVE', 'timestamp': self.now(),
         }})
@@ -3049,6 +3100,14 @@ class SwerveBridge(Node):
         elif status == 'CANCELED' and pending_cancel_state:
             status = pending_cancel_state
         self.nav_state = 'IDLE' if status == 'SUCCEEDED' else status
+        if status == 'SUCCEEDED':
+            self.get_logger().info(
+                f'NAV_GOAL_SUCCEEDED robot={self.robot_id} preview={context.get("preview_request_id")} '
+                f'active_map={context.get("active_map_id")}@{context.get("active_map_revision")}')
+        elif status == 'FAILED':
+            self.get_logger().warning(
+                f'NAV_GOAL_FAILED robot={self.robot_id} preview={context.get("preview_request_id")} '
+                f'status_code={status_code}')
         if status == 'PAUSED':
             self.paused_pose_context = context
         if self.active_pose_goal is handle:

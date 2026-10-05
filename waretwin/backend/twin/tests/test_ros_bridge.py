@@ -79,7 +79,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         slam_snapshot = {'type': 'MAP_SNAPSHOT', 'map': {
             'robot_id': 'R01', 'frame_id': 'map', 'map_source': 'SLAM_TOOLBOX',
             'mapping_session_id': 'session-1', 'active_map_id': 'SLAM-session-1',
-            'active_map_revision': 'slam-r1', 'width': 1, 'height': 1,
+            'active_map_revision': 'session-session-1', 'map_content_revision': 'slam-r1', 'width': 1, 'height': 1,
             'resolution': 0.05, 'origin': {'x': 0.0, 'y': 0.0, 'yaw': 0.0}, 'data': [100],
         }}
         try:
@@ -267,6 +267,8 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 'type': 'NAV_GOAL', 'robot_id': robot_id, 'x': x, 'y': 3.0, 'yaw': 0.4,
                 'frame_id': 'map', 'preview_request_id': request_id,
                 'active_map_id': map_id, 'active_map_revision': revision,
+                'source_type': 'ACTIVE_MAP_POINT',
+                'source_map_id': map_id, 'source_map_revision': revision,
             })
 
         def navigation_calls():
@@ -275,13 +277,17 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
 
         try:
             with patch.object(runtime, 'robot_bridge_online', return_value=True), \
+                    patch.object(runtime, 'unified_navigation_blocker', return_value=None), \
                     patch.object(runtime, 'gateway', return_value=gateway), \
                     patch.object(runtime, 'broadcast', new=AsyncMock()):
                 await request_preview('preview-valid')
                 gateway.send_command.assert_awaited_with('R01', 'PATH_PREVIEW', {
                     'request_id': 'preview-valid', 'x': 2.0, 'y': 3.0, 'yaw': 0.4,
-                    'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
+                    'source_type': 'ACTIVE_MAP_POINT', 'source_id': None, 'tag_id': None,
                     'tag_revision': None, 'registry_revision': None,
+                    'source_map_id': 'CANONICAL', 'source_map_revision': '21',
+                    'registration_revision': None, 'registration_source': None,
+                    'map_content_revision': None,
                     'frame_id': 'map', 'active_map_id': 'CANONICAL',
                     'active_map_revision': '21', 'canonical_map_revision': 21,
                 })
@@ -372,8 +378,11 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 self.assertEqual(len(navigation_calls()), 1)
                 self.assertEqual(gateway.send_command.await_args.args, ('R01', 'NAVIGATE', {
                     'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
-                    'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
+                    'source_type': 'ACTIVE_MAP_POINT', 'source_id': None, 'tag_id': None,
                     'tag_revision': None, 'registry_revision': None,
+                    'source_map_id': 'CANONICAL', 'source_map_revision': '21',
+                    'registration_revision': None, 'registration_source': None,
+                    'map_content_revision': None,
                     'preview_request_id': 'preview-approved',
                     'active_map_id': 'CANONICAL', 'active_map_revision': '21',
                     'canonical_map_revision': 21,
@@ -407,10 +416,13 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             return {'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 1.25, 'y': -0.5, 'yaw': 0.3,
                 'frame_id': 'map', 'preview_request_id': request_id,
                 'map_id': map_id, 'map_revision': revision,
-                'active_map_id': map_id, 'active_map_revision': revision}
+                'active_map_id': map_id, 'active_map_revision': revision,
+                'source_type': 'ACTIVE_MAP_POINT',
+                'source_map_id': map_id, 'source_map_revision': revision}
 
         with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
                 patch.object(runtime, 'operation_mode', 'NAVIGATION'), \
+                patch.object(runtime, 'unified_navigation_blocker', return_value=None), \
                 patch.object(runtime, 'active_map_state', side_effect=lambda _rid: active['value']), \
                 patch.object(runtime, 'robot_bridge_online', return_value=True), \
                 patch.object(runtime, 'navigation_localization_state', side_effect=lambda _rid, state: state['active_map_id']), \
@@ -440,8 +452,11 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             await runtime.handle_message(capture, request_preview('local-old', 'saved-R01-1', 'artifact-1'))
             self.assertEqual(gateway.send_command.await_args.args, ('R01', 'PATH_PREVIEW', {
                 'request_id': 'local-old', 'x': 1.25, 'y': -0.5, 'yaw': 0.3,
-                'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
+                'source_type': 'ACTIVE_MAP_POINT', 'source_id': None, 'tag_id': None,
                 'tag_revision': None, 'registry_revision': None, 'frame_id': 'map',
+                'source_map_id': 'saved-R01-1', 'source_map_revision': 'artifact-1',
+                'registration_revision': None, 'registration_source': None,
+                'map_content_revision': None,
                 'active_map_id': 'saved-R01-1', 'active_map_revision': 'artifact-1',
                 'canonical_map_revision': 21,
             }))
@@ -460,8 +475,11 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             await runtime.handle_message(capture, send_goal('local-current', 'saved-R01-2', 'artifact-2'))
             self.assertEqual(gateway.send_command.await_args.args, ('R01', 'NAVIGATE', {
                 'x': 1.25, 'y': -0.5, 'yaw': 0.3, 'frame_id': 'map',
-                'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
+                'source_type': 'ACTIVE_MAP_POINT', 'source_id': None, 'tag_id': None,
                 'tag_revision': None, 'registry_revision': None,
+                'source_map_id': 'saved-R01-2', 'source_map_revision': 'artifact-2',
+                'registration_revision': None, 'registration_source': None,
+                'map_content_revision': None,
                 'preview_request_id': 'local-current', 'active_map_id': 'saved-R01-2',
                 'active_map_revision': 'artifact-2', 'canonical_map_revision': 21,
             }))
@@ -744,7 +762,8 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.robot_runtime_modes['R01'] = 'MAPPING'
             await runtime.update_external_robot_state({
                 'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 21,
-                'active_map_id': 'SLAM-session-current', 'active_map_revision': 'grid-abc',
+                'active_map_id': 'SLAM-session-current',
+                'active_map_revision': 'session-session-current', 'map_content_revision': 'grid-abc',
                 'mapping_session_id': 'session-current', 'map_source': 'SLAM_TOOLBOX',
                 'pose_source': 'TF',
                 'canonical_pose': {'x': 15, 'y': 5.5, 'yaw': 0.8, 'frame_id': 'map',
@@ -756,17 +775,19 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             })
             self.assertEqual(runtime.engine.state['robots']['R01']['position'], [1.2, 0.0, 2.3])
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_id'], 'SLAM-session-current')
-            self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_revision'], 'grid-abc')
+            self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_revision'], 'session-session-current')
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_map_source'], 'SLAM_TOOLBOX')
             self.assertEqual(runtime.engine.state['robots']['R01']['pose_mapping_session_id'], 'session-current')
             self.assertEqual(runtime.engine.state['robots']['R01']['active_map_pose']['map_id'], 'SLAM-session-current')
+            self.assertEqual(runtime.engine.state['robots']['R01']['active_map_pose']['map_content_revision'], 'grid-abc')
             self.assertEqual(runtime.engine.state['robots']['R01']['active_map_pose']['x'], 1.2)
             self.assertEqual(runtime.engine.state['robots']['R01']['slam_pose']['x'], 1.2)
             self.assertEqual(runtime.engine.state['robots']['R01']['canonical_pose']['x'], 15)
             self.assertEqual(runtime.engine.state['robots']['R01']['canonical_pose']['yaw'], 0.8)
             await runtime.update_external_robot_state({
                 'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 21,
-                'active_map_id': 'SLAM-session-current', 'active_map_revision': 'grid-abc',
+                'active_map_id': 'SLAM-session-current',
+                'active_map_revision': 'session-session-current',
                 'mapping_session_id': 'session-stale',
                 'x': 99, 'y': 99, 'yaw': 0, 'vx': 0, 'vy': 0, 'wz': 0,
             })

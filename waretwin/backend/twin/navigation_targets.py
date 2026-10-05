@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .models import NavigationTag, RobotMapRegistration, WarehouseMap
+from .map_registration import transform_canonical_pose
 
 
 class NavigationTargetError(ValueError):
@@ -157,13 +158,20 @@ def _tag_record(tag: NavigationTag, map_id: str, map_revision: str, map_error: s
     }
 
 
-def _registered_pose(pose: dict[str, Any], registration: RobotMapRegistration) -> dict[str, float]:
-    cosine, sine = math.cos(registration.yaw), math.sin(registration.yaw)
-    x = float(registration.tx) + cosine * float(pose['x']) - sine * float(pose['y'])
-    y = float(registration.ty) + sine * float(pose['x']) + cosine * float(pose['y'])
-    yaw = math.atan2(math.sin(float(pose['yaw']) + float(registration.yaw)),
-                     math.cos(float(pose['yaw']) + float(registration.yaw)))
-    return {'x': x, 'y': y, 'yaw': yaw}
+def _active_registration(robot_id: str, active_map: dict[str, Any],
+                         canonical_revision: int,
+                         warehouse_map: WarehouseMap) -> RobotMapRegistration | None:
+    registration = RobotMapRegistration.objects.filter(
+        robot_id=str(robot_id), canonical_revision=canonical_revision,
+        warehouse_map=warehouse_map,
+        active_map_id=str(active_map.get('active_map_id') or ''),
+        active_map_revision=str(active_map.get('active_map_revision') or ''),
+        is_active=True,
+    ).order_by('-registration_revision').first()
+    if registration is not None and not all(math.isfinite(value) for value in (
+            registration.tx, registration.ty, registration.yaw)):
+        return None
+    return registration
 
 
 def navigation_tag_registry(active_map: dict[str, Any], robot_id: str | None = None) -> dict[str, Any]:
@@ -212,14 +220,7 @@ def navigation_tag_registry(active_map: dict[str, Any], robot_id: str | None = N
             for tag in NavigationTag.objects.filter(warehouse=warehouse_map.warehouse).order_by('tag_id')]
     registration = None
     if local_only and robot_id:
-        registration = RobotMapRegistration.objects.filter(
-            robot_id=str(robot_id), warehouse_map=warehouse_map,
-            canonical_revision=int(source_revision), active_map_id=map_id,
-            active_map_revision=map_revision, is_active=True,
-        ).order_by('-registration_revision').first()
-        if registration is not None and not all(math.isfinite(value) for value in (
-                registration.tx, registration.ty, registration.yaw)):
-            registration = None
+        registration = _active_registration(robot_id, active_map, int(source_revision), warehouse_map)
 
     if local_only and registration is not None:
         for tag in tags:
@@ -232,7 +233,9 @@ def navigation_tag_registry(active_map: dict[str, Any], robot_id: str | None = N
             tag['map_id'] = map_id
             tag['map_revision'] = map_revision
             if canonical_pose is not None:
-                active_pose = _registered_pose(canonical_pose, registration)
+                active_pose = transform_canonical_pose(canonical_pose, {
+                    'tx': registration.tx, 'ty': registration.ty, 'yaw': registration.yaw,
+                })
                 if all(math.isfinite(value) for value in active_pose.values()):
                     tag['navigation_pose'] = active_pose
                 else:
@@ -297,8 +300,10 @@ def navigation_tag_registry(active_map: dict[str, Any], robot_id: str | None = N
 
 
 def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: dict[str, Any],
-                               tag_id: int | str | None = None, x: float | None = None,
-                               y: float | None = None, yaw: float | None = None) -> dict[str, Any]:
+                              tag_id: int | str | None = None, x: float | None = None,
+                              y: float | None = None, yaw: float | None = None,
+                              source_map_id: str | None = None,
+                              source_map_revision: str | int | None = None) -> dict[str, Any]:
     """Resolve either target source to the shared frame/map-bound contract."""
     rid = str(robot_id or '').strip()
     map_id = str(active_map.get('active_map_id') or '')
@@ -308,19 +313,76 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
     if not map_id or not map_revision:
         raise NavigationTargetError('MAP_REQUIRED', 'the robot active map is not confirmed')
     source = str(source_type or '').upper()
-    if source == 'MAP_POINT':
+    if source in ('MAP_POINT', 'ACTIVE_MAP_POINT'):
         if active_map.get('map_sync_status') not in ('CANONICAL', 'LOCAL_ONLY'):
             raise NavigationTargetError('MAP_NOT_READY', 'the robot active map is not ready for navigation')
+        if source_map_id is not None and str(source_map_id) != map_id:
+            raise NavigationTargetError('MAP_POINT_SOURCE_MISMATCH',
+                                         'active-map point does not identify the current active map')
+        if source_map_revision is not None and str(source_map_revision) != map_revision:
+            raise NavigationTargetError('MAP_POINT_SOURCE_MISMATCH',
+                                         'active-map point belongs to a different stable map revision')
         try:
             point = {'x': float(x), 'y': float(y), 'yaw': float(yaw)}
         except (TypeError, ValueError):
             raise NavigationTargetError('MAP_POINT_INVALID', 'map point x, y and yaw are required') from None
         if not all(math.isfinite(value) for value in point.values()):
             raise NavigationTargetError('MAP_POINT_INVALID', 'map point coordinates must be finite')
+        return NavigationTarget(rid, 'ACTIVE_MAP_POINT', None, 'map', map_id, map_revision,
+                                point['x'], point['y'], point['yaw'], {
+                                    'source_map_id': map_id,
+                                    'source_map_revision': map_revision,
+                                    'source_pose': point,
+                                    'map_content_revision': active_map.get('map_content_revision'),
+                                }).as_dict()
+    if source == 'CANONICAL_MAP_POINT':
+        if active_map.get('map_sync_status') not in ('CANONICAL', 'LOCAL_ONLY'):
+            raise NavigationTargetError('MAP_NOT_READY', 'the robot active map is not ready for navigation')
+        try:
+            point = {'x': float(x), 'y': float(y), 'yaw': float(yaw)}
+            canonical_revision = int(str(source_map_revision or ''))
+        except (TypeError, ValueError):
+            raise NavigationTargetError('MAP_POINT_INVALID',
+                'canonical point x, y, yaw and source map revision are required') from None
+        if not all(math.isfinite(value) for value in point.values()):
+            raise NavigationTargetError('MAP_POINT_INVALID', 'canonical point coordinates must be finite')
+        if str(source_map_id or '') != 'CANONICAL':
+            raise NavigationTargetError('MAP_POINT_SOURCE_MISMATCH',
+                'GLOBAL warehouse points must identify the CANONICAL source map')
+        warehouse_map = WarehouseMap.objects.filter(is_active=True).order_by('id').first()
+        if (warehouse_map is None or int(warehouse_map.revision) != canonical_revision
+                or str(active_map.get('canonical_map_revision') or '') != str(canonical_revision)):
+            raise NavigationTargetError('CANONICAL_MAP_REVISION_MISMATCH',
+                'canonical point does not match the active warehouse and robot map baseline')
+        registration = None
+        if map_id == 'CANONICAL':
+            if map_revision != str(canonical_revision) or active_map.get('map_sync_status') != 'CANONICAL':
+                raise NavigationTargetError('CANONICAL_MAP_REVISION_MISMATCH',
+                    'robot canonical map identity does not match the selected GLOBAL map')
+            resolved = point
+        else:
+            registration = _active_registration(rid, active_map, canonical_revision, warehouse_map)
+            if registration is None:
+                raise NavigationTargetError('MAP_REGISTRATION_REQUIRED',
+                    'canonical map point cannot be resolved until the exact active map has a current registration')
+            resolved = transform_canonical_pose(point, {
+                'tx': registration.tx, 'ty': registration.ty, 'yaw': registration.yaw,
+            })
+        metadata = {
+            'source_map_id': 'CANONICAL',
+            'source_map_revision': str(canonical_revision),
+            'source_pose': point,
+            'active_map_id': map_id,
+            'active_map_revision': map_revision,
+            'registration_revision': registration.registration_revision if registration else None,
+            'registration_source': registration.source if registration else 'IDENTITY_CANONICAL_MAP',
+            'map_content_revision': active_map.get('map_content_revision'),
+        }
         return NavigationTarget(rid, source, None, 'map', map_id, map_revision,
-                                point['x'], point['y'], point['yaw']).as_dict()
+                                resolved['x'], resolved['y'], resolved['yaw'], metadata).as_dict()
     if source != 'TAG':
-        raise NavigationTargetError('SOURCE_TYPE_INVALID', 'source_type must be MAP_POINT or TAG')
+        raise NavigationTargetError('SOURCE_TYPE_INVALID',
+            'source_type must be ACTIVE_MAP_POINT, CANONICAL_MAP_POINT or TAG')
 
     registry = navigation_tag_registry(active_map, robot_id=rid)
     registration_required = registry.get('reason') == 'TAG_MAP_REGISTRATION_REQUIRED'
@@ -369,6 +431,12 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
             'canonical_map_revision': registry.get('canonical_map_revision'),
             'registration_revision': registry.get('registration_revision'),
             'registration_source': registry.get('transform_source'),
+            'source_map_id': registry.get('canonical_map_id'),
+            'source_map_revision': registry.get('canonical_map_revision'),
+            'source_pose': record.get('canonical_navigation_pose') or record['navigation_pose'],
+            'active_map_id': map_id,
+            'active_map_revision': map_revision,
+            'map_content_revision': active_map.get('map_content_revision'),
         },
     )
     return target.as_dict()

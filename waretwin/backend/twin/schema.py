@@ -754,8 +754,10 @@ class CmdNavGoal(_Base):
     active_map_revision: Optional[str] = Field(default=None, max_length=128)
     map_id: Optional[str] = Field(default=None, max_length=128)
     map_revision: Optional[str] = Field(default=None, max_length=128)
-    source_type: Optional[Literal["MAP_POINT", "TAG"]] = None
+    source_type: Optional[Literal["MAP_POINT", "ACTIVE_MAP_POINT", "CANONICAL_MAP_POINT", "TAG"]] = None
     source_id: Optional[str] = Field(default=None, max_length=128)
+    source_map_id: Optional[str] = Field(default=None, max_length=128)
+    source_map_revision: Optional[str] = Field(default=None, max_length=128)
 
 
 class CmdNavControl(_Base):
@@ -775,7 +777,10 @@ class CmdPathPreviewRequest(_Base):
     active_map_revision: Optional[str] = Field(default=None, max_length=128)
     map_id: Optional[str] = Field(default=None, max_length=128)
     map_revision: Optional[str] = Field(default=None, max_length=128)
-    source_type: Literal["MAP_POINT", "TAG"] = "MAP_POINT"
+    source_type: Literal["MAP_POINT", "ACTIVE_MAP_POINT", "CANONICAL_MAP_POINT", "TAG"] = "MAP_POINT"
+    source_map_id: Optional[str] = Field(default=None, max_length=128)
+    source_map_revision: Optional[str] = Field(default=None, max_length=128)
+    map_content_revision: Optional[str] = Field(default=None, max_length=128)
     tag_id: Optional[int] = Field(default=None, ge=0)
     tag_revision: Optional[str] = Field(default=None, max_length=128)
     registry_revision: Optional[str] = Field(default=None, max_length=128)

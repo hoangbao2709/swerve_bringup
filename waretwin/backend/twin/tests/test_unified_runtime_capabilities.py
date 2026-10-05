@@ -12,7 +12,8 @@ class UnifiedRuntimeCapabilityTests(TestCase):
         now = time.monotonic()
         map_payload = {'map': {
             'map_source': 'SLAM_TOOLBOX', 'mapping_session_id': 'session-1',
-            'active_map_id': 'SLAM-session-1', 'active_map_revision': 'cells-a1',
+            'active_map_id': 'SLAM-session-1', 'active_map_revision': 'session-session-1',
+            'map_content_revision': 'cells-a1',
         }}
         patches = [
             patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'),
@@ -87,10 +88,142 @@ class UnifiedRuntimeCapabilityTests(TestCase):
 
 
 class UnifiedPreviewTests(IsolatedAsyncioTestCase):
+    async def test_slam_content_churn_preserves_capability_preview_and_goal_but_new_session_invalidates(self):
+        now = time.monotonic()
+        map_payload = {'map': {
+            'map_source': 'SLAM_TOOLBOX', 'mapping_session_id': 'session-1',
+            'active_map_id': 'SLAM-session-1', 'active_map_revision': 'session-session-1',
+            'map_content_revision': 'cells-A',
+        }}
+        robot_pose = {
+            'valid': True, 'frame_id': 'map', 'map_id': 'SLAM-session-1',
+            'map_revision': 'session-session-1', 'map_source': 'SLAM_TOOLBOX',
+            'pose_source': 'TF', 'x': 0.0, 'y': 0.0, 'yaw': 0.0,
+        }
+        consumer = SimpleNamespace(send_json=AsyncMock())
+        gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+        patches = [
+            patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'),
+            patch.object(runtime, 'operation_mode', 'UNIFIED'),
+            patch.object(runtime, 'published_map_revision', 21),
+            patch.object(runtime, 'robot_runtime_modes', {'R01': 'UNIFIED'}),
+            patch.object(runtime, 'robot_mapping_sessions', {'R01': 'session-1'}),
+            patch.object(runtime, 'robot_mapping_state', {'R01': 'MAPPING'}),
+            patch.object(runtime, 'robot_slam_map_snapshots', {'R01': map_payload}),
+            patch.object(runtime, 'ros_diagnostics', {
+                'slam': True, 'nav2': True, 'nav2_ready': True,
+                'mapping': {'slam_state': 'ACTIVE', 'map_live': True},
+            }),
+            patch.object(runtime, 'ros_diagnostics_received_monotonic', now),
+            patch.object(runtime, 'robot_command_diagnostics', {'R01': {
+                'active_control_mode': 'AUTONOMOUS', 'estop_active': False,
+                'received_monotonic': now,
+            }}),
+            patch.object(runtime, 'control_mode_requests', {}, create=True),
+            patch.object(runtime, 'local_map_overrides', {}),
+            patch.object(runtime, 'local_map_transitions', set()),
+            patch.object(runtime, 'engine', SimpleNamespace(state={'robots': {
+                'R01': {'control_mode': 'AUTONOMOUS', 'active_map_pose': robot_pose},
+            }})),
+            patch.object(runtime, 'robot_pose_heartbeats', {'R01': now}),
+            patch.object(runtime, 'robot_bridge_online', return_value=True),
+            patch.object(runtime, 'gateway', return_value=gateway),
+            patch.object(runtime, 'broadcast', new=AsyncMock()),
+            patch.object(runtime, 'path_preview_requests', {}),
+            patch.object(runtime, 'path_preview_results', {}),
+            patch.object(runtime, 'approved_path_previews', {}),
+            patch.object(runtime, 'expired_path_previews', {}),
+            patch.object(runtime, 'path_preview_invalidations', {}),
+        ]
+        with ExitStack() as stack:
+            for context in patches:
+                stack.enter_context(context)
+
+            first_identity = runtime.active_map_state('R01')
+            self.assertEqual((first_identity['active_map_id'], first_identity['active_map_revision']),
+                             ('SLAM-session-1', 'session-session-1'))
+            self.assertEqual(first_identity['map_content_revision'], 'cells-A')
+            self.assertTrue(runtime.robot_capabilities('R01')['goal_available'])
+
+            async def request_preview(request_id):
+                await runtime.handle_message(consumer, {
+                    'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01', 'request_id': request_id,
+                    'source_type': 'ACTIVE_MAP_POINT', 'source_map_id': 'SLAM-session-1',
+                    'source_map_revision': 'session-session-1',
+                    'x': 1.5, 'y': 2.5, 'yaw': 0.25, 'frame_id': 'map',
+                    'active_map_id': 'SLAM-session-1', 'active_map_revision': 'session-session-1',
+                    'map_id': 'SLAM-session-1', 'map_revision': 'session-session-1',
+                })
+
+            async def planner_result(request_id, revision):
+                await runtime.handle_ros_message({
+                    'type': 'PATH_PREVIEW_RESULT', 'robot_id': 'R01', 'request_id': request_id,
+                    'status': 'VALID', 'path': [[0.0, 0.0], [1.5, 2.5]],
+                    'goal': {'x': 1.5, 'y': 2.5, 'yaw': 0.25},
+                    'active_map_id': 'SLAM-session-1',
+                    'active_map_revision': 'session-session-1',
+                    'map_content_revision': revision,
+                })
+
+            await request_preview('content-churn-preview')
+            self.assertEqual(gateway.send_command.await_args.args[1], 'PATH_PREVIEW')
+            map_payload['map']['map_content_revision'] = 'cells-B'
+            self.assertEqual(runtime.active_map_state('R01')['active_map_id'], first_identity['active_map_id'])
+            self.assertEqual(runtime.active_map_state('R01')['active_map_revision'], first_identity['active_map_revision'])
+            self.assertEqual(runtime.active_map_state('R01')['map_content_revision'], 'cells-B')
+            self.assertEqual(runtime.navigation_localization_state('R01', runtime.active_map_state('R01'))['map_revision'],
+                             first_identity['active_map_revision'])
+            self.assertTrue(runtime.robot_capabilities('R01')['goal_available'])
+            await planner_result('content-churn-preview', 'cells-B')
+            result = runtime.path_preview_results[('R01', 'content-churn-preview')]
+            self.assertEqual(result['status'], 'VALID')
+            self.assertEqual(result['map_content_revision_at_request'], 'cells-A')
+            self.assertEqual(result['map_content_revision'], 'cells-B')
+
+            map_payload['map']['map_content_revision'] = 'cells-C'
+            await runtime.handle_message(consumer, {
+                'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 1.5, 'y': 2.5, 'yaw': 0.25,
+                'frame_id': 'map', 'preview_request_id': 'content-churn-preview',
+                'active_map_id': 'SLAM-session-1', 'active_map_revision': 'session-session-1',
+                'source_type': 'ACTIVE_MAP_POINT', 'source_map_id': 'SLAM-session-1',
+                'source_map_revision': 'session-session-1',
+            })
+            self.assertEqual(gateway.send_command.await_args.args[1], 'NAVIGATE')
+            self.assertEqual(gateway.send_command.await_args.args[2]['active_map_revision'],
+                             first_identity['active_map_revision'])
+            self.assertEqual(gateway.send_command.await_args.args[2]['map_content_revision'], 'cells-C')
+
+            await request_preview('old-session-preview')
+            await planner_result('old-session-preview', 'cells-C')
+            map_payload['map'].update({
+                'mapping_session_id': 'session-2', 'active_map_id': 'SLAM-session-2',
+                'active_map_revision': 'session-session-2', 'map_content_revision': 'cells-new-session',
+            })
+            runtime.robot_mapping_sessions['R01'] = 'session-2'
+            runtime.engine.state['robots']['R01']['active_map_pose'] = {
+                **robot_pose, 'map_id': 'SLAM-session-2', 'map_revision': 'session-session-2',
+            }
+            runtime.robot_pose_heartbeats['R01'] = time.monotonic()
+            changed_identity = runtime.active_map_state('R01')
+            self.assertNotEqual(changed_identity['active_map_id'], first_identity['active_map_id'])
+            self.assertNotEqual(changed_identity['active_map_revision'], first_identity['active_map_revision'])
+            self.assertTrue(runtime.robot_capabilities('R01')['goal_available'])
+            consumer.send_json.reset_mock()
+            await runtime.handle_message(consumer, {
+                'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 1.5, 'y': 2.5, 'yaw': 0.25,
+                'frame_id': 'map', 'preview_request_id': 'old-session-preview',
+                'active_map_id': 'SLAM-session-2', 'active_map_revision': 'session-session-2',
+                'source_type': 'ACTIVE_MAP_POINT', 'source_map_id': 'SLAM-session-1',
+                'source_map_revision': 'session-session-1',
+            })
+            self.assertEqual(consumer.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_MAP_MISMATCH')
+            self.assertEqual(sum(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list), 1)
+
     async def test_nav2_preview_is_allowed_while_unified_slam_is_active(self):
         now = time.monotonic()
         active_map = {
-            'active_map_id': 'SLAM-session-1', 'active_map_revision': 'cells-a1',
+            'active_map_id': 'SLAM-session-1', 'active_map_revision': 'session-session-1',
+            'map_content_revision': 'cells-a1',
             'canonical_map_revision': 21, 'map_source': 'SLAM_TOOLBOX',
             'map_sync_status': 'LOCAL_ONLY',
         }
@@ -111,6 +244,7 @@ class UnifiedPreviewTests(IsolatedAsyncioTestCase):
                     'map_source': 'SLAM_TOOLBOX', 'mapping_session_id': 'session-1',
                     'active_map_id': active_map['active_map_id'],
                     'active_map_revision': active_map['active_map_revision'],
+                    'map_content_revision': active_map['map_content_revision'],
                 }}}),
             patch.object(runtime, 'ros_diagnostics', {
                     'slam': True, 'nav2': True, 'nav2_ready': True,
@@ -127,10 +261,11 @@ class UnifiedPreviewTests(IsolatedAsyncioTestCase):
             patch.object(runtime, 'control_mode_requests', {}, create=True),
             patch.object(runtime, 'local_map_transitions', set()),
             patch.object(runtime, 'robot_bridge_online', return_value=True),
+            patch.object(runtime, 'unified_navigation_blocker', return_value=None),
             patch.object(runtime, 'active_map_state', return_value=active_map),
             patch.object(runtime, 'navigation_localization_state', return_value=localization),
             patch.object(runtime, 'resolve_navigation_target', new=AsyncMock(side_effect=lambda **kw: {
-                    'robot_id': kw['robot_id'], 'source_type': 'MAP_POINT', 'source_id': None,
+                    'robot_id': kw['robot_id'], 'source_type': 'ACTIVE_MAP_POINT', 'source_id': None,
                     'frame_id': 'map', 'map_id': active_map['active_map_id'],
                     'map_revision': active_map['active_map_revision'],
                     'x': kw['x'], 'y': kw['y'], 'yaw': kw['yaw'], 'metadata': {},

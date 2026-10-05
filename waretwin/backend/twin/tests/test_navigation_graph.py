@@ -108,7 +108,7 @@ class NavigationTargetResolutionTests(TestCase):
         self.assertEqual(set(point), set(tag))
         self.assertEqual((point['frame_id'], point['map_id'], point['map_revision']),
                          (tag['frame_id'], tag['map_id'], tag['map_revision']))
-        self.assertEqual((point['source_type'], point['source_id']), ('MAP_POINT', None))
+        self.assertEqual((point['source_type'], point['source_id']), ('ACTIVE_MAP_POINT', None))
 
     def test_map_point_resolves_in_the_active_local_map_without_coordinate_reinterpretation(self):
         local_map = {**self.active_map, 'active_map_id': 'local-R01-map',
@@ -345,10 +345,12 @@ class NavigationTargetResolutionTests(TestCase):
                 'frame_id': 'map', 'preview_request_id': request_id,
                 'active_map_id': 'CANONICAL', 'active_map_revision': '7',
                 'source_type': source_type, 'source_id': source_id,
+                'source_map_id': 'CANONICAL', 'source_map_revision': '7',
             })
 
         with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
                 patch.object(runtime, 'operation_mode', 'NAVIGATION'), \
+                patch.object(runtime, 'unified_navigation_blocker', return_value=None), \
                 patch.object(runtime, 'active_map_state', return_value=self.active_map), \
                 patch.object(runtime, 'robot_bridge_online', return_value=True), \
                 patch.object(runtime, 'navigation_localization_state', return_value=localization_state), \
@@ -380,6 +382,9 @@ class NavigationTargetResolutionTests(TestCase):
                 'request_id': request_id, 'x': 2.0, 'y': 5.0, 'yaw': 0.25, 'frame_id': 'map',
                 'source_type': 'TAG', 'source_id': '1', 'tag_id': 1,
                 'tag_revision': tag_record['tag_revision'], 'registry_revision': registry['registry_revision'],
+                'source_map_id': 'CANONICAL', 'source_map_revision': '7',
+                'registration_revision': None, 'registration_source': None,
+                'map_content_revision': None,
                 'active_map_id': 'CANONICAL', 'active_map_revision': '7', 'canonical_map_revision': 7,
             })
             self.assertFalse(any(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list))
@@ -396,6 +401,9 @@ class NavigationTargetResolutionTests(TestCase):
                 'x': 2.0, 'y': 5.0, 'yaw': 0.25, 'frame_id': 'map',
                 'source_type': 'TAG', 'source_id': '1', 'tag_id': 1,
                 'tag_revision': tag_record['tag_revision'], 'registry_revision': registry['registry_revision'],
+                'source_map_id': 'CANONICAL', 'source_map_revision': '7',
+                'registration_revision': None, 'registration_source': None,
+                'map_content_revision': None,
                 'preview_request_id': request_id, 'active_map_id': 'CANONICAL',
                 'active_map_revision': '7', 'canonical_map_revision': 7,
             })
@@ -437,6 +445,7 @@ class NavigationTargetResolutionTests(TestCase):
 
         with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
                 patch.object(runtime, 'operation_mode', 'NAVIGATION'), \
+                patch.object(runtime, 'unified_navigation_blocker', return_value=None), \
                 patch.object(runtime, 'robot_runtime_modes', {'R01': 'NAVIGATION'}), \
                 patch.object(runtime, 'active_map_state', return_value=local_map), \
                 patch.object(runtime, 'robot_bridge_online', return_value=True), \
@@ -465,6 +474,9 @@ class NavigationTargetResolutionTests(TestCase):
             'source_type': 'TAG', 'source_id': '1', 'tag_id': 1,
             'tag_revision': tag_record['tag_revision'],
             'registry_revision': registry['registry_revision'],
+            'source_map_id': 'CANONICAL', 'source_map_revision': '7',
+            'registration_revision': 1, 'registration_source': 'survey-control-points',
+            'map_content_revision': None,
             'active_map_id': 'SLAM-session-4', 'active_map_revision': 'slam-rev-12',
             'canonical_map_revision': 7,
         }

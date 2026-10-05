@@ -36,16 +36,22 @@ def test_map_callback_only_replaces_latest_reference_and_wakes_worker(monkeypatc
     assert bridge.map_snapshot_worker.wake.call_count == 2
 
 
-def test_map_version_changes_only_when_geometry_or_content_signature_changes(monkeypatch):
+def test_slam_identity_stays_stable_while_map_content_revision_changes(monkeypatch):
     bridge = object.__new__(SwerveBridge)
     bridge.runtime_state = 'MAPPING'
     bridge.mapping_session_id = 'session-42'
-    bridge.mapping_map_revision = None
+    bridge.mapping_map_revision = 'session-session-42'
+    bridge.mapping_map_content_revision = None
     bridge.mapping_map_version = 0
     bridge.ros_map_revision = 21
     bridge.latest_map_generation = 1
     bridge.processed_map_generation = 0
     bridge.latest_map_signature = None
+    bridge.last_logged_map_identity = None
+    bridge.last_logged_map_content_revision = None
+    bridge.loaded_local_map_id = None
+    bridge.loaded_local_map_revision = None
+    bridge.get_logger = lambda: SimpleNamespace(info=Mock())
     bridge.latest_map = SimpleNamespace(
         header=SimpleNamespace(frame_id='map'),
         info=SimpleNamespace(width=2, height=1, resolution=0.05,
@@ -54,17 +60,30 @@ def test_map_version_changes_only_when_geometry_or_content_signature_changes(mon
         data=[-1, 100],
     )
     bridge._confirm_local_map_if_ready = lambda: None
-    signatures = iter(('same', 'same', 'changed'))
+    signatures = iter(('content-A', 'content-A', 'content-B', 'content-C'))
     monkeypatch.setattr(bridge_node, 'occupancy_content_signature', lambda _data: next(signatures))
 
     bridge._update_latest_map_signature()
     assert bridge.mapping_map_version == 1
+    identity_a = bridge.active_map_identity()
+    content_a = identity_a['map_content_revision']
     bridge.latest_map_generation = 2
     bridge._update_latest_map_signature()
     assert bridge.mapping_map_version == 1
+    assert bridge.active_map_identity() == identity_a
     bridge.latest_map_generation = 3
     bridge._update_latest_map_signature()
     assert bridge.mapping_map_version == 2
+    identity_b = bridge.active_map_identity()
+    assert identity_b['active_map_id'] == identity_a['active_map_id']
+    assert identity_b['active_map_revision'] == identity_a['active_map_revision']
+    assert identity_b['map_content_revision'] != content_a
+    bridge.latest_map_generation = 4
+    bridge._update_latest_map_signature()
+    identity_c = bridge.active_map_identity()
+    assert identity_c['active_map_id'] == identity_a['active_map_id']
+    assert identity_c['active_map_revision'] == identity_a['active_map_revision']
+    assert identity_c['map_content_revision'] not in (content_a, identity_b['map_content_revision'])
 
 
 def test_map_payload_is_compressed_once_per_version_and_cached_for_reconnect(monkeypatch):
@@ -84,6 +103,8 @@ def test_map_payload_is_compressed_once_per_version_and_cached_for_reconnect(mon
     bridge.mapping_session_id = 'session-42'
     bridge.mapping_map_version = 1
     bridge.mapping_map_revision = 'revision'
+    bridge.mapping_map_content_revision = 'content-1'
+    bridge.get_logger = lambda: SimpleNamespace(info=Mock())
     bridge.ros_map_revision = 21
     bridge.robot_id = 'R01'
     bridge.active_map_identity = lambda: {'active_map_id': 'SLAM-session-42',
@@ -119,6 +140,10 @@ def test_map_identity_change_rebuilds_snapshot_without_an_occupancy_change(monke
     bridge.ros_map_revision = 21
     bridge.loaded_local_map_id = None
     bridge.loaded_local_map_revision = None
+    bridge.mapping_map_content_revision = None
+    bridge.last_logged_map_identity = None
+    bridge.last_logged_map_content_revision = None
+    bridge.get_logger = lambda: SimpleNamespace(info=Mock())
     bridge.mapping_map_version = 0
     bridge.latest_map_generation = 1
     bridge.processed_map_generation = 0
@@ -169,6 +194,7 @@ def test_confirming_local_map_wakes_snapshot_worker():
     bridge = object.__new__(SwerveBridge)
     bridge.runtime_state = 'NAVIGATION'
     bridge.ros_map_revision = 21
+    bridge.mapping_map_content_revision = None
     bridge.loaded_local_map_id = None
     bridge.loaded_local_map_revision = None
     bridge.pending_local_map_load = {
@@ -229,6 +255,7 @@ def test_mapping_map_identity_is_session_scoped_and_never_canonical():
     bridge.runtime_state = 'MAPPING'
     bridge.mapping_session_id = 'session-42'
     bridge.mapping_map_revision = 'cells-abc'
+    bridge.mapping_map_content_revision = 'cells-abc'
     bridge.ros_map_revision = 17
     bridge.loaded_local_map_id = 'old-loaded-map'
     bridge.loaded_local_map_revision = 'old-revision'
@@ -237,7 +264,8 @@ def test_mapping_map_identity_is_session_scoped_and_never_canonical():
 
     assert identity == {
         'active_map_id': 'SLAM-session-42',
-        'active_map_revision': 'cells-abc',
+        'active_map_revision': 'session-session-42',
+        'map_content_revision': 'cells-abc',
         'canonical_map_revision': '17',
     }
 

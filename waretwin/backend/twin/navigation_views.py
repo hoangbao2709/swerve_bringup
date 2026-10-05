@@ -95,7 +95,8 @@ def register_robot_map(request, robot_id: str):
             registration_revision=registration_revision, source=source,
             created_by=None,
         )
-    runtime.invalidate_path_previews(robot_id, 'map registration updated')
+    runtime.invalidate_registration_path_previews(
+        robot_id, 'canonical-to-active map registration revision changed')
     return JsonResponse({
         'robot_id': robot_id,
         'canonical_map_id': 'CANONICAL',

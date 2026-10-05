@@ -144,6 +144,9 @@ class TwinRuntime:
         self.robot_mapping_state: dict[str, str] = {}
         self.robot_mapping_elapsed_s: dict[str, float] = {}
         self.robot_mapping_sessions: dict[str, str] = {}
+        self.robot_map_registrations: dict[str, dict[str, Any]] = {}
+        self.simulation_registration_drift: dict[tuple[str, str, str, int], int] = {}
+        self.simulation_registration_last_check: dict[tuple[str, str, str], float] = {}
         self.robot_runtime_modes: dict[str, str] = {}
         self.robot_command_diagnostics: dict[str, dict[str, Any]] = {}
         self.path_preview_requests: dict[tuple[str, str], dict[str, Any]] = {}
@@ -205,9 +208,13 @@ class TwinRuntime:
             status = self.local_map_status.get(rid, {})
             revision = self.local_map_revisions.get(rid)
             ready = bool(status.get('loaded') and status.get('map_id') == local_id and revision)
+            snapshot = self.robot_runtime_map_snapshots.get(rid, {})
+            map_data = snapshot.get('map') if isinstance(snapshot, dict) else {}
+            map_data = map_data if isinstance(map_data, dict) else {}
             return {
                 'active_map_id': local_id if ready else None,
                 'active_map_revision': revision if ready else None,
+                'map_content_revision': map_data.get('map_content_revision'),
                 'local_active_map_id': local_id,
                 'local_active_map_revision': revision,
                 'canonical_map_revision': canonical_revision,
@@ -222,13 +229,16 @@ class TwinRuntime:
             map_data = snapshot.get('map') if isinstance(snapshot, dict) else {}
             map_data = map_data if isinstance(map_data, dict) else {}
             snapshot_session = str(map_data.get('mapping_session_id') or '')
-            map_id = (f'SLAM-{session_id}' if session_id else
-                      str(map_data.get('active_map_id') or ''))
+            expected_map_id = f'SLAM-{session_id}' if session_id else ''
+            expected_revision = f'session-{session_id}' if session_id else ''
+            map_id = str(map_data.get('active_map_id') or '')
             revision = str(map_data.get('active_map_revision') or '')
-            ready = bool(session_id and snapshot_session == session_id and map_id and revision)
+            ready = bool(session_id and snapshot_session == session_id
+                and map_id == expected_map_id and revision == expected_revision)
             return {
-                'active_map_id': map_id or None,
-                'active_map_revision': revision or None,
+                'active_map_id': map_id if ready else None,
+                'active_map_revision': revision if ready else None,
+                'map_content_revision': map_data.get('map_content_revision'),
                 'local_active_map_id': None,
                 'local_active_map_revision': None,
                 'canonical_map_revision': canonical_revision,
@@ -262,12 +272,18 @@ class TwinRuntime:
         return {
             'active_map_id': 'CANONICAL' if ros_revision is not None else None,
             'active_map_revision': str(ros_revision) if ros_revision is not None else None,
+            'map_content_revision': self._runtime_map_content_revision(rid),
             'local_active_map_id': None,
             'local_active_map_revision': None,
             'canonical_map_revision': canonical_revision,
             'map_sync_status': status,
             'map_source': 'CANONICAL' if ros_revision is not None else None,
         }
+
+    def _runtime_map_content_revision(self, robot_id: str) -> str | None:
+        snapshot = self.robot_runtime_map_snapshots.get(str(robot_id), {})
+        map_data = snapshot.get('map') if isinstance(snapshot, dict) else {}
+        return str(map_data.get('map_content_revision')) if isinstance(map_data, dict) and map_data.get('map_content_revision') else None
 
     def robot_capabilities(self, robot_id: str) -> dict[str, bool]:
         """Compute capabilities from runtime mode plus measured bridge state."""
@@ -320,14 +336,20 @@ class TwinRuntime:
         manual_available = bool(
             mapping_available and control_mode == 'MANUAL' and control_applied and estop_clear
         )
-        goal_available = bool(
-            nav2_ready and map_ready and control_mode == 'AUTONOMOUS'
-            and control_applied and estop_clear and rid not in self.local_map_transitions
-            and self.navigation_localization_state(rid, active_map) is not None
-        )
+        goal_blocker = self.navigation_goal_blocker(rid, active_map=active_map,
+            nav2_ready=nav2_ready, map_ready=map_ready, control_mode=control_mode,
+            control_applied=control_applied, estop_clear=estop_clear,
+            command_fresh=command_fresh)
+        goal_available = goal_blocker is None
+        registration = self.robot_map_registrations.get(rid, {})
         tag_navigation_available = bool(
-            goal_available and active_map.get('active_map_id') == 'CANONICAL'
-            and active_map.get('map_sync_status') == 'CANONICAL'
+            goal_available and (
+                active_map.get('active_map_id') == 'CANONICAL'
+                and active_map.get('map_sync_status') == 'CANONICAL'
+                or registration.get('active_map_id') == active_map.get('active_map_id')
+                and registration.get('active_map_revision') == active_map.get('active_map_revision')
+                and registration.get('canonical_map_revision') == str(active_map.get('canonical_map_revision') or '')
+            )
         )
         return {
             'mapping_available': mapping_available,
@@ -336,39 +358,72 @@ class TwinRuntime:
             'nav2_ready': nav2_ready,
             'manual_available': manual_available,
             'goal_available': goal_available,
+            'goal_blocker_code': goal_blocker[0] if goal_blocker else None,
+            'goal_blocker_reason': goal_blocker[1] if goal_blocker else None,
             'map_ready': map_ready,
             'tag_navigation_available': tag_navigation_available,
+            'registration_revision': registration.get('registration_revision'),
+            'registration_source': registration.get('source'),
         }
+
+    def navigation_goal_blocker(self, robot_id: str, *, active_map=None,
+                                nav2_ready=None, map_ready=None, control_mode=None,
+                                control_applied=None, estop_clear=None,
+                                command_fresh=None) -> tuple[str, str] | None:
+        """Return the measured blocker for the shared Nav2 target pipeline."""
+        rid = str(robot_id or '').strip()
+        active_map = active_map if active_map is not None else self.active_map_state(rid)
+        timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        if not self.is_external or not self.robot_bridge_online(rid):
+            return 'ROS_BRIDGE_OFFLINE', 'ROS bridge is offline or heartbeat is stale'
+        if nav2_ready is None:
+            diagnostics = self.ros_diagnostics
+            diagnostics_at = self.ros_diagnostics_received_monotonic
+            diagnostics_fresh = (diagnostics_at is not None
+                                 and time.monotonic() - diagnostics_at <= timeout)
+            mode = str(self.robot_runtime_modes.get(rid) or self.operation_mode).upper()
+            nav2_ready = bool(diagnostics_fresh and mode in NAVIGATION_CAPABLE_MODES
+                              and diagnostics.get('nav2')
+                              and diagnostics.get('nav2_ready') is True)
+        if not nav2_ready:
+            return 'NAV2_NOT_READY', 'Nav2 lifecycle or required ComputePathToPose/NavigateToPose actions are not ready'
+        if rid in self.local_map_transitions:
+            return 'ACTIVE_MAP_TRANSITION', 'navigation is blocked while the active map is changing'
+        command = self.robot_command_diagnostics.get(rid, {})
+        received = command.get('received_monotonic')
+        fresh = (received is not None and time.monotonic() - float(received) <= timeout)
+        command_fresh = fresh if command_fresh is None else command_fresh
+        if not command_fresh:
+            return 'COMMAND_STATE_STALE', 'fresh command arbiter mode and E-STOP diagnostics are required'
+        robot = self.engine.state.get('robots', {}).get(rid, {})
+        control_mode = str(robot.get('control_mode') or '').upper() if control_mode is None else control_mode
+        request = getattr(self, 'control_mode_requests', {}).get(rid, {})
+        if control_applied is None:
+            control_applied = (fresh
+                and str(command.get('active_control_mode') or '').upper() == control_mode
+                and request.get('mode_transition_state') != 'REQUESTED')
+        if (control_mode != 'AUTONOMOUS'
+                or str(command.get('active_control_mode') or '').upper() != 'AUTONOMOUS'
+                or request.get('mode_transition_state') == 'REQUESTED'
+                or not control_applied):
+            return 'CONTROL_MODE_NOT_AUTONOMOUS', 'apply AUTONOMOUS and wait for the command arbiter acknowledgement'
+        estop_clear = (command.get('estop_active') is False) if estop_clear is None else estop_clear
+        if not estop_clear:
+            return 'ESTOP_STATE_UNCONFIRMED', 'Nav2 is blocked until runtime confirms E-STOP is clear'
+        if map_ready is None:
+            map_ready = bool(active_map.get('active_map_id') and active_map.get('active_map_revision')
+                and active_map.get('map_sync_status') in ('CANONICAL', 'LOCAL_ONLY'))
+        if not active_map.get('active_map_id') or not active_map.get('active_map_revision') or not map_ready:
+            return 'ACTIVE_MAP_NOT_READY', 'the active navigation map identity/revision is not confirmed and ready'
+        if self.navigation_localization_state(rid, active_map) is None:
+            return 'LOCALIZATION_NOT_READY', 'a fresh TF pose in the confirmed active map is required for navigation'
+        return None
 
     def unified_navigation_blocker(self, robot_id: str) -> str | None:
         """Return a fail-closed reason when the unified Nav2 path is not ready."""
         rid = str(robot_id or '').strip()
-        mode = str(self.robot_runtime_modes.get(rid) or self.operation_mode).upper()
-        if mode != 'UNIFIED':
-            return None
-        capabilities = self.robot_capabilities(rid)
-        if not capabilities['nav2_ready']:
-            return 'NAV2_NOT_READY: Nav2 lifecycle or required action servers are not ready'
-        if rid in self.local_map_transitions:
-            return 'MAP_TRANSITION: navigation is blocked while the active map is changing'
-        command = self.robot_command_diagnostics.get(rid, {})
-        command_received = command.get('received_monotonic')
-        timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
-        if command_received is None or time.monotonic() - float(command_received) > timeout:
-            return 'COMMAND_STATE_STALE: fresh command arbiter mode and E-STOP diagnostics are required'
-        robot = self.engine.state.get('robots', {}).get(rid, {})
-        request = getattr(self, 'control_mode_requests', {}).get(rid, {})
-        if (str(robot.get('control_mode') or '').upper() != 'AUTONOMOUS'
-                or str(command.get('active_control_mode') or '').upper() != 'AUTONOMOUS'
-                or request.get('mode_transition_state') == 'REQUESTED'):
-            return 'CONTROL_MODE_NOT_AUTONOMOUS: apply AUTONOMOUS before requesting a Nav2 path'
-        if command.get('estop_active') is not False:
-            return 'ESTOP_STATE_UNCONFIRMED: Nav2 is blocked until runtime confirms E-STOP is clear'
-        if not capabilities['map_ready']:
-            return 'SLAM_MAP_NOT_READY: the active live map is not available'
-        if self.navigation_localization_state(rid, self.active_map_state(rid)) is None:
-            return 'LOCALIZATION_NOT_READY: a fresh active-map TF pose is required'
-        return None
+        blocker = self.navigation_goal_blocker(rid)
+        return f'{blocker[0]}: {blocker[1]}' if blocker else None
 
     def navigation_localization_state(self, robot_id: str, active_map: dict[str, Any]) -> dict[str, str] | None:
         rid = str(robot_id)
@@ -405,6 +460,22 @@ class TwinRuntime:
         for key in keys:
             if key in self.path_preview_results or key in self.approved_path_previews:
                 self.path_preview_invalidations[key] = reason
+            for cache in (self.path_preview_requests, self.approved_path_previews,
+                          self.path_preview_results):
+                cache.pop(key, None)
+
+    def invalidate_registration_path_previews(self, robot_id: str, reason: str) -> None:
+        """Invalidate only targets whose coordinates depend on registration."""
+        rid = str(robot_id or '').strip()
+        keys = set()
+        for cache in (self.path_preview_requests, self.approved_path_previews,
+                      self.path_preview_results):
+            for key, value in list(cache.items()):
+                if key[0] == rid and value.get('source_type') in (
+                        'CANONICAL_MAP_POINT', 'TAG'):
+                    keys.add(key)
+        for key in keys:
+            self.path_preview_invalidations[key] = reason
             for cache in (self.path_preview_requests, self.approved_path_previews,
                           self.path_preview_results):
                 cache.pop(key, None)
@@ -820,7 +891,7 @@ class TwinRuntime:
             if (not mapping_session
                     or str(data.get('mapping_session_id') or '') != mapping_session
                     or reported_map_id != f'SLAM-{mapping_session}'
-                    or not reported_active_revision):
+                    or reported_active_revision != f'session-{mapping_session}'):
                 return
         elif active.get('local_active_map_id'):
             if (reported_map_id != active.get('active_map_id')
@@ -871,12 +942,49 @@ class TwinRuntime:
         active_pose = {'x': float(data['x']), 'y': float(data['y']), 'yaw': float(data['yaw']),
                        'frame_id': frame_id, 'map_id': reported_map_id,
                        'map_revision': reported_active_revision, 'map_source': reported_map_source,
+                       'map_content_revision': str(data.get('map_content_revision') or '') or None,
                        'pose_source': pose_source, 'mapping_session_id': data.get('mapping_session_id'),
                        'timestamp': now_iso, 'valid': True}
         canonical_pose = validated_canonical_pose(data.get('canonical_pose'),
                                                   self.published_map_revision, self.runtime_mode)
         if robot_mode not in MAPPING_CAPABLE_MODES and reported_map_id == 'CANONICAL' and pose_source == 'TF':
             canonical_pose = active_pose
+        if self.runtime_mode == 'GAZEBO_ROS' and robot_mode in MAPPING_CAPABLE_MODES and canonical_pose:
+            try:
+                from .map_registration import update_gazebo_registration
+                active_identity = self.active_map_state(rid)
+                identity_key = (rid, str(active_identity.get('active_map_id') or ''),
+                                str(active_identity.get('active_map_revision') or ''))
+                now_monotonic = time.monotonic()
+                last_checked = self.simulation_registration_last_check.get(identity_key)
+                result = None
+                if last_checked is None or now_monotonic - last_checked >= 1.0:
+                    self.simulation_registration_last_check[identity_key] = now_monotonic
+                    result = await sync_to_async(update_gazebo_registration, thread_sensitive=True)(
+                        robot_id=rid, active_map=active_identity,
+                        canonical_pose=canonical_pose, active_pose=active_pose,
+                        drift_state=self.simulation_registration_drift,
+                    )
+                if result:
+                    registration = result['registration']
+                    self.robot_map_registrations[rid] = {
+                        'canonical_map_revision': str(registration.canonical_revision),
+                        'active_map_id': registration.active_map_id,
+                        'active_map_revision': registration.active_map_revision,
+                        'registration_revision': registration.registration_revision,
+                        'source': registration.source,
+                        'tx': registration.tx, 'ty': registration.ty, 'yaw': registration.yaw,
+                    }
+                    if result['changed']:
+                        event = 'MAP_REGISTRATION_CREATED' if result['created'] else 'MAP_REGISTRATION_UPDATED'
+                        log.info('%s robot=%s active_map=%s active_revision=%s canonical_revision=%s registration_revision=%s source=%s',
+                            event, rid, registration.active_map_id, registration.active_map_revision,
+                            registration.canonical_revision, registration.registration_revision,
+                            registration.source)
+                        self.invalidate_registration_path_previews(
+                            rid, 'canonical-to-active registration revision changed')
+            except Exception:
+                log.exception('Gazebo canonical map registration provider failed for robot=%s', rid)
         nav = str(data.get('navigation_state') or 'UNKNOWN').upper()
         reported_control_mode = data.get('control_mode') or robot.get('control_mode')
         control_mode = str(reported_control_mode).upper() if reported_control_mode else None
@@ -1063,23 +1171,42 @@ class TwinRuntime:
                 and self.navigation_localization_state(robot_id, active_now) == request['localization_state']
             )
             source_still_current = True
-            if request.get('source_type') == 'TAG':
+            if request.get('source_type') in ('TAG', 'CANONICAL_MAP_POINT'):
                 try:
-                    current_target = await self.resolve_navigation_target(
-                        robot_id=robot_id, source_type='TAG', active_map=active_now,
-                        tag_id=request.get('tag_id'),
-                    )
+                    if request.get('source_type') == 'TAG':
+                        current_target = await self.resolve_navigation_target(
+                            robot_id=robot_id, source_type='TAG', active_map=active_now,
+                            tag_id=request.get('tag_id'),
+                        )
+                    else:
+                        source_pose = request.get('source_goal') or {}
+                        current_target = await self.resolve_navigation_target(
+                            robot_id=robot_id, source_type='CANONICAL_MAP_POINT',
+                            active_map=active_now, x=source_pose.get('x'),
+                            y=source_pose.get('y'), yaw=source_pose.get('yaw'),
+                            source_map_id=request.get('source_map_id'),
+                            source_map_revision=request.get('source_map_revision'),
+                        )
                     current_metadata = current_target.get('metadata') or {}
-                    source_still_current = (
-                        str(current_target.get('source_id')) == str(request.get('source_id'))
-                        and current_metadata.get('tag_revision') == request.get('tag_revision')
-                        and current_metadata.get('registry_revision') == request.get('registry_revision')
-                        and all(abs(float(current_target[axis]) - float(request['goal'][axis])) <= 1e-4
-                                for axis in ('x', 'y', 'yaw'))
-                    )
+                    if request.get('source_type') == 'TAG':
+                        source_still_current = (
+                            str(current_target.get('source_id')) == str(request.get('source_id'))
+                            and current_metadata.get('tag_revision') == request.get('tag_revision')
+                            and current_metadata.get('registry_revision') == request.get('registry_revision')
+                            and current_metadata.get('registration_revision') == request.get('registration_revision')
+                            and all(abs(float(current_target[axis]) - float(request['goal'][axis])) <= 1e-4
+                                    for axis in ('x', 'y', 'yaw'))
+                        )
+                    else:
+                        source_still_current = (
+                            current_metadata.get('registration_revision') == request.get('registration_revision')
+                            and current_metadata.get('registration_source') == request.get('registration_source')
+                            and all(abs(float(current_target[axis]) - float(request['goal'][axis])) <= 1e-4
+                                    for axis in ('x', 'y', 'yaw'))
+                        )
                 except Exception as exc:
                     source_still_current = False
-                    data['reason'] = f'Tag target could not be revalidated ({type(exc).__name__})'
+                    data['reason'] = f'Navigation source could not be revalidated ({type(exc).__name__})'
             if status == 'VALID' and not (path_is_valid and target_matches and map_matches and still_current and source_still_current):
                 status = 'INVALID'
                 data.setdefault('reason', 'planner result did not match the requested target, map, or localization state')
@@ -1090,17 +1217,31 @@ class TwinRuntime:
                 'tag_id': request.get('tag_id'),
                 'tag_revision': request.get('tag_revision'),
                 'registry_revision': request.get('registry_revision'),
+                'source_map_id': request.get('source_map_id'),
+                'source_map_revision': request.get('source_map_revision'),
+                'source_goal': request.get('source_goal'),
+                'registration_revision': request.get('registration_revision'),
+                'registration_source': request.get('registration_source'),
                 'active_map_id': request['active_map_id'],
                 'active_map_revision': request['active_map_revision'],
                 'canonical_map_revision': request['canonical_map_revision'],
+                'map_content_revision': active_now.get('map_content_revision'),
+                'map_content_revision_at_request': request.get('map_content_revision'),
                 'goal': {**request['goal'], 'frame_id': 'map'},
             })
+            log.info('PATH_PREVIEW_%s robot=%s request_id=%s source=%s active_map=%s active_revision=%s registration_revision=%s reason=%s',
+                'VALID' if status == 'VALID' else 'INVALID', robot_id, request_id,
+                request.get('source_type'), request.get('active_map_id'),
+                request.get('active_map_revision'), request.get('registration_revision'),
+                data.get('reason'))
             record = {
                 **request,
                 'status': status,
                 'path_found': status == 'VALID' and path_is_valid,
                 'created_monotonic': now,
                 'goal': request['goal'],
+                'map_content_revision': active_now.get('map_content_revision'),
+                'map_content_revision_at_request': request.get('map_content_revision'),
             }
             self.path_preview_results[key] = record
             if record['path_found']:
@@ -1692,13 +1833,26 @@ class TwinRuntime:
             request_id = str(getattr(msg, 'request_id', '') or '')
             active = self.active_map_state(msg.robot_id)
             source_type = str(msg.source_type or 'MAP_POINT').upper()
+            if source_type == 'MAP_POINT':
+                source_type = 'ACTIVE_MAP_POINT'
             source_id = str(msg.tag_id) if source_type == 'TAG' and msg.tag_id is not None else None
+            source_map_id = str(getattr(msg, 'source_map_id', '') or '')
+            source_map_revision = str(getattr(msg, 'source_map_revision', '') or '')
+            if source_type == 'ACTIVE_MAP_POINT':
+                source_map_id = source_map_id or str(active.get('active_map_id') or '')
+                source_map_revision = source_map_revision or str(active.get('active_map_revision') or '')
+            elif source_type == 'CANONICAL_MAP_POINT':
+                source_map_id = source_map_id or 'CANONICAL'
             resolved_target = None
             target_metadata: dict[str, Any] = {}
+            source_goal = None
             tag_revision = None
             registry_revision = None
 
             async def preview_failure(status, reason):
+                log.warning('PATH_PREVIEW_INVALID robot=%s request_id=%s source=%s active_map=%s@%s reason=%s',
+                    msg.robot_id, request_id, source_type, active.get('active_map_id'),
+                    active.get('active_map_revision'), reason)
                 goal = ({'x': resolved_target['x'], 'y': resolved_target['y'],
                          'yaw': resolved_target['yaw'], 'frame_id': 'map'}
                         if resolved_target is not None else None)
@@ -1708,10 +1862,16 @@ class TwinRuntime:
                     'source_type': source_type, 'source_id': source_id,
                     'tag_id': msg.tag_id if source_type == 'TAG' else None,
                     'tag_revision': tag_revision, 'registry_revision': registry_revision,
+                    'source_map_id': source_map_id or None,
+                    'source_map_revision': source_map_revision or None,
+                    'source_goal': source_goal,
+                    'registration_revision': target_metadata.get('registration_revision'),
+                    'registration_source': target_metadata.get('registration_source'),
                     'path': [], 'path_length_m': None, 'goal': goal,
                     'active_map_id': active.get('active_map_id'),
                     'active_map_revision': active.get('active_map_revision'),
                     'canonical_map_revision': active.get('canonical_map_revision'),
+                    'map_content_revision': active.get('map_content_revision'),
                     'timestamp': datetime.now(timezone.utc).isoformat(),
                 })
 
@@ -1748,6 +1908,11 @@ class TwinRuntime:
             if localization_state is None:
                 await preview_failure('INVALID', 'a fresh TF pose in the confirmed active map is required for navigation')
                 return
+            if source_type in ('ACTIVE_MAP_POINT', 'CANONICAL_MAP_POINT'):
+                try:
+                    source_goal = {axis: float(getattr(msg, axis)) for axis in ('x', 'y', 'yaw')}
+                except (TypeError, ValueError):
+                    source_goal = None
             try:
                 resolved_target = await self.resolve_navigation_target(
                     robot_id=msg.robot_id,
@@ -1757,14 +1922,21 @@ class TwinRuntime:
                     x=msg.x,
                     y=msg.y,
                     yaw=msg.yaw,
+                    source_map_id=source_map_id or None,
+                    source_map_revision=source_map_revision or None,
                 )
             except Exception as exc:
                 code = getattr(exc, 'code', 'NAVIGATION_TARGET_INVALID')
+                if code in ('MAP_REGISTRATION_REQUIRED', 'TAG_MAP_REGISTRATION_REQUIRED'):
+                    log.warning('MAP_REGISTRATION_INVALID robot=%s active_map=%s@%s code=%s',
+                        msg.robot_id, active.get('active_map_id'),
+                        active.get('active_map_revision'), code)
                 await preview_failure('INVALID', f'{code}: {exc}')
                 return
             target = {axis: float(resolved_target[axis]) for axis in ('x', 'y', 'yaw')}
             target_metadata = dict(resolved_target.get('metadata') or {})
             if source_type == 'TAG':
+                source_goal = target_metadata.get('source_pose')
                 tag_revision = target_metadata.get('tag_revision')
                 registry_revision = target_metadata.get('registry_revision')
                 if (not msg.tag_revision or not msg.registry_revision
@@ -1795,24 +1967,40 @@ class TwinRuntime:
                 'goal': target,
                 'source_type': source_type,
                 'source_id': source_id,
+                'source_map_id': target_metadata.get('source_map_id') or source_map_id or None,
+                'source_map_revision': target_metadata.get('source_map_revision') or source_map_revision or None,
+                'source_goal': source_goal or target_metadata.get('source_pose'),
+                'registration_revision': target_metadata.get('registration_revision'),
+                'registration_source': target_metadata.get('registration_source'),
                 'tag_id': msg.tag_id if source_type == 'TAG' else None,
                 'tag_revision': tag_revision,
                 'registry_revision': registry_revision,
                 'target_metadata': target_metadata,
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
+                'map_content_revision': active.get('map_content_revision'),
                 'canonical_map_revision': active['canonical_map_revision'],
                 'localization_state': localization_state,
                 'created_monotonic': now,
             }
+            log.info('PATH_PREVIEW_REQUESTED robot=%s request_id=%s source=%s source_map=%s@%s active_map=%s@%s registration_revision=%s map_content_revision=%s',
+                msg.robot_id, request_id, source_type, request.get('source_map_id'),
+                request.get('source_map_revision'), active['active_map_id'],
+                active['active_map_revision'], request.get('registration_revision'),
+                request.get('map_content_revision'))
             self.path_preview_requests[key] = request
             result = await self.gateway().send_command(msg.robot_id, 'PATH_PREVIEW', {
                 'request_id': request_id, **target, 'frame_id': msg.frame_id,
                 'source_type': source_type, 'source_id': source_id,
                 'tag_id': msg.tag_id if source_type == 'TAG' else None,
                 'tag_revision': tag_revision, 'registry_revision': registry_revision,
+                'source_map_id': request['source_map_id'],
+                'source_map_revision': request['source_map_revision'],
+                'registration_revision': request['registration_revision'],
+                'registration_source': request['registration_source'],
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
+                'map_content_revision': active.get('map_content_revision'),
                 'canonical_map_revision': active['canonical_map_revision'],
             })
             if not result.get('ok'):
@@ -1949,34 +2137,68 @@ class TwinRuntime:
                         'message': 'goal does not match the approved Nav2 path preview',
                     })
                     return
-                source_type = str(preview.get('source_type') or 'MAP_POINT')
+                source_type = str(preview.get('source_type') or 'ACTIVE_MAP_POINT')
                 source_id = preview.get('source_id')
                 requested_source_type = str(getattr(msg, 'source_type', '') or '')
-                source_mismatch = (
-                    (source_type == 'TAG' and (requested_source_type != 'TAG'
-                     or str(getattr(msg, 'source_id', '') or '') != str(source_id)))
-                    or (source_type == 'MAP_POINT' and requested_source_type not in ('', 'MAP_POINT'))
-                )
+                if requested_source_type == 'MAP_POINT':
+                    requested_source_type = 'ACTIVE_MAP_POINT'
+                source_mismatch = False
+                if source_type == 'TAG':
+                    source_mismatch = (requested_source_type != 'TAG'
+                        or str(getattr(msg, 'source_id', '') or '') != str(source_id)
+                        or str(getattr(msg, 'source_map_id', '') or '')
+                            != str(preview.get('source_map_id') or '')
+                        or str(getattr(msg, 'source_map_revision', '') or '')
+                            != str(preview.get('source_map_revision') or ''))
+                elif source_type == 'CANONICAL_MAP_POINT':
+                    source_mismatch = (requested_source_type != source_type
+                        or str(getattr(msg, 'source_map_id', '') or '') != str(preview.get('source_map_id') or '')
+                        or str(getattr(msg, 'source_map_revision', '') or '') != str(preview.get('source_map_revision') or ''))
+                elif source_type in ('ACTIVE_MAP_POINT', 'MAP_POINT'):
+                    source_mismatch = (requested_source_type != 'ACTIVE_MAP_POINT'
+                        or str(getattr(msg, 'source_map_id', '') or '')
+                            != str(preview.get('source_map_id') or '')
+                        or str(getattr(msg, 'source_map_revision', '') or '')
+                            != str(preview.get('source_map_revision') or ''))
                 if source_mismatch:
                     await consumer.send_json({
                         'type': 'ERROR', 'code': 'PATH_PREVIEW_INVALID',
                         'message': 'navigation target source does not match the approved path preview',
                     })
                     return
-                if source_type == 'TAG':
+                if source_type in ('TAG', 'CANONICAL_MAP_POINT'):
                     try:
-                        resolved_now = await self.resolve_navigation_target(
-                            robot_id=msg.robot_id, source_type='TAG', active_map=active,
-                            tag_id=preview.get('tag_id'),
-                        )
+                        if source_type == 'TAG':
+                            resolved_now = await self.resolve_navigation_target(
+                                robot_id=msg.robot_id, source_type='TAG', active_map=active,
+                                tag_id=preview.get('tag_id'),
+                            )
+                        else:
+                            source_pose = preview.get('source_goal') or {}
+                            resolved_now = await self.resolve_navigation_target(
+                                robot_id=msg.robot_id, source_type='CANONICAL_MAP_POINT',
+                                active_map=active, x=source_pose.get('x'),
+                                y=source_pose.get('y'), yaw=source_pose.get('yaw'),
+                                source_map_id=preview.get('source_map_id'),
+                                source_map_revision=preview.get('source_map_revision'),
+                            )
                         current_metadata = resolved_now.get('metadata') or {}
-                        current_tag_matches = (
-                            str(resolved_now.get('source_id')) == str(source_id)
-                            and current_metadata.get('tag_revision') == preview.get('tag_revision')
-                            and current_metadata.get('registry_revision') == preview.get('registry_revision')
-                            and all(abs(float(resolved_now[axis]) - float(target[axis])) <= 1e-4
-                                    for axis in ('x', 'y', 'yaw'))
-                        )
+                        if source_type == 'TAG':
+                            current_tag_matches = (
+                                str(resolved_now.get('source_id')) == str(source_id)
+                                and current_metadata.get('tag_revision') == preview.get('tag_revision')
+                                and current_metadata.get('registry_revision') == preview.get('registry_revision')
+                                and current_metadata.get('registration_revision') == preview.get('registration_revision')
+                                and all(abs(float(resolved_now[axis]) - float(target[axis])) <= 1e-4
+                                        for axis in ('x', 'y', 'yaw'))
+                            )
+                        else:
+                            current_tag_matches = (
+                                current_metadata.get('registration_revision') == preview.get('registration_revision')
+                                and current_metadata.get('registration_source') == preview.get('registration_source')
+                                and all(abs(float(resolved_now[axis]) - float(target[axis])) <= 1e-4
+                                        for axis in ('x', 'y', 'yaw'))
+                            )
                     except Exception:
                         current_tag_matches = False
                     if not current_tag_matches:
@@ -1993,18 +2215,31 @@ class TwinRuntime:
                     'tag_id': preview.get('tag_id'),
                     'tag_revision': preview.get('tag_revision'),
                     'registry_revision': preview.get('registry_revision'),
+                    'source_map_id': preview.get('source_map_id'),
+                    'source_map_revision': preview.get('source_map_revision'),
+                    'registration_revision': preview.get('registration_revision'),
+                    'registration_source': preview.get('registration_source'),
+                    'map_content_revision': active.get('map_content_revision'),
                     'preview_request_id': preview_id,
                     'active_map_id': active['active_map_id'],
                     'active_map_revision': active['active_map_revision'],
                     'canonical_map_revision': active['canonical_map_revision'],
                 })
                 if result.get('ok'):
+                    log.info('NAV_GOAL_SENT robot=%s preview_id=%s source=%s source_map=%s@%s active_map=%s@%s registration_revision=%s target=(%.3f,%.3f,%.3f)',
+                        msg.robot_id, preview_id, source_type, preview.get('source_map_id'),
+                        preview.get('source_map_revision'), active['active_map_id'],
+                        active['active_map_revision'], preview.get('registration_revision'),
+                        target['x'], target['y'], target['yaw'])
                     await self.broadcast({'type': 'NAV_GOAL', 'goal': {
                         'robot_id': msg.robot_id, 'frame_id': msg.frame_id,
                         'x': target['x'], 'y': target['y'], 'yaw': target['yaw'],
                         'source_type': source_type, 'source_id': source_id,
                         'active_map_id': active['active_map_id'],
                         'active_map_revision': active['active_map_revision'],
+                        'source_map_id': preview.get('source_map_id'),
+                        'source_map_revision': preview.get('source_map_revision'),
+                        'registration_revision': preview.get('registration_revision'),
                         'status': 'SENT', 'timestamp': datetime.now(timezone.utc).isoformat(),
                     }})
             else:

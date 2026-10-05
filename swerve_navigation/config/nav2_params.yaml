@@ -10,8 +10,13 @@ controller_server:
     goal_checker_plugins: [general_goal_checker]
     controller_plugins: [FollowPath]
     progress_checker:
-      plugin: nav2_controller::SimpleProgressChecker
+      # A navigation goal has both translation and terminal-heading checks.
+      # Count a deliberate 0.20 rad heading change as progress so a holonomic
+      # robot can finish an in-place yaw correction without disabling the
+      # existing 0.30 m translation / 10 s stuck checks.
+      plugin: nav2_controller::PoseProgressChecker
       required_movement_radius: 0.30
+      required_movement_angle: 0.20
       movement_time_allowance: 10.0
     general_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
@@ -27,7 +32,9 @@ controller_server:
       max_vel_x: 0.35
       min_vel_y: -0.55
       max_vel_y: 0.35
-      max_vel_theta: 0.10
+      # Keep terminal heading corrections below the swerve controller's
+      # 1.5 rad/s physical command limit.
+      max_vel_theta: 0.5
       min_speed_xy: 0.0
       max_speed_xy: 0.35
       min_speed_theta: 0.0
@@ -61,6 +68,12 @@ controller_server:
       RotateToGoal.scale: 2.0
       RotateToGoal.slowing_factor: 1.0
       RotateToGoal.lookahead_time: -1.0
+      # The goal checker accepts heading error up to 0.05 rad. Reset the
+      # oscillation sign history after that much measured angular progress so
+      # small terminal-heading corrections cannot leave every DWB sample
+      # rejected. The critic remains enabled and still rejects reversals
+      # until the robot makes measurable translation or rotation progress.
+      Oscillation.oscillation_reset_angle: 0.05
 
 local_costmap:
   local_costmap:
@@ -175,8 +188,13 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odometry/filtered
-    bt_loop_duration: 10
-    default_server_timeout: 20
+    # Match the 10 Hz controller loop. A 100 Hz behavior-tree loop was
+    # saturating the unified Gazebo VM and starving controller callbacks.
+    bt_loop_duration: 100
+    # Action handshakes must tolerate one delayed controller cycle under the
+    # unified Gazebo load; this only extends acknowledgement waiting and does
+    # not alter action, map, localization, collision, or E-stop validation.
+    default_server_timeout: 500
     wait_for_service_timeout: 1000
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node

@@ -25,7 +25,7 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from nav2_msgs.srv import ManageLifecycleNodes
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -322,6 +322,7 @@ class Readiness(Node):
         self.slam_parameters = (self.create_client(GetParameters, '/slam_toolbox/get_parameters')
                                 if self.mapping_required else None)
         self.bridge_parameters = self.create_client(GetParameters, '/swerve_bridge/get_parameters')
+        self.path_action = ActionClient(self, ComputePathToPose, '/compute_path_to_pose')
         self.action = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.tf = Buffer()
         self.listener = TransformListener(self.tf, self)
@@ -1045,7 +1046,7 @@ class Readiness(Node):
             ('NAV2_READY', tuple(f'NODE_{name.upper()}_READY' for name in required_nodes)
              + ('NAV2_LIFECYCLE_READY',
                 'MAP_READY' if mode == 'unified' else 'MAP_FILE_READY',
-                'ACTION_SERVER_READY')),
+                'COMPUTE_PATH_ACTION_SERVER_READY', 'ACTION_SERVER_READY')),
             ('BRIDGE_READY', ('ROS_BRIDGE_R01_READY',)),
         )
         for summary_name, stages in groups:
@@ -1656,11 +1657,18 @@ class Readiness(Node):
                     )
             if not map_file_ok:
                 return self._finish(result, 'Nav2 map source is not ready')
+            if not self._stage(result, 'COMPUTE_PATH_ACTION_SERVER_READY',
+                               lambda: self.path_action.wait_for_server(timeout_sec=0.0),
+                               '/compute_path_to_pose action server',
+                               'action_server_unavailable:/compute_path_to_pose'):
+                return self._finish(result, '/compute_path_to_pose action server not ready')
             if not self._stage(result, 'ACTION_SERVER_READY',
                                lambda: self.action.wait_for_server(timeout_sec=0.0),
                                '/navigate_to_pose action server',
                                'action_server_unavailable:/navigate_to_pose'):
                 return self._finish(result, '/navigate_to_pose action server not ready')
+            result['stages']['NAVIGATE_TO_POSE_ACTION_SERVER_READY'] = result['stages'].get(
+                'ACTION_SERVER_READY', False)
 
         bridge_ok, bridge_reason = self._wait_ros_bridge(deadline)
         self._report_stage(

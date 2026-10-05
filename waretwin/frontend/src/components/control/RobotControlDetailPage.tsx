@@ -11,10 +11,10 @@ import { ActiveNavigationMap2DView, LocalRobotSection } from "./LocalRobotSectio
 import { RobotLidar3DView } from "./RobotLidarViews";
 import { occupancyRasters } from "./occupancyRaster";
 import { detailPerformance } from "./detailPerformance";
-import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, mapPointTarget, sameNavigationMapIdentity, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
+import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, mapPointPreviewPayload, mapPointTarget, sameNavigationMapIdentity, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
 
 type WorldGoal = { x: number; y: number; yaw: number };
-type GoalSelection = WorldGoal & Partial<NavigationMapIdentity>;
+type GoalSelection = WorldGoal & Partial<NavigationMapIdentity> & Partial<Pick<MapPointNavigationTarget, "source_map_id" | "source_map_revision">>;
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
 type LocalTab = "CONTROL" | "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type MapSource = "GLOBAL" | "LIDAR";
@@ -35,7 +35,8 @@ const MANUAL_ACTIONS: Array<{ action: ManualAction; label: string; title: string
 const EMPTY_ERRORS: RobotDetailError[] = [];
 
 function isMapPointTarget(target: GoalSelection | null): target is MapPointNavigationTarget {
-  return Boolean(target && target.frame_id === "map" && target.map_id && target.map_revision);
+  return Boolean(target && target.frame_id === "map" && target.map_id && target.map_revision
+    && target.source_type && target.source_map_id && target.source_map_revision);
 }
 
 function pushRoute(path: string) {
@@ -169,6 +170,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const activeMappingSnapshot = useLiveSlamMap && slam2dMap?.map_source === "SLAM_TOOLBOX"
     && slam2dMap.frame_id === "map" && Boolean(slam2dMap.mapping_session_id)
     && slam2dMap.active_map_id === `SLAM-${slam2dMap.mapping_session_id}`
+    && slam2dMap.active_map_revision === `session-${slam2dMap.mapping_session_id}`
     && (!mappingSessionId || slam2dMap.mapping_session_id === mappingSessionId) ? slam2dMap : null;
   const activeMapId = useLiveSlamMap ? activeMappingSnapshot?.active_map_id ?? null
     : activeLocalMapId ?? (canonicalMapReady ? "CANONICAL" : activeMapSnapshot?.active_map_id ?? null);
@@ -183,9 +185,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     useLiveSlamMap ? Boolean(activeMappingSnapshot)
       : ["CANONICAL", "LOCAL_ONLY"].includes(activeMapStatus ?? "")
   ));
-  const navigationUiAvailable = runtimeState === "UNIFIED"
-    ? Boolean(runtimeCapabilities?.goal_available && controlMode === "AUTONOMOUS" && controlOnline)
-    : runtimeState === "NAVIGATION" && activeMapReady;
+  const navigationUiAvailable = Boolean(runtimeCapabilities?.goal_available
+    && controlMode === "AUTONOMOUS" && controlOnline);
   const canonicalMapRevision = mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision;
   const currentSlam2dMap = activeMappingSnapshot;
   const currentSlam3dCloud = useLiveSlamMap && slam3dAccumulatedCloud?.accumulated
@@ -210,23 +211,33 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     ? selectedTag : null;
   const candidatePreview = pathPreview?.request_id === latestPathRequest.current ? pathPreview : null;
   const previewAgeMs = candidatePreview?.timestamp ? clockNow - Date.parse(candidatePreview.timestamp) : Infinity;
-  const previewTargetMatches = Boolean(candidatePreview?.goal && goalPreview
-    && Math.abs(candidatePreview.goal.x - goalPreview.x) <= 1e-4
-    && Math.abs(candidatePreview.goal.y - goalPreview.y) <= 1e-4
-    && Math.abs(candidatePreview.goal.yaw - goalPreview.yaw) <= 1e-4);
+  const sourcePreviewPose = targetMethod === "MAP_POINT"
+    && goalPreview?.source_type === "CANONICAL_MAP_POINT"
+    ? candidatePreview?.source_goal : candidatePreview?.goal;
+  const previewTargetMatches = Boolean(sourcePreviewPose && goalPreview
+    && Math.abs(sourcePreviewPose.x - goalPreview.x) <= 1e-4
+    && Math.abs(sourcePreviewPose.y - goalPreview.y) <= 1e-4
+    && Math.abs(sourcePreviewPose.yaw - goalPreview.yaw) <= 1e-4);
   const previewSourceMatches = targetMethod === "TAG"
     ? Boolean(candidatePreview?.source_type === "TAG" && selectedTag
       && candidatePreview.tag_id === selectedTag.tag_id
       && candidatePreview.tag_revision === selectedTag.tag_revision
-      && candidatePreview.registry_revision === tagRegistry?.registry_revision)
-    : (candidatePreview?.source_type ?? "MAP_POINT") === "MAP_POINT";
+      && candidatePreview.registry_revision === tagRegistry?.registry_revision
+      && candidatePreview.registration_revision === selectedTag.registration_revision)
+    : Boolean(isMapPointTarget(goalPreview)
+      && candidatePreview?.source_type === goalPreview.source_type
+      && candidatePreview.source_map_id === goalPreview.source_map_id
+      && candidatePreview.source_map_revision === goalPreview.source_map_revision);
   const approvedPreview: RobotDetailPathPreview | null = candidatePreview
     && candidatePreview.status === "VALID" && candidatePreview.path.length > 0
     && candidatePreview.active_map_id === activeMapId
     && candidatePreview.active_map_revision === activeMapRevision
     && (targetMethod === "TAG" || Boolean(isMapPointTarget(goalPreview)
-      && goalPreview.frame_id === "map" && goalPreview.map_id === activeMapId
-      && goalPreview.map_revision === activeMapRevision))
+      && (goalPreview.source_type === "CANONICAL_MAP_POINT"
+        ? goalPreview.source_map_id === "CANONICAL"
+          && goalPreview.source_map_revision === String(canonicalMapRevision)
+        : goalPreview.source_map_id === activeMapId
+          && goalPreview.source_map_revision === activeMapRevision)))
     && previewTargetMatches && previewSourceMatches && Number.isFinite(previewAgeMs)
     && previewAgeMs >= -5_000 && previewAgeMs <= 120_000 ? candidatePreview : null;
 
@@ -236,6 +247,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       ? runtimeMapSnapshot : null;
   const activeNavigationMapKey = JSON.stringify([robotId, activeMapId, activeMapRevision, activeMapReady]);
   const previousActiveNavigationMapKey = useRef(activeNavigationMapKey);
+  const registrationRevision = runtimeCapabilities?.registration_revision ?? null;
+  const previousRegistrationRevision = useRef<number | null>(registrationRevision);
 
   useEffect(() => {
     select(robotId);
@@ -257,6 +270,17 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [activeNavigationMapKey, robotId, setRobotDetail]);
 
   useEffect(() => {
+    if (previousRegistrationRevision.current === registrationRevision) return;
+    previousRegistrationRevision.current = registrationRevision;
+    // Only GLOBAL/canonical points depend on this transform. Direct active-map
+    // points remain valid when canonical registration is recalibrated.
+    if (targetMethod !== "MAP_POINT" || goalPreview?.source_type !== "CANONICAL_MAP_POINT") return;
+    latestPathRequest.current = "";
+    setPathRequestState("IDLE");
+    setRobotDetail(robotId, { pathPreview: null });
+  }, [goalPreview?.source_type, registrationRevision, robotId, setRobotDetail, targetMethod]);
+
+  useEffect(() => {
     if (targetMethod !== "TAG") return;
     let current = true;
     setTagRegistry(null);
@@ -275,7 +299,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       setTagRegistryState("ERROR");
     });
     return () => { current = false; };
-  }, [activeMapId, activeMapRevision, robotId, targetMethod]);
+  }, [activeMapId, activeMapRevision, runtimeCapabilities?.registration_revision, robotId, targetMethod]);
 
   useEffect(() => {
     if (runtimeState === "MAPPING") setGoalPreview(null);
@@ -503,7 +527,9 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       frame_id: "map", preview_request_id: approvedPreview.request_id, active_map_id: activeMapId!,
       active_map_revision: activeMapRevision!, map_id: approvedPreview.active_map_id!,
       map_revision: approvedPreview.active_map_revision!, source_type: approvedPreview.source_type ?? "MAP_POINT",
-      source_id: approvedPreview.source_id ?? undefined })) {
+      source_id: approvedPreview.source_id ?? undefined,
+      source_map_id: approvedPreview.source_map_id ?? undefined,
+      source_map_revision: approvedPreview.source_map_revision ?? undefined })) {
       setError("Navigation goal was not sent");
       return;
     }
@@ -515,9 +541,14 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   };
 
   const selectMapPoint = useCallback((target: MapPointNavigationTarget) => {
-    if (target.frame_id !== "map" || target.map_id !== activeMapId
-        || target.map_revision !== activeMapRevision) {
-      setError("Map point selection belongs to a map that is no longer active");
+    const sourceMatches = target.source_type === "CANONICAL_MAP_POINT"
+      ? target.source_map_id === "CANONICAL"
+        && target.source_map_revision === String(canonicalMapRevision)
+      : target.source_type === "ACTIVE_MAP_POINT"
+        && target.source_map_id === activeMapId
+        && target.source_map_revision === activeMapRevision;
+    if (target.frame_id !== "map" || !sourceMatches) {
+      setError("Map point selection belongs to a map identity or revision that is no longer current");
       return;
     }
     setSelectedTagId(null);
@@ -527,7 +558,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
     setError("");
-  }, [activeMapId, activeMapRevision, robotId, setRobotDetail]);
+  }, [activeMapId, activeMapRevision, canonicalMapRevision, robotId, setRobotDetail]);
 
   const selectTargetMethod = (method: NavigationTargetMethod) => {
     if (method === targetMethod) return;
@@ -572,10 +603,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       setError(`Path planning is blocked: the selected robot active map is not confirmed (${activeMapStatus})`);
       return;
     }
-    const pointIdentity: NavigationMapIdentity | null = targetMethod === "MAP_POINT" && isMapPointTarget(target)
-      ? { frame_id: target.frame_id, map_id: target.map_id, map_revision: target.map_revision } : null;
-    if (targetMethod === "MAP_POINT" && (!pointIdentity || pointIdentity.frame_id !== "map"
-        || pointIdentity.map_id !== activeMapId || pointIdentity.map_revision !== activeMapRevision)) {
+    const pointTarget = targetMethod === "MAP_POINT" && isMapPointTarget(target) ? target : null;
+    if (targetMethod === "MAP_POINT" && (!pointTarget || pointTarget.frame_id !== "map"
+        || pointTarget.source_type === "ACTIVE_MAP_POINT"
+          && (pointTarget.source_map_id !== activeMapId || pointTarget.source_map_revision !== activeMapRevision)
+        || pointTarget.source_type === "CANONICAL_MAP_POINT"
+          && (pointTarget.source_map_id !== "CANONICAL"
+            || pointTarget.source_map_revision !== String(canonicalMapRevision)))) {
       latestPathRequest.current = "";
       setPathRequestState("IDLE");
       setRobotDetail(robotId, { pathPreview: null });
@@ -603,21 +637,20 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setPathRequestState("PLANNING");
     setRobotDetail(robotId, { pathPreview: null });
     const common = { type: "PATH_PREVIEW_REQUEST" as const, robot_id: robotId, request_id: requestId,
-      frame_id: "map" as const,
-      active_map_id: pointIdentity?.map_id ?? activeMapId!,
-      active_map_revision: pointIdentity?.map_revision ?? activeMapRevision!,
-      map_id: pointIdentity?.map_id ?? activeMapId!,
-      map_revision: pointIdentity?.map_revision ?? activeMapRevision! };
+      frame_id: "map" as const, active_map_id: activeMapId!, active_map_revision: activeMapRevision!,
+      map_id: activeMapId!, map_revision: activeMapRevision! };
+    const pointPayload = pointTarget ? mapPointPreviewPayload(pointTarget,
+      { map_id: activeMapId!, map_revision: activeMapRevision! }, activeMap2dSnapshot?.map_content_revision) : null;
     const sent = targetMethod === "TAG" && selectedTag && tagRegistry?.registry_revision
       ? wsSend({ ...common, source_type: "TAG", tag_id: selectedTag.tag_id,
         tag_revision: selectedTag.tag_revision, registry_revision: tagRegistry.registry_revision })
-      : wsSend({ ...common, source_type: "MAP_POINT", x: target.x, y: target.y, yaw: target.yaw });
+      : pointPayload ? wsSend({ ...common, ...pointPayload }) : false;
     if (!sent) {
       latestPathRequest.current = "";
       setPathRequestState("IDLE");
       setError("Path preview request was not sent because the WebSocket is disconnected");
     }
-  }, [activeMapId, activeMapReady, activeMapRevision, activeMapStatus, controlMode, controlOnline, navigationUiAvailable, robotId, selectedTag, setRobotDetail, tagRegistry?.registry_revision, targetMethod]);
+  }, [activeMap2dSnapshot?.map_content_revision, activeMapId, activeMapReady, activeMapRevision, activeMapStatus, canonicalMapRevision, controlMode, controlOnline, navigationUiAvailable, robotId, selectedTag, setRobotDetail, tagRegistry?.registry_revision, targetMethod]);
 
   useEffect(() => {
     if (pathPreview?.request_id && pathPreview.request_id === latestPathRequest.current) setPathRequestState("IDLE");
@@ -739,7 +772,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             {visitedViews.current.has("LIDAR_3D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_3D" ? "is-active" : "")} data-view="LIDAR_3D" aria-hidden={detailView !== "LIDAR_3D"}><RobotLidar3DView active={detailView === "LIDAR_3D"} frame={currentSlam3dCloud} robot={robot} slamMap={currentSlam2dMap} /></div>}
           </div>
           <div className="robot-detail-goal-toolbar">
-            <span>{targetMethod === "TAG" ? selectedTag ? `TAG ${selectedTag.tag_id} SELECTED · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : candidatePreview?.status === "INVALID" || candidatePreview?.status === "NO_PATH" ? candidatePreview.reason ?? candidatePreview.status : "PATH PREVIEW REQUIRED"}` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
+            <span>{targetMethod === "TAG" ? selectedTag ? `TAG ${selectedTag.tag_id} SELECTED · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : candidatePreview?.status === "INVALID" || candidatePreview?.status === "NO_PATH" ? candidatePreview.reason ?? candidatePreview.status : "PATH PREVIEW REQUIRED"}` : !navigationUiAvailable ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : !navigationUiAvailable ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
             <button type="button" disabled={!navigationUiAvailable || (!goalPreview || targetMethod === "TAG" && !selectedTag?.navigable) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
@@ -934,6 +967,7 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
     frame_id: displayedMapIdentity.frame_id ?? "map",
     map_id: displayedMapIdentity.active_map_id ?? "CANONICAL",
     map_revision: String(displayedMapIdentity.active_map_revision ?? ""),
+    source_type: "CANONICAL_MAP_POINT",
   };
   const canPick = sameNavigationMapIdentity(pickMapIdentity, clickMapIdentity);
   const displayedPose = useStableDisplayedFramePose(robot, displayedMapIdentity);

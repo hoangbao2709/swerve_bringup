@@ -9,7 +9,11 @@ swerve_controller:
     max_steering_angle: 3.141592653589793
     command_timeout: 0.5
     control_rate: 50.0
-    speed_deadband: 0.01
+    # Nav2's low-speed terminal yaw command (0.0158 rad/s measured in Gazebo)
+    # produces 0.0047 m/s at the 0.30 m module lever arm. Keep this per-module
+    # floor below that achievable command, with margin, so feedback does not
+    # report a yaw correction while the wheel targets are silently zeroed.
+    speed_deadband: 0.001
     steering_alignment_full_error: 0.10
     steering_alignment_stop_error: 0.70
     cmd_vel_topic: /cmd_vel_selected

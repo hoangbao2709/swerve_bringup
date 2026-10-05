@@ -4,6 +4,7 @@ import queue
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'swerve_controller'))
@@ -41,6 +42,44 @@ def test_controller_gates_drive_against_final_angle_not_ramped_target(actual, ex
         drive_pub=SimpleNamespace(publish=lambda msg: output.append(list(msg.data))))
     SwerveController.update(node)
     assert all((abs(value) > 0) == expected_moving for value in output[-1])
+
+
+def test_low_speed_nav_yaw_correction_survives_module_deadband():
+    from geometry_msgs.msg import Twist
+    from swerve_controller_node import SwerveController
+
+    config = yaml.safe_load((ROOT / 'config/swerve_controller.yaml').read_text())
+    params = config['swerve_controller']['ros__parameters']
+    wheel_radius = params['wheel_radius']
+    module_x = params['modules.front.x']
+    nav_yaw_command = 0.0158
+    module_linear_speed = abs(nav_yaw_command * module_x)
+    assert module_linear_speed > params['speed_deadband']
+
+    node = SimpleNamespace(
+        emergency_stop=False,
+        last_cmd_time=None,
+        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=1_100_000_000)),
+        wheel_radius=wheel_radius,
+        max_linear_velocity=params['max_linear_velocity'],
+        max_angular_velocity=params['max_angular_velocity'],
+        max_steering_angle=params['max_steering_angle'],
+        speed_deadband=params['speed_deadband'],
+        modules=('front', 'rear'),
+        module_xy={
+            'front': (params['modules.front.x'], params['modules.front.y']),
+            'rear': (params['modules.rear.x'], params['modules.rear.y']),
+        },
+        steering_command={'front': 0.0, 'rear': 0.0},
+        steering_state={'front': 0.0, 'rear': 0.0},
+    )
+    command = Twist()
+    command.angular.z = nav_yaw_command
+    SwerveController.cmd_vel_callback(node, command)
+
+    for _, wheel_speed in node.targets.values():
+        assert wheel_speed > 0.0
+        assert wheel_speed * wheel_radius > params['speed_deadband']
 
 
 @pytest.mark.parametrize('barrier', [
@@ -130,7 +169,8 @@ def test_lease_timer_applies_fresh_pending_ingress_before_old_expiry(monkeypatch
         mode_transition_state='APPLIED', manual_twist=Twist(), manual_deadline=.4,
         emergency_stop_active=False, control_mode='MANUAL', local_map_load_pending=False,
         get_parameter=lambda name: SimpleNamespace(value=(.4 if name=='manual_command_timeout' else .25)),
-        trace_control_callback=lambda _: None, send_control_status=lambda _: None,
+        trace_control_callback=lambda _: None,
+        send_control_status=lambda *_args, **_kwargs: None,
         cmd_pub=SimpleNamespace(publish=sent.append))
     bridge._manual_timer = lambda: SwerveBridge._manual_timer(bridge)
     bridge._apply_manual_command = lambda data: SwerveBridge._apply_manual_command(bridge, data)

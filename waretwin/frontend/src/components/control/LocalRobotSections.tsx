@@ -323,6 +323,7 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
     && scan.frame_id === map.frame_id ? scan : null;
   const mapIdentity: NavigationMapIdentity = {
     frame_id: map.frame_id, map_id: map.active_map_id, map_revision: String(map.active_map_revision),
+    source_type: "ACTIVE_MAP_POINT",
   };
   const selectedTarget = target?.frame_id === mapIdentity.frame_id
     && target.map_id === mapIdentity.map_id && target.map_revision === mapIdentity.map_revision ? target : null;

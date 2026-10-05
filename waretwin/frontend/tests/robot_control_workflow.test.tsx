@@ -79,7 +79,8 @@ function r01(): RobotState {
       map_revision: "21", map_source: "CANONICAL", pose_source: "GAZEBO_MODEL_STATES", valid: true,
       source_frame_id: "world", transform_source: "VALIDATED_CANONICAL_WORLD_BUNDLE", timestamp: new Date().toISOString() },
     slam_pose: { x: 2.25, y: 3.5, yaw: -0.2, frame_id: "map", map_id: "SLAM-session-1",
-      map_revision: "slam-r1", map_source: "SLAM_TOOLBOX", pose_source: "TF", valid: true,
+      map_revision: "session-session-1", map_content_revision: "slam-r1",
+      map_source: "SLAM_TOOLBOX", pose_source: "TF", valid: true,
       mapping_session_id: "session-1", timestamp: new Date().toISOString() },
   };
 }
@@ -104,6 +105,15 @@ function setOnlineRobot(runtimeState = "NAVIGATION") {
     },
   });
   useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: mapSnapshot });
+}
+
+function setNavReadyCapabilities() {
+  useStore.setState({ robotCapabilities: { R01: {
+    mapping_available: true, mapping_active: false, nav2_available: true, nav2_ready: true,
+    manual_available: false, goal_available: true, goal_blocker_code: null,
+    goal_blocker_reason: null, map_ready: true, tag_navigation_available: false,
+    registration_revision: null, registration_source: null,
+  } } });
 }
 
 function buttonNamed(name: string): HTMLButtonElement | undefined {
@@ -228,6 +238,7 @@ describe("robot detail route stability", () => {
 
   it("previews the selected Tag through the common resolver before Send Goal is enabled", async () => {
     setOnlineRobot();
+    setNavReadyCapabilities();
     useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
     const registry: RobotNavigationTagRegistry = {
       robot_id: "R01", source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY", warehouse_id: 1,
@@ -620,7 +631,8 @@ describe("robot detail route stability", () => {
   it("shows live SLAM and ready Nav2 together in Unified without disabling goals because SLAM is active", async () => {
     setOnlineRobot("UNIFIED");
     const slamMap = { robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX" as const,
-      mapping_session_id: "session-1", active_map_id: "SLAM-session-1", active_map_revision: "slam-r1",
+      mapping_session_id: "session-1", active_map_id: "SLAM-session-1",
+      active_map_revision: "session-session-1", map_content_revision: "cells-a",
       width: 2, height: 2, resolution: .05, origin: { x: 0, y: 0, yaw: 0 }, data: [-1, 0, 100, -1] };
     const cloud = { robot_id: "R01", frame_id: "map", source_frame_id: "lidar_link", point_count: 3,
       points: [[1, 0, 0], [2, 1, 0.1], [3, 2, 0.2]] as [number, number, number][], bounds: null,
@@ -644,7 +656,7 @@ describe("robot detail route stability", () => {
 
     expect(container.querySelector('[data-testid="slam-runtime-state"]')?.textContent).toBe("SLAM LIVE");
     expect(container.querySelector('[data-testid="nav2-runtime-state"]')?.textContent).toBe("NAV2 READY");
-    expect(container.textContent).toContain("SLAM-session-1 · rslam-r1 · SLAM · LIVE · LOCAL_ONLY");
+    expect(container.textContent).toContain("SLAM-session-1 · rsession-session-1 · SLAM · LIVE · LOCAL_ONLY");
     expect(container.textContent).not.toContain("GOALS DISABLED");
 
     act(() => buttonNamed("MAP VIEW 2D")?.click());
@@ -670,7 +682,8 @@ describe("robot detail route stability", () => {
   it("keeps the canonical warehouse and canonical pose selected while SLAM telemetry changes", () => {
     setOnlineRobot("MAPPING");
     const slamMap = { robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX" as const,
-      mapping_session_id: "session-1", active_map_id: "SLAM-session-1", width: 2, height: 2,
+      mapping_session_id: "session-1", active_map_id: "SLAM-session-1",
+      active_map_revision: "session-session-1", map_content_revision: "cells-a", width: 2, height: 2,
       resolution: .05, origin: { x: -1, y: -1, yaw: 0 }, data: [-1, 0, 100, -1] };
     const runtimeMap = { ...slamMap, map_source: "NAV2_MAP" as const, mapping_session_id: null, active_map_id: "CANONICAL" };
     useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1", slam2dMap: slamMap, runtimeMapSnapshot: runtimeMap });
@@ -693,6 +706,7 @@ describe("robot detail route stability", () => {
 
   it("requires PREVIEW PATH after map-point selection and invalidates approval when the point changes", async () => {
     setOnlineRobot();
+    setNavReadyCapabilities();
     useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
     renderNode(<RobotControlDetailPage robotId="R01" />);
 
@@ -712,6 +726,8 @@ describe("robot detail route stability", () => {
 
     const approved = {
       robot_id: "R01", request_id: request.request_id, status: "VALID" as const,
+      source_type: "CANONICAL_MAP_POINT" as const, source_map_id: "CANONICAL",
+      source_map_revision: "21", source_goal: { x: request.x!, y: request.y!, yaw: request.yaw! },
       frame_id: "map" as const, path: [[0, 0], [1, 1]] as Array<[number, number]>,
       path_length_m: 1.4, goal: { x: request.x, y: request.y, yaw: request.yaw },
       timestamp: new Date().toISOString(), active_map_id: "CANONICAL", active_map_revision: "21",
@@ -730,14 +746,16 @@ describe("robot detail route stability", () => {
     expect(replacement.request_id).not.toBe(request.request_id);
 
     const approvedReplacement = { ...approved, request_id: replacement.request_id,
-      goal: { x: replacement.x, y: replacement.y, yaw: replacement.yaw } };
+      goal: { x: replacement.x, y: replacement.y, yaw: replacement.yaw },
+      source_goal: { x: replacement.x!, y: replacement.y!, yaw: replacement.yaw! } };
     act(() => useStore.getState().setRobotDetail("R01", { pathPreview: approvedReplacement }));
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(false);
     await act(async () => { buttonNamed("SEND GOAL")?.click(); });
     const goalMessage = vi.mocked(wsSend).mock.calls.map(([message]) => message)
       .find((message) => message.type === "NAV_GOAL");
     expect(goalMessage).toMatchObject({ type: "NAV_GOAL", robot_id: "R01", preview_request_id: replacement.request_id,
-      active_map_id: "CANONICAL", active_map_revision: "21" });
+      active_map_id: "CANONICAL", active_map_revision: "21",
+      source_type: "CANONICAL_MAP_POINT", source_map_id: "CANONICAL", source_map_revision: "21" });
 
     act(() => useStore.getState().setRobotDetail("R01", { pathPreview: { ...approvedReplacement, path: [] } }));
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
@@ -749,6 +767,7 @@ describe("robot detail route stability", () => {
 
   it("picks and previews directly on the active saved local map, then clears selection if its identity changes", async () => {
     setOnlineRobot();
+    setNavReadyCapabilities();
     const localMap = { robot_id: "R01", frame_id: "map", map_source: "LOCAL_MAP" as const,
       active_map_id: "saved-R01-1", active_map_revision: "artifact-1", width: 20, height: 20,
       resolution: 0.1, origin: { x: -1, y: -1, yaw: 0 }, data: Array(400).fill(0) };
@@ -764,8 +783,14 @@ describe("robot detail route stability", () => {
 
     const canonicalCanvas = container.querySelector<HTMLCanvasElement>('[aria-label="Canonical warehouse and robot pose map"]');
     await act(async () => { canonicalCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
-    expect(container.textContent).not.toContain("TARGET ");
-    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
+    expect(container.textContent).toContain("TARGET ");
+    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    const canonicalRequest = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
+    expect(canonicalRequest).toMatchObject({ type: "PATH_PREVIEW_REQUEST",
+      source_type: "CANONICAL_MAP_POINT", source_map_id: "CANONICAL", source_map_revision: "21",
+      active_map_id: "saved-R01-1", active_map_revision: "artifact-1" });
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
 
     await act(async () => { buttonNamed("MAP VIEW 2D")?.click(); });
     const localCanvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas');
@@ -781,6 +806,7 @@ describe("robot detail route stability", () => {
     if (!request || request.type !== "PATH_PREVIEW_REQUEST") throw new Error("local path preview request was not emitted");
 
     const approved = { robot_id: "R01", request_id: request.request_id, status: "VALID" as const,
+      source_type: "ACTIVE_MAP_POINT" as const, source_map_id: "saved-R01-1", source_map_revision: "artifact-1",
       frame_id: "map" as const, path: [[0, 0], [1, 1]] as Array<[number, number]>, path_length_m: 1.4,
       goal: { x: request.x!, y: request.y!, yaw: request.yaw! }, timestamp: new Date().toISOString(),
       active_map_id: "saved-R01-1", active_map_revision: "artifact-1" };

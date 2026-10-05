@@ -42,6 +42,23 @@ def test_live_slam_nav2_has_no_map_server_and_costmap_subscribes_to_full_map():
     assert config['planner_server']['ros__parameters']['GridBased']['allow_unknown'] is False
 
 
+def test_nav2_progress_checker_counts_terminal_yaw_without_weakening_stuck_limits():
+    config = yaml.safe_load((ROOT / 'swerve_navigation/config/nav2_params.yaml').read_text(encoding='utf-8'))
+    params = config['controller_server']['ros__parameters']
+    checker = params['progress_checker']
+
+    assert checker['plugin'] == 'nav2_controller::PoseProgressChecker'
+    assert checker['required_movement_radius'] == 0.30
+    assert checker['required_movement_angle'] == 0.20
+    assert checker['movement_time_allowance'] == 10.0
+
+    follow_path = params['FollowPath']
+    assert follow_path['Oscillation.oscillation_reset_angle'] == follow_path['xy_goal_tolerance']
+    assert follow_path['critics'].count('Oscillation') == 1
+    bt_params = config['bt_navigator']['ros__parameters']
+    assert bt_params['default_server_timeout'] == 500
+
+
 def test_unified_nav2_readiness_order_matches_lifecycle_manager_start_order():
     readiness = (ROOT / 'scripts/navigation_readiness.py').read_text(encoding='utf-8')
     launch = (ROOT / 'swerve_navigation/launch/navigation.launch.py').read_text(encoding='utf-8')

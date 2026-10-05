@@ -244,7 +244,7 @@ def _run_readiness(root: Path, mode: str, robot_id: str, backend_url: str | None
             args.extend(('--backend-url', backend_url))
         if log_path:
             args.extend(('--log-path', log_path))
-        if mode == 'navigation' and map_file:
+        if mode in ('navigation', 'unified') and map_file:
             args.extend(('--map-file', map_file))
         lifecycle_state_file = (env or os.environ).get('WARETWIN_NAV2_LIFECYCLE_STATE_FILE')
         if mode in ('navigation', 'unified') and lifecycle_state_file:

@@ -145,6 +145,7 @@ class TwinRuntime:
         self.robot_mapping_elapsed_s: dict[str, float] = {}
         self.robot_mapping_sessions: dict[str, str] = {}
         self.robot_map_registrations: dict[str, dict[str, Any]] = {}
+        self.robot_navigation_maps: dict[str, dict[str, Any]] = {}
         self.simulation_registration_drift: dict[tuple[str, str, str, int], int] = {}
         self.simulation_registration_last_check: dict[tuple[str, str, str], float] = {}
         self.robot_runtime_modes: dict[str, str] = {}
@@ -415,6 +416,42 @@ class TwinRuntime:
                 and active_map.get('map_sync_status') in ('CANONICAL', 'LOCAL_ONLY'))
         if not active_map.get('active_map_id') or not active_map.get('active_map_revision') or not map_ready:
             return 'ACTIVE_MAP_NOT_READY', 'the active navigation map identity/revision is not confirmed and ready'
+        mode = str(self.robot_runtime_modes.get(rid) or self.operation_mode).upper()
+        if mode == 'UNIFIED':
+            navigation_map = self.robot_navigation_maps.get(rid, {})
+            try:
+                navigation_map_age = time.monotonic() - float(
+                    navigation_map.get('received_monotonic'))
+                navigation_map_fresh = math.isfinite(navigation_map_age) and 0.0 <= navigation_map_age <= timeout
+            except (TypeError, ValueError, OverflowError):
+                navigation_map_fresh = False
+            if not navigation_map_fresh or navigation_map.get('ready') is not True:
+                detail = str(navigation_map.get('reason') or 'registered full navigation map is not ready')
+                return 'NAVIGATION_MAP_NOT_READY', detail
+            registration = self.robot_map_registrations.get(rid, {})
+            try:
+                geometry_ready = (
+                    str(navigation_map.get('frame_id') or '') == 'map'
+                    and int(navigation_map.get('width')) > 0
+                    and int(navigation_map.get('height')) > 0
+                    and math.isfinite(float(navigation_map.get('resolution')))
+                    and float(navigation_map.get('resolution')) > 0.0
+                )
+            except (TypeError, ValueError, OverflowError):
+                geometry_ready = False
+            if (not geometry_ready
+                    or not str(navigation_map.get('navigation_map_id') or '')
+                    or not str(navigation_map.get('navigation_map_revision') or '')
+                    or navigation_map.get('navigation_map_source') != 'PUBLISHED_CANONICAL_REGISTERED'
+                    or str(navigation_map.get('active_map_id') or '') != str(active_map.get('active_map_id') or '')
+                    or str(navigation_map.get('active_map_revision') or '') != str(active_map.get('active_map_revision') or '')
+                    or str(navigation_map.get('canonical_map_revision') or '')
+                        != str(active_map.get('canonical_map_revision') or '')
+                    or navigation_map.get('registration_revision') != registration.get('registration_revision')
+                    or navigation_map.get('registration_source') != registration.get('source')):
+                return 'NAVIGATION_MAP_REVISION_MISMATCH', (
+                    'full Nav2 map is not tied to the current active map, canonical revision, '
+                    'and exact registration revision')
         if self.navigation_localization_state(rid, active_map) is None:
             return 'LOCALIZATION_NOT_READY', 'a fresh TF pose in the confirmed active map is required for navigation'
         return None
@@ -622,6 +659,10 @@ class TwinRuntime:
                 rid: {key: value for key, value in row.items() if key != 'received_monotonic'}
                 for rid, row in self.robot_map_sync.items()
             },
+            'navigation_maps': {
+                rid: {key: value for key, value in row.items() if key != 'received_monotonic'}
+                for rid, row in self.robot_navigation_maps.items()
+            },
             'local_active_maps': {
                 rid: self.active_map_state(rid)
                 for rid in sorted(self.connected_robot_ids | set(self.local_map_overrides))
@@ -666,6 +707,8 @@ class TwinRuntime:
         self.bridge_status = 'CONNECTED'
         self.ros_diagnostics['ros'] = True
         self.nav2_state = 'CONNECTED'
+        if robot_id:
+            self.robot_navigation_maps.pop(str(robot_id), None)
         self.map_sync_error = None
         await self.send_published_map_to_bridge()
         await self.broadcast_runtime_status()
@@ -679,6 +722,7 @@ class TwinRuntime:
             self.robot_bridge_heartbeats.pop(rid, None)
             self.robot_pose_heartbeats.pop(rid, None)
             self.robot_map_sync.pop(rid, None)
+            self.robot_navigation_maps.pop(rid, None)
             self._aggregate_robot_map_sync()
         else:
             self.connected_robot_ids.clear()
@@ -687,6 +731,7 @@ class TwinRuntime:
             self.robot_bridge_heartbeats.clear()
             self.robot_pose_heartbeats.clear()
             self.robot_map_sync.clear()
+            self.robot_navigation_maps.clear()
         self.ros_bridge_connected = bool(self.connected_robot_ids) if robot_id else False
         if self.ros_bridge_connected:
             # One namespaced bridge went away; keep the other robots and the
@@ -975,6 +1020,17 @@ class TwinRuntime:
                         'source': registration.source,
                         'tx': registration.tx, 'ty': registration.ty, 'yaw': registration.yaw,
                     }
+                    from .ros_bridge_consumer import registry
+                    await registry.send({
+                        'type': 'MAP_REGISTRATION', 'robot_id': rid,
+                        'canonical_map_revision': registration.canonical_revision,
+                        'active_map_id': registration.active_map_id,
+                        'active_map_revision': registration.active_map_revision,
+                        'registration_revision': registration.registration_revision,
+                        'source': registration.source,
+                        'tx': registration.tx, 'ty': registration.ty,
+                        'yaw': registration.yaw,
+                    })
                     if result['changed']:
                         event = 'MAP_REGISTRATION_CREATED' if result['created'] else 'MAP_REGISTRATION_UPDATED'
                         log.info('%s robot=%s active_map=%s active_revision=%s canonical_revision=%s registration_revision=%s source=%s',
@@ -1129,6 +1185,34 @@ class TwinRuntime:
             # well as forwarding the robot-scoped console payload.
             await self.handle_ros_diagnostics(data)
             await self.broadcast(data)
+        elif kind == 'NAVIGATION_MAP_STATUS':
+            robot_id = str(data.get('robot_id') or '').strip()
+            if not robot_id or robot_id not in self.connected_robot_ids:
+                return
+            previous = self.robot_navigation_maps.get(robot_id, {})
+            current = {
+                key: data.get(key) for key in (
+                    'ready', 'navigation_map_source', 'navigation_map_id',
+                    'navigation_map_revision', 'canonical_map_revision',
+                    'active_map_id', 'active_map_revision',
+                    'registration_revision', 'registration_source',
+                    'frame_id', 'resolution', 'width', 'height',
+                    'origin_x', 'origin_y', 'origin_yaw',
+                    'min_x', 'max_x', 'min_y', 'max_y',
+                    'source_width', 'source_height', 'source_resolution',
+                    'source_origin_x', 'source_origin_y', 'source_origin_yaw',
+                    'known_cells', 'free_cells', 'occupied_cells', 'unknown_cells',
+                    'reason',
+                )
+            }
+            current['received_monotonic'] = time.monotonic()
+            self.robot_navigation_maps[robot_id] = current
+            if (previous.get('navigation_map_revision')
+                    != current.get('navigation_map_revision')
+                    or previous.get('ready') != current.get('ready')):
+                self.invalidate_path_previews(robot_id, 'full navigation map identity/revision changed')
+            await self.broadcast(data)
+            await self.broadcast_runtime_status()
         elif kind == 'PATH_PREVIEW_RESULT':
             robot_id = str(data.get('robot_id') or '')
             request_id = str(data.get('request_id') or '')
@@ -1163,12 +1247,19 @@ class TwinRuntime:
             map_matches = (
                 str(data.get('active_map_id') or '') == request['active_map_id']
                 and str(data.get('active_map_revision') or '') == request['active_map_revision']
+                and str(data.get('navigation_map_revision') or '')
+                    == str(request.get('navigation_map_revision') or '')
             )
             active_now = self.active_map_state(robot_id)
+            current_navigation_map = self.robot_navigation_maps.get(robot_id, {})
             still_current = (
                 active_now.get('active_map_id') == request['active_map_id']
                 and active_now.get('active_map_revision') == request['active_map_revision']
                 and self.navigation_localization_state(robot_id, active_now) == request['localization_state']
+                and (str(self.robot_runtime_modes.get(robot_id) or self.operation_mode).upper() != 'UNIFIED'
+                     or (current_navigation_map.get('ready') is True
+                         and str(current_navigation_map.get('navigation_map_revision') or '')
+                         == str(request.get('navigation_map_revision') or '')))
             )
             source_still_current = True
             if request.get('source_type') in ('TAG', 'CANONICAL_MAP_POINT'):
@@ -1227,6 +1318,10 @@ class TwinRuntime:
                 'canonical_map_revision': request['canonical_map_revision'],
                 'map_content_revision': active_now.get('map_content_revision'),
                 'map_content_revision_at_request': request.get('map_content_revision'),
+                'navigation_map_id': current_navigation_map.get('navigation_map_id'),
+                'navigation_map_revision': request.get('navigation_map_revision'),
+                'reason_code': data.get('reason_code'),
+                'coverage': data.get('coverage'),
                 'goal': {**request['goal'], 'frame_id': 'map'},
             })
             log.info('PATH_PREVIEW_%s robot=%s request_id=%s source=%s active_map=%s active_revision=%s registration_revision=%s reason=%s',
@@ -1422,6 +1517,8 @@ class TwinRuntime:
             self.ros_diagnostics['metrics'] = dict(values['metrics'])
         if isinstance(values.get('mapping'), dict):
             self.ros_diagnostics['mapping'] = dict(values['mapping'])
+        if isinstance(values.get('navigation_map'), dict):
+            self.ros_diagnostics['navigation_map'] = dict(values['navigation_map'])
         if isinstance(values.get('errors'), list):
             self.ros_diagnostics['errors'] = values['errors'][:100]
         if values.get('simulation_time') is not None:
@@ -1872,6 +1969,10 @@ class TwinRuntime:
                     'active_map_revision': active.get('active_map_revision'),
                     'canonical_map_revision': active.get('canonical_map_revision'),
                     'map_content_revision': active.get('map_content_revision'),
+                    'navigation_map_id': self.robot_navigation_maps.get(
+                        msg.robot_id, {}).get('navigation_map_id'),
+                    'navigation_map_revision': self.robot_navigation_maps.get(
+                        msg.robot_id, {}).get('navigation_map_revision'),
                     'timestamp': datetime.now(timezone.utc).isoformat(),
                 })
 
@@ -1979,6 +2080,11 @@ class TwinRuntime:
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
                 'map_content_revision': active.get('map_content_revision'),
+                'navigation_map_revision': (
+                    self.robot_navigation_maps.get(msg.robot_id, {}).get('navigation_map_revision')
+                    if str(self.robot_runtime_modes.get(msg.robot_id) or self.operation_mode).upper() == 'UNIFIED'
+                    else None
+                ),
                 'canonical_map_revision': active['canonical_map_revision'],
                 'localization_state': localization_state,
                 'created_monotonic': now,
@@ -2001,6 +2107,8 @@ class TwinRuntime:
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
                 'map_content_revision': active.get('map_content_revision'),
+                **({'navigation_map_revision': request['navigation_map_revision']}
+                   if request['navigation_map_revision'] is not None else {}),
                 'canonical_map_revision': active['canonical_map_revision'],
             })
             if not result.get('ok'):
@@ -2121,6 +2229,18 @@ class TwinRuntime:
                         'message': 'the active map or revision changed after path preview',
                     })
                     return
+                if str(self.robot_runtime_modes.get(msg.robot_id) or self.operation_mode).upper() == 'UNIFIED':
+                    navigation_map = self.robot_navigation_maps.get(msg.robot_id, {})
+                    expected_navigation_revision = str(navigation_map.get('navigation_map_revision') or '')
+                    if (navigation_map.get('ready') is not True
+                            or not expected_navigation_revision
+                            or str(preview.get('navigation_map_revision') or '')
+                                != expected_navigation_revision):
+                        await consumer.send_json({
+                            'type': 'ERROR', 'code': 'PATH_PREVIEW_MAP_MISMATCH',
+                            'message': 'the registered full navigation map changed after path preview',
+                        })
+                        return
                 target = preview.get('goal') or {}
                 try:
                     matches_target = all(
@@ -2223,6 +2343,8 @@ class TwinRuntime:
                     'preview_request_id': preview_id,
                     'active_map_id': active['active_map_id'],
                     'active_map_revision': active['active_map_revision'],
+                    **({'navigation_map_revision': preview['navigation_map_revision']}
+                       if preview.get('navigation_map_revision') is not None else {}),
                     'canonical_map_revision': active['canonical_map_revision'],
                 })
                 if result.get('ok'):

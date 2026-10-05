@@ -60,7 +60,7 @@ def generate_launch_description():
     simulated_navigation_mode = IfCondition(PythonExpression([
         "'", use_sim, "' == 'true' and '", mode, "' == 'navigation'"]))
     require_canonical_map = ParameterValue(PythonExpression([
-        "'", mode, "' == 'navigation'"]), value_type=bool)
+        "'", mode, "' in ('navigation', 'unified')"]), value_type=bool)
     require_tag_map = ParameterValue(PythonExpression([
         "'", mode, "' == 'navigation'"]), value_type=bool)
     lidar_topic = LaunchConfiguration('real_lidar_topic')
@@ -88,7 +88,9 @@ def generate_launch_description():
             raise RuntimeError(
                 f'Unsupported mode={selected!r}; choose unified, mapping, or navigation')
         if selected == 'unified':
-            return [LogInfo(msg='WareTwin runtime mode: UNIFIED (SLAM Toolbox + Nav2 share the live SLAM map)')]
+            return [LogInfo(msg=(
+                'WareTwin runtime mode: UNIFIED (SLAM owns live /map and map->odom; '
+                'Nav2 plans on the published canonical map registered into /navigation_map)'))]
         return [LogInfo(msg=f'WareTwin legacy runtime mode: {selected.upper()}')]
 
     def validate_map_bundle(context):
@@ -268,7 +270,7 @@ def generate_launch_description():
                                                     'autostart': nav2_autostart,
                                                     'map_file': map_file,
                                                     'map_source': PythonExpression([
-                                                        "'LIVE_SLAM' if '", mode,
+                                                        "'REGISTERED_CANONICAL' if '", mode,
                                                         "' == 'unified' else 'STATIC_MAP'"]),
                                                     'allow_dev_map': allow_dev_world}.items(),
                                   condition=navigation_mode)
@@ -279,7 +281,12 @@ def generate_launch_description():
                                'gazebo_model_name': 'swerve_base',
                                'namespace': namespace,
                                'runtime_state': mode,
-                               'map_topic': '/map',
+                               'map_topic': PythonExpression([
+                                   "'/map' if '", mode,
+                                   "' in ('mapping', 'unified') else '/navigation_map'"]),
+                               'canonical_map_topic': '/canonical_map',
+                               'navigation_map_topic': '/navigation_map',
+                               'navigation_map_metadata_topic': '/navigation_map_metadata',
                                'django_token': LaunchConfiguration('bridge_token'),
                                'django_ws_url': LaunchConfiguration('bridge_ws_url'),
                                'artifact_root': artifact_root,

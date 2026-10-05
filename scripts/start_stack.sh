@@ -460,7 +460,7 @@ ros_readiness_report() {
       --log-path "$(stack_log_file ros)"
       --lifecycle-state-file "$NAV2_LIFECYCLE_STATE_FILE"
     )
-    if [[ "$MODE" == navigation && -n "$MAP_FILE" ]]; then
+    if [[ ( "$MODE" == navigation || "$MODE" == unified ) && -n "$MAP_FILE" ]]; then
       readiness_args+=(--map-file "$MAP_FILE")
     fi
     # The Python probe owns its own deadline.  Wrapping it in GNU timeout sends

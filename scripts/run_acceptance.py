@@ -210,7 +210,7 @@ def run_case(args, case_name: str, case_dir: str) -> dict:
             '--timeout', str(args.readiness_timeout), '--json', readiness_path,
         ]
         map_file = read_simple_env(runtime_path, 'MAP_FILE')
-        if args.mode == 'navigation' and map_file:
+        if args.mode in ('navigation', 'unified') and map_file:
             readiness_cmd.extend(['--map-file', map_file])
         readiness = subprocess.run(
             readiness_cmd, cwd=ROOT, env=ros_env, stdout=subprocess.PIPE,

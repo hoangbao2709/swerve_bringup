@@ -118,6 +118,7 @@ class RosBridgeConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
     database_free_types = frozenset({
         'HEARTBEAT', 'ROBOT_STATE', 'ROBOT_CONTROL_STATUS', 'COMMAND_DIAGNOSTICS',
         'ROS_DIAGNOSTICS', 'SYSTEM_DIAGNOSTICS', 'MAP_REVISION_STATUS',
+        'NAVIGATION_MAP_STATUS',
         'MAP_SNAPSHOT', 'LIDAR_SCAN', 'LIDAR_MAP_2D', 'LIDAR_MAP_3D',
         'LIDAR_STREAM_DIAGNOSTICS', 'NAV_GLOBAL_PATH', 'NAV_LOCAL_PATH',
         'ROBOT_DETAIL_VIEW_STATUS',

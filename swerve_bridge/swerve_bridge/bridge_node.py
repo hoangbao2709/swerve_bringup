@@ -53,6 +53,7 @@ from .web_map_renderer import (
     occupancy_content_signature,
     occupancy_grid_statistics,
 )
+from .navigation_map import transform_occupancy_grid, validate_target_coverage
 
 
 def yaw_from_quaternion(q) -> float:
@@ -81,6 +82,9 @@ class SwerveBridge(Node):
         self.declare_parameter('lidar_filtered_topic', '/lidar/points_filtered')
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('map_topic', '/map')
+        self.declare_parameter('canonical_map_topic', '/canonical_map')
+        self.declare_parameter('navigation_map_topic', '/navigation_map')
+        self.declare_parameter('navigation_map_metadata_topic', '/navigation_map_metadata')
         self.declare_parameter('global_path_topic', '/plan')
         self.declare_parameter('local_path_topic', '/local_plan')
         self.declare_parameter('goal_topic', '/goal_pose')
@@ -267,6 +271,18 @@ class SwerveBridge(Node):
         self.pending_local_map_load = None
         self.pending_initial_pose = None
         self.map_callback_count = 0
+        self.canonical_navigation_grid = None
+        self.navigation_map_registration = None
+        self.navigation_map_signature = None
+        self.navigation_grid_occupancy = None
+        self.navigation_map_status = {
+            'ready': False,
+            'navigation_map_source': None,
+            'navigation_map_id': None,
+            'navigation_map_revision': None,
+            'frame_id': 'map',
+            'reason': 'WAITING_FOR_CANONICAL_MAP_AND_REGISTRATION',
+        }
         self.path_preview_approvals = {}
         self.paused_pose_context = None
         self.goal_request_pending = False
@@ -361,12 +377,28 @@ class SwerveBridge(Node):
             SlamSerializePoseGraph, self._scoped_topic('/slam_toolbox/serialize_map'))
         scan_topic = self._scoped_topic(self.get_parameter('scan_topic').value)
         map_topic = self._scoped_topic(self.get_parameter('map_topic').value)
+        canonical_map_topic = self._scoped_topic(self.get_parameter('canonical_map_topic').value)
+        navigation_map_topic = self._scoped_topic(self.get_parameter('navigation_map_topic').value)
+        navigation_map_metadata_topic = self._scoped_topic(
+            self.get_parameter('navigation_map_metadata_topic').value)
         global_path_topic = self._scoped_topic(self.get_parameter('global_path_topic').value)
         local_path_topic = self._scoped_topic(self.get_parameter('local_path_topic').value)
         goal_topic = self._scoped_topic(self.get_parameter('goal_topic').value)
         self.scan_topic_name = scan_topic
         self.create_subscription(LaserScan, scan_topic, self.scan_cb, qos_profile_sensor_data)
         self.create_subscription(OccupancyGrid, map_topic, self.map_cb, canonical_map_qos_profile())
+        self.navigation_map_pub = None
+        self.navigation_map_metadata_pub = None
+        self.canonical_map_subscription = None
+        if self.runtime_state == 'UNIFIED':
+            map_qos = canonical_map_qos_profile()
+            self.navigation_map_pub = self.create_publisher(
+                OccupancyGrid, navigation_map_topic, map_qos)
+            self.navigation_map_metadata_pub = self.create_publisher(
+                String, navigation_map_metadata_topic, map_qos)
+            self.canonical_map_subscription = self.create_subscription(
+                OccupancyGrid, canonical_map_topic,
+                self.canonical_navigation_map_cb, map_qos)
         self.create_subscription(RosPath, global_path_topic, self.global_path_cb, 1)
         self.create_subscription(RosPath, local_path_topic, self.local_path_cb, 1)
         self.create_subscription(PoseStamped, goal_topic, self.goal_pose_cb, 1)
@@ -387,6 +419,12 @@ class SwerveBridge(Node):
             lambda: 3600.0,
             lambda exc: self.get_logger().warning(f'map snapshot preparation failed: {type(exc).__name__}'),
             name='web-map-snapshot')
+        self.navigation_map_worker = VisualizationWorker(
+            self.publish_registered_navigation_map,
+            lambda: 3600.0,
+            lambda exc: self.get_logger().error(
+                f'NAVIGATION_MAP_TRANSFORM_FAILED error={type(exc).__name__}:{str(exc)[:240]}'),
+            name='registered-navigation-map')
         self.diagnostics_worker = VisualizationWorker(self.diagnostics_timer,
             lambda: 1.0 / max(.1, float(self.get_parameter('heartbeat_rate').value)),
             lambda exc: self.get_logger().warning(f'diagnostics preparation failed: {type(exc).__name__}'),
@@ -405,6 +443,7 @@ class SwerveBridge(Node):
         self.outbound_thread.start()
         self.visualization_worker.start()
         self.map_snapshot_worker.start()
+        self.navigation_map_worker.start()
         self.diagnostics_worker.start()
         self.thread = threading.Thread(target=self.websocket_loop, daemon=True)
         self.thread.start()
@@ -538,7 +577,256 @@ class SwerveBridge(Node):
         self.latest_map_received_monotonic = now
         self.latest_map_generation += 1
         self.map_callback_count += 1
+        if (self.runtime_state != 'UNIFIED'
+                and self._scoped_topic(self.get_parameter('map_topic').value)
+                == self._scoped_topic(self.get_parameter('navigation_map_topic').value)):
+            active = self.active_map_identity()
+            grid_data = {
+                'ready': bool(active.get('active_map_id') == 'CANONICAL'
+                              and active.get('active_map_revision')),
+                'navigation_map_id': 'CANONICAL',
+                'navigation_map_revision': str(active.get('active_map_revision') or ''),
+                'resolution': float(msg.info.resolution),
+                'width': int(msg.info.width), 'height': int(msg.info.height),
+                'origin_x': float(msg.info.origin.position.x),
+                'origin_y': float(msg.info.origin.position.y),
+                'origin_yaw': yaw_from_quaternion(msg.info.origin.orientation),
+                'data': msg.data,
+            }
+            grid_data.update({
+                'min_x': grid_data['origin_x'],
+                'max_x': grid_data['origin_x'] + grid_data['width'] * grid_data['resolution'],
+                'min_y': grid_data['origin_y'],
+                'max_y': grid_data['origin_y'] + grid_data['height'] * grid_data['resolution'],
+            })
+            self.navigation_grid_occupancy = grid_data
+            self.navigation_map_status = {
+                **{key: value for key, value in grid_data.items() if key != 'data'},
+                'navigation_map_source': 'PUBLISHED_CANONICAL',
+                'canonical_map_revision': self.ros_map_revision,
+                'active_map_id': active.get('active_map_id'),
+                'active_map_revision': active.get('active_map_revision'),
+                'frame_id': str(msg.header.frame_id or ''),
+                'reason': None,
+            }
         self.map_snapshot_worker.wake()
+
+    def canonical_navigation_map_cb(self, msg):
+        """Store the published full map quickly; resampling runs off-executor."""
+        if self.runtime_state != 'UNIFIED':
+            return
+        if str(msg.header.frame_id or '') != 'map':
+            self.navigation_map_status = {
+                **self.navigation_map_status, 'ready': False,
+                'reason': 'CANONICAL_NAVIGATION_MAP_FRAME_MISMATCH',
+            }
+            self._publish_navigation_map_status()
+            return
+        self.canonical_navigation_grid = msg
+        self.navigation_map_worker.wake()
+
+    def apply_navigation_map_registration(self, data):
+        """Accept only the backend's exact active/canonical registration tuple."""
+        active = self.active_map_identity()
+        try:
+            registration = {
+                'robot_id': str(data.get('robot_id') or ''),
+                'canonical_map_revision': int(data.get('canonical_map_revision')),
+                'active_map_id': str(data.get('active_map_id') or ''),
+                'active_map_revision': str(data.get('active_map_revision') or ''),
+                'registration_revision': int(data.get('registration_revision')),
+                'source': str(data.get('source') or ''),
+                'tx': float(data.get('tx')), 'ty': float(data.get('ty')),
+                'yaw': float(data.get('yaw')),
+            }
+        except (TypeError, ValueError, OverflowError):
+            registration = None
+        valid = bool(
+            registration
+            and registration['robot_id'] == self.robot_id
+            and registration['canonical_map_revision'] == self.ros_map_revision
+            and registration['active_map_id'] == active.get('active_map_id')
+            and registration['active_map_revision'] == active.get('active_map_revision')
+            and self.active_map_source() == 'SLAM_TOOLBOX'
+            and registration['registration_revision'] > 0
+            and registration['source']
+            and all(math.isfinite(registration[key]) for key in ('tx', 'ty', 'yaw'))
+        )
+        if not valid:
+            self.navigation_map_registration = None
+            self.navigation_map_signature = None
+            self.navigation_grid_occupancy = None
+            self.navigation_map_status = {
+                **self.navigation_map_status, 'ready': False,
+                'reason': 'MAP_REGISTRATION_IDENTITY_MISMATCH',
+                'active_map_id': active.get('active_map_id'),
+                'active_map_revision': active.get('active_map_revision'),
+                'canonical_map_revision': self.ros_map_revision,
+            }
+            self.get_logger().error(
+                f'MAP_REGISTRATION_INVALID robot={self.robot_id} '
+                f'active_map={active.get("active_map_id")}@{active.get("active_map_revision")} '
+                f'canonical_revision={self.ros_map_revision}')
+            self._publish_navigation_map_status()
+            return
+        signature = tuple(registration[key] for key in (
+            'canonical_map_revision', 'active_map_id', 'active_map_revision',
+            'registration_revision', 'source', 'tx', 'ty', 'yaw'))
+        previous = self.navigation_map_registration
+        previous_signature = (tuple(previous[key] for key in (
+            'canonical_map_revision', 'active_map_id', 'active_map_revision',
+            'registration_revision', 'source', 'tx', 'ty', 'yaw')) if previous else None)
+        if signature == previous_signature:
+            return
+        self.navigation_map_registration = registration
+        self.navigation_map_signature = None
+        self.navigation_grid_occupancy = None
+        self.navigation_map_status = {
+            **self.navigation_map_status, 'ready': False,
+            'navigation_map_source': 'PUBLISHED_CANONICAL_REGISTERED',
+            'canonical_map_revision': registration['canonical_map_revision'],
+            'active_map_id': registration['active_map_id'],
+            'active_map_revision': registration['active_map_revision'],
+            'registration_revision': registration['registration_revision'],
+            'registration_source': registration['source'],
+            'reason': 'REGISTERED_NAVIGATION_MAP_REFRESHING',
+        }
+        self.get_logger().info(
+            f'MAP_REGISTRATION_ACCEPTED robot={self.robot_id} '
+            f'active_map={registration["active_map_id"]}@{registration["active_map_revision"]} '
+            f'canonical_revision={registration["canonical_map_revision"]} '
+            f'registration_revision={registration["registration_revision"]} '
+            f'source={registration["source"]}')
+        self._publish_navigation_map_status()
+        self.navigation_map_worker.wake()
+
+    def publish_registered_navigation_map(self):
+        """Publish the complete canonical raster transformed into the active SLAM frame."""
+        source = self.canonical_navigation_grid
+        registration = self.navigation_map_registration
+        if source is None or registration is None or self.navigation_map_pub is None:
+            return
+        active = self.active_map_identity()
+        if (str(source.header.frame_id or '') != 'map'
+                or registration.get('active_map_id') != active.get('active_map_id')
+                or registration.get('active_map_revision') != active.get('active_map_revision')
+                or registration.get('canonical_map_revision') != self.ros_map_revision):
+            return
+        source_origin = source.info.origin
+        source_signature = (
+            int(source.info.width), int(source.info.height),
+            round(float(source.info.resolution), 8),
+            round(float(source_origin.position.x), 6),
+            round(float(source_origin.position.y), 6),
+            round(yaw_from_quaternion(source_origin.orientation), 6),
+            occupancy_content_signature(source.data),
+        )
+        identity = (
+            registration['canonical_map_revision'], registration['active_map_id'],
+            registration['active_map_revision'], registration['registration_revision'],
+            registration['source'], round(registration['tx'], 9),
+            round(registration['ty'], 9), round(registration['yaw'], 9),
+        )
+        signature = (source_signature, identity)
+        if signature == self.navigation_map_signature and self.navigation_map_status.get('ready'):
+            return
+        transformed = transform_occupancy_grid(
+            width=source.info.width, height=source.info.height,
+            resolution=source.info.resolution,
+            origin_x=source_origin.position.x, origin_y=source_origin.position.y,
+            origin_yaw=yaw_from_quaternion(source_origin.orientation),
+            data=source.data, transform=registration,
+        )
+        current_registration = self.navigation_map_registration
+        if (current_registration is None
+                or any(current_registration.get(key) != registration.get(key) for key in (
+                    'canonical_map_revision', 'active_map_id', 'active_map_revision',
+                    'registration_revision', 'source', 'tx', 'ty', 'yaw'))
+                or self.active_map_identity().get('active_map_id') != registration['active_map_id']
+                or self.active_map_identity().get('active_map_revision') != registration['active_map_revision']):
+            return
+        output = OccupancyGrid()
+        output.header.stamp = source.header.stamp
+        output.header.frame_id = 'map'
+        output.info.map_load_time = source.info.map_load_time
+        output.info.resolution = transformed['resolution']
+        output.info.width = transformed['width']
+        output.info.height = transformed['height']
+        output.info.origin.position.x = transformed['origin_x']
+        output.info.origin.position.y = transformed['origin_y']
+        output.info.origin.position.z = 0.0
+        output.info.origin.orientation.w = 1.0
+        output.data = transformed['data']
+        navigation_map_id = (
+            f"NAV-{registration['canonical_map_revision']}-{registration['active_map_id']}"
+        )
+        navigation_map_revision = (
+            f"{registration['active_map_revision']}:canonical-{registration['canonical_map_revision']}"
+            f":registration-{registration['registration_revision']}"
+        )
+        status = {
+            'ready': True,
+            'navigation_map_source': 'PUBLISHED_CANONICAL_REGISTERED',
+            'navigation_map_id': navigation_map_id,
+            'navigation_map_revision': navigation_map_revision,
+            'canonical_map_revision': registration['canonical_map_revision'],
+            'active_map_id': registration['active_map_id'],
+            'active_map_revision': registration['active_map_revision'],
+            'registration_revision': registration['registration_revision'],
+            'registration_source': registration['source'],
+            'registration': {key: registration[key] for key in ('tx', 'ty', 'yaw')},
+            'frame_id': 'map',
+            'resolution': transformed['resolution'],
+            'width': transformed['width'], 'height': transformed['height'],
+            'origin_x': transformed['origin_x'], 'origin_y': transformed['origin_y'],
+            'origin_yaw': 0.0,
+            'min_x': transformed['min_x'], 'max_x': transformed['max_x'],
+            'min_y': transformed['min_y'], 'max_y': transformed['max_y'],
+            'source_width': int(source.info.width),
+            'source_height': int(source.info.height),
+            'source_resolution': float(source.info.resolution),
+            'source_origin_x': float(source_origin.position.x),
+            'source_origin_y': float(source_origin.position.y),
+            'source_origin_yaw': yaw_from_quaternion(source_origin.orientation),
+            'known_cells': transformed['known_cells'],
+            'free_cells': transformed['free_cells'],
+            'occupied_cells': transformed['occupied_cells'],
+            'unknown_cells': transformed['unknown_cells'],
+            'reason': None,
+        }
+        self.navigation_map_pub.publish(output)
+        self.navigation_grid_occupancy = {
+            'ready': True,
+            'navigation_map_id': navigation_map_id,
+            'navigation_map_revision': navigation_map_revision,
+            'resolution': transformed['resolution'],
+            'width': transformed['width'], 'height': transformed['height'],
+            'origin_x': transformed['origin_x'], 'origin_y': transformed['origin_y'],
+            'origin_yaw': 0.0,
+            'min_x': transformed['min_x'], 'max_x': transformed['max_x'],
+            'min_y': transformed['min_y'], 'max_y': transformed['max_y'],
+            'data': transformed['data'],
+        }
+        self.navigation_map_status = status
+        self.navigation_map_signature = signature
+        self._publish_navigation_map_status()
+        self.get_logger().info(
+            f'NAVIGATION_MAP_READY id={navigation_map_id} revision={navigation_map_revision} '
+            f'source_revision={registration["canonical_map_revision"]} '
+            f'registration_revision={registration["registration_revision"]} frame=map '
+            f'size={transformed["width"]}x{transformed["height"]} '
+            f'origin=({transformed["origin_x"]:.3f},{transformed["origin_y"]:.3f}) '
+            f'bounds=[{transformed["min_x"]:.3f},{transformed["max_x"]:.3f}]x'
+            f'[{transformed["min_y"]:.3f},{transformed["max_y"]:.3f}]')
+
+    def _publish_navigation_map_status(self):
+        status = dict(self.navigation_map_status)
+        status.update({'robot_id': self.robot_id, 'timestamp': self.now()})
+        self.send({'type': 'NAVIGATION_MAP_STATUS', **status})
+        if self.navigation_map_metadata_pub is not None:
+            message = String()
+            message.data = json.dumps(status, sort_keys=True, separators=(',', ':'))
+            self.navigation_map_metadata_pub.publish(message)
 
     def _update_latest_map_signature(self):
         generation = self.latest_map_generation
@@ -1001,6 +1289,10 @@ class SwerveBridge(Node):
 
     def diagnostics_timer(self):
         diagnostics = self.collect_diagnostics()
+        if self.runtime_state == 'UNIFIED' and self.navigation_map_status.get('ready'):
+            # Refresh backend freshness from this bridge heartbeat without
+            # rebuilding or republishing the unchanged OccupancyGrid.
+            self._publish_navigation_map_status()
         self.send({'type': 'ROS_DIAGNOSTICS', 'robot_id': self.robot_id,
                    'diagnostics': diagnostics, 'timestamp': self.now()})
         self.send({'type': 'SYSTEM_DIAGNOSTICS', 'robot_id': self.robot_id,
@@ -1567,7 +1859,7 @@ class SwerveBridge(Node):
             or (self.last_clock_monotonic is not None and time.monotonic() - self.last_clock_monotonic <= 3.0)
         )
         slam = any('slam_toolbox' in name.lower() for name in node_names)
-        nav2_nodes = ('map_server', 'amcl', 'controller_server', 'planner_server',
+        nav2_nodes = ('map_server', 'canonical_map_server', 'amcl', 'controller_server', 'planner_server',
                       'behavior_server', 'bt_navigator', 'waypoint_follower',
                       'lifecycle_manager_navigation')
         nav2 = any(any(marker in name for marker in nav2_nodes) for name in node_names)
@@ -1652,6 +1944,7 @@ class SwerveBridge(Node):
                                     or self.loaded_local_map_id else self.map_sync_status),
             },
             'mapping': mapping_status,
+            'navigation_map': dict(self.navigation_map_status),
             'command_ownership': dict(self.command_diagnostics),
             'lidar_stream': dict(self.last_lidar_output_metadata),
             'simulation_time': self.simulation_time,
@@ -1914,6 +2207,22 @@ class SwerveBridge(Node):
                                             error='ekf_v30e /set_pose accepted the request but map-frame TF did not confirm the initial pose')
 
     def _loaded_nav2_revision(self, nav2_node_present):
+        if self.runtime_state == 'UNIFIED':
+            status = self.navigation_map_status
+            registration = self.navigation_map_registration or {}
+            active = self.active_map_identity()
+            try:
+                canonical_revision = int(status.get('canonical_map_revision'))
+            except (TypeError, ValueError):
+                return None
+            if (not nav2_node_present or not status.get('ready')
+                    or canonical_revision != self.ros_map_revision
+                    or status.get('active_map_id') != active.get('active_map_id')
+                    or status.get('active_map_revision') != active.get('active_map_revision')
+                    or status.get('registration_revision') != registration.get('registration_revision')
+                    or status.get('navigation_map_source') != 'PUBLISHED_CANONICAL_REGISTERED'):
+                return None
+            return canonical_revision
         # Revalidating the complete raster on every heartbeat can monopolize
         # the single ROS executor. Cache only successful, content-bound checks;
         # a new grid, configured revision or modified artifact invalidates it.
@@ -2149,6 +2458,8 @@ class SwerveBridge(Node):
             try:
                 if kind == 'MAP_PUBLISHED':
                     self.apply_published_map(data)
+                elif kind == 'MAP_REGISTRATION':
+                    self.apply_navigation_map_registration(data)
                 elif kind == 'PATH_PREVIEW':
                     self.preview_path(data)
                 elif kind == 'LOCAL_CONTROL':
@@ -2212,14 +2523,27 @@ class SwerveBridge(Node):
             'yaw': float(data.get('yaw', 0.0)),
         }
         active_map = self.active_map_identity()
+        navigation_map = dict(self.navigation_map_status)
+        navigation_map_revision = (navigation_map.get('navigation_map_revision')
+                                   if self.runtime_state == 'UNIFIED' else None)
+        coverage_error = None
 
-        def result(status, reason=None, points=None):
+        def result(status, reason=None, points=None, reason_code=None):
             points = points or []
             current_map = self.active_map_identity()
             if (current_map.get('active_map_id') != active_map.get('active_map_id')
                     or current_map.get('active_map_revision') != active_map.get('active_map_revision')):
                 status = 'INVALID'
                 reason = 'active map changed while Nav2 was computing the preview'
+                points = []
+                reason_code = 'ACTIVE_MAP_CHANGED'
+            current_navigation_map_revision = (
+                self.navigation_map_status.get('navigation_map_revision')
+                if self.runtime_state == 'UNIFIED' else None)
+            if current_navigation_map_revision != navigation_map_revision:
+                status = 'INVALID'
+                reason = 'NAVIGATION_MAP_REVISION_MISMATCH: full navigation map changed during preview'
+                reason_code = 'NAVIGATION_MAP_REVISION_MISMATCH'
                 points = []
             local_points = []
             local_goal = None
@@ -2247,6 +2571,10 @@ class SwerveBridge(Node):
                 'source_map_revision': data.get('source_map_revision'),
                 'registration_revision': data.get('registration_revision'),
                 'registration_source': data.get('registration_source'),
+                'navigation_map_id': navigation_map.get('navigation_map_id'),
+                'navigation_map_revision': navigation_map_revision,
+                'reason_code': reason_code,
+                'coverage': coverage_error,
                 **active_map,
                 'frame_id': 'map', 'path': points, 'local_path': local_points,
                 'local_goal': local_goal,
@@ -2262,6 +2590,7 @@ class SwerveBridge(Node):
                 self.path_preview_approvals[request_id] = {
                     'goal': dict(goal), 'active_map_id': active_map['active_map_id'],
                     'active_map_revision': active_map['active_map_revision'],
+                    'navigation_map_revision': navigation_map_revision,
                     'created_monotonic': now,
                 }
                 if len(self.path_preview_approvals) > 128:
@@ -2281,9 +2610,29 @@ class SwerveBridge(Node):
                 or not active_map.get('active_map_revision')):
             result('INVALID', 'PATH_PREVIEW_MAP_MISMATCH: request does not match the active robot map')
             return
+        if self.runtime_state == 'UNIFIED':
+            if (not navigation_map.get('ready')
+                    or not isinstance(self.navigation_grid_occupancy, dict)
+                    or not self.navigation_grid_occupancy.get('ready')):
+                result('INVALID', 'NAVIGATION_MAP_NOT_READY: the registered full warehouse map is unavailable',
+                       reason_code='NAVIGATION_MAP_NOT_READY')
+                return
+            if (str(data.get('navigation_map_revision') or '')
+                    != str(navigation_map_revision or '')):
+                result('INVALID', 'NAVIGATION_MAP_REVISION_MISMATCH: preview request uses a stale full-map registration',
+                       reason_code='NAVIGATION_MAP_REVISION_MISMATCH')
+                return
         if not all(math.isfinite(value) for value in goal.values()):
             result('INVALID', 'goal coordinates must be finite')
             return
+        if self.runtime_state == 'UNIFIED':
+            coverage_error = validate_target_coverage(
+                self.navigation_grid_occupancy, x=goal['x'], y=goal['y'])
+            if coverage_error:
+                reason_code = coverage_error.get('code', 'NAVIGATION_MAP_INVALID')
+                result('NO_PATH', f'{reason_code}: {json.dumps(coverage_error, sort_keys=True)}',
+                       reason_code=reason_code)
+                return
         if not self.path_preview_client.server_is_ready():
             result('NO_PATH', 'Nav2 ComputePathToPose action server is unavailable')
             return
@@ -2319,8 +2668,14 @@ class SwerveBridge(Node):
             time.monotonic() - preview['created_monotonic'] <= 120.0
             and preview['active_map_id'] == active.get('active_map_id')
             and preview['active_map_revision'] == active.get('active_map_revision')
+            and preview.get('navigation_map_revision')
+            == (self.navigation_map_status.get('navigation_map_revision')
+                if self.runtime_state == 'UNIFIED' else None)
             and str(data.get('active_map_id') or '') == active.get('active_map_id')
             and str(data.get('active_map_revision') or '') == active.get('active_map_revision')
+            and str(data.get('navigation_map_revision') or '')
+            == (str(self.navigation_map_status.get('navigation_map_revision') or '')
+                if self.runtime_state == 'UNIFIED' else '')
             and goal_matches
         )
         if valid:
@@ -2349,10 +2704,13 @@ class SwerveBridge(Node):
             poses = response.result.path.poses
             if not successful_path_result(
                     response.status, GoalStatus.STATUS_SUCCEEDED, len(poses)):
-                reason = ('Nav2 path request did not succeed'
-                          if response.status != GoalStatus.STATUS_SUCCEEDED
-                          else 'Nav2 returned an empty path')
-                send_result('NO_PATH', reason)
+                if response.status != GoalStatus.STATUS_SUCCEEDED:
+                    send_result('NO_PATH',
+                                f'NAV2_PLANNER_ABORTED: ComputePathToPose action status={response.status}',
+                                reason_code='NAV2_PLANNER_ABORTED')
+                else:
+                    send_result('NO_PATH', 'NO_VALID_PATH: Nav2 returned an empty path',
+                                reason_code='NO_VALID_PATH')
                 return
             path_payload = self._pose_path_payload(response.result.path, self.robot_id)
         except Exception as exc:
@@ -2901,6 +3259,7 @@ class SwerveBridge(Node):
             'source_map_revision': data.get('source_map_revision'),
             'registration_revision': data.get('registration_revision'),
             'registration_source': data.get('registration_source'),
+            'navigation_map_revision': data.get('navigation_map_revision'),
         }
         vda_context = data.get('vda_order_context')
         if isinstance(vda_context, dict):
@@ -2919,6 +3278,21 @@ class SwerveBridge(Node):
                     or str(data.get('active_map_revision') or '') != str(active.get('active_map_revision') or '')):
                 self.send_nav_status(context, 'FAILED', 'PATH_PREVIEW_MAP_MISMATCH: the active robot map changed')
                 return
+            if self.runtime_state == 'UNIFIED':
+                navigation_map = self.navigation_map_status
+                if (navigation_map.get('ready') is not True
+                        or str(data.get('navigation_map_revision') or '')
+                            != str(navigation_map.get('navigation_map_revision') or '')
+                        or str(navigation_map.get('active_map_id') or '')
+                            != str(active.get('active_map_id') or '')
+                        or str(navigation_map.get('active_map_revision') or '')
+                            != str(active.get('active_map_revision') or '')
+                        or str(navigation_map.get('canonical_map_revision') or '')
+                            != str(active.get('canonical_map_revision') or '')):
+                    self.send_nav_status(
+                        context, 'FAILED',
+                        'NAVIGATION_MAP_REVISION_MISMATCH: registered full navigation map changed')
+                    return
         if self.loaded_local_map_id and not self.loaded_local_map_revision:
             self.send_nav_status(context, 'FAILED', 'active local map revision is not confirmed')
             return
@@ -3393,6 +3767,7 @@ class SwerveBridge(Node):
         self.stop_event.set()
         self.visualization_worker.close()
         self.map_snapshot_worker.close()
+        self.navigation_map_worker.close()
         self.diagnostics_worker.close()
         self.outbound.clear()
         self.lidar_frame_buffer.clear()

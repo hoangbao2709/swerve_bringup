@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Holonomic Nav2 bringup for the swerve base.
 
-``LIVE_SLAM`` consumes SLAM Toolbox's existing ``/map`` and does not create a
-map_server or a competing localization owner. ``STATIC_MAP`` is retained for
-the legacy Navigation alias and validates the selected saved map.
+``REGISTERED_CANONICAL`` loads the published full warehouse map on a distinct
+``/canonical_map`` topic. The ROS bridge registers that raster into the live
+SLAM ``map`` frame and publishes ``/navigation_map`` for Nav2. ``LIVE_SLAM``
+and ``STATIC_MAP`` remain available for their explicit legacy launch modes.
 """
 
 from __future__ import annotations
@@ -105,10 +106,12 @@ def _nav2_environment():
 
 def _nav_nodes(context, *, params_default: str, default_map: Path):
     map_source = LaunchConfiguration('map_source').perform(context).strip().upper()
-    if map_source not in ('LIVE_SLAM', 'STATIC_MAP'):
-        raise RuntimeError(f'unsupported Nav2 map_source={map_source!r}; choose LIVE_SLAM or STATIC_MAP')
+    if map_source not in ('LIVE_SLAM', 'STATIC_MAP', 'REGISTERED_CANONICAL'):
+        raise RuntimeError(
+            f'unsupported Nav2 map_source={map_source!r}; choose LIVE_SLAM, STATIC_MAP, '
+            'or REGISTERED_CANONICAL')
     map_path = None
-    if map_source == 'STATIC_MAP':
+    if map_source in ('STATIC_MAP', 'REGISTERED_CANONICAL'):
         map_path = _validate_saved_map(LaunchConfiguration('map_file').perform(context), default_map)
         if map_path == default_map.resolve() and LaunchConfiguration('allow_dev_map').perform(context).lower() != 'true':
             raise RuntimeError(
@@ -134,13 +137,21 @@ def _nav_nodes(context, *, params_default: str, default_map: Path):
     if map_source == 'STATIC_MAP':
         nodes.append(Node(package='nav2_map_server', executable='map_server', name='map_server', output='screen',
                           additional_env=nav2_env,
-                          parameters=[{'use_sim_time': use_sim_time, 'yaml_filename': str(map_path)}]))
+                          parameters=[{'use_sim_time': use_sim_time, 'yaml_filename': str(map_path)}],
+                          remappings=[('map', '/navigation_map')]))
+    elif map_source == 'REGISTERED_CANONICAL':
+        nodes.append(Node(package='nav2_map_server', executable='map_server', name='canonical_map_server', output='screen',
+                          additional_env=nav2_env,
+                          parameters=[{'use_sim_time': use_sim_time, 'yaml_filename': str(map_path)}],
+                          remappings=[('map', '/canonical_map')]))
+    global_map_remapping = [('/navigation_map', '/map')] if map_source == 'LIVE_SLAM' else []
     nodes.extend([
         Node(package='nav2_controller', executable=nav2_executable('nav2_controller', 'controller_server'),
              name='controller_server', output='screen', parameters=common, additional_env=nav2_env,
-             remappings=[('cmd_vel', '/cmd_vel_nav')]),
+             remappings=[('cmd_vel', '/cmd_vel_nav'), *global_map_remapping]),
         Node(package='nav2_planner', executable=nav2_executable('nav2_planner', 'planner_server'),
-             name='planner_server', output='screen', parameters=common, additional_env=nav2_env),
+             name='planner_server', output='screen', parameters=common, additional_env=nav2_env,
+             remappings=global_map_remapping),
         Node(package='nav2_behaviors', executable=nav2_executable('nav2_behaviors', 'behavior_server'),
              name='behavior_server', output='screen', parameters=common, additional_env=nav2_env,
              remappings=[('cmd_vel', '/cmd_vel_nav')]),
@@ -162,6 +173,7 @@ def _nav_nodes(context, *, params_default: str, default_map: Path):
                      'map_server', 'controller_server', 'planner_server', 'behavior_server',
                      'bt_navigator', 'waypoint_follower',
                  ] if map_source == 'STATIC_MAP' else [
+                     *(['canonical_map_server'] if map_source == 'REGISTERED_CANONICAL' else []),
                      'controller_server', 'planner_server', 'behavior_server',
                      'bt_navigator', 'waypoint_follower',
                  ]),
@@ -181,7 +193,7 @@ def generate_launch_description():
                               description='Lifecycle startup heartbeat grace period in seconds.'),
         DeclareLaunchArgument('map_file', default_value=str(default_map), description='Static Nav2 map YAML'),
         DeclareLaunchArgument('map_source', default_value='STATIC_MAP',
-                              description='LIVE_SLAM consumes SLAM Toolbox /map without map_server; STATIC_MAP uses map_file.'),
+                              description='REGISTERED_CANONICAL publishes the selected map on /canonical_map for registration into /navigation_map; STATIC_MAP publishes /navigation_map; LIVE_SLAM consumes /map.'),
         DeclareLaunchArgument('allow_dev_map', default_value='false',
                               description='Explicitly permit the package development Nav2 map.'),
         DeclareLaunchArgument('params_file', default_value=params, description='Nav2 parameter file'),

@@ -37,8 +37,10 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
-# In UNIFIED, SLAM Toolbox owns the live /map topic, so Nav2 intentionally
-# excludes map_server. The legacy static-map mode keeps its historical node.
+# In UNIFIED, SLAM Toolbox alone owns live /map and map->odom. A separate
+# lifecycle map_server publishes the selected published bundle on
+# /canonical_map; the bridge registers that raster into the active SLAM frame
+# on /navigation_map for Nav2. The two map products never share a topic.
 NAV2_LIVE_SLAM_LIFECYCLE_NODES = (
     'controller_server',
     'planner_server',
@@ -47,6 +49,9 @@ NAV2_LIVE_SLAM_LIFECYCLE_NODES = (
     'waypoint_follower',
 )
 NAV2_STATIC_MAP_LIFECYCLE_NODES = ('map_server', *NAV2_LIVE_SLAM_LIFECYCLE_NODES)
+NAV2_REGISTERED_CANONICAL_LIFECYCLE_NODES = (
+    'canonical_map_server', *NAV2_LIVE_SLAM_LIFECYCLE_NODES,
+)
 NAV2_SETTLED_STATE_LABELS = {'unconfigured', 'inactive', 'active', 'finalized'}
 NAV2_TRANSITION_STATE_LABELS = {
     'configuring', 'cleaningup', 'shuttingdown', 'activating',
@@ -123,9 +128,9 @@ SWERVE_REQUIRED_JOINTS = {
     'wheel_front_drive_joint', 'wheel_rear_drive_joint',
 }
 
-# Both map_server and SLAM Toolbox publish the canonical map with the ROS map
-# QoS (reliable + transient-local). A volatile sensor-data subscriber can miss
-# the only latched map sample when the readiness probe joins late.
+# Map server, bridge navigation map, and SLAM publish latched grids. A volatile
+# sensor-data subscriber can miss the only transient-local map sample when
+# readiness joins late.
 MAP_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
@@ -218,7 +223,7 @@ class Readiness(Node):
         self.navigation_required = self.mode in ('navigation', 'unified')
         self.nav2_lifecycle_nodes = (
             NAV2_STATIC_MAP_LIFECYCLE_NODES if self.mode == 'navigation'
-            else NAV2_LIVE_SLAM_LIFECYCLE_NODES if self.mode == 'unified'
+            else NAV2_REGISTERED_CANONICAL_LIFECYCLE_NODES if self.mode == 'unified'
             else ()
         )
         self.nav2_required_nodes = (
@@ -226,6 +231,7 @@ class Readiness(Node):
             if self.navigation_required else ()
         )
         self.expected_map_file = os.path.realpath(map_file) if map_file else None
+        self.expected_canonical_revision = self._bundle_revision_for_map(self.expected_map_file)
         self.robot_id = str(robot_id)
         self.backend_url = backend_url
         self.log_path = log_path
@@ -259,6 +265,10 @@ class Readiness(Node):
         self.filtered_odom_seen = False
         self.scan_seen = False
         self.map_seen = False
+        self.canonical_map_grid = None
+        self.navigation_map_grid = None
+        self.global_costmap_grid = None
+        self.navigation_map_metadata = None
         self.sensor_receive_times = {
             'scan': deque(maxlen=30),
             'filtered_odom': deque(maxlen=30),
@@ -296,6 +306,15 @@ class Readiness(Node):
         if self.mapping_required:
             self.readiness_subscriptions['map'] = self.create_subscription(
                 OccupancyGrid, '/map', self._map_cb, MAP_QOS)
+        if self.mode == 'unified':
+            self.readiness_subscriptions['canonical_map'] = self.create_subscription(
+                OccupancyGrid, '/canonical_map', self._canonical_map_cb, MAP_QOS)
+            self.readiness_subscriptions['navigation_map'] = self.create_subscription(
+                OccupancyGrid, '/navigation_map', self._navigation_map_cb, MAP_QOS)
+            self.readiness_subscriptions['navigation_map_metadata'] = self.create_subscription(
+                String, '/navigation_map_metadata', self._navigation_map_metadata_cb, MAP_QOS)
+            self.readiness_subscriptions['global_costmap'] = self.create_subscription(
+                OccupancyGrid, '/global_costmap/costmap', self._global_costmap_cb, MAP_QOS)
         self.readiness_subscriptions['points'] = self.create_subscription(
             PointCloud2, '/lidar/points',
             lambda msg: self._cloud_cb('points_seen', msg), sensor_qos)
@@ -319,6 +338,9 @@ class Readiness(Node):
             if self.navigation_required else None)
         self.map_parameters = (self.create_client(GetParameters, '/map_server/get_parameters')
                                if self.mode == 'navigation' else None)
+        self.canonical_map_parameters = (
+            self.create_client(GetParameters, '/canonical_map_server/get_parameters')
+            if self.mode == 'unified' else None)
         self.slam_parameters = (self.create_client(GetParameters, '/slam_toolbox/get_parameters')
                                 if self.mapping_required else None)
         self.bridge_parameters = self.create_client(GetParameters, '/swerve_bridge/get_parameters')
@@ -334,6 +356,27 @@ class Readiness(Node):
         except (KeyError, TypeError, ValueError):
             return None
         return value if math.isfinite(value) else None
+
+    @staticmethod
+    def _bundle_revision_for_map(map_file):
+        """Resolve revision only from the manifest that owns the selected map artifact."""
+        if not map_file:
+            return None
+        selected = Path(map_file).resolve()
+        for parent in selected.parents:
+            manifest_path = parent / 'manifest.json'
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+                revision = int(manifest['revision'])
+                artifacts = manifest.get('artifacts') or {}
+                roles = [artifacts.get('nav2_map'), *(manifest.get('nav2_maps') or {}).values()]
+                owned_paths = {(parent / str(value)).resolve() for value in roles if value}
+            except (OSError, ValueError, TypeError, KeyError):
+                return None
+            return revision if selected in owned_paths else None
+        return None
 
     def _record_timeline(self, name, at=None, status='PASS', detail=None):
         at = time.monotonic() if at is None else float(at)
@@ -536,6 +579,24 @@ class Readiness(Node):
         if self.map_seen:
             self._stop_monitoring('map')
 
+    def _canonical_map_cb(self, msg):
+        self.canonical_map_grid = msg
+
+    def _navigation_map_cb(self, msg):
+        self.navigation_map_grid = msg
+
+    def _global_costmap_cb(self, msg):
+        self.global_costmap_grid = msg
+
+    def _navigation_map_metadata_cb(self, msg):
+        try:
+            value = json.loads(str(msg.data))
+        except (TypeError, ValueError):
+            self.navigation_map_metadata = {'ready': False, 'reason': 'metadata_json_invalid'}
+            return
+        self.navigation_map_metadata = value if isinstance(value, dict) else {
+            'ready': False, 'reason': 'metadata_not_object'}
+
     def _command_owner_cb(self, msg):
         self.command_owner_seen = str(msg.data) in (
             'NONE', 'ESTOP', 'WEB_MANUAL', 'DIRECT_MANUAL', 'NAV2', 'TAG_ROUTE')
@@ -631,7 +692,12 @@ class Readiness(Node):
             return False, f'/map_publishers_must_be_slam_toolbox_only:{sorted(map_nodes)}'
         if 'slam_toolbox' not in tf_nodes:
             return False, f'slam_toolbox_not_publishing_tf:{sorted(tf_nodes)}'
-        return True, 'map=/map publisher=slam_toolbox; /tf publisher=slam_toolbox; no V30E/localization owner'
+        if 'map_server' in names:
+            return False, 'legacy_map_server_node_must_not_compete_with_live_SLAM'
+        return True, (
+            'live_map=/map publisher=slam_toolbox; map_to_odom_owner=slam_toolbox; '
+            'canonical and registered navigation rasters use distinct topics'
+        )
 
     def _mapping_slam_parameters(self, deadline):
         names = [
@@ -1046,6 +1112,7 @@ class Readiness(Node):
             ('NAV2_READY', tuple(f'NODE_{name.upper()}_READY' for name in required_nodes)
              + ('NAV2_LIFECYCLE_READY',
                 'MAP_READY' if mode == 'unified' else 'MAP_FILE_READY',
+                *(('REGISTERED_NAVIGATION_MAP_READY',) if mode == 'unified' else ()),
                 'COMPUTE_PATH_ACTION_SERVER_READY', 'ACTION_SERVER_READY')),
             ('BRIDGE_READY', ('ROS_BRIDGE_R01_READY',)),
         )
@@ -1117,7 +1184,8 @@ class Readiness(Node):
         return states
 
     def _nav2_graph_counts(self):
-        counts = {'map_server': 0, 'lifecycle_manager_navigation': 0,
+        counts = {'map_server': 0, 'canonical_map_server': 0,
+                  'lifecycle_manager_navigation': 0,
                   'lifecycle_manager_mapping_map': 0}
         for name, _namespace in self.get_node_names_and_namespaces():
             if name in counts:
@@ -1143,12 +1211,14 @@ class Readiness(Node):
         }, None
 
     def _read_map_yaml_parameter(self, deadline):
+        client = (self.canonical_map_parameters if self.mode == 'unified'
+                  else self.map_parameters)
         response = self._service_call(
-            self.map_parameters, min(deadline, time.monotonic() + 3.0),
+            client, min(deadline, time.monotonic() + 3.0),
             lambda request: setattr(request, 'names', ['yaml_filename']),
         )
         if response is None or not response.values:
-            return None, self.last_service_error or 'map_server yaml_filename unavailable'
+            return None, self.last_service_error or 'selected navigation map_server yaml_filename unavailable'
         value = response.values[0]
         if value.type != ParameterType.PARAMETER_STRING:
             return None, f'map_server_yaml_filename_wrong_type:{value.type}'
@@ -1156,6 +1226,161 @@ class Readiness(Node):
         if self.expected_map_file and actual != self.expected_map_file:
             return actual, f'map_server_yaml_filename_mismatch:expected={self.expected_map_file}:actual={actual}'
         return actual, None
+
+    @staticmethod
+    def _grid_geometry(msg):
+        if msg is None:
+            return None
+        origin = msg.info.origin
+        q = origin.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        resolution = float(msg.info.resolution)
+        width, height = int(msg.info.width), int(msg.info.height)
+        return {
+            'frame_id': str(msg.header.frame_id or ''),
+            'resolution': resolution, 'width': width, 'height': height,
+            'origin_x': float(origin.position.x), 'origin_y': float(origin.position.y),
+            'origin_yaw': yaw,
+            'min_x': float(origin.position.x),
+            'max_x': float(origin.position.x) + width * resolution,
+            'min_y': float(origin.position.y),
+            'max_y': float(origin.position.y) + height * resolution,
+            'valid': (width > 0 and height > 0 and resolution > 0.0
+                      and len(msg.data) == width * height
+                      and all(math.isfinite(value) for value in (
+                          resolution, float(origin.position.x),
+                          float(origin.position.y), yaw))),
+        }
+
+    def _unified_navigation_map_error(self):
+        """Validate the published bundle, registration, transformed grid, and Nav2 consumer."""
+        if self.expected_canonical_revision is None:
+            return 'published_bundle_manifest_or_nav2_artifact_missing_or_mismatched'
+        canonical = self._grid_geometry(self.canonical_map_grid)
+        navigation = self._grid_geometry(self.navigation_map_grid)
+        costmap = self._grid_geometry(self.global_costmap_grid)
+        status = self.navigation_map_metadata
+        if not canonical or not canonical['valid'] or canonical['frame_id'] != 'map':
+            return 'canonical_map_not_ready_or_invalid'
+        if not navigation or not navigation['valid'] or navigation['frame_id'] != 'map':
+            return 'registered_navigation_map_not_ready_or_invalid'
+        if not isinstance(status, dict) or status.get('ready') is not True:
+            return 'registered_navigation_map_status_not_ready'
+        try:
+            canonical_revision = int(status.get('canonical_map_revision'))
+            registration_revision = int(status.get('registration_revision'))
+        except (TypeError, ValueError):
+            return 'navigation_map_revision_metadata_invalid'
+        if canonical_revision != self.expected_canonical_revision:
+            return (f'canonical_revision_mismatch:expected={self.expected_canonical_revision}:'
+                    f'actual={canonical_revision}')
+        if (status.get('navigation_map_source') != 'PUBLISHED_CANONICAL_REGISTERED'
+                or not str(status.get('active_map_id') or '').startswith('SLAM-')
+                or not str(status.get('active_map_revision') or '').startswith('session-')
+                or registration_revision <= 0
+                or not status.get('registration_source')):
+            return 'registered_navigation_map_identity_or_registration_invalid'
+        if status.get('frame_id') != 'map':
+            return f'navigation_map_frame_mismatch:{status.get("frame_id")}'
+        try:
+            for key in ('width', 'height'):
+                if int(status.get(key) or 0) != navigation[key]:
+                    return f'navigation_map_{key}_metadata_mismatch'
+            for key in ('resolution', 'origin_x', 'origin_y'):
+                if not math.isclose(float(status.get(key)), navigation[key], abs_tol=1e-5):
+                    return f'navigation_map_{key}_metadata_mismatch'
+            if (int(status.get('source_width') or 0) != canonical['width']
+                    or int(status.get('source_height') or 0) != canonical['height']
+                    or not math.isclose(float(status.get('source_resolution')), canonical['resolution'], abs_tol=1e-6)
+                    or not math.isclose(float(status.get('source_origin_x')), canonical['origin_x'], abs_tol=1e-5)
+                    or not math.isclose(float(status.get('source_origin_y')), canonical['origin_y'], abs_tol=1e-5)
+                    or not math.isclose(float(status.get('source_origin_yaw')), canonical['origin_yaw'], abs_tol=1e-5)):
+                return 'navigation_map_source_geometry_does_not_match_published_canonical_grid'
+        except (TypeError, ValueError):
+            return 'navigation_map_geometry_metadata_invalid'
+        registration = status.get('registration')
+        if not isinstance(registration, dict):
+            return 'navigation_map_registration_transform_missing'
+        try:
+            tx, ty, angle = (float(registration[key]) for key in ('tx', 'ty', 'yaw'))
+        except (KeyError, TypeError, ValueError):
+            return 'navigation_map_registration_transform_invalid'
+        if not all(math.isfinite(value) for value in (tx, ty, angle)):
+            return 'navigation_map_registration_transform_non_finite'
+        corners = []
+        cosine, sine = math.cos(angle), math.sin(angle)
+        source_cosine, source_sine = math.cos(canonical['origin_yaw']), math.sin(canonical['origin_yaw'])
+        for local_x, local_y in ((0.0, 0.0),
+                                 (canonical['width'] * canonical['resolution'], 0.0),
+                                 (0.0, canonical['height'] * canonical['resolution']),
+                                 (canonical['width'] * canonical['resolution'],
+                                  canonical['height'] * canonical['resolution'])):
+            x = canonical['origin_x'] + source_cosine * local_x - source_sine * local_y
+            y = canonical['origin_y'] + source_sine * local_x + source_cosine * local_y
+            corners.append((tx + cosine * x - sine * y,
+                             ty + sine * x + cosine * y))
+        expected = {
+            'min_x': min(point[0] for point in corners),
+            'max_x': max(point[0] for point in corners),
+            'min_y': min(point[1] for point in corners),
+            'max_y': max(point[1] for point in corners),
+        }
+        for key, value in expected.items():
+            try:
+                actual = float(status[key])
+            except (KeyError, TypeError, ValueError):
+                return f'navigation_map_registered_extent_missing:{key}'
+            if not math.isclose(actual, value, abs_tol=canonical['resolution'] + 1e-4):
+                return f'navigation_map_registered_extent_mismatch:{key}'
+        if not costmap or not costmap['valid'] or costmap['frame_id'] != 'map':
+            return 'global_costmap_not_ready_or_invalid'
+        tolerance = max(navigation['resolution'], costmap['resolution']) + 1e-4
+        if (costmap['min_x'] > navigation['min_x'] + tolerance
+                or costmap['min_y'] > navigation['min_y'] + tolerance
+                or costmap['max_x'] < navigation['max_x'] - tolerance
+                or costmap['max_y'] < navigation['max_y'] - tolerance):
+            return 'global_costmap_extent_does_not_cover_registered_navigation_map'
+        try:
+            map_nodes = {str(row.node_name).lstrip('/')
+                         for row in self.get_publishers_info_by_topic('/map')}
+            canonical_nodes = {str(row.node_name).lstrip('/')
+                               for row in self.get_publishers_info_by_topic('/canonical_map')}
+            navigation_nodes = {str(row.node_name).lstrip('/')
+                                for row in self.get_publishers_info_by_topic('/navigation_map')}
+            costmap_subscribers = {str(row.node_name).lstrip('/')
+                                   for row in self.get_subscriptions_info_by_topic('/navigation_map')}
+        except Exception as exc:
+            return f'navigation_map_graph_query_failed:{type(exc).__name__}'
+        if map_nodes != {'slam_toolbox'}:
+            return f'/map_publishers_must_be_slam_toolbox_only:{sorted(map_nodes)}'
+        if canonical_nodes != {'canonical_map_server'}:
+            return f'/canonical_map_publishers_must_be_canonical_map_server_only:{sorted(canonical_nodes)}'
+        if navigation_nodes != {'swerve_bridge'}:
+            return f'/navigation_map_publishers_must_be_swerve_bridge_only:{sorted(navigation_nodes)}'
+        if not costmap_subscribers.intersection({'global_costmap', 'planner_server', 'controller_server'}):
+            return f'nav2_global_costmap_not_subscribed_to_navigation_map:{sorted(costmap_subscribers)}'
+        print(
+            'NAVIGATION_MAP_CONTRACT=PASS '
+            f'topic=/navigation_map source=PUBLISHED_CANONICAL_REGISTERED '
+            f'id={status.get("navigation_map_id")} revision={status.get("navigation_map_revision")} '
+            f'canonical_revision={self.expected_canonical_revision} '
+            f'size={navigation["width"]}x{navigation["height"]} '
+            f'extent=[{navigation["min_x"]:.3f},{navigation["max_x"]:.3f}]x'
+            f'[{navigation["min_y"]:.3f},{navigation["max_y"]:.3f}] '
+            f'global_costmap={costmap["width"]}x{costmap["height"]} '
+            f'costmap_extent=[{costmap["min_x"]:.3f},{costmap["max_x"]:.3f}]x'
+            f'[{costmap["min_y"]:.3f},{costmap["max_y"]:.3f}]', flush=True)
+        return None
+
+    def _wait_unified_navigation_map(self, deadline):
+        last_error = 'registered_navigation_map_not_ready'
+        while time.monotonic() < deadline:
+            last_error = self._unified_navigation_map_error()
+            if last_error is None:
+                return True, None
+            rclpy.spin_once(self, timeout_sec=0.2)
+        return False, last_error
 
     def _startup_state(self):
         return read_nav2_startup_state(self.lifecycle_state_file)
@@ -1208,7 +1433,9 @@ class Readiness(Node):
         print('NAV2_LIFECYCLE_GRAPH=' + ','.join(
             f'{name}={count}' for name, count in graph_counts.items()), flush=True)
         expected_map_server_count = 1 if self.mode == 'navigation' else 0
+        expected_canonical_server_count = 1 if self.mode == 'unified' else 0
         if (graph_counts['map_server'] != expected_map_server_count
+                or graph_counts['canonical_map_server'] != expected_canonical_server_count
                 or graph_counts['lifecycle_manager_navigation'] != 1
                 or graph_counts['lifecycle_manager_mapping_map'] != 0):
             return False, f'invalid_nav2_lifecycle_graph:{graph_counts}'
@@ -1221,11 +1448,20 @@ class Readiness(Node):
             return False, 'deferred_nav2_contract_violated:autostart=true'
         if manager['node_names'] != expected_names:
             return False, f'nav2_lifecycle_manager_node_names_mismatch:{manager["node_names"]}'
-        if self.mode == 'navigation':
+        if self.mode in ('navigation', 'unified'):
+            if self.mode == 'unified' and self.expected_canonical_revision is None:
+                return False, 'published_map_bundle_revision_unavailable_or_selected_map_not_in_bundle'
             map_yaml, error = self._read_map_yaml_parameter(deadline)
             if error:
                 return False, error
-            print(f'MAP_SERVER_YAML=PASS path={map_yaml}', flush=True)
+            server = 'canonical_map_server' if self.mode == 'unified' else 'map_server'
+            revision = (f' canonical_revision={self.expected_canonical_revision}'
+                        if self.mode == 'unified' else '')
+            print(f'MAP_SERVER_YAML=PASS server=/{server} path={map_yaml}{revision}', flush=True)
+            if self.mode == 'unified':
+                print('NAV2_MAP_SOURCE=REGISTERED_CANONICAL '
+                      'canonical_topic=/canonical_map navigation_topic=/navigation_map '
+                      'live_slam_topic=/map', flush=True)
         else:
             print('NAV2_MAP_SOURCE=LIVE_SLAM topic=/map map_server=absent', flush=True)
         return True, None
@@ -1678,10 +1914,19 @@ class Readiness(Node):
         )
         if not bridge_ok:
             return self._finish(result, f'R01 ROS bridge is not ready: {bridge_reason}')
+        if self.mode == 'unified':
+            navigation_map_ok, navigation_map_error = self._wait_unified_navigation_map(deadline)
+            self._report_stage(
+                result, 'REGISTERED_NAVIGATION_MAP_READY', navigation_map_ok,
+                navigation_map_error,
+            )
+            if not navigation_map_ok:
+                return self._finish(
+                    result, f'full registered Nav2 navigation map is not ready: {navigation_map_error}')
         result['startup_wall_time'] = time.monotonic() - started
         result['startup_sim_time'] = self.get_clock().now().nanoseconds * 1e-9
         result['nav_ready'] = True
-        ready_label = ('Unified SLAM + Nav2 runtime READY' if self.mode == 'unified'
+        ready_label = ('Unified SLAM + registered full-map Nav2 runtime READY' if self.mode == 'unified'
                        else 'Mapping stack READY' if self.mode == 'mapping'
                        else 'Navigation stack READY')
         print(ready_label, flush=True)

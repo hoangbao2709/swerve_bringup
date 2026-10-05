@@ -8,12 +8,22 @@
 /acceptance_full_*/
 /benchmark_*/
 /generated/
+
 **/__pycache__/
 *.py[cod]
+
+# SQLite
+# Ignore SQLite databases by default...
 **/*.sqlite3
+
+# ...but allow backend database to be committed
+!waretwin/backend/*.sqlite3
+
+# Never commit SQLite temporary/runtime files
 **/*.sqlite3-shm
 **/*.sqlite3-wal
 **/*.sqlite3-journal
+
 **/*.bak_*
 *.bak
 *~

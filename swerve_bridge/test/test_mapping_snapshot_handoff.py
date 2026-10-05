@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 from collections import deque
+import math
 from unittest.mock import Mock
 
 import pytest
+from sensor_msgs.msg import LaserScan
 
 from swerve_bridge import bridge_node
 from swerve_bridge.bridge_node import SwerveBridge
@@ -326,3 +328,62 @@ def test_3d_cloud_accumulates_in_slam_map_while_global_is_visible(monkeypatch):
     assert frame['point_count'] == 2
     assert frame['slam_pose']['mapping_session_id'] == 'session-42'
     assert len(frame['trajectory']) == 2
+
+
+def test_map_overlay_scan_geometry_tracks_robot_yaw_at_each_scan_stamp(monkeypatch):
+    bridge = object.__new__(SwerveBridge)
+    bridge.robot_id = 'AMR-17'
+    bridge.scan_topic_name = '/scan'
+    bridge.runtime_state = 'MAPPING'
+    bridge.mapping_session_id = 'mapping-4'
+    bridge.slam_trajectory = []
+    bridge.scan_intervals = deque()
+    bridge.scan_sim_intervals = deque()
+    # Simulate the subscription callback having advanced while a worker is
+    # still transforming the previous message.
+    bridge.last_scan_stamp = 99.0
+    bridge.get_parameter = lambda name: SimpleNamespace(value={
+        'map_frame': 'map',
+        'mapping_sensor_tf_timeout_s': 2.5,
+        'lidar_max_points': 720,
+    }[name])
+
+    def transform(yaw):
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=2.0, y=3.0, z=0.0),
+            rotation=SimpleNamespace(x=0.0, y=0.0,
+                z=math.sin(yaw / 2), w=math.cos(yaw / 2)),
+        ))
+
+    bridge.tf_buffer = SimpleNamespace(lookup_transform=Mock(
+        side_effect=[transform(0.0), transform(math.pi / 2)]))
+    monkeypatch.setattr(bridge_node.Time, 'from_msg',
+        staticmethod(lambda stamp: (stamp.sec, stamp.nanosec)))
+    scan = LaserScan()
+    scan.header.frame_id = 'lidar_link'
+    scan.header.stamp.sec = 10
+    scan.header.stamp.nanosec = 250_000_000
+    scan.angle_min = 0.0
+    scan.angle_increment = 0.1
+    scan.angle_max = 0.0
+    scan.range_min = 0.1
+    scan.range_max = 10.0
+    scan.ranges = [1.0]
+
+    first = SwerveBridge._transform_scan(bridge, scan)
+    scan.header.stamp.sec = 11
+    scan.header.stamp.nanosec = 500_000_000
+    second = SwerveBridge._transform_scan(bridge, scan)
+
+    assert [call.args[:3] for call in bridge.tf_buffer.lookup_transform.call_args_list] == [
+        ('map', 'lidar_link', (10, 250_000_000)),
+        ('map', 'lidar_link', (11, 500_000_000)),
+    ]
+    assert first['source_frame_id'] == second['source_frame_id'] == 'lidar_link'
+    assert first['frame_id'] == second['frame_id'] == 'map'
+    assert first['stamp'] == pytest.approx(10.25)
+    assert second['stamp'] == pytest.approx(11.5)
+    assert first['sensor_pose']['yaw'] == pytest.approx(0.0)
+    assert second['sensor_pose']['yaw'] == pytest.approx(math.pi / 2)
+    assert first['points'][0] == pytest.approx([3.0, 3.0])
+    assert second['points'][0] == pytest.approx([2.0, 4.0])

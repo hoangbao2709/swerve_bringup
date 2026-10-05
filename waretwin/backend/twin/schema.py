@@ -57,6 +57,7 @@ class RobotStatus(str, Enum):
 
 
 class RobotFsmState(str, Enum):
+    UNKNOWN = "UNKNOWN"
     IDLE = "IDLE"
     TASK_ASSIGNED = "TASK_ASSIGNED"
     NAVIGATING = "NAVIGATING"
@@ -237,28 +238,28 @@ class RobotState(_Base):
     lift_stage: Optional[Literal["TO_LIFT", "QUEUED", "BOARDING", "RIDING", "ALIGHTING"]] = None
     position: Vec3
     heading: float
-    velocity: float = Field(ge=0)
-    max_speed: float = Field(gt=0)
-    battery: Pct
+    velocity: Optional[float] = Field(default=None, ge=0)
+    max_speed: Optional[float] = Field(default=None, gt=0)
+    battery: Optional[Pct] = None
     status: RobotStatus
     fsm: RobotFsmState
-    health: Pct = 100
+    health: Optional[Pct] = None
     current_task_id: Optional[TaskId] = None
     destination: Optional[LocationId] = None
     path: list[GridCell] = Field(default_factory=list)
     path_index: int = 0
-    load: Load
+    load: Optional[Load] = None
     zone: Optional[ZoneId] = None
     eta_s: Optional[float] = None
     fsm_since_tick: int = 0
-    stats: RobotStats = Field(default_factory=RobotStats)
-    perception: Perception = Field(default_factory=Perception)
+    stats: Optional[RobotStats] = None
+    perception: Optional[Perception] = None
     # Optional live ROS telemetry; LOCAL_SIM keeps the defaults.
     vx: float = 0.0
     vy: float = 0.0
     wz: float = 0.0
     navigation_state: str = "IDLE"
-    control_mode: Literal["MANUAL", "AUTONOMOUS"] = "AUTONOMOUS"
+    control_mode: Optional[Literal["MANUAL", "AUTONOMOUS"]] = None
     last_telemetry_at: Optional[str] = None
     # Identity of the coordinate frame and map used for this live robot pose.
     slam_pose: Optional[dict[str, Any]] = None

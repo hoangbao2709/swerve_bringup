@@ -1119,6 +1119,8 @@ class SwerveBridge(Node):
             'x': translation[0], 'y': translation[1],
             'yaw': yaw_from_quaternion(quaternion),
         }
+        scan_stamp = scan.header.stamp
+        source_stamp = float(scan_stamp.sec) + float(scan_stamp.nanosec) * 1e-9
         return {
             'robot_id': self.robot_id,
             'topic': self.scan_topic_name,
@@ -1129,7 +1131,11 @@ class SwerveBridge(Node):
             'sensor_pose': sensor_pose,
             'trajectory': [[x, y] for x, y in self.slam_trajectory],
             'timestamp': datetime.now(timezone.utc).isoformat(),
-            'stamp': self.last_scan_stamp,
+            # Keep the scan and its transform inseparable. ``last_scan_stamp``
+            # is updated by the subscription callback and may already refer to
+            # a newer scan while this visualization worker handles an older
+            # one. The payload stamp must always identify this exact scan.
+            'stamp': source_stamp,
             'angle_min': float(scan.angle_min), 'angle_max': float(scan.angle_max),
             'angle_increment': float(scan.angle_increment),
             'range_min': float(scan.range_min), 'range_max': float(scan.range_max),

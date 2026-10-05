@@ -4,16 +4,17 @@ import math
 from typing import Any
 
 from asgiref.sync import async_to_sync
+from django.db import transaction
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .auth import user_from_request
-from .models import EventLog, RobotNavigationMission
+from .models import EventLog, RobotMapRegistration, RobotNavigationMission, WarehouseMap
 from .navigation_targets import navigation_tag_registry
 from .runtime import runtime
 from .tag_navigation import active_warehouse, create_mission, current_mission, get_tag_graph, mission_snapshot, shortest_tag_route, validate_target_tag
-from .views import _body, _error
+from .views import _body, _error, api_admin_required
 
 
 def _auth(view):
@@ -35,22 +36,90 @@ def tags(request):
 @require_http_methods(['GET'])
 def robot_tags(request, robot_id: str):
     active_map = runtime.active_map_state(robot_id)
-    mode = str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode).upper()
-    if mode == 'MAPPING':
-        return JsonResponse({
-            'robot_id': robot_id,
-            'source': 'WAREHOUSE_NAVIGATION_TAG_REGISTRY',
-            'warehouse_id': None,
-            'map_id': active_map.get('active_map_id'),
-            'map_revision': active_map.get('active_map_revision'),
-            'frame_id': 'map',
-            'compatible': False,
-            'reason': 'Tag navigation is unavailable on an unregistered live SLAM map',
-            'registry_revision': None,
-            'tags': [],
-        })
-    registry = navigation_tag_registry(active_map)
+    registry = navigation_tag_registry(active_map, robot_id=robot_id)
     return JsonResponse({'robot_id': robot_id, **registry})
+
+
+@csrf_exempt
+@api_admin_required
+@require_http_methods(['POST'])
+def register_robot_map(request, robot_id: str):
+    """Persist an audited canonical->active-map SE(2) registration.
+
+    The request must name the exact live map identities. A later SLAM map or
+    canonical map revision cannot inherit this transform accidentally.
+    """
+    body = _body(request)
+    active = runtime.active_map_state(robot_id)
+    active_map_id = str(active.get('active_map_id') or '')
+    active_map_revision = str(active.get('active_map_revision') or '')
+    if (not active_map_id or not active_map_revision
+            or active.get('map_sync_status') != 'LOCAL_ONLY'
+            or active_map_id == 'CANONICAL'):
+        return _error('robot must have a confirmed active local/SLAM map', 409,
+                      {'code': 'ACTIVE_LOCAL_MAP_REQUIRED'})
+    if (str(body.get('active_map_id') or '') != active_map_id
+            or str(body.get('active_map_revision') or '') != active_map_revision):
+        return _error('registration must identify the exact active map and revision', 409,
+                      {'code': 'ACTIVE_MAP_REVISION_MISMATCH'})
+    try:
+        canonical_revision = int(body.get('canonical_map_revision'))
+    except (TypeError, ValueError):
+        return _error('canonical_map_revision must be an integer', 400,
+                      {'code': 'CANONICAL_MAP_REVISION_REQUIRED'})
+    if canonical_revision != active.get('canonical_map_revision'):
+        return _error('canonical revision does not match the robot map baseline', 409,
+                      {'code': 'CANONICAL_MAP_REVISION_MISMATCH'})
+    warehouse_map = WarehouseMap.objects.filter(is_active=True).order_by('id').first()
+    if warehouse_map is None or warehouse_map.revision != canonical_revision:
+        return _error('canonical map revision is not the active warehouse revision', 409,
+                      {'code': 'CANONICAL_MAP_REVISION_MISMATCH'})
+    try:
+        transform = {key: float(body[key]) for key in ('tx', 'ty', 'yaw')}
+    except (KeyError, TypeError, ValueError):
+        return _error('tx, ty and yaw are required finite transform values', 400,
+                      {'code': 'REGISTRATION_TRANSFORM_INVALID'})
+    if not all(math.isfinite(value) for value in transform.values()):
+        return _error('tx, ty and yaw must be finite', 400,
+                      {'code': 'REGISTRATION_TRANSFORM_INVALID'})
+    source = str(body.get('source') or '').strip()
+    if not source or len(source) > 160:
+        return _error('registration source is required and must be at most 160 characters', 400,
+                      {'code': 'REGISTRATION_SOURCE_REQUIRED'})
+    transform['yaw'] = math.atan2(math.sin(transform['yaw']), math.cos(transform['yaw']))
+
+    with transaction.atomic():
+        warehouse_map = WarehouseMap.objects.select_for_update().filter(
+            pk=warehouse_map.pk, is_active=True, revision=canonical_revision).first()
+        if warehouse_map is None:
+            return _error('canonical map changed while the registration was being saved', 409,
+                          {'code': 'CANONICAL_MAP_REVISION_MISMATCH'})
+        prior = RobotMapRegistration.objects.select_for_update().filter(
+            robot_id=robot_id, active_map_id=active_map_id,
+            active_map_revision=active_map_revision)
+        registration_revision = (prior.order_by('-registration_revision')
+                                 .values_list('registration_revision', flat=True).first() or 0) + 1
+        prior.filter(is_active=True).update(is_active=False)
+        registration = RobotMapRegistration.objects.create(
+            robot_id=robot_id, warehouse_map=warehouse_map,
+            canonical_revision=canonical_revision,
+            active_map_id=active_map_id, active_map_revision=active_map_revision,
+            tx=transform['tx'], ty=transform['ty'], yaw=transform['yaw'],
+            registration_revision=registration_revision, source=source,
+            created_by=request.api_user,
+        )
+    runtime.invalidate_path_previews(robot_id, 'map registration updated')
+    return JsonResponse({
+        'robot_id': robot_id,
+        'canonical_map_id': 'CANONICAL',
+        'canonical_map_revision': canonical_revision,
+        'active_map_id': active_map_id,
+        'active_map_revision': active_map_revision,
+        'tx': registration.tx, 'ty': registration.ty, 'yaw': registration.yaw,
+        'registration_revision': registration.registration_revision,
+        'source': registration.source,
+        'is_active': registration.is_active,
+    }, status=201)
 
 
 @_auth
@@ -104,7 +173,7 @@ def start(request):
     robot_id = str(body.get('robot_id', '')).strip()
     if not robot_id or body.get('target_tag_id') is None: return _error('robot_id and target_tag_id are required')
     robot_mode = str(runtime.robot_runtime_modes.get(robot_id) or runtime.operation_mode).upper()
-    if robot_mode == 'UNIFIED':
+    if runtime.is_external or robot_mode == 'UNIFIED':
         return _error('Tag navigation must use the shared NavigationTarget preview and Nav2 pipeline', 409,
                       {'code': 'TAG_NAVIGATION_SINGLE_PIPELINE_REQUIRED'})
     if not runtime.ros_bridge_connected and runtime.is_external: return _error('ROS bridge is offline', 409)
@@ -124,7 +193,8 @@ def _action(request, mission_id: int, action: str, status: str):
     try: mission = RobotNavigationMission.objects.select_related('target_tag').get(pk=mission_id)
     except RobotNavigationMission.DoesNotExist: return _error('mission not found', 404)
     robot_mode = str(runtime.robot_runtime_modes.get(mission.robot_id) or runtime.operation_mode).upper()
-    if robot_mode == 'UNIFIED' and action in ('RESUME_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION'):
+    if (runtime.is_external or robot_mode == 'UNIFIED') \
+            and action in ('RESUME_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION'):
         return _error('Tag navigation must use the shared NavigationTarget preview and Nav2 pipeline', 409,
                       {'code': 'TAG_NAVIGATION_SINGLE_PIPELINE_REQUIRED'})
     if action in ('RESUME_TAG_NAVIGATION', 'REPLAN_TAG_NAVIGATION'):

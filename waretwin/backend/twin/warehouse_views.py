@@ -11,7 +11,7 @@ from channels.layers import get_channel_layer
 from django.db.models import Count, Q
 from django.db.models.deletion import ProtectedError
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.http import HttpRequest, JsonResponse
+from django.http import HttpRequest, HttpResponseNotFound, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
@@ -329,34 +329,27 @@ def zone_detail(request: HttpRequest, zone_id: int):
 
 
 @csrf_exempt
-@require_http_methods(['GET', 'POST'])
 def shelves(request: HttpRequest):
-    user, error = _user(request, admin=request.method == 'POST')
+    # The retained Overview reads the published shelf catalog, but warehouse
+    # administration is no longer a public product surface.
+    if request.method != 'GET':
+        return HttpResponseNotFound()
+    user, error = _user(request)
     if error: return error
-    if request.method == 'GET':
-        q = Shelf.objects.select_related('zone', 'zone__warehouse')
-        warehouse_id = request.GET.get('warehouse')
-        zone_id = request.GET.get('zone')
-        search = request.GET.get('search', '').strip()
-        status = request.GET.get('status', '').strip().upper()
-        stype = request.GET.get('type', '').strip().upper()
-        floor = request.GET.get('floor')
-        if warehouse_id: q = q.filter(zone__warehouse_id=warehouse_id)
-        if zone_id: q = q.filter(zone_id=zone_id)
-        if search: q = q.filter(Q(code__icontains=search) | Q(name__icontains=search) | Q(layout_rack_id__icontains=search))
-        if status: q = q.filter(status=status)
-        if stype: q = q.filter(type=stype)
-        if floor and floor.isdigit(): q = q.filter(floor=int(floor))
-        return JsonResponse([shelf_to_dict(x) for x in q], safe=False)
-    data = _body(request)
-    try: zone = Zone.objects.select_related('warehouse').get(id=int(data.get('zone_id')))
-    except (TypeError, ValueError, Zone.DoesNotExist): return _error('valid zone_id is required')
-    obj = Shelf(zone=zone, floor=zone.floor)
-    err = _save(obj, apply_shelf_data, data, zone=zone)
-    if err: return err
-    _audit(user, 'CREATE_SHELF', f'{zone.code}/{obj.code}')
-    _commit_map(zone.warehouse, user, 'CREATE_SHELF')
-    return JsonResponse(shelf_to_dict(obj), status=201)
+    q = Shelf.objects.select_related('zone', 'zone__warehouse')
+    warehouse_id = request.GET.get('warehouse')
+    zone_id = request.GET.get('zone')
+    search = request.GET.get('search', '').strip()
+    status = request.GET.get('status', '').strip().upper()
+    stype = request.GET.get('type', '').strip().upper()
+    floor = request.GET.get('floor')
+    if warehouse_id: q = q.filter(zone__warehouse_id=warehouse_id)
+    if zone_id: q = q.filter(zone_id=zone_id)
+    if search: q = q.filter(Q(code__icontains=search) | Q(name__icontains=search) | Q(layout_rack_id__icontains=search))
+    if status: q = q.filter(status=status)
+    if stype: q = q.filter(type=stype)
+    if floor and floor.isdigit(): q = q.filter(floor=int(floor))
+    return JsonResponse([shelf_to_dict(x) for x in q], safe=False)
 
 
 @csrf_exempt

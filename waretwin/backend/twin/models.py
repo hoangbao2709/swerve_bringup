@@ -228,6 +228,48 @@ class WarehouseMapVersion(models.Model):
         return f'{self.warehouse_map.warehouse.code}@v{self.version}'
 
 
+class RobotMapRegistration(models.Model):
+    """Versioned SE(2) transform from a canonical map to one robot map.
+
+    A registration is bound to both exact map identities and revisions. New
+    calibrations are appended, leaving earlier records available for audit;
+    only one registration for a robot/map identity pair may be active.
+    """
+    robot_id = models.CharField(max_length=64, db_index=True)
+    warehouse_map = models.ForeignKey(WarehouseMap, on_delete=models.PROTECT,
+                                      related_name='robot_registrations')
+    canonical_revision = models.PositiveIntegerField()
+    active_map_id = models.CharField(max_length=128)
+    active_map_revision = models.CharField(max_length=128)
+    tx = models.FloatField()
+    ty = models.FloatField()
+    yaw = models.FloatField()
+    registration_revision = models.PositiveIntegerField()
+    source = models.CharField(max_length=160)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_by = models.ForeignKey('auth.User', on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['robot_id', 'active_map_id', 'active_map_revision', '-registration_revision']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['robot_id', 'active_map_id', 'active_map_revision', 'registration_revision'],
+                name='uniq_robot_map_registration_revision',
+            ),
+            models.UniqueConstraint(
+                fields=['robot_id', 'active_map_id', 'active_map_revision'],
+                condition=models.Q(is_active=True),
+                name='uniq_active_robot_map_registration',
+            ),
+        ]
+
+    def __str__(self):
+        return (f'{self.robot_id}:{self.active_map_id}@{self.active_map_revision}'
+                f'->CANONICAL@{self.canonical_revision}/r{self.registration_revision}')
+
+
 class WorkPoint(models.Model):
     """A robot-accessible point in a warehouse.
 

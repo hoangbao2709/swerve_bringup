@@ -1,28 +1,35 @@
 from copy import deepcopy
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import AsyncMock, Mock, patch
 
+from asgiref.sync import async_to_sync
 from django.test import TestCase as DjangoTestCase, override_settings
 from django.utils import timezone
 
 from twin.models import RobotProfile, RobotSchedule, ScheduleStop, Warehouse, WarehouseMap, WarehouseOrder, WorkPoint
 from twin.runtime import runtime
-from twin.schedule_services import apply_external_nav_status, prepare_external_dispatches
+from twin.sim.engine import SimEngine
 
 
 class ExternalRuntimeTests(TestCase):
     @override_settings(WARETWIN_RUNTIME_MODE='GAZEBO_ROS')
-    def test_external_runtime_never_uses_local_sim_step(self):
+    def test_external_runtime_starts_without_seeded_robot_or_device_state(self):
         old_mode = runtime.runtime_mode
-        old_step = runtime.engine.step
+        old_engine = runtime.engine
         runtime.runtime_mode = 'GAZEBO_ROS'
-        before = runtime.engine.state['sim']['tick']
         try:
-            runtime.engine.step = lambda: self.fail('SimEngine.step must not run in external mode')
-            runtime.engine.state['sim']['tick'] = before + 1
-            self.assertEqual(runtime.engine.state['sim']['tick'], before + 1)
+            runtime.engine = SimEngine(runtime.layout)
+            runtime.engine.state['conveyors'] = {'CV-FAKE': {'id': 'CV-FAKE', 'status': 'RUNNING'}}
+            runtime._prepare_external_cache()
+            state = runtime.full_message()['state']
+            self.assertEqual(state['robots'], {})
+            self.assertEqual(state['conveyors'], {})
+            self.assertEqual(state['tasks'], {})
+            self.assertEqual(state['kpi']['fleet']['total'], 0)
         finally:
-            runtime.engine.step = old_step
+            runtime.engine = old_engine
             runtime.runtime_mode = old_mode
 
 
@@ -30,6 +37,11 @@ class ExternalStopLifecycleTests(DjangoTestCase):
     def setUp(self):
         self.old_connected = runtime.ros_bridge_connected
         self.old_robot = deepcopy(runtime.engine.state['robots'].get('R01'))
+        self.old_mode = runtime.runtime_mode
+        self.old_tick = runtime.engine.state['sim']['tick']
+        self.old_client_count = runtime.client_count
+        self.old_gateway = runtime.robot_gateway
+        self.old_last_telemetry = runtime.last_telemetry_at
         self.wh = Warehouse.objects.create(
             code='WH-ROS-STOP', name='ROS stop test', status='ACTIVE',
             width=30, depth=30, height=5, layout_id='ros-stop-test',
@@ -74,61 +86,38 @@ class ExternalStopLifecycleTests(DjangoTestCase):
 
     def tearDown(self):
         runtime.ros_bridge_connected = self.old_connected
+        runtime.runtime_mode = self.old_mode
+        runtime.engine.state['sim']['tick'] = self.old_tick
+        runtime.client_count = self.old_client_count
+        runtime.robot_gateway = self.old_gateway
+        runtime.last_telemetry_at = self.old_last_telemetry
         if self.old_robot is None:
             runtime.engine.state['robots'].pop('R01', None)
         else:
             runtime.engine.state['robots']['R01'] = self.old_robot
 
-    def test_source_and_destination_are_independent_nav2_goals(self):
-        goals, changed = prepare_external_dispatches(runtime)
-        self.assertTrue(changed)
-        self.assertEqual(len(goals), 1)
-        self.assertEqual(goals[0]['stop_id'], self.source_stop.id)
-        self.assertEqual((goals[0]['x'], goals[0]['y']), (1.0, 2.0))
-
-        # A result for any stop except the exact active stop_id is ignored.
-        self.assertFalse(apply_external_nav_status({
-            'type': 'NAV_STATUS', 'robot_id': 'R01',
-            'schedule_id': self.schedule.schedule_id,
-            'stop_id': self.destination_stop.id, 'status': 'SUCCEEDED',
-        }))
-
-        self.assertTrue(apply_external_nav_status({
-            'type': 'NAV_STATUS', 'robot_id': 'R01',
-            'schedule_id': self.schedule.schedule_id,
-            'stop_id': self.source_stop.id, 'status': 'SUCCEEDED',
-        }))
-        self.source_stop.refresh_from_db()
-        self.destination_stop.refresh_from_db()
-        self.schedule.refresh_from_db()
-        self.assertEqual(self.source_stop.status, 'ARRIVED')
-        self.assertEqual(self.destination_stop.status, 'PENDING')
-        self.assertEqual(self.schedule.current_leg, 0)
-
-        goals, _ = prepare_external_dispatches(runtime)
-        self.source_stop.refresh_from_db()
-        self.destination_stop.refresh_from_db()
-        self.schedule.refresh_from_db()
-        self.assertEqual(self.source_stop.status, 'COMPLETED')
-        self.assertEqual(self.destination_stop.status, 'ACTIVE')
-        self.assertEqual(self.schedule.current_leg, 1)
-        self.assertEqual(goals[0]['stop_id'], self.destination_stop.id)
-
-        self.assertTrue(apply_external_nav_status({
-            'type': 'NAV_STATUS', 'robot_id': 'R01',
-            'schedule_id': self.schedule.schedule_id,
-            'stop_id': self.destination_stop.id, 'status': 'SUCCEEDED',
-        }))
-        self.destination_stop.refresh_from_db()
-        self.schedule.refresh_from_db()
-        self.assertEqual(self.destination_stop.status, 'ARRIVED')
-        self.assertNotEqual(self.schedule.status, 'COMPLETED')
-
-        goals, _ = prepare_external_dispatches(runtime)
-        self.assertEqual(goals, [])
-        self.destination_stop.refresh_from_db()
+    def test_stale_database_order_and_schedule_never_dispatch_navigation(self):
+        runtime.runtime_mode = 'GAZEBO_ROS'
+        runtime.engine.state['sim']['tick'] = 10
+        runtime.client_count = 0
+        runtime.last_telemetry_at = None
+        runtime.robot_gateway = SimpleNamespace(
+            send_command=AsyncMock(return_value={'ok': True}),
+        )
+        goal = {
+            'robot_id': 'R01', 'schedule_id': self.schedule.schedule_id,
+            'stop_id': self.source_stop.id, 'frame_id': 'map',
+            'x': self.source.x, 'y': self.source.y, 'yaw': self.source.yaw,
+        }
+        # The legacy scheduler would return this due, stale DB goal. External
+        # runtime ticks must not call the scheduler or forward any NAVIGATE.
+        with patch('twin.schedule_services.prepare_external_dispatches', Mock(return_value=([goal], True))) as dispatch:
+            with patch.object(runtime, 'runtime_status_message', return_value={'map_sync_status': 'SYNCED'}):
+                async_to_sync(runtime.after_ticks)()
+        dispatch.assert_not_called()
+        runtime.robot_gateway.send_command.assert_not_awaited()
         self.schedule.refresh_from_db()
         self.order.refresh_from_db()
-        self.assertEqual(self.destination_stop.status, 'COMPLETED')
-        self.assertEqual(self.schedule.status, 'COMPLETED')
-        self.assertEqual(self.order.status, 'COMPLETED')
+        self.assertEqual(self.schedule.status, 'PLANNED')
+        self.assertEqual(self.order.status, 'NEW')
+        self.assertEqual(self.source_stop.status, 'PENDING')

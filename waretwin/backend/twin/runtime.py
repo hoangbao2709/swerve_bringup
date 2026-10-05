@@ -86,7 +86,7 @@ class TwinRuntime:
         self.engine.external_scheduler = True
         self.plc = PLCSimulator(self.layout)
         self.engine.state['conveyors'] = self.plc.snapshot()
-        self.runtime_mode = str(getattr(settings, 'WARETWIN_RUNTIME_MODE', 'LOCAL_SIM'))
+        self.runtime_mode = str(getattr(settings, 'WARETWIN_RUNTIME_MODE', 'GAZEBO_ROS'))
         self.robot_gateway = None
         self._prepare_external_cache()
         self.run_id = uuid.uuid4().hex[:8]
@@ -162,14 +162,19 @@ class TwinRuntime:
     def _prepare_external_cache(self) -> None:
         if not self.is_external:
             return
-        for robot in self.engine.state.get('robots', {}).values():
-            robot['status'] = 'OFFLINE'
-            robot['fsm'] = 'OFFLINE'
-            robot['navigation_state'] = 'OFFLINE'
-            robot['last_telemetry_at'] = None
-            robot['vx'] = robot['vy'] = robot['wz'] = 0.0
-            robot['path'] = []
-            robot['path_index'] = 0
+        state = self.engine.state
+        # The simulation engine seeds a demo fleet and warehouse-device state.
+        # In external modes none of that is evidence of a connected robot or
+        # live equipment, so wait for authenticated ROS/backend reports.
+        for section in self.SECTIONS:
+            state[section] = {}
+        state['robots'] = {}
+        state['recent_events'] = []
+        state['recent_decisions'] = []
+        state['kpi']['fleet'] = {
+            'total': 0, 'active': 0, 'charging': 0, 'idle': 0,
+            'warning': 0, 'error': 0, 'offline': 0,
+        }
 
     def gateway(self):
         if self.robot_gateway is None:
@@ -434,8 +439,8 @@ class TwinRuntime:
                         self.engine.state['sim']['tick'] += 1
                     else:
                         self.engine.step()
-                    self.plc.tick(TICK_S)
-                    self.engine.state['conveyors'] = self.plc.snapshot()
+                        self.plc.tick(TICK_S)
+                        self.engine.state['conveyors'] = self.plc.snapshot()
                     acc -= TICK_S
                     n += 1
                 if n:
@@ -459,30 +464,12 @@ class TwinRuntime:
         S = self.engine.state
         S['sim']['speed'] = self.speed
         S['sim']['mode'] = 'LIVE' if self.is_external else ('PAUSED' if self.paused else 'LIVE')
-        # Persistent scheduler is authoritative for simulated work. Run it at 1 Hz
-        # simulation time so planned database routes are dispatched to the same
-        # movement/A* engine that drives the 2D/3D robot models.
-        if S['sim']['tick'] % 10 == 0:
+        # Persistent scheduling remains a LOCAL_SIM feature only. In external
+        # modes, legacy DB orders/schedules must never become robot motion.
+        if not self.is_external and S['sim']['tick'] % 10 == 0:
             try:
-                if self.is_external:
-                    # Never dispatch a fleet scheduler goal against a stale
-                    # canonical map. E-stop remains an explicit gateway command.
-                    if self.runtime_status_message().get('map_sync_status') != 'SYNCED':
-                        goals, changed = [], False
-                    else:
-                        from .schedule_services import prepare_external_dispatches
-                        goals, changed = await sync_to_async(
-                            prepare_external_dispatches, thread_sensitive=True)(self)
-                    for goal in goals:
-                        result = await self.gateway().send_command(goal['robot_id'], 'NAVIGATE', goal)
-                        if not result.get('ok'):
-                            log.warning('ROS bridge unavailable for %s', goal.get('schedule_id'))
-                            from .schedule_services import release_external_dispatch
-                            await sync_to_async(release_external_dispatch, thread_sensitive=True)(
-                                goal['schedule_id'], goal['stop_id'])
-                else:
-                    from .schedule_services import process_runtime_schedules
-                    changed = await sync_to_async(process_runtime_schedules, thread_sensitive=True)(self.engine, self.plc)
+                from .schedule_services import process_runtime_schedules
+                changed = await sync_to_async(process_runtime_schedules, thread_sensitive=True)(self.engine, self.plc)
                 if changed:
                     await self.broadcast({'type': 'SCHEDULE_UPDATED', 'source': 'runtime'})
             except Exception as exc:
@@ -787,6 +774,18 @@ class TwinRuntime:
                                   'tick': self.engine.state['sim']['tick'],
                                   'patch': {'robots': self._robot_patch()}, 'events': []})
 
+    def _floor_for_height(self, height: float) -> int:
+        floors = self.layout.get('floors', [])
+        candidates = []
+        for floor in floors if isinstance(floors, list) else []:
+            if not isinstance(floor, dict):
+                continue
+            try:
+                candidates.append((abs(float(floor.get('elevation', 0.0)) - height), int(floor['id'])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return min(candidates)[1] if candidates else 1
+
     async def update_external_robot_state(self, data: dict[str, Any]) -> None:
         rid = str(data.get('robot_id') or '').strip()
         if not rid or rid not in self.connected_robot_ids:
@@ -838,19 +837,34 @@ class TwinRuntime:
                 self.map_sync_error = (f'robot {rid} pose revision {pose_revision} does not match '
                                        f'published revision {self.published_map_revision}')
                 return
+        try:
+            x, y, z, yaw = (float(data[key]) for key in ('x', 'y', 'z', 'yaw'))
+            vx, vy, wz = (float(data[key]) for key in ('vx', 'vy', 'wz'))
+            if not all(math.isfinite(value) for value in (x, y, z, yaw, vx, vy, wz)):
+                raise ValueError('non-finite ROS pose or twist')
+        except (KeyError, TypeError, ValueError):
+            self.map_tf_status = False
+            self.map_sync_error = f'robot {rid} pose/twist is incomplete or invalid'
+            return
+        pose = ros_pose_to_waretwin(x, y, z, yaw)
+        twist = ros_twist_to_waretwin(vx, vy, wz)
         robots = self.engine.state.setdefault('robots', {})
         robot = robots.get(rid)
         if robot is None:
-            # Preserve the existing schema shape for a robot discovered later.
-            robot = next(iter(robots.values()), {}).copy()
-            robot.update({'id': rid, 'position': [0.0, 0.0, 0.0], 'path': [], 'path_index': 0,
-                          'stats': {'distance_m': 0.0, 'tasks_completed': 0, 'energy_wh': 0.0,
-                                    'busy_ticks': 0, 'wait_ticks': 0}, 'load': {'current': 0, 'capacity': 4}})
+            robot = {
+                'id': rid, 'model': str(data.get('model') or 'UNKNOWN'),
+                'floor': self._floor_for_height(z), 'lift_id': None, 'lift_stage': None,
+                'position': pose['position'], 'heading': pose['heading'],
+                'velocity': twist['velocity'], 'max_speed': None, 'battery': None,
+                'status': 'ACTIVE', 'fsm': 'UNKNOWN', 'health': None,
+                'current_task_id': None, 'destination': None, 'path': [], 'path_index': 0,
+                'load': None, 'zone': None, 'eta_s': None,
+                'fsm_since_tick': int(self.engine.state['sim']['tick']), 'stats': None,
+                'perception': None, 'vx': twist['vx'], 'vy': twist['vy'], 'wz': twist['wz'],
+                'navigation_state': 'UNKNOWN', 'control_mode': None,
+                'last_telemetry_at': None,
+            }
             robots[rid] = robot
-        pose = ros_pose_to_waretwin(float(data.get('x', 0.0)), float(data.get('y', 0.0)),
-                                    float(data.get('z', 0.0)), float(data.get('yaw', 0.0)))
-        twist = ros_twist_to_waretwin(float(data.get('vx', 0.0)), float(data.get('vy', 0.0)),
-                                      float(data.get('wz', 0.0)))
         now_iso = str(data.get('timestamp') or datetime.now(timezone.utc).isoformat())
         active_pose = {'x': float(data['x']), 'y': float(data['y']), 'yaw': float(data['yaw']),
                        'frame_id': frame_id, 'map_id': reported_map_id,
@@ -861,10 +875,11 @@ class TwinRuntime:
                                                   self.published_map_revision, self.runtime_mode)
         if robot_mode not in MAPPING_CAPABLE_MODES and reported_map_id == 'CANONICAL' and pose_source == 'TF':
             canonical_pose = active_pose
-        nav = str(data.get('navigation_state') or 'IDLE').upper()
-        control_mode = str(data.get('control_mode') or robot.get('control_mode') or 'AUTONOMOUS').upper()
+        nav = str(data.get('navigation_state') or 'UNKNOWN').upper()
+        reported_control_mode = data.get('control_mode') or robot.get('control_mode')
+        control_mode = str(reported_control_mode).upper() if reported_control_mode else None
         if control_mode not in ('MANUAL', 'AUTONOMOUS'):
-            control_mode = 'AUTONOMOUS'
+            control_mode = None
         # ``robot`` is the persisted state dictionary.  ``dict.update`` takes
         # one mapping, so merge the ROS pose, twist and metadata explicitly;
         # the previous three-argument call raised on every ROBOT_STATE frame
@@ -873,6 +888,23 @@ class TwinRuntime:
         robot.update(twist)
         robot.update({'navigation_state': nav, 'last_telemetry_at': now_iso,
                       'control_mode': control_mode, 'status': 'ACTIVE',
+                      # A robot row may have been created earlier while a
+                      # different runtime mode was active. Do not let any
+                      # seeded/simulated telemetry survive into GAZEBO_ROS;
+                      # retain these values only when the bridge explicitly
+                      # reported them in this frame.
+                      'max_speed': data.get('max_speed'),
+                      'battery': data.get('battery'),
+                      'health': data.get('health'),
+                      'current_task_id': data.get('current_task_id'),
+                      'destination': data.get('destination'),
+                      'path': data.get('path') if isinstance(data.get('path'), list) else [],
+                      'path_index': data.get('path_index', 0),
+                      'load': data.get('load'),
+                      'zone': data.get('zone'),
+                      'eta_s': data.get('eta_s'),
+                      'stats': data.get('stats'),
+                      'perception': data.get('perception'),
                       'fsm': self._fsm_from_nav(nav),
                       'active_map_pose': active_pose,
                       'slam_pose': active_pose if reported_map_source == 'SLAM_TOOLBOX' else None,
@@ -897,7 +929,7 @@ class TwinRuntime:
     @staticmethod
     def _fsm_from_nav(nav: str) -> str:
         return {'ACTIVE': 'NAVIGATING', 'NAVIGATING': 'NAVIGATING', 'SUCCEEDED': 'COMPLETED',
-                'FAILED': 'ERROR', 'CANCELED': 'IDLE', 'IDLE': 'IDLE'}.get(nav, 'NAVIGATING')
+                'FAILED': 'ERROR', 'CANCELED': 'IDLE', 'IDLE': 'IDLE'}.get(nav, 'UNKNOWN')
 
     async def handle_nav_status(self, data: dict[str, Any]) -> None:
         from .schedule_services import apply_external_nav_status
@@ -1346,8 +1378,9 @@ class TwinRuntime:
             cur['wz'] = round(float(r.get('wz', 0.0)), 3)
             cur['navigation_state'] = r.get('navigation_state', r.get('fsm', 'IDLE'))
             cur['last_telemetry_at'] = r.get('last_telemetry_at')
-            cur['battery'] = round(r['battery'], 2)
-            if tick % 10 == 0:
+            if r.get('battery') is not None:
+                cur['battery'] = round(r['battery'], 2)
+            if tick % 10 == 0 and isinstance(r.get('stats'), dict):
                 cur['stats'] = {k: round(v, 1) if isinstance(v, float) else v for k, v in r['stats'].items()}
             cur['path'] = r['path']
             prev = prev_sent.get(rid, {})
@@ -1447,6 +1480,7 @@ class TwinRuntime:
         self.engine.external_scheduler = True
         self.plc = PLCSimulator(self.layout)
         self.engine.state['conveyors'] = self.plc.snapshot()
+        self._prepare_external_cache()
         self.run_id = uuid.uuid4().hex[:8]
         self._snapshot_prev()
         self.last_sent_tick = 0

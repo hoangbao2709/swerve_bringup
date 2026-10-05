@@ -91,7 +91,7 @@ def test_mapping_authority_requires_slam_as_the_only_map_publisher(readiness_mod
     )
     ok, detail = probe._mapping_runtime_authority()
     assert ok
-    assert 'map=/map publisher=slam_toolbox' in detail
+    assert 'live_map=/map publisher=slam_toolbox' in detail
 
     probe.get_node_names_and_namespaces = lambda: [
         ('slam_toolbox', '/'), ('ekf_v30e', '/'),
@@ -101,25 +101,115 @@ def test_mapping_authority_requires_slam_as_the_only_map_publisher(readiness_mod
     assert 'ekf_v30e' in detail
 
 
-def test_unified_nav2_lifecycle_contract_omits_static_map_server(readiness_module):
+def test_unified_nav2_lifecycle_contract_uses_registered_bundle_map(readiness_module):
     probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
     probe.mode = 'unified'
-    probe.nav2_lifecycle_nodes = readiness_module.NAV2_LIVE_SLAM_LIFECYCLE_NODES
+    probe.nav2_lifecycle_nodes = readiness_module.NAV2_REGISTERED_CANONICAL_LIFECYCLE_NODES
+    probe.expected_canonical_revision = 22
     probe._nav2_graph_counts = lambda: {
         'map_server': 0,
+        'canonical_map_server': 1,
         'lifecycle_manager_navigation': 1,
         'lifecycle_manager_mapping_map': 0,
     }
     probe._read_nav2_manager_configuration = lambda _deadline: ({
         'autostart': False,
-        'node_names': list(readiness_module.NAV2_LIVE_SLAM_LIFECYCLE_NODES),
+        'node_names': list(readiness_module.NAV2_REGISTERED_CANONICAL_LIFECYCLE_NODES),
     }, None)
-    probe._read_map_yaml_parameter = lambda _deadline: pytest.fail(
-        'LIVE_SLAM readiness must not query an absent map_server')
+    probe._read_map_yaml_parameter = lambda _deadline: ('/bundle/22/nav2/warehouse.yaml', None)
 
     ready, error = probe._deferred_nav2_contract(time.monotonic() + 1.0)
 
     assert ready, error
+
+
+def _grid(width, height, resolution, origin_x, origin_y):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        header=SimpleNamespace(frame_id='map'),
+        info=SimpleNamespace(
+            width=width, height=height, resolution=resolution,
+            origin=SimpleNamespace(
+                position=SimpleNamespace(x=origin_x, y=origin_y),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+        ),
+        data=[0] * (width * height),
+    )
+
+
+def _full_registered_map_probe(readiness_module):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.expected_canonical_revision = 22
+    probe.canonical_map_grid = _grid(600, 1200, 0.05, 0.0, 0.0)
+    probe.navigation_map_grid = _grid(1200, 600, 0.05, -5.5, -15.0)
+    probe.global_costmap_grid = _grid(1200, 600, 0.05, -5.5, -15.0)
+    probe.navigation_map_metadata = {
+        'ready': True,
+        'navigation_map_source': 'PUBLISHED_CANONICAL_REGISTERED',
+        'navigation_map_id': 'NAV-22-SLAM-session-1',
+        'navigation_map_revision': 'session-session-1:canonical-22:registration-3',
+        'canonical_map_revision': 22,
+        'active_map_id': 'SLAM-session-1',
+        'active_map_revision': 'session-session-1',
+        'registration_revision': 3,
+        'registration_source': 'GAZEBO_CANONICAL_ALIGNMENT',
+        'frame_id': 'map',
+        'resolution': 0.05, 'width': 1200, 'height': 600,
+        'origin_x': -5.5, 'origin_y': -15.0,
+        'min_x': -5.5, 'max_x': 54.5, 'min_y': -15.0, 'max_y': 15.0,
+        'source_width': 600, 'source_height': 1200, 'source_resolution': 0.05,
+        'source_origin_x': 0.0, 'source_origin_y': 0.0, 'source_origin_yaw': 0.0,
+        'registration': {'tx': -5.5, 'ty': 15.0, 'yaw': -1.5707963267948966},
+    }
+    probe.get_publishers_info_by_topic = lambda topic: [
+        SimpleNamespace(node_name={
+            '/map': 'slam_toolbox',
+            '/canonical_map': 'canonical_map_server',
+            '/navigation_map': 'swerve_bridge',
+        }[topic])
+    ]
+    probe.get_subscriptions_info_by_topic = lambda topic: (
+        [SimpleNamespace(node_name='global_costmap')] if topic == '/navigation_map' else [])
+    return probe
+
+
+def test_registered_navigation_map_and_costmap_cover_full_bundle_not_live_slam_extent(
+    readiness_module,
+):
+    probe = _full_registered_map_probe(readiness_module)
+    assert probe._unified_navigation_map_error() is None
+
+    # The confirmed old live SLAM map was 420x597 at (-5.429, -14.897),
+    # so its max X=15.571m cannot cover the registered canonical map.
+    probe.global_costmap_grid = _grid(420, 597, 0.05, -5.429391, -14.896761)
+    assert probe._unified_navigation_map_error() == (
+        'global_costmap_extent_does_not_cover_registered_navigation_map')
+
+
+def test_registered_navigation_map_readiness_fails_closed_on_revision_and_duplicate_map_owner(
+    readiness_module,
+):
+    probe = _full_registered_map_probe(readiness_module)
+    probe.navigation_map_metadata['canonical_map_revision'] = 21
+    assert probe._unified_navigation_map_error() == 'canonical_revision_mismatch:expected=22:actual=21'
+
+    probe = _full_registered_map_probe(readiness_module)
+    original = probe.get_publishers_info_by_topic
+    probe.get_publishers_info_by_topic = lambda topic: (
+        original(topic) + [type('Publisher', (), {'node_name': 'map_server'})()]
+        if topic == '/map' else original(topic))
+    assert '/map_publishers_must_be_slam_toolbox_only' in probe._unified_navigation_map_error()
+
+
+def test_readiness_binds_selected_nav2_yaml_to_published_bundle_revision(readiness_module):
+    selected = ROOT / 'generated/maps/WH-TEST-01/22/nav2/warehouse_1.yaml'
+    assert readiness_module.Readiness._bundle_revision_for_map(selected) == 22
+    assert readiness_module.Readiness._bundle_revision_for_map(
+        ROOT / 'swerve_navigation/maps/warehouse.yaml') is None
 
 
 def test_mapping_readiness_sensor_rate_requires_real_receive_samples(readiness_module):

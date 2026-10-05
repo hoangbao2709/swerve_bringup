@@ -37,6 +37,7 @@ def _navigate_to_pose_goal():
 def _nav_safety_bridge():
     bridge = object.__new__(SwerveBridge)
     bridge.robot_id = 'R01'
+    bridge.runtime_state = 'NAVIGATION'
     bridge.control_mode = 'AUTONOMOUS'
     bridge.emergency_stop_active = False
     bridge.goal_request_pending = False
@@ -99,9 +100,12 @@ def test_tag_resolved_pose_uses_shared_compute_path_and_navigate_to_pose_actions
 
     bridge = object.__new__(SwerveBridge)
     bridge.robot_id = 'R01'
+    bridge.runtime_state = 'NAVIGATION'
     bridge.control_mode = 'AUTONOMOUS'
     bridge.emergency_stop_active = False
     bridge.active_map_identity = lambda: map_identity.copy()
+    bridge.navigation_map_status = {}
+    bridge.navigation_grid_occupancy = None
     bridge.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: 'stamp'))
     bridge.path_preview_client = SimpleNamespace(
         server_is_ready=lambda: True,
@@ -157,6 +161,89 @@ def test_tag_resolved_pose_uses_shared_compute_path_and_navigate_to_pose_actions
     assert nav_goal.pose.pose.position.y == target['y']
     assert nav_goal.pose.pose.orientation.z == math.sin(target['yaw'] / 2.0)
     assert nav_goal.pose.pose.orientation.w == math.cos(target['yaw'] / 2.0)
+
+
+def test_unified_preview_requires_registered_full_map_and_binds_its_revision(monkeypatch):
+    monkeypatch.setattr(bridge_node, 'ComputePathToPose', SimpleNamespace(Goal=_compute_path_goal))
+    active = {
+        'active_map_id': 'SLAM-session-1',
+        'active_map_revision': 'session-session-1',
+        'canonical_map_revision': 22,
+    }
+    registration = {
+        'tx': -5.5, 'ty': 15.0, 'yaw': -math.pi / 2.0,
+    }
+    nav_map = {
+        'ready': True,
+        'navigation_map_id': 'NAV-22-SLAM-session-1',
+        'navigation_map_revision': 'session-session-1:canonical-22:registration-4',
+        'resolution': 0.05, 'width': 1200, 'height': 600,
+        'origin_x': -5.5, 'origin_y': -15.0, 'origin_yaw': 0.0,
+        'min_x': -5.5, 'max_x': 54.5, 'min_y': -15.0, 'max_y': 15.0,
+        'data': [0] * (1200 * 600),
+    }
+    action = Mock()
+    action.send_goal_async.return_value = SimpleNamespace(add_done_callback=Mock())
+    bridge = object.__new__(SwerveBridge)
+    bridge.robot_id = 'R01'
+    bridge.runtime_state = 'UNIFIED'
+    bridge.control_mode = 'AUTONOMOUS'
+    bridge.emergency_stop_active = False
+    bridge.active_map_identity = lambda: active.copy()
+    bridge.navigation_map_status = {
+        'ready': True,
+        'navigation_map_id': nav_map['navigation_map_id'],
+        'navigation_map_revision': nav_map['navigation_map_revision'],
+    }
+    bridge.navigation_grid_occupancy = nav_map
+    bridge._map_to_base = lambda x, y, _stamp: (x, y, 0.0)
+    bridge.path_preview_client = SimpleNamespace(
+        server_is_ready=lambda: True, send_goal_async=action.send_goal_async)
+    bridge.path_preview_goals = {}
+    bridge.path_preview_approvals = {}
+    bridge.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: 'stamp'))
+    bridge.send = Mock()
+
+    target = {'x': 16.49, 'y': 0.014, 'yaw': 0.0}
+    base = {
+        'type': 'PATH_PREVIEW', 'request_id': 'unified-tag-1204', **target,
+        'frame_id': 'map', 'source_type': 'TAG', 'source_id': '1204',
+        'active_map_id': active['active_map_id'],
+        'active_map_revision': active['active_map_revision'],
+    }
+    bridge.preview_path({**base, 'navigation_map_revision': 'stale-registration'})
+    rejected = bridge.send.call_args.args[0]
+    assert rejected['reason_code'] == 'NAVIGATION_MAP_REVISION_MISMATCH'
+    assert action.send_goal_async.call_count == 0
+
+    bridge.preview_path({**base, 'x': 60.0,
+                         'navigation_map_revision': nav_map['navigation_map_revision']})
+    outside = bridge.send.call_args.args[0]
+    assert outside['reason_code'] == 'TARGET_OUTSIDE_NAVIGATION_MAP'
+    assert action.send_goal_async.call_count == 0
+
+    bridge.preview_path({**base, 'navigation_map_revision': nav_map['navigation_map_revision']})
+    goal = action.send_goal_async.call_args.args[0]
+    assert goal.goal.header.frame_id == 'map'
+    assert goal.goal.pose.position.x == target['x']
+    assert bridge.path_preview_goals['unified-tag-1204'] == target
+
+    approval = {
+        'goal': target.copy(), 'active_map_id': active['active_map_id'],
+        'active_map_revision': active['active_map_revision'],
+        'navigation_map_revision': nav_map['navigation_map_revision'],
+        'created_monotonic': time.monotonic(),
+    }
+    bridge.path_preview_approvals['unified-tag-1204'] = approval
+    nav_goal_data = {
+        **base, 'preview_request_id': 'unified-tag-1204',
+        'navigation_map_revision': nav_map['navigation_map_revision'],
+    }
+    assert bridge.consume_path_preview(nav_goal_data)
+
+    bridge.path_preview_approvals['unified-tag-1204'] = approval
+    bridge.navigation_map_status['navigation_map_revision'] = 'new-registration'
+    assert not bridge.consume_path_preview(nav_goal_data)
 
 
 @pytest.mark.parametrize(('source_type', 'source_id'), [('MAP_POINT', None), ('TAG', '1301')])

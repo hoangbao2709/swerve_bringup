@@ -64,13 +64,14 @@ def test_view_ack_wakes_worker_without_recompressing_map():
     frames, wakes = [], []
     node = SimpleNamespace(detail_view='LIDAR_3D', detail_view_epoch=4,
         last_sent_map_signature=('unchanged-map',), lidar_frame_buffer=LatestFrameBuffer(),
+        map_snapshot_worker=SimpleNamespace(wake=lambda: wakes.append('map')),
         outbound=OutboundMailbox(), web_cloud_epoch='bridge', robot_id='R01',
         send=frames.append, now=lambda: 'now',
         visualization_worker=SimpleNamespace(wake=lambda: wakes.append(True)))
     assert SwerveBridge.set_detail_view(node, 'GLOBAL', {'request_id': 'view-request'})
-    assert node.last_sent_map_signature == ('unchanged-map',)
+    assert node.last_sent_map_signature is None
     assert frames[0]['state'] == 'APPLIED' and frames[0]['view_epoch'] == 5
-    assert frames[0]['request_id'] == 'view-request' and wakes == [True]
+    assert frames[0]['request_id'] == 'view-request' and wakes == ['map', True]
     assert not SwerveBridge.set_detail_view(node, 'invalid', {})
     assert len(frames) == 1
 

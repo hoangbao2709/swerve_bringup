@@ -153,7 +153,7 @@ def test_map_validation_cache_invalidates_grid_yaml_and_image(tmp_path):
     yaml.write_text('image: map.pgm\n')
     image.write_bytes(b'first')
     calls = []
-    node = SimpleNamespace(latest_map=object(), latest_map_signature=('grid', 1),
+    node = SimpleNamespace(runtime_state='LOCALIZATION', latest_map=object(), latest_map_signature=('grid', 1),
         nav2_map_file=yaml, nav2_configured_revision=21,
         _verify_loaded_nav2_revision=lambda present: calls.append(present) or 21)
     def check():

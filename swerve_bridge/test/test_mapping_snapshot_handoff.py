@@ -20,6 +20,10 @@ def test_map_callback_only_replaces_latest_reference_and_wakes_worker(monkeypatc
     bridge.last_map_monotonic = None
     bridge.map_intervals = deque(maxlen=30)
     bridge.map_snapshot_worker = SimpleNamespace(wake=Mock())
+    # UNIFIED owns its navigation grid via /navigation_map; this callback is
+    # only responsible for retaining the live SLAM snapshot and waking its
+    # existing WebSocket snapshot worker.
+    bridge.runtime_state = 'UNIFIED'
     monkeypatch.setattr(
         bridge_node, 'occupancy_content_signature',
         lambda _cells: (_ for _ in ()).throw(AssertionError('hash must run on worker')),

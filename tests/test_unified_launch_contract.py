@@ -22,21 +22,23 @@ def test_unified_launch_starts_slam_and_nav2_without_legacy_v30e_localizer():
     assert "('mapping', 'unified')" in source
     assert "('navigation', 'unified')" in source
     assert 'condition=legacy_navigation_mode' in source
-    assert "'LIVE_SLAM' if '" in source
+    assert "'REGISTERED_CANONICAL' if '" in source
+    assert "'navigation_map_topic': '/navigation_map'" in source
     assert "'navigation'" in source[source.index('simulated_navigation_mode ='):source.index('require_canonical_map =')]
-    assert 'SLAM Toolbox + Nav2 share the live SLAM map' in source
+    assert 'Nav2 plans on the published canonical map registered into /navigation_map' in source
 
 
-def test_live_slam_nav2_has_no_map_server_and_costmap_subscribes_to_full_map():
+def test_unified_nav2_registers_full_published_map_on_distinct_topic():
     launch = (ROOT / 'swerve_navigation/launch/navigation.launch.py').read_text(encoding='utf-8')
     assert "map_source == 'STATIC_MAP'" in launch
-    assert "map_source not in ('LIVE_SLAM', 'STATIC_MAP')" in launch
+    assert "'REGISTERED_CANONICAL'" in launch
+    assert "'canonical_map_server'" in launch
     assert "'map_server', 'controller_server'" in launch
     assert "'controller_server', 'planner_server'" in launch
 
     config = yaml.safe_load((ROOT / 'swerve_navigation/config/nav2_params.yaml').read_text(encoding='utf-8'))
     static_layer = config['global_costmap']['global_costmap']['ros__parameters']['static_layer']
-    assert static_layer['map_topic'] == '/map'
+    assert static_layer['map_topic'] == '/navigation_map'
     assert static_layer['map_subscribe_transient_local'] is True
     assert static_layer['subscribe_to_updates'] is False
     assert config['planner_server']['ros__parameters']['GridBased']['allow_unknown'] is False
@@ -71,11 +73,21 @@ def test_unified_nav2_readiness_order_matches_lifecycle_manager_start_order():
         node for node in readiness_tree.body
         if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name)
-                and target.id == 'NAV2_LIVE_SLAM_LIFECYCLE_NODES'
+                and target.id == 'NAV2_REGISTERED_CANONICAL_LIFECYCLE_NODES'
                 for target in node.targets)
     )
-    readiness_order = ast.literal_eval(readiness_assignment.value)
-    assert readiness_order == expected_order
+    registered_order = readiness_assignment.value
+    assert isinstance(registered_order, ast.Tuple)
+    assert isinstance(registered_order.elts[0], ast.Constant)
+    assert registered_order.elts[0].value == 'canonical_map_server'
+    assert isinstance(registered_order.elts[1], ast.Starred)
+    assert ast.literal_eval(next(
+        node.value for node in readiness_tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name)
+                and target.id == 'NAV2_LIVE_SLAM_LIFECYCLE_NODES'
+                for target in node.targets)
+    )) == expected_order
     launch_tree = ast.parse(launch)
     configured_order = None
     for node in ast.walk(launch_tree):
@@ -84,10 +96,12 @@ def test_unified_nav2_readiness_order_matches_lifecycle_manager_start_order():
         for key, value in zip(node.keys, node.values):
             if not (isinstance(key, ast.Constant) and key.value == 'node_names'):
                 continue
-            if isinstance(value, ast.IfExp) and isinstance(value.orelse, ast.List):
-                configured_order = tuple(ast.literal_eval(value.orelse))
+            if isinstance(value, ast.IfExp):
+                configured_order = ast.unparse(value)
                 break
-    assert configured_order == expected_order
+    assert configured_order is not None
+    assert configured_order.rindex('canonical_map_server') < configured_order.rindex('controller_server')
+    assert configured_order.rindex('controller_server') < configured_order.rindex('planner_server')
 
 
 def test_installed_humble_static_layer_exposes_configured_live_map_parameters():

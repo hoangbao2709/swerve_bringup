@@ -1,8 +1,5 @@
 # Put these in frontend/.env when testing this Django backend. Empty base URLs
 # make the browser resolve the Django hostname automatically, including LAN use.
-VITE_DEMO_MODE=false
-VITE_BACKEND_MODE=true
-VITE_RUNTIME_MODE=GAZEBO_ROS
 FRONTEND_HOST=0.0.0.0
 FRONTEND_PORT=5173
 VITE_BACKEND_PORT=8000

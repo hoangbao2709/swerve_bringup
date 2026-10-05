@@ -86,7 +86,7 @@ class TwinRuntime:
         self.engine.external_scheduler = True
         self.plc = PLCSimulator(self.layout)
         self.engine.state['conveyors'] = self.plc.snapshot()
-        self.runtime_mode = str(getattr(settings, 'WARETWIN_RUNTIME_MODE', 'LOCAL_SIM'))
+        self.runtime_mode = str(getattr(settings, 'WARETWIN_RUNTIME_MODE', 'GAZEBO_ROS'))
         self.robot_gateway = None
         self._prepare_external_cache()
         self.run_id = uuid.uuid4().hex[:8]
@@ -167,6 +167,7 @@ class TwinRuntime:
             robot['fsm'] = 'OFFLINE'
             robot['navigation_state'] = 'OFFLINE'
             robot['last_telemetry_at'] = None
+            robot['battery_reported'] = False
             robot['vx'] = robot['vy'] = robot['wz'] = 0.0
             robot['path'] = []
             robot['path_index'] = 0
@@ -865,6 +866,11 @@ class TwinRuntime:
         control_mode = str(data.get('control_mode') or robot.get('control_mode') or 'AUTONOMOUS').upper()
         if control_mode not in ('MANUAL', 'AUTONOMOUS'):
             control_mode = 'AUTONOMOUS'
+        reported_battery = data.get('battery')
+        if (isinstance(reported_battery, (int, float)) and not isinstance(reported_battery, bool)
+                and math.isfinite(float(reported_battery)) and 0 <= float(reported_battery) <= 100):
+            robot['battery'] = float(reported_battery)
+            robot['battery_reported'] = True
         # ``robot`` is the persisted state dictionary.  ``dict.update`` takes
         # one mapping, so merge the ROS pose, twist and metadata explicitly;
         # the previous three-argument call raised on every ROBOT_STATE frame
@@ -882,7 +888,8 @@ class TwinRuntime:
                       'pose_map_revision': reported_active_revision or str(data.get('map_revision') or ''),
                       'pose_map_source': reported_map_source,
                       'pose_source': pose_source,
-                      'pose_mapping_session_id': str(data.get('mapping_session_id') or '') or None})
+                      'pose_mapping_session_id': str(data.get('mapping_session_id') or '') or None,
+                      'battery_reported': robot.get('battery_reported') is True})
         self.last_telemetry_at = time.monotonic()
         self.last_ros_heartbeat = self.last_telemetry_at
         self.robot_bridge_heartbeats[rid] = self.last_telemetry_at
@@ -1323,7 +1330,15 @@ class TwinRuntime:
         S = self.engine.state
         S['sim']['speed'] = self.speed
         S['sim']['mode'] = 'LIVE' if self.is_external else ('PAUSED' if self.paused else 'LIVE')
-        return {'type': 'FULL', 'state': S}
+        state = S
+        if self.is_external:
+            state = {**S, 'robots': {
+                rid: {**robot,
+                      'battery': robot.get('battery') if robot.get('battery_reported') is True else None,
+                      'battery_reported': robot.get('battery_reported') is True}
+                for rid, robot in S.get('robots', {}).items()
+            }}
+        return {'type': 'FULL', 'state': state}
 
     def _snapshot_prev(self) -> None:
         S = self.engine.state
@@ -1346,7 +1361,10 @@ class TwinRuntime:
             cur['wz'] = round(float(r.get('wz', 0.0)), 3)
             cur['navigation_state'] = r.get('navigation_state', r.get('fsm', 'IDLE'))
             cur['last_telemetry_at'] = r.get('last_telemetry_at')
-            cur['battery'] = round(r['battery'], 2)
+            battery_reported = r.get('battery_reported') is True
+            battery = r.get('battery')
+            cur['battery_reported'] = battery_reported and isinstance(battery, (int, float))
+            cur['battery'] = round(float(battery), 2) if cur['battery_reported'] else None
             if tick % 10 == 0:
                 cur['stats'] = {k: round(v, 1) if isinstance(v, float) else v for k, v in r['stats'].items()}
             cur['path'] = r['path']

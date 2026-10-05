@@ -62,6 +62,10 @@ class NavigationGraphSyncTests(TestCase):
 
 class NavigationTargetResolutionTests(TestCase):
     def setUp(self):
+        self.old_robot_mode = runtime.robot_runtime_modes.get('R01')
+        self.old_operation_mode = runtime.operation_mode
+        runtime.robot_runtime_modes.pop('R01', None)
+        runtime.operation_mode = 'NAVIGATION'
         self.layout = {
             'id': 'target-resolution-test', 'name': 'Target Resolution Test', 'units': 'm',
             'size': {'width': 20, 'depth': 10, 'height': 4},
@@ -84,6 +88,14 @@ class NavigationTargetResolutionTests(TestCase):
             'active_map_id': 'CANONICAL', 'active_map_revision': '7',
             'canonical_map_revision': 7, 'map_sync_status': 'CANONICAL',
         }
+
+    def tearDown(self):
+        runtime.operation_mode = self.old_operation_mode
+        if self.old_robot_mode is None:
+            runtime.robot_runtime_modes.pop('R01', None)
+        else:
+            runtime.robot_runtime_modes['R01'] = self.old_robot_mode
+        super().tearDown()
 
     def resolve(self, tag_id, active_map=None):
         return resolve_navigation_target(
@@ -181,7 +193,8 @@ class NavigationTargetResolutionTests(TestCase):
         user = User.objects.create_user(username='tag-registry-test', password='test-only-password')
         token = ApiToken.issue(user)
         client = Client(HTTP_AUTHORIZATION=f'Bearer {token.key}')
-        with patch.object(runtime, 'active_map_state', return_value=self.active_map):
+        with patch.object(runtime, 'active_map_state', return_value=self.active_map), \
+                patch.object(runtime, 'operation_mode', 'NAVIGATION'):
             response = client.get('/api/robots/R01/navigation-tags')
         self.assertEqual(response.status_code, 200)
         body = response.json()

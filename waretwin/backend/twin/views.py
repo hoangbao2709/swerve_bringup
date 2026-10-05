@@ -176,29 +176,6 @@ def conveyor_handshake(request, conveyor_id: str):
 
 @csrf_exempt
 @require_http_methods(['POST'])
-def auth_register(request):
-    d = _body(request)
-    username = str(d.get('username', '')).strip()
-    email = str(d.get('email', '')).strip()
-    password = str(d.get('password', ''))
-    if len(username) < 3:
-        return _error('invalid username')
-    if '@' not in email:
-        return _error('invalid email')
-    err = _valid_password(password)
-    if err:
-        return _error(err)
-    if User.objects.filter(email__iexact=email).exists():
-        return _error('email already exists', 409)
-    try:
-        user = User.objects.create_user(username=username, email=email, password=password)
-    except IntegrityError:
-        return _error('username or email already exists', 409)
-    return JsonResponse(public_user(user), status=201)
-
-
-@csrf_exempt
-@require_http_methods(['POST'])
 def auth_login(request):
     d = _body(request)
     user = authenticate(request, username=d.get('username', ''), password=d.get('password', ''))

@@ -1,17 +1,5 @@
-/**
- * WebSocket client（Phase 3）
- *
- *  Backend → FULL / PATCH / HEATMAP / ERROR   →  store.twin / store.heat
- *  UI      → SIM_CONTROL / INJECT / CREATE_TASK / ACK_ALERT / RESYNC
- *
- * PATCH 合併規則（與 backend/app/main.py make_patch 對應）：
- *  - sim / kpi / subsystems / recent_decisions：整段取代
- *  - robots：每台 {...prev, ...patch}（path 只在變更時出現）
- *  - tasks / zones / conveyors / cameras / sensors / people / alerts：以 id 合併；值為 null 代表刪除
- *  - events：prepend 到 recent_events（ring 500）
- * 若 patch.base_tick 與本地 tick 不符 → 送 RESYNC 要 FULL。
- */
-import type { ServerMessage, ClientMessage, TwinState, HeatmapLayer, RobotState } from "../schema/twin_state";
+/** Authenticated Django Channels client for live robot/runtime state and control. */
+import type { ServerMessage, ClientMessage, TwinState, RobotState } from "../schema/twin_state";
 import { detailFramePatch, detailViewStatusPatch } from "../components/control/detailViewState";
 import { THRESHOLDS } from "../schema/twin_state";
 import { useStore } from "../state/store";
@@ -73,22 +61,10 @@ let reconnectAttempt = 0;
 let stopped = false;
 let localTick = -1;
 let onStateChange: ((s: ConnState) => void) | null = null;
-type CopilotReply = { request_id: string; text: string; citations: Array<{ robot_id?: string; task_id?: string; event_id?: string }>; model?: string };
-const copilotListeners = new Set<(r: CopilotReply) => void>();
-/** 訂閱 COPILOT_REPLY；回傳取消函式 */
-export function onCopilotReply(fn: (r: CopilotReply) => void): () => void { copilotListeners.add(fn); return () => copilotListeners.delete(fn); }
-const layoutListeners = new Set<(meta: Extract<ServerMessage, { type: "LAYOUT_UPDATED" }>) => void>();
-export function onLayoutUpdated(fn: (meta: Extract<ServerMessage, { type: "LAYOUT_UPDATED" }>) => void): () => void {
-  layoutListeners.add(fn);
-  return () => layoutListeners.delete(fn);
-}
 
 async function refreshLayout(meta: Extract<ServerMessage, { type: "LAYOUT_UPDATED" }>) {
   try {
-    if (meta.is_active === false) {
-      layoutListeners.forEach((fn) => fn(meta));
-      return;
-    }
+    if (meta.is_active === false) return;
     const token = useStore.getState().authToken;
     const headers: Record<string, string> = {};
     if (token) headers.authorization = `Bearer ${token}`;
@@ -100,7 +76,6 @@ async function refreshLayout(meta: Extract<ServerMessage, { type: "LAYOUT_UPDATE
       warehouse_id: meta.warehouse_id,
       updated_at: meta.updated_at ?? null,
     });
-    layoutListeners.forEach((fn) => fn(meta));
   } catch (error) {
     console.warn("[layout] realtime refresh failed", error);
   }
@@ -138,18 +113,6 @@ async function refreshMapSyncStatus() {
     console.warn("[map-sync] status refresh failed", error);
   }
 }
-
-const scheduleListeners = new Set<(source: string) => void>();
-export function onScheduleUpdated(fn: (source: string) => void): () => void { scheduleListeners.add(fn); return () => scheduleListeners.delete(fn); }
-
-const whatifListeners = new Set<(r: unknown) => void>();
-export function onWhatIfResult(fn: (r: unknown) => void): () => void { whatifListeners.add(fn); return () => whatifListeners.delete(fn); }
-const whatifErrorListeners = new Set<(message: string, request_id: string | null) => void>();
-/** 後端對 WHATIF_RUN 回 ERROR（RATE_LIMITED / BAD_MESSAGE…）時通知，讓抽屜解除 Simulating 狀態 */
-export function onWhatIfError(fn: (message: string, request_id: string | null) => void): () => void { whatifErrorListeners.add(fn); return () => whatifErrorListeners.delete(fn); }
-/** 正在等待結果的 What-if request_id（null = 沒有）；ERROR / WHATIF_RESULT 都要帶同一個 id 才會被當成它的回應 */
-let whatifPending: string | null = null;
-export function markWhatIfPending(id: string | null) { whatifPending = id; }
 
 export function wsSend(msg: ClientMessage): boolean {
   if (socket && socket.readyState === WebSocket.OPEN) { socket.send(JSON.stringify(msg)); return true; }
@@ -210,7 +173,7 @@ function open() {
   ws.onopen = () => {
     clearTimeout(timeout); reconnectAttempt = 0; onStateChange?.("online");
     void refreshMapSyncStatus();
-    // Pull the database-backed map once on connect so / always matches admin pages.
+    // Pull the active database-backed map used by Robot Control.
     const st = useStore.getState();
     const token = st.authToken;
     const headers: Record<string, string> = {};
@@ -242,11 +205,9 @@ function open() {
     if (socket === ws) socket = null;
     const authFailed = ev.code === 4401 || ev.code === 4403;
     if (authFailed) {
-      if (whatifPending) { const id = whatifPending; whatifPending = null; whatifErrorListeners.forEach((fn) => fn("authentication failed — please log in again", id)); }
       onStateChange?.("unauthorized");
       return;
     }
-    if (whatifPending) { const id = whatifPending; whatifPending = null; whatifErrorListeners.forEach((fn) => fn("connection lost — please run again", id)); }
     if (!stopped) {
       onStateChange?.("reconnecting");
       // A backend restart or Wi-Fi handover should not create a reconnect
@@ -266,20 +227,24 @@ function handle(msg: ServerMessage) {
   switch (msg.type) {
     case "FULL": {
       localTick = msg.state.sim.tick;
-      st.setTwin(msg.state); syncControls(msg.state);
+      st.setTwin(msg.state);
       break;
     }
     case "PATCH": {
+      if (!st.twin) {
+        localTick = -1;
+        wsSend({ type: "RESYNC" });
+        return;
+      }
       if (localTick >= 0 && msg.base_tick !== localTick && msg.base_tick !== msg.tick) {
         // 漏掉了 tick（例如分頁休眠），要求全量重送
         localTick = -1; wsSend({ type: "RESYNC" }); return;
       }
       localTick = msg.tick;
       const next = applyPatch(st.twin, msg);
-      st.setTwin(next); if (msg.patch.sim) syncControls(next);
+      st.setTwin(next);
       break;
     }
-    case "HEATMAP": st.setHeat(msg.layer); break;
     case "LAYOUT_UPDATED": {
       void refreshLayout(msg);
       break;
@@ -288,7 +253,6 @@ function handle(msg: ServerMessage) {
       st.setMapSync({ publishedRevision: msg.map_revision, publishedVersion: msg.published_version, status: "PENDING_SYNC", error: `Revision ${msg.map_revision} is waiting for runtime reload and acknowledgement` });
       break;
     }
-    case "SCHEDULE_UPDATED": scheduleListeners.forEach((fn) => fn(msg.source)); break;
     case "RUNTIME_STATUS":
       st.setRuntimeMode(msg.runtime_mode);
       if (msg.runtime_state) st.setRuntimeState(msg.runtime_state);
@@ -341,10 +305,10 @@ function handle(msg: ServerMessage) {
         modeTransitionState: msg.mode_transition_state ?? null,
       });
       if (!msg.accepted) st.setNotice(`Robot control rejected: ${msg.reason || "command was rejected"}`);
-      else if (msg.mode_transition_state === "APPLIED" && st.twin.robots[msg.robot_id]) st.setTwin({
+      else if (msg.mode_transition_state === "APPLIED" && st.twin?.robots[msg.robot_id]) st.setTwin({
         ...st.twin,
         robots: {
-          ...st.twin.robots,
+          ...st.twin!.robots,
           [msg.robot_id]: { ...st.twin.robots[msg.robot_id], control_mode: msg.applied_mode ?? msg.mode },
         },
       });
@@ -467,34 +431,16 @@ function handle(msg: ServerMessage) {
       if (msg.mission) st.setTagNavigation(msg.mission);
       else if (st.tagNavigation) st.setTagNavigation({ ...st.tagNavigation, mission_id: msg.mission_id ?? st.tagNavigation.mission_id, id: msg.mission_id ?? st.tagNavigation.id, robot_id: msg.robot_id, status: msg.state ?? msg.status ?? st.tagNavigation.status, current_tag_id: msg.current_tag_id ?? st.tagNavigation.current_tag_id, next_tag_id: msg.next_tag_id ?? st.tagNavigation.next_tag_id, target_tag_id: msg.target_tag_id ?? st.tagNavigation.target_tag_id, route: msg.route ?? st.tagNavigation.route, route_index: msg.route_index ?? st.tagNavigation.route_index, progress_percent: msg.progress_percent ?? st.tagNavigation.progress_percent });
       break;
-    case "TAG_DETECTION": st.setTagDetection({ visible: msg.visible, tagId: msg.tag_id ?? null, offsetX: msg.offset_x ?? null, offsetY: msg.offset_y ?? null, yaw: msg.yaw ?? null, timestamp: msg.timestamp ?? null }); break;
     case "LOCALIZATION_STATUS": st.setLocalization({ state: msg.state, lastTagId: msg.last_tag_id ?? null, expectedTagId: msg.expected_tag_id ?? null, tagVisible: msg.tag_visible ?? false, lastTagSeenAt: msg.last_tag_seen_at ?? null }); break;
     case "TAG_NAV_ROUTE": if (st.tagNavigation) st.setTagNavigation({ ...st.tagNavigation, route: msg.route }); break;
     case "TAG_NAV_EVENT": break;
-    case "COPILOT_REPLY": copilotListeners.forEach((fn) => fn(msg as unknown as CopilotReply)); break;
-    case "WHATIF_RESULT": if (!msg.request_id || msg.request_id === whatifPending) whatifPending = null; whatifListeners.forEach((fn) => fn(msg.result)); break;
     case "ERROR": {
       console.warn("[ws] server error", msg.code, msg.message);
-      if (msg.code === "RATE_LIMITED" || msg.code === "TOO_LARGE" || msg.code === "BAD_TASK" || msg.code === "BAD_ASSIGN" || msg.code === "BAD_MESSAGE" || msg.code === "FORBIDDEN") {
-        st.setNotice(`${msg.code === "RATE_LIMITED" ? "Rate limit" : msg.code === "TOO_LARGE" ? "Request too large" : msg.code === "BAD_TASK" ? "Task rejected" : msg.code === "BAD_ASSIGN" ? "Assignment rejected" : msg.code === "FORBIDDEN" ? "Forbidden" : "Rejected"}: ${msg.message}`);
-        // Copilot 等待中的泡泡也要收掉
-        const rid = (msg as unknown as { request_id?: string }).request_id;
-        if (rid) copilotListeners.forEach((fn) => fn({ request_id: rid, text: `⏳ ${msg.message}`, citations: [] }));
-        // 只有 request_id 等於正在等待的 What-if 才算它的錯誤（其他錯誤例如 BAD_TASK 不會誤關 Simulating）
-        if (whatifPending && rid === whatifPending) { const id = whatifPending; whatifPending = null; whatifErrorListeners.forEach((fn) => fn(msg.message, id)); }
-      }
+      st.setNotice(`${msg.code}: ${msg.message}`);
       break;
     }
     default: break;
   }
-}
-
-/** 後端是權威：播放/暫停/倍速以 sim 欄位為準（例如另一個分頁按了暫停） */
-function syncControls(t: TwinState) {
-  const st = useStore.getState();
-  if (st.speed !== t.sim.speed) st.setSpeed(t.sim.speed);
-  const paused = t.sim.mode === "PAUSED";
-  if (st.paused !== paused) st.setPaused(paused);
 }
 
 type Patch = Extract<ServerMessage, { type: "PATCH" }>;
@@ -521,5 +467,3 @@ function applyPatch(prev: TwinState, msg: Patch): TwinState {
   if (msg.events.length) next.recent_events = [...msg.events.slice().reverse(), ...prev.recent_events].slice(0, THRESHOLDS.EVENT_RING_SIZE);
   return next;
 }
-
-export type { HeatmapLayer };

@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { RobotState } from "../src/schema/twin_state";
+import type { RobotState, RobotSystemDiagnostics, TwinState } from "../src/schema/twin_state";
+import type { WarehouseLayout } from "../src/layout/types";
 import { useStore } from "../src/state/store";
 import type { RobotNavigationTagRegistry } from "../src/services/api";
 
@@ -51,9 +52,7 @@ vi.mock("../src/components/control/RobotLidarViews", async () => {
     }),
   };
 });
-vi.mock("../src/simulation/runner", () => ({ useSimulationRunner: () => undefined }));
 
-import { RobotQuickDetailModal } from "../src/components/robot/RobotQuickDetailModal";
 import { RobotControlDetailPage } from "../src/components/control/RobotControlDetailPage";
 import { occupancyRasters } from "../src/components/control/occupancyRaster";
 import * as api from "../src/services/api";
@@ -61,6 +60,21 @@ import { wsSend, wsManualCommand, wsSetRobotMode } from "../src/services/ws";
 import type { LocalRobotMap } from "../src/services/api";
 
 const initialState = useStore.getState();
+const runtimeDiagnostics: RobotSystemDiagnostics = {
+  ros: true, gazebo: true, controller_manager: true, slam: true, nav2: true,
+  tf: true, lidar: true, nodes: [], topics: [], controllers: [],
+  simulation_time: null, last_update_at: null,
+  command_ownership: { estop_active: false },
+};
+const backendLayout: WarehouseLayout = {
+  schema_version: 1, id: "runtime-layout", name: "Runtime test layout", units: "meter",
+  size: { width: 100, depth: 70, height: 5 }, grid: { cell_size: 0.25, cols: 400, rows: 280 },
+  coordinate_system: { unit: "meter", frame: "map", yaw_unit: "radian" },
+  floors: [{ id: 1, name: "F1", elevation: 0, boundary: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 70 }, { x: 0, y: 70 }] }],
+  lifts: [], zones: [], docks: [], racks: [], conveyors: [], stations: [], charging_stations: [],
+  parking: [], restricted_areas: [], walkways: [], cameras: [], sensors: [], locations: [],
+  obstacles: [], spawn: { robots: [] },
+};
 let root: Root;
 let container: HTMLDivElement;
 
@@ -90,13 +104,14 @@ function renderNode(node: ReactNode) {
 }
 
 function setOnlineRobot(runtimeState = "NAVIGATION") {
+  useStore.getState().setLayout(backendLayout, { revision: 21, warehouse_id: 7 });
   const mapSnapshot = {
     robot_id: "R01", frame_id: "map", map_source: "NAV2_MAP" as const, map_revision: 21, active_map_id: "CANONICAL",
     active_map_revision: "21", canonical_map_revision: 21,
     width: 10, height: 10, resolution: 1, origin: { x: -5, y: -5, yaw: 0 }, data: Array(100).fill(0),
   };
   useStore.setState({
-    runtimeMode: "GAZEBO_ROS", runtimeState, rosConnected: true, websocketState: "CONNECTED",
+    runtimeMode: "GAZEBO_ROS", runtimeState, rosConnected: true, rosDiagnostics: runtimeDiagnostics, websocketState: "CONNECTED",
     connectedRobotIds: ["R01"], mapSync: {
       ...initialState.mapSync, publishedRevision: 21, rosRevision: 21,
       nav2Revision: 21, status: "SYNCED", tfStatus: true,
@@ -124,6 +139,7 @@ beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   window.history.replaceState({}, "", "/");
   useStore.setState({ ...initialState, twin: { ...initialState.twin, robots: { R01: r01() } }, quickDetailRobotId: null, robotDetail: {} });
+  useStore.getState().setRobotDetail("R01", { diagnostics: runtimeDiagnostics });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -143,26 +159,6 @@ afterEach(() => {
   container.remove();
   useStore.setState(initialState);
   vi.restoreAllMocks();
-});
-
-describe("robot quick detail workflow", () => {
-  it("opens from the shared robot selection action and displays the robot ID", () => {
-    act(() => useStore.getState().openRobotQuickDetail("R01"));
-    renderNode(<RobotQuickDetailModal />);
-    expect(document.body.textContent).toContain("ROBOT QUICK DETAIL");
-    expect(document.body.textContent).toContain("R01");
-    expect(document.body.textContent).toContain("Robot ID");
-    expect(document.body.textContent).toContain("EMERGENCY STOP");
-  });
-
-  it("routes CONTROL ROBOT DETAIL to the selected robot URL", () => {
-    act(() => useStore.getState().openRobotQuickDetail("R01"));
-    renderNode(<RobotQuickDetailModal />);
-    const control = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.includes("CONTROL ROBOT DETAIL"));
-    expect(control).toBeTruthy();
-    act(() => control?.click());
-    expect(window.location.pathname).toBe("/robots/R01/control");
-  });
 });
 
 describe("robot detail route stability", () => {
@@ -352,6 +348,16 @@ describe("robot detail route stability", () => {
     await act(async () => { buttonNamed("CLEAR STOP")?.click(); await settleUi(); });
     expect(container.textContent).toContain("CLEAR_ESTOP_REJECTED_GOAL_PENDING");
     expect(container.querySelector('[role="status"]')?.textContent ?? "").not.toContain("CLEAR_ESTOP_APPLIED");
+  });
+
+  it("fails closed when E-STOP state is unavailable", () => {
+    setOnlineRobot();
+    useStore.setState({ rosDiagnostics: null });
+    useStore.getState().setRobotDetail("R01", { diagnostics: null });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    expect(container.textContent).toContain("E-STOP UNKNOWN");
+    expect(container.querySelector<HTMLButtonElement>(".manual-key-forward")?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>(".manual-key-stop")?.disabled).toBe(false);
   });
 
   it("latches Mapping teleop on click and ignores pointer release until a second click", () => {

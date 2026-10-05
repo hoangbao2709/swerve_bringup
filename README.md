@@ -4,6 +4,45 @@ Muốn chạy toàn bộ frontend + Django backend + Gazebo + ROS bridge + RViz,
 xem [SETUP_A_Z.md](SETUP_A_Z.md). Lệnh build trong tài liệu đã xử lý package
 lồng `swerve_bridge` và môi trường ROS overlay của máy.
 
+## `robot-real-sim` branch
+
+This branch is a simulation environment that preserves the real robot software
+control path. Gazebo replaces the physical hardware; Web Control, Django,
+WebSocket, the ROS bridge, ROS 2 control, Nav2, SLAM, safety logic, and map
+synchronization stay on the production-style path.
+
+```text
+Web Control
+    ↓
+Django / WebSocket
+    ↓
+ROS Bridge
+    ↓
+ROS 2
+    ↓
+Command Arbiter / Nav2
+    ↓
+Robot Interface
+    ↓
+Gazebo simulated hardware
+```
+
+The UI contains Login, the Robot Control overview at `/control`, and dynamic
+robot detail pages at `/robots/:robotId/control`. It does not simulate motion
+or substitute browser-generated state when the backend or ROS runtime is down.
+The active map identity and revision are runtime-verified before navigation.
+
+Start the full unified SLAM Toolbox + Nav2 profile with:
+
+```bash
+./scripts/setup_full_stack.sh
+./scripts/start_stack.sh unified --gui --rviz
+```
+
+The start script forces the Django runtime to `GAZEBO_ROS`; simulation of
+physical motion and sensors happens below ROS 2 in Gazebo. For the complete
+readiness and troubleshooting procedure, see [SETUP_A_Z.md](SETUP_A_Z.md).
+
 Package ROS 2 (ament_cmake) chứa mô tả URDF + launch hiển thị cho AGV đa hướng:
 - 2 cụm swerve (steer_front, steer_rear): mỗi cụm có khớp xoay đứng (steer) + khớp lăn bánh chủ động (drive)
 - 4 caster bị động ở 4 góc: physics mặc định là collision cylinder đơn giản, ít ma sát

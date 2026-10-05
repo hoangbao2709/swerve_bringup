@@ -1,6 +1,5 @@
 import { API_URL } from "./ws";
 import { useStore } from "../state/store";
-import type { TagNavigationState } from "../schema/twin_state";
 
 async function responseError(response: Response): Promise<string> {
   try {
@@ -12,12 +11,6 @@ async function responseError(response: Response): Promise<string> {
   } catch {
     return response.statusText || `HTTP ${response.status}`;
   }
-}
-
-export async function navigationApi(path: string, init: RequestInit = {}) {
-  const response = await apiFetch(`/api/navigation/${path}`, init);
-  if (!response.ok) throw new Error(await responseError(response));
-  return response.json();
 }
 
 export type RobotNavigationTag = {
@@ -69,18 +62,13 @@ export async function getRobotNavigationTags(robotId: string): Promise<RobotNavi
   return response.json() as Promise<RobotNavigationTagRegistry>;
 }
 
-export const startTagMission = (robot_id: string, target_tag_id: number) => {
-  const state = useStore.getState();
-  if (state.runtimeMode !== "LOCAL_SIM" && state.mapSync.status !== "SYNCED") {
-    return Promise.reject(new Error(`Cannot start mission: map revision mismatch (${state.mapSync.status})`));
-  }
-  return navigationApi("missions/start", { method: "POST", body: JSON.stringify({ robot_id, target_tag_id }) }) as Promise<TagNavigationState>;
-};
-export const missionAction = (id: number, action: "pause" | "resume" | "cancel" | "replan") => navigationApi(`missions/${id}/${action}`, { method: "POST" });
-export const emergencyStop = async (robotId: string) => {
+export type EmergencyStopResult = { ok: true; mission?: unknown };
+export const emergencyStop = async (robotId: string): Promise<EmergencyStopResult> => {
   const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/emergency-stop`, { method: "POST" });
   if (!response.ok) throw new Error(await responseError(response));
-  return response.json();
+  const body = await response.json() as Partial<EmergencyStopResult>;
+  if (body.ok !== true) throw new Error("EMERGENCY_STOP_UNCONFIRMED: ROS bridge did not acknowledge the stop request");
+  return body as EmergencyStopResult;
 };
 export type ClearEmergencyStopResult = {
   ok: true;

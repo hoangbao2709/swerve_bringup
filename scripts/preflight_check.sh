@@ -121,12 +121,10 @@ if [[ -d "$ROOT_DIR/waretwin/frontend/node_modules" ]] && [[ -f "$ROOT_DIR/waret
 else
   fail "Frontend node_modules missing; run ./scripts/setup_full_stack.sh"
 fi
-if [[ -f "$ROOT_DIR/waretwin/frontend/.env" ]] && \
-   grep -Eq '^VITE_DEMO_MODE=false([[:space:]]*#.*)?$' "$ROOT_DIR/waretwin/frontend/.env" && \
-   grep -Eq '^VITE_RUNTIME_MODE=(GAZEBO_ROS|REAL_ROBOT)$' "$ROOT_DIR/waretwin/frontend/.env"; then
-  ok "Frontend backend-connected environment"
+if [[ -f "$ROOT_DIR/waretwin/frontend/.env" ]]; then
+  ok "Frontend environment file"
 else
-  fail "Frontend .env must set VITE_DEMO_MODE=false and VITE_RUNTIME_MODE=GAZEBO_ROS (run setup_full_stack.sh)"
+  fail "Frontend .env is missing (run setup_full_stack.sh)"
 fi
 
 if [[ -f "$ROOT_DIR/install/local_setup.bash" ]] && command -v ros2 >/dev/null 2>&1 \

@@ -239,7 +239,8 @@ class RobotState(_Base):
     heading: float
     velocity: float = Field(ge=0)
     max_speed: float = Field(gt=0)
-    battery: Pct
+    battery: Optional[Pct] = None
+    battery_reported: bool = False
     status: RobotStatus
     fsm: RobotFsmState
     health: Pct = 100

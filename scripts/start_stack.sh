@@ -164,7 +164,7 @@ FRONTEND_MODE_SELECTED="${WARETWIN_FRONTEND_MODE:-production}"
 case "$FRONTEND_MODE_SELECTED" in
   production)
     echo 'Building production frontend (React development validation is expensive on the VM)'
-    (cd "$ROOT_DIR/waretwin/frontend" && env VITE_RUNTIME_MODE=GAZEBO_ROS VITE_DEMO_MODE=false VITE_BACKEND_MODE=true VITE_BACKEND_PORT="$BACKEND_PORT_SELECTED" VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run build)
+    (cd "$ROOT_DIR/waretwin/frontend" && env VITE_BACKEND_PORT="$BACKEND_PORT_SELECTED" VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run build)
     FRONTEND_RUN_SCRIPT=preview
     ;;
   development) FRONTEND_RUN_SCRIPT=dev ;;
@@ -347,7 +347,7 @@ echo "[ROBOT] id=$ROBOT_ID spawn=($SPAWN_TEXT)"
 echo "[ROS_DOMAIN_ID] $ROS_DOMAIN_ID_SELECTED"
 
 echo "Starting frontend on $FRONTEND_URL"
-setsid bash -c "cd '$ROOT_DIR/waretwin/frontend' && exec env VITE_RUNTIME_MODE=GAZEBO_ROS VITE_DEMO_MODE=false VITE_BACKEND_MODE=true VITE_BACKEND_PORT='$BACKEND_PORT_SELECTED' VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run '$FRONTEND_RUN_SCRIPT' -- --host '$FRONTEND_HOST_SELECTED' --port '$FRONTEND_PORT_SELECTED' --strictPort" \
+setsid bash -c "cd '$ROOT_DIR/waretwin/frontend' && exec env VITE_BACKEND_PORT='$BACKEND_PORT_SELECTED' VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run '$FRONTEND_RUN_SCRIPT' -- --host '$FRONTEND_HOST_SELECTED' --port '$FRONTEND_PORT_SELECTED' --strictPort" \
   > "$(stack_log_file frontend)" 2>&1 < /dev/null &
 stack_write_pid frontend "$!"
 if ! stack_wait_http "$FRONTEND_URL" 30; then

@@ -720,12 +720,14 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
         old_connected = set(runtime.connected_robot_ids)
         old_heartbeats = dict(runtime.robot_bridge_heartbeats)
         old_sessions = runtime.robot_mapping_sessions.copy()
+        old_robot_mode = runtime.robot_runtime_modes.get('R01')
         old_published = runtime.published_map_revision
         robots = runtime.engine.state.setdefault('robots', {})
         old_robot = deepcopy(robots.get('R01'))
         try:
             runtime.runtime_mode = 'GAZEBO_ROS'
             runtime.operation_mode = 'MAPPING'
+            runtime.robot_runtime_modes['R01'] = 'MAPPING'
             runtime.published_map_revision = 21
             runtime.connected_robot_ids.add('R01')
             runtime.robot_mapping_sessions['R01'] = 'session-current'
@@ -764,6 +766,10 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.connected_robot_ids = old_connected
             runtime.robot_bridge_heartbeats = old_heartbeats
             runtime.robot_mapping_sessions.clear(); runtime.robot_mapping_sessions.update(old_sessions)
+            if old_robot_mode is None:
+                runtime.robot_runtime_modes.pop('R01', None)
+            else:
+                runtime.robot_runtime_modes['R01'] = old_robot_mode
             runtime.published_map_revision = old_published
             if old_robot is None:
                 robots.pop('R01', None)

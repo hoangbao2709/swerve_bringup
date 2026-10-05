@@ -15,8 +15,7 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
     ],
     test: {
-      // The deterministic simulation/perception stress tests intentionally run
-      // thousands of ticks and exceed Vitest's 5 s default on this machine.
+      // Control workflow tests render map and LiDAR views and need extra time.
       testTimeout: 30_000,
     },
     server: {

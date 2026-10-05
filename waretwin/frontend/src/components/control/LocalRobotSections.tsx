@@ -19,6 +19,7 @@ import { mapPointTarget, type MapPointNavigationTarget, type NavigationMapIdenti
 
 type SectionName = "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type Pose = { x: number; y: number; yaw: number };
+type PoseDraft = { x: number | null; y: number | null; yaw: number | null };
 type Props = {
   section: SectionName;
   robotId: string;
@@ -30,8 +31,7 @@ type Props = {
   diagnostics: RobotSystemDiagnostics | null;
   errors: RobotDetailError[];
   controlOnline: boolean;
-  controlMode: "MANUAL" | "AUTONOMOUS";
-  runtimeMode: string;
+  controlMode: "MANUAL" | "AUTONOMOUS" | "UNKNOWN";
   runtimeState: string;
   runtimeCapabilities: RobotRuntimeCapabilities | null;
   localization: unknown;
@@ -353,13 +353,14 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
   </div>;
 }
 
-function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, localization, runtimeMode }: Props) {
-  const current = useMemo<Pose>(() => ({
-    x: Number(robot?.active_map_pose?.x ?? (runtimeMode === "LOCAL_SIM" ? robot?.position?.[0] : 0) ?? 0),
-    y: Number(robot?.active_map_pose?.y ?? (runtimeMode === "LOCAL_SIM" ? robot?.position?.[2] : 0) ?? 0),
-    yaw: Number(robot?.active_map_pose?.yaw ?? (runtimeMode === "LOCAL_SIM" ? robot?.heading : 0) ?? 0),
-  }), [robot?.active_map_pose, robot?.heading, robot?.position, runtimeMode]);
-  const [pose, setPose] = useState<Pose>(current);
+function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, localization }: Props) {
+  const current = useMemo<Pose | null>(() => {
+    const reported = robot?.active_map_pose;
+    if (!reported?.valid || reported.frame_id !== "map" || !reported.map_id || !reported.map_revision
+        || ![reported.x, reported.y, reported.yaw].every(Number.isFinite)) return null;
+    return { x: reported.x, y: reported.y, yaw: reported.yaw };
+  }, [robot?.active_map_pose]);
+  const [pose, setPose] = useState<PoseDraft>(() => current ?? { x: null, y: null, yaw: null });
   const [pickMode, setPickMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -368,14 +369,16 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
   useEffect(() => {
     if (selectedRobot.current === robotId) return;
     selectedRobot.current = robotId;
-    setPose(current);
+    setPose(current ?? { x: null, y: null, yaw: null });
   }, [current, robotId]);
-  const update = (key: keyof Pose, value: number) => setPose((previous) => ({ ...previous, [key]: value }));
+  const update = (key: keyof Pose, value: number | null) => setPose((previous) => ({ ...previous, [key]: value }));
   const apply = async () => {
-    if (!window.confirm(`Initialize ${robotId} at x=${pose.x.toFixed(2)}, y=${pose.y.toFixed(2)}, yaw=${pose.yaw.toFixed(2)} rad?`)) return;
+    if (![pose.x, pose.y, pose.yaw].every((value) => typeof value === "number" && Number.isFinite(value))) return;
+    const requestedPose = { x: pose.x!, y: pose.y!, yaw: pose.yaw! };
+    if (!window.confirm(`Initialize ${robotId} at x=${requestedPose.x.toFixed(2)}, y=${requestedPose.y.toFixed(2)}, yaw=${requestedPose.yaw.toFixed(2)} rad?`)) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      await initializeLocalRobotPose(robotId, { ...pose, frame_id: "map" });
+      await initializeLocalRobotPose(robotId, { ...requestedPose, frame_id: "map" });
       setNotice("INITIAL POSE ACCEPTED BY ekf_v30e · waiting for the next localization update");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Initial pose was not accepted"); }
     finally { setBusy(false); }
@@ -384,9 +387,9 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
   return <SectionFrame>
     <SectionPanel title="LOCALIZATION STATE">
       <div className="local-status-grid">
-        <Metric label="X · MAP" value={valueNumber(current.x, 3, " m")} mono />
-        <Metric label="Y · MAP" value={valueNumber(current.y, 3, " m")} mono />
-        <Metric label="YAW" value={valueNumber(current.yaw, 3, " rad")} mono />
+        <Metric label="X · MAP" value={current ? valueNumber(current.x, 3, " m") : "UNAVAILABLE"} mono />
+        <Metric label="Y · MAP" value={current ? valueNumber(current.y, 3, " m") : "UNAVAILABLE"} mono />
+        <Metric label="YAW" value={current ? valueNumber(current.yaw, 3, " rad") : "UNAVAILABLE"} mono />
         <Metric label="FRAME" value="map" mono />
         <Metric label="LOCALIZATION" value={localization} />
         <Metric label="OWNER" value="ekf_v30e · map → odom" mono />
@@ -394,14 +397,14 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
     </SectionPanel>
     <SectionPanel title="INITIALIZE ROBOT POSE" className="local-pose-editor">
       <div className="local-pose-fields">
-        <label className="local-field"><span>X · MAP (m)</span><input type="number" step="0.01" value={pose.x} onChange={(event) => update("x", Number(event.target.value))} /></label>
-        <label className="local-field"><span>Y · MAP (m)</span><input type="number" step="0.01" value={pose.y} onChange={(event) => update("y", Number(event.target.value))} /></label>
-        <label className="local-field"><span>YAW (rad)</span><input type="number" step="0.01" value={pose.yaw} onChange={(event) => update("yaw", Number(event.target.value))} /></label>
-        <div className="local-pose-yaw"><button type="button" onClick={() => update("yaw", pose.yaw - Math.PI / 12)}>YAW −</button><button type="button" onClick={() => update("yaw", pose.yaw + Math.PI / 12)}>YAW +</button></div>
+        <label className="local-field"><span>X · MAP (m)</span><input type="number" step="0.01" value={pose.x ?? ""} onChange={(event) => update("x", event.target.value === "" ? null : Number(event.target.value))} /></label>
+        <label className="local-field"><span>Y · MAP (m)</span><input type="number" step="0.01" value={pose.y ?? ""} onChange={(event) => update("y", event.target.value === "" ? null : Number(event.target.value))} /></label>
+        <label className="local-field"><span>YAW (rad)</span><input type="number" step="0.01" value={pose.yaw ?? ""} onChange={(event) => update("yaw", event.target.value === "" ? null : Number(event.target.value))} /></label>
+        <div className="local-pose-yaw"><button type="button" disabled={pose.yaw === null} onClick={() => pose.yaw !== null && update("yaw", pose.yaw - Math.PI / 12)}>YAW −</button><button type="button" disabled={pose.yaw === null} onClick={() => pose.yaw !== null && update("yaw", pose.yaw + Math.PI / 12)}>YAW +</button></div>
         <button type="button" className={pickMode ? "is-active" : ""} onClick={() => setPickMode((value) => !value)} disabled={!localizationMap}>PICK ON MAP</button>
-        <button type="button" className="robot-console-primary" disabled={!controlOnline || busy || !Number.isFinite(pose.x + pose.y + pose.yaw)} onClick={() => void apply()}>SET INITIAL POSE</button>
+        <button type="button" className="robot-console-primary" disabled={!controlOnline || busy || ![pose.x, pose.y, pose.yaw].every((value) => typeof value === "number" && Number.isFinite(value))} onClick={() => void apply()}>SET INITIAL POSE</button>
       </div>
-      {localizationMap ? <PosePickerMap map={localizationMap} robot={robot} pose={pose} active={pickMode} onPick={(point) => setPose((old) => ({ ...old, ...point }))} /> : <div className="local-empty">Waiting for the robot scoped ROS map snapshot.</div>}
+      {localizationMap ? <PosePickerMap map={localizationMap} robot={robot} pose={[pose.x, pose.y, pose.yaw].every((value) => typeof value === "number" && Number.isFinite(value)) ? { x: pose.x!, y: pose.y!, yaw: pose.yaw! } : null} active={pickMode} onPick={(point) => setPose((old) => ({ ...old, ...point }))} /> : <div className="local-empty">Waiting for the robot scoped ROS map snapshot.</div>}
       <p className="local-help">The pose is applied through the current authoritative robot_localization EKF service. It changes localization and does not teleport the robot.</p>
     </SectionPanel>
     {error && <div className="local-feedback error" role="alert">{error}</div>}
@@ -409,7 +412,7 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
   </SectionFrame>;
 }
 
-type MapProps = { map: RobotDetailMapSnapshot; poseMapIdentity?: MapPoseIdentity; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; navigationPath?: RobotWorldPoint[]; pickInstruction?: string; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; pose: Pose; active: boolean; onPick: (point: Pick<Pose, "x" | "y">) => void; ariaLabel?: string };
+type MapProps = { map: RobotDetailMapSnapshot; poseMapIdentity?: MapPoseIdentity; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; navigationPath?: RobotWorldPoint[]; pickInstruction?: string; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; pose?: Pose | null; active: boolean; onPick: (point: Pick<Pose, "x" | "y">) => void; ariaLabel?: string };
 function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, trajectory = [], navigationPath = [], pickInstruction, showRobot = true, showScan = true, showGrid = false, showPose = true, pose, active, onPick, ariaLabel = "Select map frame initial robot position" }: MapProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -511,7 +514,7 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
       for (const [x, y] of scan.points) { const p = worldToScreen({ x, y }, transform); context.fillRect(p.x - 1.5, p.y - 1.5, 3, 3); }
     }
     if (showRobot && displayedPose) drawPose(context, transform, displayedPose.x, displayedPose.y, displayedPose.yaw, "#42dfd2");
-    if (showPose) drawPose(context, transform, pose.x, pose.y, pose.yaw, "#f6cf4f");
+    if (showPose && pose) drawPose(context, transform, pose.x, pose.y, pose.yaw, "#f6cf4f");
     context.fillStyle = "#8aa4bf"; context.font = "10px JetBrains Mono, monospace";
     context.fillText(active ? pickInstruction ?? "CLICK TO SET XY · YAW CONTROLS BELOW" : "MAP FRAME · METRES", 10, size.height - 10);
   }, [active, bounds, displayedPose, map, navigationPath, pickInstruction, pose, raster, rasterMap, scan, showGrid, showPose, showRobot, showScan, size, trajectory, transform]);
@@ -707,7 +710,7 @@ function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtime
         <Metric label="LIDAR WEB OUTPUT FPS" value={stream?.web_output_fps == null ? "N/A" : valueNumber(stream.web_output_fps, 2, " Hz")} mono />
         <Metric label="LIDAR POINT COUNT" value={stream?.point_count ?? "N/A"} mono />
         <Metric label="LIDAR DROPPED FRAMES" value={stream?.dropped_frames ?? "N/A"} mono />
-        <Metric label="SIMULATION TIME" value={valueNumber(diagnostics?.simulation_time, 3, " s")} mono />
+        <Metric label="ROS /clock" value={valueNumber(diagnostics?.simulation_time, 3, " s")} mono />
         <Metric label="GAZEBO RTF" value={valueNumber(diagnostics?.gazebo_rtf ?? metrics.gazebo_rtf, 3)} mono />
         <Metric label="WEBSOCKET LATENCY" value={valueNumber(diagnostics?.websocket_latency_ms, 0, " ms")} mono />
         <Metric label="MQTT LAST ERROR" value={vdaError || "NONE"} />

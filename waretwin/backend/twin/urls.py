@@ -32,7 +32,6 @@ urlpatterns = [
     path('warehouse-sync/from-layout', warehouse_views.warehouse_sync_from_layout),
     path('warehouse-maps', warehouse_views.warehouse_maps),
     path('warehouse-maps/<int:warehouse_id>/activate', warehouse_views.warehouse_map_activate),
-    path('auth/register', views.auth_register),
     path('auth/login', views.auth_login),
     path('auth/logout', views.auth_logout),
     path('auth/me', views.auth_me),

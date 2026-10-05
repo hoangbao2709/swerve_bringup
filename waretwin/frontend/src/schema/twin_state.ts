@@ -6,7 +6,7 @@
  *  2. 所有型別都是「純資料」：不得含 Three.js 物件、函式、class 實例。
  *     這是 What-if Simulation 能直接 JSON.parse(JSON.stringify(state)) 複製的前提。
  *  3. 座標系：右手座標，單位公尺。x = 倉庫長邊 (0..100)、z = 倉庫短邊 (0..70)、y = 高度。
- *     與 warehouse_layout.json 一致。
+ *     與 backend canonical-map layout contract 一致。
  *  4. 時間：tick 為模擬時間單位 (固定 100 ms 模擬時間)，sim_time_ms = tick * 100。
  *     wall_time 只用於 UI 顯示，不參與任何邏輯。
  *  5. 所有 enum 值使用大寫字串，方便日誌閱讀與 Pydantic 對應。
@@ -177,7 +177,8 @@ export interface RobotState {
   heading: number;
   velocity: number;              // m/s，純量；方向由 heading 決定
   max_speed: number;             // m/s
-  battery: number;               // 0..100
+  battery: number | null;         // null until ROS reports a measured battery value
+  battery_reported?: boolean;
   status: RobotStatus;
   fsm: RobotFsmState;
   health: number;                // 0..100
@@ -206,9 +207,9 @@ export interface RobotState {
   vy?: number;
   wz?: number;
   navigation_state?: string;
-  control_mode?: "MANUAL" | "AUTONOMOUS";
+  control_mode?: "MANUAL" | "AUTONOMOUS" | null;
   last_telemetry_at?: string | null;
-  /** Map identity attached to the live pose; absent for LOCAL_SIM robots. */
+  /** Map identity attached to a pose reported by the robot runtime. */
   pose_frame_id?: string | null;
   /** Current runtime pose with its explicit active-map identity. */
   active_map_pose?: FramePose | null;
@@ -523,7 +524,7 @@ export interface WhatIfResult {
 
 export interface TwinState {
   schema_version: "1.0";
-  layout_id: string;                  // 對應 warehouse_layout.json 的 id
+  layout_id: string;                  // backend layout identifier
   sim: SimulationState;
   /** 以 id 為 key 的字典：diff / patch 友善，查找 O(1) */
   robots: Record<RobotId, RobotState>;
@@ -553,7 +554,7 @@ export interface TagNavigationState {
   route_index: number; progress_percent: number; failure_reason: string; started_at?: string | null;
 }
 
-export type RuntimeState = "IDLE" | "SIMULATION" | "MAPPING" | "NAVIGATION" | "UNIFIED" | "ERROR";
+export type RuntimeState = "UNKNOWN" | "IDLE" | "MAPPING" | "NAVIGATION" | "UNIFIED" | "ERROR";
 export type RobotRuntimeCapabilities = {
   mapping_available: boolean;
   mapping_active: boolean;
@@ -835,7 +836,7 @@ export type ServerMessage =
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
   | { type: "map.published"; warehouse_id: number | string; revision: number; published_version: number; map_revision: number; artifact_manifest?: unknown }
   | { type: "SCHEDULE_UPDATED"; source: string }
-  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }>; local_active_maps?: Record<string, RobotLocalMapDiagnostics & { active_map_id?: string | null; active_map_revision?: string | null; map_source?: string | null }>; robot_capabilities?: Record<RobotId, RobotRuntimeCapabilities>; robot_mapping_sessions?: Record<string, string | null> }
+  | { type: "RUNTIME_STATUS"; runtime_mode: "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }>; local_active_maps?: Record<string, RobotLocalMapDiagnostics & { active_map_id?: string | null; active_map_revision?: string | null; map_source?: string | null }>; robot_capabilities?: Record<RobotId, RobotRuntimeCapabilities>; robot_mapping_sessions?: Record<string, string | null> }
   | { type: "ROBOT_CONTROL_STATUS"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS"; accepted: boolean; requested_mode?: "MANUAL" | "AUTONOMOUS"; applied_mode?: "MANUAL" | "AUTONOMOUS"; mode_transition_state?: "REQUESTED" | "APPLIED" | "FAILED"; request_id?: string | null; reason?: string | null; timestamp?: string }
   | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
   | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }

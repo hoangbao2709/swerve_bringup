@@ -1,4 +1,4 @@
-/** warehouse_layout.json 的型別，對應 docs/layout/warehouse_layout_格式說明.md */
+/** Backend canonical-map layout contract used by Robot Control. */
 export type P2 = [number, number];
 export type WarehousePoint = { x: number; y: number };
 export type P3 = [number, number, number];

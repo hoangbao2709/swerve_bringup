@@ -28,22 +28,22 @@ describe("robot pose and displayed map identity", () => {
     canonical_pose: canonical, slam_pose: { ...canonical, x: 0, y: 0, yaw: 0,
       map_id: "SLAM-session-1", map_source: "SLAM_TOOLBOX", pose_source: "TF", mapping_session_id: "session-1" } } as RobotState;
   it("selects the same canonical pose for warehouse renderers while mapping uses SLAM", () => {
-    expect(robotForWarehouse(robot, "GAZEBO_ROS", "map", 21)?.position).toEqual([15, 0, 5.5]);
-    expect(robotForWarehouse(robot, "GAZEBO_ROS", "map", 21)?.heading).toBe(0.7);
+    expect(robotForWarehouse(robot, "map", 21)?.position).toEqual([15, 0, 5.5]);
+    expect(robotForWarehouse(robot, "map", 21)?.heading).toBe(0.7);
     expect(robotForDisplayedMap(robot, slamMap)?.position).toEqual([0, 0, 0]);
   });
   it("hides an unavailable, stale, wrong-revision or unvalidated canonical pose", () => {
     for (const pose of [null, { ...canonical, map_revision: "20" },
       { ...canonical, timestamp: "2000-01-01T00:00:00Z" }, { ...canonical, transform_source: "ASSUMED_OFFSET" }]) {
-      expect(robotForWarehouse({ ...robot, canonical_pose: pose }, "GAZEBO_ROS", "map", 21)).toBeUndefined();
+      expect(robotForWarehouse({ ...robot, canonical_pose: pose }, "map", 21)).toBeUndefined();
     }
   });
   it("does not reinterpret a SLAM pose as canonical when canonical telemetry is missing", () => {
-    expect(robotForWarehouse({ ...robot, canonical_pose: null, ...slamPose }, "GAZEBO_ROS", "map", 21)).toBeUndefined();
+    expect(robotForWarehouse({ ...robot, canonical_pose: null, ...slamPose }, "map", 21)).toBeUndefined();
   });
   it("rejects offline, nonfinite and wrong-session named poses", () => {
-    expect(robotForWarehouse({ ...robot, status: "OFFLINE" }, "GAZEBO_ROS", "map", 21)).toBeUndefined();
-    expect(robotForWarehouse({ ...robot, canonical_pose: { ...canonical, x: NaN } }, "GAZEBO_ROS", "map", 21)).toBeUndefined();
+    expect(robotForWarehouse({ ...robot, status: "OFFLINE" }, "map", 21)).toBeUndefined();
+    expect(robotForWarehouse({ ...robot, canonical_pose: { ...canonical, x: NaN } }, "map", 21)).toBeUndefined();
     expect(robotForDisplayedMap({ ...robot, slam_pose: { ...robot.slam_pose!, mapping_session_id: "old" } }, slamMap)).toBeUndefined();
     expect(robotForDisplayedMap({ ...robot, slam_pose: { ...robot.slam_pose!, frame_id: "world" } }, slamMap)).toBeUndefined();
   });

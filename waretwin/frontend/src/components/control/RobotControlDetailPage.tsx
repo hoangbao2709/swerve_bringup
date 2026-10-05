@@ -2,8 +2,8 @@ import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useR
 import { apiFetch, clearEmergencyStop, emergencyStop, getRobotNavigationTags, type RobotNavigationTag, type RobotNavigationTagRegistry } from "../../services/api";
 import { WS_URL, wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
 import { MANUAL_COMMAND_REFRESH_MS, nextManualCommand, type ActiveManualCommand } from "../../services/manualCommand";
-import { useSimulationRunner } from "../../simulation/runner";
-import { layout, useStore } from "../../state/store";
+import { logout } from "../../services/auth";
+import { useStore } from "../../state/store";
 import type { FramePose, RobotDetailError, RobotDetailGoal, RobotDetailMapSnapshot, RobotDetailPath, RobotDetailPathPreview, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
 import type { WarehouseLayout } from "../../layout/types";
 import { createWorldTransform, floorBoundary, screenToWorld, worldToScreen, type WorldBounds, type WorldTransform } from "../../layout/coordinates";
@@ -87,8 +87,6 @@ export function RobotControlDetailPage({ robotId }: { robotId: string }) {
 }
 
 function RobotControlDetailContent({ robotId }: { robotId: string }) {
-  useSimulationRunner();
-
   const robot = useStore((state) => state.twin?.robots?.[robotId]);
   const robotIdsKey = useStore((state) => Object.keys(state.twin?.robots ?? {}).join("\u0000"));
   const robotIds = useMemo(() => robotIdsKey ? robotIdsKey.split("\u0000") : [], [robotIdsKey]);
@@ -96,7 +94,6 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     const taskId = state.twin?.robots?.[robotId]?.current_task_id;
     return taskId ? state.twin?.tasks?.[taskId] ?? null : null;
   });
-  const select = useStore((state) => state.select);
   const rawDiagnostics = useStore((state) => state.rosDiagnostics);
   const diagnostics = rawDiagnostics as RobotSystemDiagnostics | null;
   const rawLocalization = useStore((state) => state.localization);
@@ -130,14 +127,16 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const useLiveSlamMap = slamRuntimeActive && !activeLocalMapId;
   const activeMapSnapshot = useLiveSlamMap ? slam2dMap : runtimeMapSnapshot;
   const setRobotDetail = useStore((state) => state.setRobotDetail);
+  const layout = useStore((state) => state.layout);
   const authToken = useStore((state) => state.authToken);
+  const authUser = useStore((state) => state.authUser);
   const appliedMode = useStore((state) => state.robotDetail[robotId]?.appliedMode);
   const requestedMode = useStore((state) => state.robotDetail[robotId]?.requestedMode);
   const modeTransitionState = useStore((state) => state.robotDetail[robotId]?.modeTransitionState);
   const mapSync = useStore((state) => state.mapSync);
-  const layoutRevision = useStore((state) => state.layoutRevision);
   const robotMapSync = mapSync.robots[robotId];
-  const [controlMode, setControlMode] = useState<"MANUAL" | "AUTONOMOUS">(robot?.control_mode ?? "AUTONOMOUS");
+  const reportedControlMode = appliedMode ?? (robot?.last_telemetry_at ? robot.control_mode : null);
+  const [controlMode, setControlMode] = useState<"MANUAL" | "AUTONOMOUS" | "UNKNOWN">(reportedControlMode ?? "UNKNOWN");
   const [activeManualCommand, setActiveManualCommand] = useState<ActiveManualCommand | null>(null);
   const [activeTab, setActiveTab] = useState<LocalTab>("CONTROL");
   const [mapSource, setMapSource] = useState<MapSource>("GLOBAL");
@@ -165,8 +164,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }>({ activate: () => undefined, stop: () => undefined });
 
   const robotBridgeOnline = connectedRobotIds.includes(robotId);
-  const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && (runtimeMode === "LOCAL_SIM" || (robotBridgeOnline && rosConnected && websocketState === "CONNECTED")));
-  const controlOnline = Boolean(robotOnline && runtimeMode !== "LOCAL_SIM" && robotBridgeOnline && rosConnected && websocketState === "CONNECTED");
+  const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && robotBridgeOnline && rosConnected && websocketState === "CONNECTED");
+  const controlOnline = Boolean(robotOnline && robotBridgeOnline && rosConnected && websocketState === "CONNECTED");
   const localization = diagnostics?.localization ?? rawLocalization?.state ?? null;
   const canonicalMapReady = !activeLocalMapId && (robotMapSync?.status ?? mapSync.status) === "SYNCED";
   const activeMappingSnapshot = useLiveSlamMap && slam2dMap?.map_source === "SLAM_TOOLBOX"
@@ -189,7 +188,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const navigationUiAvailable = runtimeState === "UNIFIED"
     ? Boolean(runtimeCapabilities?.goal_available && controlMode === "AUTONOMOUS" && controlOnline)
     : runtimeState === "NAVIGATION" && activeMapReady;
-  const canonicalMapRevision = mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision;
+  const canonicalMapRevision = mapSync.publishedRevision ?? mapSync.rosRevision;
   const currentSlam2dMap = activeMappingSnapshot;
   const currentSlam3dCloud = useLiveSlamMap && slam3dAccumulatedCloud?.accumulated
     && slam3dAccumulatedCloud.accumulation_mode === "SLAM_VISUALIZATION_VOXEL_MAP"
@@ -202,17 +201,18 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     && slam3dAccumulatedCloud.slam_pose.map_id === `SLAM-${slam3dAccumulatedCloud.slam_pose.mapping_session_id}`
     && (!mappingSessionId || slam3dAccumulatedCloud.slam_pose.mapping_session_id === mappingSessionId)
     ? slam3dAccumulatedCloud : null;
-  const statePose = robot?.active_map_pose ?? (runtimeMode === "LOCAL_SIM" && robot ? {
-    x: robot.position[0], y: robot.position[2], yaw: robot.heading,
-    frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
-  } : null);
+  const reportedPose = robot?.active_map_pose;
+  const statePose = reportedPose?.valid && reportedPose.frame_id === "map"
+    && [reportedPose.x, reportedPose.y, reportedPose.yaw].every(Number.isFinite)
+    && reportedPose.map_id && reportedPose.map_revision ? reportedPose : null;
   const informationalTagRegistry = tagRegistry?.reason === "TAG_MAP_REGISTRATION_REQUIRED";
   const compatibleTags = tagRegistry?.compatible || informationalTagRegistry ? tagRegistry.tags : [];
   const selectedTag = compatibleTags.find((tag) => tag.tag_id === selectedTagId) ?? null;
   const navigableTags = compatibleTags.filter((tag) => tag.navigable
     && tag.map_id === activeMapId && tag.map_revision === activeMapRevision);
+  const selectedTagRevision = mapSync.publishedRevision ?? mapSync.rosRevision;
   const selectedMapTag = selectedTag && selectedTag.map_id === "CANONICAL"
-    && selectedTag.map_revision === String(mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision)
+    && selectedTagRevision !== null && selectedTag.map_revision === String(selectedTagRevision)
     ? selectedTag : null;
   const candidatePreview = pathPreview?.request_id === latestPathRequest.current ? pathPreview : null;
   const previewAgeMs = candidatePreview?.timestamp ? clockNow - Date.parse(candidatePreview.timestamp) : Infinity;
@@ -244,12 +244,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const previousActiveNavigationMapKey = useRef(activeNavigationMapKey);
 
   useEffect(() => {
-    select(robotId);
     setGoalPreview(null);
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
-  }, [robotId, select, setRobotDetail]);
+  }, [robotId, setRobotDetail]);
 
   useEffect(() => {
     if (previousActiveNavigationMapKey.current === activeNavigationMapKey) return;
@@ -288,8 +287,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [runtimeState]);
 
   useEffect(() => {
-    setControlMode(appliedMode ?? robot?.control_mode ?? "AUTONOMOUS");
-  }, [appliedMode, robot?.control_mode, robotId]);
+    setControlMode(reportedControlMode ?? "UNKNOWN");
+  }, [reportedControlMode, robotId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
@@ -306,7 +305,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     && navigationUiAvailable && controlMode === "AUTONOMOUS" ? displayedNavigationMapIdentity : null;
   const visitedViews = useRef(new Set<string>());
   visitedViews.current.add(detailView);
-  const viewFresh = detailView === "GLOBAL" || (detailView === "LIDAR_2D" && Boolean(activeMap2dSnapshot))
+  const viewFresh = detailView === "GLOBAL" ? Boolean(layout && canonicalMapRevision !== null)
+    : (detailView === "LIDAR_2D" && Boolean(activeMap2dSnapshot))
     || (detailView === "LIDAR_3D" && Boolean(currentSlam3dCloud))
     || (viewStatus?.requested_view === detailView && viewStatus.state === "FRESH");
   useEffect(() => {
@@ -316,7 +316,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     wsSend({ type: "ROBOT_DETAIL_VIEW", robot_id: robotId, view: detailView, request_id, delivery_ack: true });
   }, [detailView, robotBridgeOnline, robotId, websocketState, setRobotDetail]);
   useLayoutEffect(() => {
-    const cached = detailView === "GLOBAL" ? layout.floors.length > 0
+    const cached = detailView === "GLOBAL" ? Boolean(layout?.floors.length)
       : detailView === "LIDAR_2D" ? occupancyRasters.peek(activeMap2dSnapshot) : slam3dAccumulatedCloud;
     if (!cached) return;
     const paint = requestAnimationFrame(() => detailPerformance("view_render", { view: detailView, robot_id: robotId, useful: true, cached: true }));
@@ -418,11 +418,12 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     };
   }, [authToken, controlOnline, robotId, stopManual]);
 
-  const estopActive = Boolean(detailDiagnostics?.command_ownership?.estop_active
-    ?? diagnostics?.command_ownership?.estop_active);
+  const estopActive = detailDiagnostics?.command_ownership?.estop_active
+    ?? diagnostics?.command_ownership?.estop_active;
+  const estopConfirmedClear = estopActive === false;
   useEffect(() => {
-    if (estopActive) stopManual();
-  }, [estopActive, stopManual]);
+    if (!estopConfirmedClear) stopManual();
+  }, [estopConfirmedClear, stopManual]);
 
   const runAction = useCallback(async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -451,7 +452,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       return;
     }
     if (controlMode !== "MANUAL" || modeTransitionState === "REQUESTED" || modeTransitionState === "FAILED") { setError("Wait for applied MANUAL mode before driving"); return; }
-    if (estopActive) { setError("Manual control is blocked while E-STOP is active"); return; }
+    if (!estopConfirmedClear) { setError("Manual control is blocked until the runtime confirms E-STOP is clear"); return; }
     if (!controlOnline) { setError("Manual control is disabled while ROS bridge is disconnected"); return; }
     const nextCommand = nextManualCommand(activeManualCommandRef.current, action);
     if (!nextCommand) {
@@ -473,7 +474,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     manualTimer.current = window.setInterval(() => {
       if (!wsManualCommand(robotId, nextCommand)) stopManual(true);
     }, MANUAL_COMMAND_REFRESH_MS);
-  }, [controlMode, controlOnline, estopActive, modeTransitionState, robotId, setManualCommand, stopManual]);
+  }, [controlMode, controlOnline, estopConfirmedClear, modeTransitionState, robotId, setManualCommand, stopManual]);
 
   manualKeyboardHandlers.current = { activate: toggleManual, stop: stopManual };
 
@@ -506,6 +507,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     if (!navigationUiAvailable) { setError("Nav2 is not ready for this active map and control mode"); return; }
     if (controlMode !== "AUTONOMOUS") { setError("Switch to AUTONOMOUS before sending a goal"); return; }
     if (!controlOnline) { setError("Navigation goal requires an online ROS bridge"); return; }
+    if (!estopConfirmedClear) { setError("Navigation is blocked until the runtime confirms E-STOP is clear"); return; }
     if (!activeMapReady) { setError(`The selected robot active map is not confirmed (${activeMapStatus})`); return; }
     if (!wsSend({ type: "NAV_GOAL", robot_id: robotId, x: approvedGoal.x, y: approvedGoal.y, yaw: approvedGoal.yaw,
       frame_id: "map", preview_request_id: approvedPreview.request_id, active_map_id: activeMapId!,
@@ -662,9 +664,11 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     <div className="robot-detail-shell">
       <header className="robot-detail-header">
         <div className="robot-detail-identity">
-          <button type="button" className="robot-detail-back" onClick={() => pushRoute("/")}>← BACK</button>
+          <button type="button" className="robot-detail-back" onClick={() => pushRoute("/control")}>← ROBOTS</button>
+          <div className="control-app-brand"><strong>PTAGV</strong><span>/</span><b>WareTwin</b></div>
           <div><span className="robot-console-kicker">ROBOT CONTROL CONSOLE</span><h1>{robotId}</h1></div>
           <StatusValue value={robotOnline ? "ONLINE" : "OFFLINE"} />
+          <StatusValue value={estopActive === true ? "E-STOP ACTIVE" : estopConfirmedClear ? "E-STOP CLEAR" : "E-STOP UNKNOWN"} />
           <span className="robot-detail-mode">{controlMode}{modeTransitionState === "REQUESTED" ? ` → ${requestedMode} REQUESTED` : modeTransitionState === "FAILED" ? " TRANSITION FAILED" : " APPLIED"}</span>
           <span className="robot-detail-runtime">{runtimeState} / {safeText(robot?.navigation_state, "N/A")}</span>
           {runtimeState === "UNIFIED" && <>
@@ -678,7 +682,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
           <label className="robot-detail-robot-select"><span>ROBOT</span><select aria-label="Select robot" value={robotId} onChange={(event) => changeRobot(event.target.value)}><option value="">Select robot</option>{robotIds.map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
           <button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline || busy} onClick={() => setMode("MANUAL")}>MANUAL</button>
           <button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline || busy} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button>
-          <button type="button" className="robot-console-danger" disabled={busy || !robotId} onClick={() => { stopManual(); void runAction(() => emergencyStop(robotId)); }}>EMERGENCY STOP</button>
+          <button type="button" className="robot-console-danger" disabled={busy || !robotId} onClick={() => { stopManual(); void runAction(async () => {
+            const result = await emergencyStop(robotId);
+            if (result.ok !== true) throw new Error("EMERGENCY_STOP_UNCONFIRMED: ROS bridge did not acknowledge the stop request");
+            setSafetyNotice("EMERGENCY STOP ACKNOWLEDGED · waiting for runtime latch state");
+          }); }}>EMERGENCY STOP</button>
+          <span className="control-detail-user">{authUser?.username ?? "UNKNOWN"}</span>
+          <button type="button" onClick={() => void logout()}>LOG OUT</button>
         </div>
       </header>
 
@@ -687,7 +697,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       </nav>
 
       {activeTab !== "CONTROL" ? <main className="robot-detail-section-main">
-        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} />
+        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} />
       </main> : <main className="robot-detail-main">
         <aside className="robot-detail-column robot-detail-left">
           <SystemInputsPanel robotId={robotId} robot={robot} controlMode={controlMode} runtimeMode={runtimeMode} goal={goalPreview ?? goal} mission={tagMission?.robot_id === robotId ? tagMission : null} />
@@ -751,7 +761,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
             <button type="button" disabled={!navigationUiAvailable || (!goalPreview || targetMethod === "TAG" && !selectedTag?.navigable) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
-            <button type="button" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
+            <button type="button" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || !estopConfirmedClear || controlMode !== "AUTONOMOUS" || !activeMapReady} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
             <button type="button" disabled={!goalPreview && selectedTagId === null} onClick={cancelPathPreview}>CANCEL</button>
           </div>
         </section>
@@ -765,7 +775,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       }
 
       <footer className="robot-detail-bottom">
-        <ManualBar controlMode={controlMode} controlOnline={controlOnline} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} setMode={setMode} />
+        <ManualBar controlMode={controlMode} controlOnline={controlOnline} estopConfirmedClear={estopConfirmedClear} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} setMode={setMode} />
         <div className="robot-detail-nav-bar">
           <div><span>NAV STATUS</span><b>{safeText(navigationStatus ?? robot?.navigation_state, "N/A")}</b></div>
           <div><span>GOAL</span><b>{goal ? `${safeNumber(goal.x, 2)} / ${safeNumber(goal.y, 2)}` : "N/A"}</b></div>
@@ -788,6 +798,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
 }
 
 function SystemInputsPanel({ robotId, robot, controlMode, runtimeMode, goal, mission }: { robotId: string; robot?: RobotState; controlMode: string; runtimeMode: string; goal: RobotDetailGoal | WorldGoal | null; mission: { target_tag_id?: number | null } | null }) {
+  const telemetry = robot?.last_telemetry_at !== null && robot?.last_telemetry_at !== undefined;
   return <Panel title="SYSTEM INPUTS">
     <Metric label="Robot" value={robotId} mono />
     <Metric label="Control mode" value={controlMode} status />
@@ -797,9 +808,9 @@ function SystemInputsPanel({ robotId, robot, controlMode, runtimeMode, goal, mis
     <Metric label="Target tag" value={mission?.target_tag_id ?? "N/A"} mono />
     <Metric label="Current command" value="N/A" />
     <div className="robot-detail-subtitle">COMMAND VELOCITY · measured</div>
-    <Metric label="linear x" value={safeNumber(robot?.vx, 3, " m/s")} mono />
-    <Metric label="linear y" value={safeNumber(robot?.vy, 3, " m/s")} mono />
-    <Metric label="angular z" value={safeNumber(robot?.wz, 3, " rad/s")} mono />
+    <Metric label="linear x" value={telemetry ? safeNumber(robot?.vx, 3, " m/s") : "NOT REPORTED"} mono />
+    <Metric label="linear y" value={telemetry ? safeNumber(robot?.vy, 3, " m/s") : "NOT REPORTED"} mono />
+    <Metric label="angular z" value={telemetry ? safeNumber(robot?.wz, 3, " rad/s") : "NOT REPORTED"} mono />
     <div className="robot-detail-subtitle">GOAL</div>
     <Metric label="x" value={goal ? safeNumber(goal.x, 3, " m") : "N/A"} mono />
     <Metric label="y" value={goal ? safeNumber(goal.y, 3, " m") : "N/A"} mono />
@@ -883,10 +894,10 @@ function ErrorMessagesPanelContent({ errors }: { errors: RobotDetailError[] }) {
 
 const ManualBar = memo(ManualBarContent);
 
-function ManualBarContent({ controlMode, controlOnline, activeManualCommand, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; activeManualCommand: ActiveManualCommand | null; moveButtonEvents: (action: ManualAction) => { onClick: () => void }; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
+function ManualBarContent({ controlMode, controlOnline, estopConfirmedClear, activeManualCommand, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; estopConfirmedClear: boolean; activeManualCommand: ActiveManualCommand | null; moveButtonEvents: (action: ManualAction) => { onClick: () => void }; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
   return <section className="robot-detail-manual">
     <div className="robot-detail-manual-head"><div><span className="robot-console-kicker">MANUAL CONTROL</span><b>{activeManualCommand ? `${activeManualCommand} LATCHED` : "STOPPED"}</b><small>Click or key press toggles; release does not stop · Space / STOP to stop</small></div><div className="robot-detail-manual-mode"><button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("MANUAL")}>MANUAL</button><button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button></div></div>
-    <div className="robot-detail-manual-pad">{MANUAL_ACTIONS.map((item) => <button type="button" key={item.action} className={`manual-key manual-key-${item.action.toLowerCase()}${activeManualCommand === item.action ? " is-active" : ""}`} title={item.title} aria-label={item.title} aria-pressed={item.action !== "STOP" && activeManualCommand === item.action} disabled={!controlOnline || (item.action !== "STOP" && controlMode !== "MANUAL")} {...moveButtonEvents(item.action)}>{item.label}<small>{item.action === "FORWARD" ? "W / ↑" : item.action === "BACKWARD" ? "S / ↓" : item.action === "LEFT" ? "A / ←" : item.action === "RIGHT" ? "D / →" : item.action === "ROTATE_LEFT" ? "Q" : item.action === "ROTATE_RIGHT" ? "E" : "STOP"}</small></button>)}</div>
+    <div className="robot-detail-manual-pad">{MANUAL_ACTIONS.map((item) => <button type="button" key={item.action} className={`manual-key manual-key-${item.action.toLowerCase()}${activeManualCommand === item.action ? " is-active" : ""}`} title={item.title} aria-label={item.title} aria-pressed={item.action !== "STOP" && activeManualCommand === item.action} disabled={!controlOnline || (item.action !== "STOP" && (controlMode !== "MANUAL" || !estopConfirmedClear))} {...moveButtonEvents(item.action)}>{item.label}<small>{item.action === "FORWARD" ? "W / ↑" : item.action === "BACKWARD" ? "S / ↓" : item.action === "LEFT" ? "A / ←" : item.action === "RIGHT" ? "D / →" : item.action === "ROTATE_LEFT" ? "Q" : item.action === "ROTATE_RIGHT" ? "E" : "STOP"}</small></button>)}</div>
   </section>;
 }
 
@@ -900,7 +911,7 @@ function MetricContent({ label, value, mono = false, status = false }: { label: 
   return <div className="robot-detail-metric"><span>{label}</span>{status ? <StatusValue value={value} /> : <b className={mono ? "mono" : ""}>{safeText(value)}</b>}</div>;
 }
 
-type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; canonicalRevision: string | number; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; selectedTag: RobotNavigationTag | null; onGoalSelect: (goal: MapPointNavigationTarget) => void; pickMapIdentity: NavigationMapIdentity | null };
+type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; canonicalRevision: string | number | null; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; selectedTag: RobotNavigationTag | null; onGoalSelect: (goal: MapPointNavigationTarget) => void; pickMapIdentity: NavigationMapIdentity | null };
 
 function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, globalPath, localPath, goal, goalPreview, pathPreview, selectedTag, onGoalSelect, pickMapIdentity }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -912,6 +923,7 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
   const [showGrid, setShowGrid] = useState(true);
   const [showPaths, setShowPaths] = useState(true);
   const layoutRevision = useStore((state) => state.layoutRevision);
+  const layout = useStore((state) => state.layout);
   const runtimeState = useStore((state) => state.runtimeState);
 
   useEffect(() => {
@@ -933,10 +945,10 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
 
   const bounds = useMemo(() => worldBounds(null, layout), [layoutRevision]);
   const displayedMapIdentity = useMemo<MapPoseIdentity>(() => ({
-    frame_id: layout.coordinate_system?.frame ?? "map",
-    active_map_id: "CANONICAL",
+    frame_id: layout?.coordinate_system?.frame ?? "map",
+    active_map_id: layout ? "CANONICAL" : null,
     active_map_revision: canonicalRevision,
-    map_source: "CANONICAL",
+    map_source: layout ? "CANONICAL" : null,
   }), [canonicalRevision, layoutRevision]);
   const clickMapIdentity: NavigationMapIdentity = {
     frame_id: displayedMapIdentity.frame_id ?? "map",
@@ -960,14 +972,14 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     // GLOBAL is always the canonical warehouse frame. Unified SLAM/Nav2 paths
     // use the active SLAM map frame and are rendered only in the SLAM views.
-    const canonicalPaths = runtimeState === "MAPPING" || runtimeState === "UNIFIED" ? false : showPaths;
+    const canonicalPaths = Boolean(layout) && runtimeState !== "MAPPING" && runtimeState !== "UNIFIED" && showPaths;
     drawDetailMap(ctx, size.width, size.height, transform, bounds, null, null, displayedPose, robot,
       canonicalPaths ? globalPath : null, canonicalPaths ? localPath : null, canonicalPaths ? goal : null,
       canonicalPaths ? goalPreview : null, canonicalPaths ? pathPreview : null,
-      { showGrid, showLidar: false, showPaths: canonicalPaths, showWarehouse: true });
-    if (selectedTag?.navigation_pose) drawSelectedTag(ctx, selectedTag, transform.toCanvas);
+      { showGrid, showLidar: false, showPaths: canonicalPaths, showWarehouse: true }, layout);
+    if (layout && selectedTag?.navigation_pose) drawSelectedTag(ctx, selectedTag, transform.toCanvas);
     detailPerformance("view_render", { view: "GLOBAL", useful: true, robot_id: robotId });
-  }, [active, bounds, goal, goalPreview, globalPath, localPath, pathPreview, selectedTag, displayedPose, robot, runtimeState, showGrid, showPaths, size.height, size.width, transform]);
+  }, [active, bounds, goal, goalPreview, globalPath, localPath, pathPreview, selectedTag, displayedPose, robot, runtimeState, showGrid, showPaths, size.height, size.width, transform, layoutRevision]);
 
   const handleMapClick = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     if (!canPick) return;
@@ -996,14 +1008,14 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
       <button type="button" className={showGrid ? "is-active" : ""} onClick={() => setShowGrid((value) => !value)}>GRID</button>
       <button type="button" className={showPaths ? "is-active" : ""} onClick={() => setShowPaths((value) => !value)}>PATH</button>
     </div>
-    <div className="robot-detail-map-readout"><span>FRAME {layout.coordinate_system?.frame ?? "map"}</span><span>CANONICAL WAREHOUSE · r{canonicalRevision}</span><span>{displayedPose ? "CANONICAL_POSE" : "ROBOT POSE WAITING"}</span></div>
+    <div className="robot-detail-map-readout"><span>FRAME {layout?.coordinate_system?.frame ?? "map"}</span><span>{layout ? `CANONICAL WAREHOUSE · r${canonicalRevision ?? "UNKNOWN"}` : "CANONICAL MAP UNAVAILABLE"}</span><span>{displayedPose ? "CANONICAL_POSE" : "ROBOT POSE WAITING"}</span></div>
   </div>;
 }
 
 type MapBounds = WorldBounds;
 type MapTransform = WorldTransform & { toCanvas: (x: number, y: number) => { x: number; y: number }; toWorld: (x: number, y: number) => { x: number; y: number } };
 
-function worldBounds(mapSnapshot: RobotDetailMapSnapshot | null, mapLayout: WarehouseLayout): MapBounds {
+function worldBounds(mapSnapshot: RobotDetailMapSnapshot | null, mapLayout: WarehouseLayout | null): MapBounds {
   if (mapSnapshot?.frame_id === "map" && mapSnapshot.width > 0 && mapSnapshot.height > 0 && mapSnapshot.resolution > 0) {
     const mapWidth = mapSnapshot.width * mapSnapshot.resolution;
     const mapHeight = mapSnapshot.height * mapSnapshot.resolution;
@@ -1014,6 +1026,7 @@ function worldBounds(mapSnapshot: RobotDetailMapSnapshot | null, mapLayout: Ware
     }));
     return { minX: Math.min(...corners.map((point) => point.x)), maxX: Math.max(...corners.map((point) => point.x)), minY: Math.min(...corners.map((point) => point.y)), maxY: Math.max(...corners.map((point) => point.y)) };
   }
+  if (!mapLayout) return { minX: -1, maxX: 1, minY: -1, maxY: 1 };
   const floor = mapLayout.floors?.[0];
   const boundary = floor ? floorBoundary(floor, mapLayout.size.width, mapLayout.size.depth) : [];
   const xs = boundary.map((point) => point.x), ys = boundary.map((point) => point.y);
@@ -1027,7 +1040,7 @@ function makeTransform(width: number, height: number, bounds: MapBounds, zoom: n
   return { ...world, toCanvas: (x, y) => worldToScreen({ x, y }, world), toWorld: (x, y) => screenToWorld({ x, y }, world) };
 }
 
-function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: number, transform: MapTransform, bounds: MapBounds, mapSnapshot: RobotDetailMapSnapshot | null, occupancyRaster: HTMLCanvasElement | null, pose: FramePose | undefined, robot: RobotState | undefined, globalPath: RobotDetailPath | null, localPath: RobotDetailPath | null, goal: RobotDetailGoal | null, goalPreview: WorldGoal | null, pathPreview: RobotDetailPathPreview | null, layers: { showGrid: boolean; showLidar: boolean; showPaths: boolean; showWarehouse: boolean }) {
+function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: number, transform: MapTransform, bounds: MapBounds, mapSnapshot: RobotDetailMapSnapshot | null, occupancyRaster: HTMLCanvasElement | null, pose: FramePose | undefined, robot: RobotState | undefined, globalPath: RobotDetailPath | null, localPath: RobotDetailPath | null, goal: RobotDetailGoal | null, goalPreview: WorldGoal | null, pathPreview: RobotDetailPathPreview | null, layers: { showGrid: boolean; showLidar: boolean; showPaths: boolean; showWarehouse: boolean }, mapLayout: WarehouseLayout | null) {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#07101c";
   ctx.fillRect(0, 0, width, height);
@@ -1044,7 +1057,7 @@ function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: num
 
   if (mapSnapshot?.frame_id === "map" && occupancyRaster) drawOccupancy(ctx, mapSnapshot, occupancyRaster, worldToCanvas, transform.scale);
   if (layers.showGrid) drawWorldGrid(ctx, width, height, transform, bounds);
-  if (layers.showWarehouse) drawWarehouseLayer(ctx, mapLayoutForCanvas(), worldToCanvas);
+  if (layers.showWarehouse && mapLayout) drawWarehouseLayer(ctx, mapLayout, worldToCanvas);
 
   if (layers.showPaths) {
     drawPath(ctx, globalPath?.frame_id === "map" ? globalPath.points : [], worldToCanvas, "#9b87ff", 2.6, false);
@@ -1058,7 +1071,6 @@ function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: num
   ctx.font = "10px JetBrains Mono, monospace";
   ctx.fillText(`scale ${transform.scale.toFixed(1)} px/m`, 12, height - 12);
 
-  function mapLayoutForCanvas() { return layout; }
 }
 
 function drawOccupancy(ctx: CanvasRenderingContext2D, mapSnapshot: RobotDetailMapSnapshot, raster: HTMLCanvasElement, worldToCanvas: MapTransform["toCanvas"], scale: number) {

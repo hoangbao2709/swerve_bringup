@@ -40,8 +40,8 @@ from tf2_ros import Buffer, TransformException, TransformListener
 # In UNIFIED, SLAM Toolbox owns the live /map topic, so Nav2 intentionally
 # excludes map_server. The legacy static-map mode keeps its historical node.
 NAV2_LIVE_SLAM_LIFECYCLE_NODES = (
-    'planner_server',
     'controller_server',
+    'planner_server',
     'behavior_server',
     'bt_navigator',
     'waypoint_follower',

@@ -24,7 +24,7 @@ export function AuthPage() {
     setError(null);
     try {
       await login(username.trim(), password);
-      go("/control");
+      go("/");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message.slice(0, 200) : "Login failed. Check your connection and credentials.");
     } finally {

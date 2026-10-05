@@ -92,10 +92,12 @@ describe("Robot Control overview", () => {
   });
 
   it("does not invent a robot or metrics before runtime telemetry arrives", () => {
-    render({ twin: null as unknown as TwinState, connectedRobotIds: [], rosConnected: false });
+    render({ twin: { ...initialState.twin, robots: { "seed-placeholder": robot("seed-placeholder", { last_telemetry_at: null }) } } as TwinState,
+      connectedRobotIds: [], rosConnected: false });
     expect(container.textContent).toContain("Waiting for robot runtime data");
     expect(container.textContent).toContain("UNKNOWN");
     expect(container.querySelectorAll("a[href^='/robots/']")).toHaveLength(0);
     expect(container.textContent).not.toContain("R01");
+    expect(container.textContent).not.toContain("seed-placeholder");
   });
 });

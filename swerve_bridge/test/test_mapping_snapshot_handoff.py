@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from collections import deque
 from unittest.mock import Mock
+import math
 
 import pytest
 
@@ -109,6 +110,57 @@ def test_map_payload_is_compressed_once_per_version_and_cached_for_reconnect(mon
     bridge.map_snapshot_timer()
     assert bridge.send.call_count == 1
     assert compressed.call_count == 1
+
+
+def test_timestamped_map_scan_geometry_rotates_with_lidar_tf(monkeypatch):
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'UNIFIED'
+    bridge.mapping_session_id = 'session-live'
+    bridge.robot_id = 'AGV-17'
+    bridge.scan_topic_name = '/scan'
+    bridge.slam_trajectory = []
+    bridge.last_scan_stamp = 1.0  # A stale side-channel value must not label this scan.
+    bridge.scan_sim_intervals = deque()
+    bridge.scan_intervals = deque()
+    bridge.get_parameter = lambda name: SimpleNamespace(value={
+        'map_frame': 'map', 'lidar_max_points': 64, 'mapping_sensor_tf_timeout_s': 2.5,
+    }[name])
+    identity = SimpleNamespace(translation=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))
+    quarter_turn = SimpleNamespace(translation=SimpleNamespace(x=2.0, y=3.0, z=0.0),
+        rotation=SimpleNamespace(x=0.0, y=0.0, z=math.sin(math.pi / 4), w=math.cos(math.pi / 4)))
+    bridge.tf_buffer = SimpleNamespace(lookup_transform=Mock(side_effect=lambda _target, _source, stamp, **_kwargs:
+        SimpleNamespace(transform=identity if stamp.sec == 10 else quarter_turn)))
+    monkeypatch.setattr(bridge_node.Time, 'from_msg', staticmethod(lambda stamp: stamp))
+
+    def laser(stamp_sec):
+        return SimpleNamespace(
+            header=SimpleNamespace(frame_id='lidar_link', stamp=SimpleNamespace(sec=stamp_sec, nanosec=250_000_000)),
+            ranges=[1.0, float('inf')], angle_min=0.0, angle_max=1.0,
+            angle_increment=1.0, range_min=0.1, range_max=10.0,
+        )
+
+    before = SwerveBridge._transform_scan(bridge, laser(10), 'map')
+    after = SwerveBridge._transform_scan(bridge, laser(11), 'map')
+
+    assert before['source_frame_id'] == after['source_frame_id'] == 'lidar_link'
+    assert before['frame_id'] == after['frame_id'] == 'map'
+    assert before['stamp'] == before['source_timestamp'] == 10.25
+    assert after['stamp'] == after['source_timestamp'] == 11.25
+    assert bridge.tf_buffer.lookup_transform.call_args_list[0].args[:3] == (
+        'map', 'lidar_link', SimpleNamespace(sec=10, nanosec=250_000_000))
+    assert bridge.tf_buffer.lookup_transform.call_args_list[1].args[:3] == (
+        'map', 'lidar_link', SimpleNamespace(sec=11, nanosec=250_000_000))
+    assert before['sensor_pose']['yaw'] == pytest.approx(0.0)
+    assert after['sensor_pose']['yaw'] == pytest.approx(math.pi / 2)
+    assert before['points'] == [[pytest.approx(1.0), pytest.approx(0.0)]]
+    assert after['sensor_pose']['x'] == pytest.approx(2.0)
+    assert after['sensor_pose']['y'] == pytest.approx(3.0)
+    # Subtract the sensor origin: the current scan rotates +90° in map axes.
+    assert after['points'] == [[pytest.approx(2.0), pytest.approx(4.0)]]
+    assert after['points'][0][0] - after['sensor_pose']['x'] == pytest.approx(0.0, abs=1e-7)
+    assert after['points'][0][1] - after['sensor_pose']['y'] == pytest.approx(1.0)
+    assert after['point_count'] == 1  # INF/no-return was not converted into an obstacle.
 
 
 def test_map_identity_change_rebuilds_snapshot_without_an_occupancy_change(monkeypatch):

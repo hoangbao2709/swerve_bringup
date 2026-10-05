@@ -75,7 +75,9 @@ function RobotCard({ robotId, robot }: { robotId: string; robot: RobotState }) {
 
 export function RobotControlPage() {
   const robots = useStore((state) => state.twin?.robots);
-  const entries = useMemo(() => Object.entries(robots ?? {}).sort(([left], [right]) => left.localeCompare(right)), [robots]);
+  const entries = useMemo(() => Object.entries(robots ?? {})
+    .filter(([, robot]) => typeof robot.last_telemetry_at === "string" && robot.last_telemetry_at.length > 0)
+    .sort(([left], [right]) => left.localeCompare(right)), [robots]);
   const runtimeMode = useStore((state) => state.runtimeMode);
   const runtimeState = useStore((state) => state.runtimeState);
   const bridgeState = useStore((state) => state.bridgeState);

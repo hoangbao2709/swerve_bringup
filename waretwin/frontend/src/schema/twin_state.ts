@@ -623,6 +623,7 @@ export type RobotDetailScan = {
   trajectory?: RobotWorldPoint[];
   timestamp?: string | null;
   stamp?: number | null;
+  source_timestamp?: number | null;
   angle_min: number;
   angle_max: number;
   angle_increment: number;

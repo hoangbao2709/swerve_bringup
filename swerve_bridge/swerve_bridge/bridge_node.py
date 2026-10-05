@@ -1086,6 +1086,8 @@ class SwerveBridge(Node):
         target_frame = str(requested_frame or self.get_parameter('map_frame').value or 'map')
         if not source_frame:
             raise TransformException('LaserScan frame_id is empty')
+        source_stamp = scan.header.stamp
+        scan_stamp = float(source_stamp.sec) + float(source_stamp.nanosec) * 1e-9
         transform = None
         if source_frame != target_frame:
             timeout = (Duration(seconds=max(0.05, float(self.get_parameter(
@@ -1094,7 +1096,7 @@ class SwerveBridge(Node):
                 and target_frame == str(self.get_parameter('map_frame').value or 'map')
                 else Duration(seconds=0.05))
             transform = self.tf_buffer.lookup_transform(
-                target_frame, source_frame, Time.from_msg(scan.header.stamp), timeout=timeout)
+                target_frame, source_frame, Time.from_msg(source_stamp), timeout=timeout)
         if transform is None:
             translation = (0.0, 0.0, 0.0)
             quaternion = (0.0, 0.0, 0.0, 1.0)
@@ -1129,7 +1131,11 @@ class SwerveBridge(Node):
             'sensor_pose': sensor_pose,
             'trajectory': [[x, y] for x, y in self.slam_trajectory],
             'timestamp': datetime.now(timezone.utc).isoformat(),
-            'stamp': self.last_scan_stamp,
+            # Both geometry and pose above use TF at this exact LaserScan stamp.
+            # Keep the source clock explicit; timestamp remains a wall-clock
+            # freshness value for the browser UI.
+            'stamp': scan_stamp,
+            'source_timestamp': scan_stamp,
             'angle_min': float(scan.angle_min), 'angle_max': float(scan.angle_max),
             'angle_increment': float(scan.angle_increment),
             'range_min': float(scan.range_min), 'range_max': float(scan.range_max),

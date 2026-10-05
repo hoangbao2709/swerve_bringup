@@ -460,30 +460,15 @@ class TwinRuntime:
         S = self.engine.state
         S['sim']['speed'] = self.speed
         S['sim']['mode'] = 'LIVE' if self.is_external else ('PAUSED' if self.paused else 'LIVE')
-        # Persistent scheduler is authoritative for simulated work. Run it at 1 Hz
-        # simulation time so planned database routes are dispatched to the same
-        # movement/A* engine that drives the 2D/3D robot models.
-        if S['sim']['tick'] % 10 == 0:
+        # Database-backed fleet schedules belong to the retired warehouse
+        # product and must never command an external robot. In this application
+        # external motion is authorized only by the explicit manual and
+        # validated Nav2 control paths. Keep the historical scheduler available
+        # solely to the isolated local simulation runtime.
+        if S['sim']['tick'] % 10 == 0 and not self.is_external:
             try:
-                if self.is_external:
-                    # Never dispatch a fleet scheduler goal against a stale
-                    # canonical map. E-stop remains an explicit gateway command.
-                    if self.runtime_status_message().get('map_sync_status') != 'SYNCED':
-                        goals, changed = [], False
-                    else:
-                        from .schedule_services import prepare_external_dispatches
-                        goals, changed = await sync_to_async(
-                            prepare_external_dispatches, thread_sensitive=True)(self)
-                    for goal in goals:
-                        result = await self.gateway().send_command(goal['robot_id'], 'NAVIGATE', goal)
-                        if not result.get('ok'):
-                            log.warning('ROS bridge unavailable for %s', goal.get('schedule_id'))
-                            from .schedule_services import release_external_dispatch
-                            await sync_to_async(release_external_dispatch, thread_sensitive=True)(
-                                goal['schedule_id'], goal['stop_id'])
-                else:
-                    from .schedule_services import process_runtime_schedules
-                    changed = await sync_to_async(process_runtime_schedules, thread_sensitive=True)(self.engine, self.plc)
+                from .schedule_services import process_runtime_schedules
+                changed = await sync_to_async(process_runtime_schedules, thread_sensitive=True)(self.engine, self.plc)
                 if changed:
                     await self.broadcast({'type': 'SCHEDULE_UPDATED', 'source': 'runtime'})
             except Exception as exc:

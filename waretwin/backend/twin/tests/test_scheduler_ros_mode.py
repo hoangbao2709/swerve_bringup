@@ -1,7 +1,9 @@
 from copy import deepcopy
 from datetime import timedelta
 from unittest import TestCase
+from unittest.mock import AsyncMock, patch
 
+from asgiref.sync import async_to_sync
 from django.test import TestCase as DjangoTestCase, override_settings
 from django.utils import timezone
 
@@ -132,3 +134,27 @@ class ExternalStopLifecycleTests(DjangoTestCase):
         self.assertEqual(self.destination_stop.status, 'COMPLETED')
         self.assertEqual(self.schedule.status, 'COMPLETED')
         self.assertEqual(self.order.status, 'COMPLETED')
+
+    @override_settings(WARETWIN_RUNTIME_MODE='GAZEBO_ROS')
+    def test_stale_database_schedules_never_dispatch_external_navigation(self):
+        old_tick = runtime.engine.state['sim']['tick']
+        old_telemetry = runtime.last_telemetry_at
+        runtime.engine.state['sim']['tick'] = 10
+        runtime.last_telemetry_at = None
+        gateway = type('Gateway', (), {'send_command': AsyncMock(return_value={'ok': True})})()
+        stale_goal = {'robot_id': 'R01', 'schedule_id': self.schedule.schedule_id,
+                      'stop_id': self.destination_stop.id, 'x': 8.0, 'y': 9.0, 'yaw': 0.2}
+        try:
+            with (
+                patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'),
+                patch.object(runtime, 'runtime_status_message', return_value={'map_sync_status': 'SYNCED'}),
+                patch('twin.schedule_services.prepare_external_dispatches', return_value=([stale_goal], True)) as prepare,
+                patch.object(runtime, 'gateway', return_value=gateway),
+                patch.object(runtime, 'broadcast', new_callable=AsyncMock),
+            ):
+                async_to_sync(runtime.after_ticks)()
+            prepare.assert_not_called()
+            gateway.send_command.assert_not_awaited()
+        finally:
+            runtime.engine.state['sim']['tick'] = old_tick
+            runtime.last_telemetry_at = old_telemetry

@@ -19,11 +19,11 @@ profile.
 
 - `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout`
 - `GET /api/health/`, `GET /api/system/status/`
-- `GET /api/state`, authenticated Channels WebSocket at `/ws`
 - `GET /api/layout`, `GET /api/map/sync-status`
 - Robot-local map, localization, and runtime controls under `/api/robots/:id/local/`
 - Robot navigation-tag registry and Emergency Stop / Clear Stop under
-  `/api/robots/:id/` and `/api/navigation/`
+  `/api/robots/:id/`
+- Robot-scoped VDA5050 configuration used by the Robot Control detail view
 - Robot commands, telemetry, path previews, and navigation goals over `/ws`
 - Authenticated ROS bridge at `/ws/ros`
 

@@ -3,6 +3,7 @@ import { useStore } from "./state/store";
 import { AuthPage } from "./components/auth/AuthPage";
 import { RobotControlPage } from "./components/control/RobotControlPage";
 import { RobotControlDetailPage } from "./components/control/RobotControlDetailPage";
+import { OverviewPage } from "./components/overview/OverviewPage";
 import { bootstrapAuth } from "./services/auth";
 import { useBackendRealtime } from "./services/backendRealtime";
 
@@ -59,7 +60,7 @@ export default function App() {
   useEffect(() => {
     if (authStatus === "loading") return;
     if (!loggedIn && path !== "/login") navigate("/login");
-    else if (loggedIn && path !== "/control" && !/^\/robots\/[^/]+\/control\/?$/.test(path)) navigate("/control");
+    else if (loggedIn && path !== "/" && path !== "/control" && !/^\/robots\/[^/]+\/control\/?$/.test(path)) navigate("/");
   }, [authStatus, loggedIn, path, navigate]);
 
   if (authStatus === "loading") return <AuthLoading />;
@@ -68,5 +69,6 @@ export default function App() {
   const detailMatch = path.match(/^\/robots\/([^/]+)\/control\/?$/);
   if (detailMatch) return <><RobotControlDetailPage robotId={decodeRouteSegment(detailMatch[1])} /><Notice /></>;
   if (path === "/control") return <><RobotControlPage /><Notice /></>;
-  return <><RobotControlPage /><Notice /></>;
+  if (path === "/") return <><OverviewPage /><Notice /></>;
+  return <><OverviewPage /><Notice /></>;
 }

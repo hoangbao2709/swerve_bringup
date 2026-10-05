@@ -743,7 +743,8 @@ describe("robot detail route stability", () => {
       .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
     expect(request?.type).toBe("PATH_PREVIEW_REQUEST");
     if (!request || request.type !== "PATH_PREVIEW_REQUEST") throw new Error("path preview request was not emitted");
-    expect(request).toMatchObject({ robot_id: "R01", frame_id: "map", active_map_id: "CANONICAL", active_map_revision: "21" });
+    expect(request).toMatchObject({ robot_id: "R01", source_type: "MAP_POINT", frame_id: "map",
+      active_map_id: "CANONICAL", active_map_revision: "21" });
     const send = buttonNamed("SEND GOAL");
     expect(send?.disabled).toBe(true);
 

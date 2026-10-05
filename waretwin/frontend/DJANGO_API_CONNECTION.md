@@ -7,7 +7,7 @@ This frontend is configured for the Django backend in `django_backend_api_connec
 - REST base: `VITE_API_BASE_URL` (legacy `VITE_API_URL` is still accepted)
 - WebSocket: `VITE_WS_BASE_URL` (legacy `VITE_WS_URL` is still accepted)
 - Authentication: `Authorization: Bearer <token>` for REST; `?token=<token>` for WebSocket.
-- Django is authoritative in backend mode. If WebSocket disconnects, the UI freezes at the last confirmed state and shows **OFFLINE**. It does not start the browser SimEngine.
+- Django is authoritative in backend mode. If WebSocket disconnects, the UI freezes at the last confirmed state and shows **OFFLINE**. The browser never emulates robot motion.
 
 ## Development
 

@@ -8,6 +8,9 @@ vi.mock("../src/services/backendRealtime", () => ({ useBackendRealtime: () => un
 vi.mock("../src/components/control/RobotControlPage", () => ({
   RobotControlPage: () => <main data-testid="control-overview">Robot Control Overview</main>,
 }));
+vi.mock("../src/components/overview/OverviewPage", () => ({
+  OverviewPage: () => <main data-testid="warehouse-overview">WareTwin Overview</main>,
+}));
 vi.mock("../src/components/control/RobotControlDetailPage", () => ({
   RobotControlDetailPage: ({ robotId }: { robotId: string }) => <main data-testid="robot-detail">Robot detail · {robotId}</main>,
 }));
@@ -81,7 +84,7 @@ describe("application routes and authentication", () => {
     expect(window.location.pathname).toBe("/login");
   });
 
-  it("logs in through the backend and opens the control overview", async () => {
+  it("logs in through the backend and opens WareTwin Overview", async () => {
     await renderApp("/login");
     const username = container.querySelector<HTMLInputElement>('input[autocomplete="username"]')!;
     const password = container.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!;
@@ -94,8 +97,8 @@ describe("application routes and authentication", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/auth/login"), expect.objectContaining({ method: "POST" }));
     expect(useStore.getState().authToken).toBe("access-1");
-    expect(window.location.pathname).toBe("/control");
-    expect(container.querySelector('[data-testid="control-overview"]')?.textContent).toContain("Robot Control Overview");
+    expect(window.location.pathname).toBe("/");
+    expect(container.querySelector('[data-testid="warehouse-overview"]')?.textContent).toContain("WareTwin Overview");
   });
 
   it("shows a backend login error and does not authenticate when the service is unavailable", async () => {
@@ -115,14 +118,29 @@ describe("application routes and authentication", () => {
     expect(window.location.pathname).toBe("/login");
   });
 
-  it("routes authenticated root and unknown paths to Control and preserves dynamic robot IDs", async () => {
+  it("routes authenticated root to Overview, exposes Control, and preserves dynamic robot IDs", async () => {
     localStorage.setItem(SESSION_KEY, JSON.stringify({ token: "stored-access", user: USER }));
     await renderApp("/");
+    expect(window.location.pathname).toBe("/");
+    expect(container.querySelector('[data-testid="warehouse-overview"]')).not.toBeNull();
+
+    await renderApp("/control");
     expect(window.location.pathname).toBe("/control");
     expect(container.querySelector('[data-testid="control-overview"]')).not.toBeNull();
 
     await renderApp("/admin/warehouse-editor");
-    expect(window.location.pathname).toBe("/control");
+    expect(window.location.pathname).toBe("/");
+    expect(container.querySelector('[data-testid="warehouse-overview"]')).not.toBeNull();
+
+    for (const removedPath of [
+      "/operations", "/diagnostics", "/robot-fleet", "/scheduler", "/inbound",
+      "/outbound", "/tasks", "/audit", "/events", "/scenarios", "/ai-ops",
+      "/what-if", "/warehouse-data", "/map-editor",
+    ]) {
+      await renderApp(removedPath);
+      expect(window.location.pathname, removedPath).toBe("/");
+      expect(container.querySelector('[data-testid="warehouse-overview"]')).not.toBeNull();
+    }
 
     await renderApp("/robots/robot-B-12/control");
     expect(window.location.pathname).toBe("/robots/robot-B-12/control");

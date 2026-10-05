@@ -652,7 +652,7 @@ function Vda5050Panel({ robotId }: { robotId: string }) {
         <div><span>MQTT STATUS</span><Status value={connectionStatus} />{draft.password_configured && <small>secret configured</small>}</div>
         <div className="local-action-row"><button type="button" disabled={busy} onClick={() => void test()}>TEST CONNECTION</button><button type="button" className="robot-console-primary" disabled={busy || !dirty} onClick={() => void save()}>{busy ? "APPLYING…" : "SAVE & APPLY"}</button></div>
       </div>
-      {draft.allow_task ? <p className="local-help">Incoming order messages are subscribed and forwarded to this robot’s authenticated ROS bridge. Disabling Allow Task removes the order subscription and rejects any in-flight order.</p> : <p className="local-help">New VDA5050 orders are blocked for this robot. Telemetry, bridge health, and authorized local manual control remain available.</p>}
+      {draft.allow_task ? <p className="local-help">Incoming order messages are subscribed and forwarded to this robot’s authenticated ROS bridge. Disabling Allow Task removes the order subscription and rejects any in-flight order.</p> : <p className="local-help">New VDA5050 orders are blocked for this robot. Telemetry, bridge health, and local manual control remain available.</p>}
       {error && <div className="local-feedback error" role="alert">{error}</div>}
       {notice && <div className="local-feedback ok" role="status">{notice}</div>}
       {testResult && <div className={`local-feedback ${testResult.startsWith("CONNECTED") ? "ok" : "error"}`} role="status">{testResult}</div>}

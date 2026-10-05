@@ -13,7 +13,6 @@ export function OverviewPage() {
   const twin = useStore((s) => s.twin);
   const paused = useStore((s) => s.paused);
   const setModal = useStore((s) => s.setModal);
-  const authUser = useStore((s) => s.authUser);
   const source = useStore((s) => s.source);
   const connectedRobotIds = useStore((s) => s.connectedRobotIds);
   const lastTelemetryAt = useStore((s) => s.lastTelemetryAt);
@@ -78,7 +77,7 @@ export function OverviewPage() {
       <nav className="overview-nav">
 
       </nav>
-      <div className="overview-sim"><button onClick={() => paused ? backendActions.play() : backendActions.pause()}>{paused ? "▶ Play" : "Ⅱ Pause"}</button><span>{authUser?.username ?? "operator"}</span></div>
+      <div className="overview-sim"><button onClick={() => paused ? backendActions.play() : backendActions.pause()}>{paused ? "▶ Play" : "Ⅱ Pause"}</button></div>
     </header>
 
     <main className="overview-main">

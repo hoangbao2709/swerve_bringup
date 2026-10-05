@@ -23,7 +23,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 patch.object(runtime, 'gateway', return_value=gateway):
             await runtime.handle_message(consumer, {'type': 'ROBOT_DETAIL_VIEW',
                 'robot_id': 'R01', 'view': 'LIDAR_3D', 'request_id': 'view-new',
-                '_view_received_ms': 12345.0}, SimpleNamespace(role='admin'))
+                '_view_received_ms': 12345.0})
         gateway.send_command.assert_awaited_once_with('R01', 'DETAIL_VIEW', {
             'view': 'LIDAR_3D', 'request_id': 'view-new', 'django_received_ms': 12345.0})
         consumer.send_json.assert_not_awaited()
@@ -253,7 +253,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01', 'request_id': request_id,
                 'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
                 'active_map_id': 'CANONICAL', 'active_map_revision': '21',
-            }, None)
+            })
             await runtime.handle_ros_message({
                 'type': 'PATH_PREVIEW_RESULT', 'robot_id': 'R01', 'request_id': request_id,
                 'status': result_status,
@@ -267,7 +267,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 'type': 'NAV_GOAL', 'robot_id': robot_id, 'x': x, 'y': 3.0, 'yaw': 0.4,
                 'frame_id': 'map', 'preview_request_id': request_id,
                 'active_map_id': map_id, 'active_map_revision': revision,
-            }, None)
+            })
 
         def navigation_calls():
             return [call for call in gateway.send_command.await_args_list
@@ -320,7 +320,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                     'request_id': 'preview-stale-localization',
                     'x': 2.0, 'y': 3.0, 'yaw': 0.4, 'frame_id': 'map',
                     'active_map_id': 'CANONICAL', 'active_map_revision': '21',
-                }, None)
+                })
                 self.assertEqual(capture.send_json.await_args.args[0]['type'], 'PATH_PREVIEW_RESULT')
                 self.assertEqual(capture.send_json.await_args.args[0]['status'], 'INVALID')
                 self.assertIn('fresh TF pose', capture.send_json.await_args.args[0]['reason'])
@@ -352,14 +352,14 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 await runtime.handle_message(capture, {
                     'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 2.0, 'y': 3.0, 'yaw': 0.4,
                     'frame_id': 'map', 'active_map_id': 'CANONICAL', 'active_map_revision': '21',
-                }, None)
+                })
                 self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_REQUIRED')
                 self.assertEqual(navigation_calls(), [])
 
                 await request_preview('preview-approved')
                 await runtime.handle_message(capture, {
                     'type': 'PATH_PREVIEW_INVALIDATE', 'robot_id': 'R01',
-                }, None)
+                })
                 self.assertNotIn(('R01', 'preview-approved'), runtime.path_preview_results)
                 self.assertNotIn(('R01', 'preview-approved'), runtime.approved_path_previews)
                 capture.send_json.reset_mock()
@@ -423,7 +423,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 patch.object(runtime, 'path_preview_invalidations', {}):
             wrong_map = request_preview('local-wrong-map', 'saved-R01-1', 'artifact-1')
             wrong_map['map_id'] = 'CANONICAL'
-            await runtime.handle_message(capture, wrong_map, None)
+            await runtime.handle_message(capture, wrong_map)
             self.assertEqual(capture.send_json.await_args.args[0]['status'], 'INVALID')
             self.assertIn('PATH_PREVIEW_MAP_MISMATCH', capture.send_json.await_args.args[0]['reason'])
             self.assertFalse(any(call.args[1] == 'PATH_PREVIEW' for call in gateway.send_command.await_args_list))
@@ -431,13 +431,13 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             capture.send_json.reset_mock()
             wrong_revision = request_preview('local-wrong-revision', 'saved-R01-1', 'artifact-1')
             wrong_revision['map_revision'] = 'artifact-other'
-            await runtime.handle_message(capture, wrong_revision, None)
+            await runtime.handle_message(capture, wrong_revision)
             self.assertEqual(capture.send_json.await_args.args[0]['status'], 'INVALID')
             self.assertIn('PATH_PREVIEW_MAP_MISMATCH', capture.send_json.await_args.args[0]['reason'])
             self.assertFalse(any(call.args[1] == 'PATH_PREVIEW' for call in gateway.send_command.await_args_list))
 
             capture.send_json.reset_mock()
-            await runtime.handle_message(capture, request_preview('local-old', 'saved-R01-1', 'artifact-1'), None)
+            await runtime.handle_message(capture, request_preview('local-old', 'saved-R01-1', 'artifact-1'))
             self.assertEqual(gateway.send_command.await_args.args, ('R01', 'PATH_PREVIEW', {
                 'request_id': 'local-old', 'x': 1.25, 'y': -0.5, 'yaw': 0.3,
                 'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
@@ -450,14 +450,14 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
 
             active['value'] = {**active['value'], 'active_map_id': 'saved-R01-2',
                 'active_map_revision': 'artifact-2'}
-            await runtime.handle_message(capture, send_goal('local-old', 'saved-R01-1', 'artifact-1'), None)
+            await runtime.handle_message(capture, send_goal('local-old', 'saved-R01-1', 'artifact-1'))
             self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_MAP_MISMATCH')
             self.assertFalse(any(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list))
 
             capture.send_json.reset_mock()
-            await runtime.handle_message(capture, request_preview('local-current', 'saved-R01-2', 'artifact-2'), None)
+            await runtime.handle_message(capture, request_preview('local-current', 'saved-R01-2', 'artifact-2'))
             await runtime.handle_ros_message(planner_result('local-current', 'saved-R01-2', 'artifact-2'))
-            await runtime.handle_message(capture, send_goal('local-current', 'saved-R01-2', 'artifact-2'), None)
+            await runtime.handle_message(capture, send_goal('local-current', 'saved-R01-2', 'artifact-2'))
             self.assertEqual(gateway.send_command.await_args.args, ('R01', 'NAVIGATE', {
                 'x': 1.25, 'y': -0.5, 'yaw': 0.3, 'frame_id': 'map',
                 'source_type': 'MAP_POINT', 'source_id': None, 'tag_id': None,
@@ -488,20 +488,20 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                     patch.object(runtime, 'gateway', return_value=gateway):
                 await runtime.handle_message(capture, {
                     'type': 'ROBOT_MODE', 'robot_id': 'R01', 'mode': 'AUTONOMOUS',
-                }, None)
+                })
                 self.assertEqual(capture.send_json.await_args.args[0]['code'], 'LOCAL_MAP_TRANSITION')
                 capture.send_json.reset_mock()
 
                 await runtime.handle_message(capture, {
                     'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'FORWARD',
-                }, None)
+                })
                 self.assertEqual(capture.send_json.await_args.args[0]['code'], 'LOCAL_MAP_TRANSITION')
                 gateway.send_command.assert_not_awaited()
 
                 capture.send_json.reset_mock()
                 await runtime.handle_message(capture, {
                     'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'STOP',
-                }, None)
+                })
                 gateway.send_command.assert_awaited_once_with('R01', 'MANUAL_CMD', {'action': 'STOP'})
         finally:
             runtime.local_map_transitions.clear()

@@ -179,22 +179,13 @@ set_env_default() {
   printf '%s=%s\n' "$key" "$value" >> .env
 }
 
-set_env_default BACKEND_HOST 0.0.0.0
+set_env_default BACKEND_HOST 127.0.0.1
 set_env_default BACKEND_PORT 8000
-set_env_default FRONTEND_HOST 0.0.0.0
+set_env_default FRONTEND_HOST 127.0.0.1
 set_env_default FRONTEND_PORT 5173
 set_env_default ROS_DOMAIN_ID 0
 set_env_default ROS_WS_URL ws://127.0.0.1:8000/ws/ros
 set_env_default WARETWIN_ARTIFACT_ROOT "$ROOT_DIR/generated/maps"
-set_env_default TWIN_ADMIN_PASSWORD ""
-if grep -qE '^TWIN_ADMIN_PASSWORD=(|change-me-before-first-run)$' .env; then
-  # Store a one-time local bootstrap credential in the ignored .env file. It is
-  # deliberately not printed to setup.log; operators can rotate it afterwards.
-  _admin_password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-  sed -i "s|^TWIN_ADMIN_PASSWORD=.*|TWIN_ADMIN_PASSWORD=$_admin_password|" .env
-  unset _admin_password
-  echo 'Generated a local TWIN_ADMIN_PASSWORD in waretwin/backend/.env (not printed).'
-fi
 if grep -qE '^WARETWIN_ROS_BRIDGE_TOKEN=(change-me|)$' .env; then
   TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
   sed -i "s|^WARETWIN_ROS_BRIDGE_TOKEN=.*|WARETWIN_ROS_BRIDGE_TOKEN=$TOKEN|" .env
@@ -210,7 +201,6 @@ source .env
 set +a
 
 backend_python manage.py migrate --noinput
-backend_python manage.py seed_demo
 backend_python manage.py sync_master_data
 backend_python manage.py check
 backend_python manage.py makemigrations --check --dry-run
@@ -243,6 +233,6 @@ Logs:     $LOG_FILE
 
 Start manually:
   cd $ROOT_DIR/waretwin/backend && ./run.sh
-  cd $ROOT_DIR/waretwin/frontend && npm run dev -- --host "${FRONTEND_HOST:-0.0.0.0}"
+  cd $ROOT_DIR/waretwin/frontend && npm run dev -- --host "${FRONTEND_HOST:-127.0.0.1}"
   cd $ROOT_DIR && source scripts/ros_env.sh && ros2 launch swerve_bringup system.launch.py
 EOF

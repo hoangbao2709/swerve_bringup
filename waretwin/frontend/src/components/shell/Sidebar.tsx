@@ -23,7 +23,6 @@ function isActive(item: MenuItem, pathname: string) {
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const source = useStore((s) => s.source);
-  const authUser = useStore((s) => s.authUser);
   const pathname = window.location.pathname;
 
   const workspace: MenuItem[] = [
@@ -67,10 +66,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </nav>
 
       <div className="wt-sidebar-footer">
-        <div className="wt-sidebar-user">
-          <span className="wt-sidebar-avatar">{(authUser?.username ?? "OP").slice(0, 2).toUpperCase()}</span>
-          <span className="wt-sidebar-item-copy"><b>{authUser?.username ?? "operator"}</b><small>{authUser?.role ?? "operator"}</small></span>
-        </div>
         {!collapsed && <div className="wt-sidebar-hint">Use the taskbar to open and focus windows.</div>}
       </div>
     </aside>

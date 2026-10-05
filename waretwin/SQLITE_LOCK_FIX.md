@@ -12,17 +12,16 @@ Changes:
 2. Master data is synchronized only by `sync_master_data`, warehouse/layout publish hooks, or `POST /api/scheduler/sync`.
 3. Explicit sync skips unchanged WorkPoint/RobotProfile rows.
 4. SQLite uses a 30s busy timeout and `sync_master_data` enables WAL mode.
-5. Frontend does not open `/ws` without an auth token.
-6. Admin no longer creates a second competing WebSocket; App owns one global connection.
+5. The local frontend opens `/ws` directly without a browser identity or token.
+6. App owns one global WebSocket connection.
 
 After replacing the project run:
 
 ```powershell
 cd backend
 python manage.py migrate
-python manage.py seed_demo
 python manage.py sync_master_data
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 127.0.0.1:8000
 ```
 
 Expected sync output includes:
@@ -31,4 +30,6 @@ Expected sync output includes:
 SQLite configured: WAL + busy_timeout=30000ms
 ```
 
-Then start frontend normally. A pre-login `/api/auth/me 401` is expected when there is no stored session. After login there should be a single authenticated `WebSocket CONNECT /ws` and scheduler GET endpoints should return 200 without writing master data.
+Then start the frontend normally. The local frontend opens `/` directly and uses
+one unauthenticated browser WebSocket at `/ws`; scheduler GET endpoints should
+return 200 without writing master data.

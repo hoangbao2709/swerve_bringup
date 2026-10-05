@@ -39,7 +39,7 @@ fi
 # Load local dotenv values while preserving variables explicitly supplied by a
 # service manager/start_stack.sh (notably the selected fallback port).
 declare -A _explicit_env=()
-for _key in DJANGO_DEBUG DJANGO_ALLOWED_HOSTS CORS_ALLOWED_ORIGINS BACKEND_HOST BACKEND_PORT FRONTEND_HOST FRONTEND_PORT ROS_DOMAIN_ID ROS_WS_URL WARETWIN_RUNTIME_MODE WARETWIN_ROS_BRIDGE_TOKEN WARETWIN_ARTIFACT_ROOT WARETWIN_DEV_AUTO_INSTALL TWIN_ADMIN_USERNAME TWIN_ADMIN_EMAIL TWIN_ADMIN_PASSWORD; do
+for _key in DJANGO_DEBUG DJANGO_ALLOWED_HOSTS CORS_ALLOWED_ORIGINS BACKEND_HOST BACKEND_PORT FRONTEND_HOST FRONTEND_PORT ROS_DOMAIN_ID ROS_WS_URL WARETWIN_RUNTIME_MODE WARETWIN_ROS_BRIDGE_TOKEN WARETWIN_ARTIFACT_ROOT WARETWIN_DEV_AUTO_INSTALL; do
   if [[ ${!_key+x} ]]; then _explicit_env["$_key"]="${!_key}"; fi
 done
 set -a
@@ -49,7 +49,5 @@ set +a
 for _key in "${!_explicit_env[@]}"; do export "$_key=${_explicit_env[$_key]}"; done
 unset _key _explicit_env
 clean_python manage.py migrate
-clean_python manage.py seed_demo
-unset TWIN_ADMIN_PASSWORD
 clean_python manage.py sync_master_data
-exec env -u PYTHONPATH -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH "$BACKEND_PYTHON_PATH" manage.py runserver "${BACKEND_HOST:-0.0.0.0}:${BACKEND_PORT:-8000}"
+exec env -u PYTHONPATH -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH "$BACKEND_PYTHON_PATH" manage.py runserver "${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8000}"

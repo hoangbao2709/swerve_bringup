@@ -21,7 +21,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       // Allow other machines on the LAN to open the dev UI.
-      host: process.env.FRONTEND_HOST || env.FRONTEND_HOST || "0.0.0.0",
+      host: process.env.FRONTEND_HOST || env.FRONTEND_HOST || "127.0.0.1",
       port,
     },
   };

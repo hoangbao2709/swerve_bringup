@@ -212,26 +212,4 @@ describe("latched manual control on the legacy control route", () => {
     expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
   });
 
-  it("stops the legacy route latch when the authenticated session token changes", () => {
-    const robot = { ...r01(), control_mode: "MANUAL" as const };
-    renderControl({
-      twin: { ...initialState.twin, robots: { R01: robot } },
-      selectedRobot: "R01",
-      runtimeMode: "GAZEBO_ROS",
-      runtimeState: "MAPPING",
-      rosConnected: true,
-      connectedRobotIds: ["R01"],
-      websocketState: "CONNECTED",
-      authToken: "old-access-token",
-    });
-    const forward = container.querySelector<HTMLButtonElement>(".manual-forward")!;
-    act(() => forward.click());
-    expect(forward.getAttribute("aria-pressed")).toBe("true");
-
-    act(() => useStore.setState({ authToken: "refreshed-access-token" }));
-
-    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
-    expect(container.querySelector<HTMLButtonElement>(".manual-forward")?.getAttribute("aria-pressed")).toBe("false");
-    expect(container.querySelector(".manual-active-command")?.textContent).toBe("STOPPED");
-  });
 });

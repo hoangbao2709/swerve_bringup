@@ -3,7 +3,6 @@ import json
 import tempfile
 from pathlib import Path
 
-from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 
 from twin.models import Warehouse, Zone, Shelf, WarehouseMap
@@ -15,7 +14,7 @@ from twin.warehouse_services import (
 
 class WarehouseMapSyncTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="admin2", password="test-password-123")
+        self.user = None
         layout_path = Path(__file__).resolve().parents[1] / "warehouse_layout.json"
         self.layout = json.loads(layout_path.read_text(encoding="utf-8"))
         result = sync_from_layout(self.layout)

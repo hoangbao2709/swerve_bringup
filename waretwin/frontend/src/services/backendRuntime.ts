@@ -1,4 +1,4 @@
-/** Authenticated backend WebSocket connection and existing panel actions.
+/** Backend WebSocket connection and existing panel actions.
  * This module has no simulator, local motion loop, or fake-data fallback. */
 import { useEffect } from "react";
 import { useStore } from "../state/store";
@@ -44,27 +44,19 @@ export const backendActions = {
 };
 
 export function useBackendRealtime() {
-  const authStatus = useStore((state) => state.authStatus);
   useEffect(() => {
     const state = useStore.getState();
-    if (authStatus !== "authenticated") {
-      wsDisconnect();
-      return;
-    }
     state.setSource("connecting");
     wsConnect((connection) => {
       const current = useStore.getState();
       const states = {
         connecting: "CONNECTING", online: "CONNECTED", reconnecting: "RECONNECTING",
-        offline: "DISCONNECTED", error: "ERROR", unauthorized: "DISCONNECTED",
+        offline: "DISCONNECTED", error: "ERROR",
       } as const;
       current.setWebsocketState(states[connection]);
       if (connection === "online") {
         current.setSource("online");
         current.setHeat(null);
-      } else if (connection === "unauthorized") {
-        current.setSource("unauthorized");
-        current.clearAuth();
       } else if (connection === "offline" || connection === "error") {
         current.setSource("offline");
         current.setHeat(null);
@@ -73,5 +65,5 @@ export function useBackendRealtime() {
       }
     });
     return () => wsDisconnect();
-  }, [authStatus]);
+  }, []);
 }

@@ -1,4 +1,4 @@
-"""Bounded latest-only visualization lane per authenticated Web consumer."""
+"""Bounded latest-only visualization lane per connected Web consumer."""
 import asyncio
 import json
 import time

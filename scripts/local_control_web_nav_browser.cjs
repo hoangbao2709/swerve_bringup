@@ -5,7 +5,6 @@ const { chromium } = require('../waretwin/frontend/node_modules/playwright');
 const dir = process.env.NAV_ACCEPTANCE_DIR;
 const backend = process.env.BACKEND_URL;
 const frontend = process.env.FRONTEND_URL;
-const authStorageKey = 'waretwin.auth';
 const readJson = name => {
   try { return JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')); }
   catch { return null; }
@@ -14,21 +13,9 @@ const writeJson = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.s
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 (async () => {
-  const login = await fetch(`${backend}/api/auth/login`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: process.env.TWIN_ADMIN_USERNAME,
-      password: process.env.TWIN_ADMIN_PASSWORD }),
-  });
-  if (!login.ok) throw Error(`Django login failed with HTTP ${login.status}`);
-  const auth = await login.json();
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   try {
     const context = await browser.newContext({ viewport: { width: 1500, height: 1000 } });
-    const origin = new URL(frontend).origin;
-    await context.addInitScript(({ key, session, expectedOrigin }) => {
-      if (location.origin === expectedOrigin) localStorage.setItem(key, JSON.stringify(session));
-    }, { key: authStorageKey, expectedOrigin: origin,
-      session: { token: auth.access_token, user: auth.user } });
     const page = await context.newPage();
     const browserErrors = [];
     const sent = [];

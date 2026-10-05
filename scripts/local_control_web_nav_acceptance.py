@@ -129,8 +129,7 @@ def main():
     evidence = Path(tempfile.mkdtemp(prefix='web-nav-resume-', dir='.runtime'))
     result = {'passed': False, 'source': 'Control Detail UI -> Django -> R01 -> Nav2 -> Gazebo'}
     result['map_world_alignment'] = alignment
-    token = acceptance.authenticate(backend)
-    url = backend.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws?token=' + token
+    url = backend.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws'
     rclpy.init()
     probe = acceptance.MotionProbe()
     ws = websocket.create_connection(url, timeout=5.0, enable_multithread=True)

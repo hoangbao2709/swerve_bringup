@@ -71,7 +71,6 @@ function RobotControlContent() {
   const runtimeState = useStore((state) => state.runtimeState);
   const diagnostics = useStore((state) => state.rosDiagnostics);
   const websocketState = useStore((state) => state.websocketState);
-  const authToken = useStore((state) => state.authToken);
   const tagGraph = useStore((state) => state.tagGraph);
 
   const robots = twin?.robots && typeof twin.robots === "object" && !Array.isArray(twin.robots) ? twin.robots : EMPTY_ROBOTS;
@@ -132,10 +131,6 @@ function RobotControlContent() {
   }, [robotId, robots, stopManual]);
 
   useEffect(() => () => stopManual(), [stopManual]);
-
-  // A refreshed/cleared credential invalidates the command owner even when
-  // the shared WebSocket has not changed state yet.
-  useEffect(() => () => stopManual(), [authToken, stopManual]);
 
   const previousRuntime = useRef({ runtimeMode, runtimeState });
   useEffect(() => {

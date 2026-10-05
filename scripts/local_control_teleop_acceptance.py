@@ -24,8 +24,8 @@ from rcl_interfaces.srv import GetParameters
 from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy
 assert os.environ.get('ACCEPTANCE_ROS_DOMAIN_ID') is not None, 'managed domain must be supplied'
 assert os.environ.get('ROS_DOMAIN_ID') == os.environ['ACCEPTANCE_ROS_DOMAIN_ID'], 'managed ROS domain mismatch'
-backend=os.environ['BACKEND_URL'];token=a.authenticate(backend)
-ws=websocket.create_connection(backend.replace('http://','ws://')+'/ws?token='+token,timeout=5);ws.settimeout(.1)
+backend=os.environ['BACKEND_URL']
+ws=websocket.create_connection(backend.replace('http://','ws://')+'/ws',timeout=5);ws.settimeout(.1)
 statuses=deque(maxlen=200);closed=False
 def receive():
  while not closed:
@@ -90,7 +90,7 @@ requested_twists={'FORWARD':[linear,0.,0.],'BACKWARD':[-linear,0.,0.],
  'ROTATE_LEFT':[0.,0.,angular],'ROTATE_RIGHT':[0.,0.,-angular]}
 if os.environ.get('ACCEPTANCE_MANUAL_PROCESS') == '1':
  from manual_refresh_process import ProcessManualRefreshWorker
- sender=ProcessManualRefreshWorker(backend.replace('http://','ws://')+'/ws?token='+token,
+ sender=ProcessManualRefreshWorker(backend.replace('http://','ws://')+'/ws',
   'R01', on_message=lambda message:record('client',message)).start()
 else:
  sender=ManualRefreshWorker(lambda message:(record('client',message),ws.send(json.dumps(message))), 'R01').start()
@@ -122,7 +122,7 @@ def settle(timeout=45):
   result=monitor.update(sim[0],time.monotonic(),sample)
   if result is not None:return result
   time.sleep(.02)
-results={'directions':{}, 'source':'authenticated Django /ws -> R01 -> real ROS/Gazebo',
+results={'directions':{}, 'source':'local Django /ws -> R01 -> real ROS/Gazebo',
  'wheel_position_rate_limit':.005}
 def gap(rows):
  stamps=sorted(set(rows))

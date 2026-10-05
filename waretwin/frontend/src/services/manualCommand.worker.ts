@@ -5,7 +5,7 @@ import type { ManualWorkerSocket } from "./manualCommandWorkerSession";
 
 type MotionAction = "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT";
 type WorkerRequest =
-  | { type: "CONNECT"; url: string; token: string }
+  | { type: "CONNECT"; url: string }
   | { type: "HOLD"; robot_id: string; action: MotionAction }
   | { type: "STOP"; robot_id: string }
   | { type: "DISCONNECT"; robot_id: string };
@@ -13,7 +13,6 @@ type WorkerRequest =
 const scope = self as DedicatedWorkerGlobalScope;
 let socket: WebSocket | null = null;
 let socketUrl = "";
-let token = "";
 let robotId = "";
 let reconnectTimer: number | null = null;
 let reconnectDelayMs = 250;
@@ -35,7 +34,7 @@ function clearReconnectTimer() {
 }
 
 function scheduleReconnect() {
-  if (disconnecting || !socketUrl || !token || reconnectTimer !== null) return;
+  if (disconnecting || !socketUrl || reconnectTimer !== null) return;
   const delay = reconnectDelayMs;
   reconnectDelayMs = Math.min(5000, reconnectDelayMs * 2);
   reconnectTimer = self.setTimeout(() => {
@@ -45,9 +44,9 @@ function scheduleReconnect() {
 }
 
 function openSocket() {
-  if (disconnecting || !socketUrl || !token) return;
+  if (disconnecting || !socketUrl) return;
   const separator = socketUrl.includes("?") ? "&" : "?";
-  const url = `${socketUrl}${separator}token=${encodeURIComponent(token)}&control_only=1`;
+  const url = `${socketUrl}${separator}control_only=1`;
   const connection = new WebSocket(url);
   socket = connection;
   connection.onopen = () => {
@@ -81,14 +80,12 @@ function openSocket() {
 scope.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
   if (request.type === "CONNECT") {
-    const credentialsChanged = Boolean(token && (token !== request.token || socketUrl !== request.url));
-    if (credentialsChanged) {
+    if (socketUrl && socketUrl !== request.url) {
       disconnecting = true;
       clearReconnectTimer();
       session.disconnect(robotId);
     }
     socketUrl = request.url;
-    token = request.token;
     disconnecting = false;
     clearReconnectTimer();
     if (!socket || socket.readyState === WebSocket.CLOSED) openSocket();

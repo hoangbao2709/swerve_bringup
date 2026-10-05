@@ -9,30 +9,18 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .auth import user_from_request
 from .models import EventLog, RobotMapRegistration, RobotNavigationMission, WarehouseMap
 from .navigation_targets import navigation_tag_registry
 from .runtime import runtime
 from .tag_navigation import active_warehouse, create_mission, current_mission, get_tag_graph, mission_snapshot, shortest_tag_route, validate_target_tag
-from .views import _body, _error, api_admin_required
+from .views import _body, _error
 
 
-def _auth(view):
-    def wrapped(request, *args, **kwargs):
-        user = user_from_request(request)
-        if user is None: return _error('authentication required', 401)
-        request.api_user = user
-        return view(request, *args, **kwargs)
-    return wrapped
-
-
-@_auth
 @require_http_methods(['GET'])
 def tags(request):
     return JsonResponse(get_tag_graph(request.GET.get('warehouse_id')).get('tags', []), safe=False)
 
 
-@_auth
 @require_http_methods(['GET'])
 def robot_tags(request, robot_id: str):
     active_map = runtime.active_map_state(robot_id)
@@ -41,7 +29,6 @@ def robot_tags(request, robot_id: str):
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def register_robot_map(request, robot_id: str):
     """Persist an audited canonical->active-map SE(2) registration.
@@ -106,7 +93,7 @@ def register_robot_map(request, robot_id: str):
             active_map_id=active_map_id, active_map_revision=active_map_revision,
             tx=transform['tx'], ty=transform['ty'], yaw=transform['yaw'],
             registration_revision=registration_revision, source=source,
-            created_by=request.api_user,
+            created_by=None,
         )
     runtime.invalidate_path_previews(robot_id, 'map registration updated')
     return JsonResponse({
@@ -122,14 +109,12 @@ def register_robot_map(request, robot_id: str):
     }, status=201)
 
 
-@_auth
 @require_http_methods(['GET'])
 def tag_graph(request):
     try: return JsonResponse(get_tag_graph(request.GET.get('warehouse_id')))
     except Exception as exc: return _error(str(exc), 404)
 
 
-@_auth
 @require_http_methods(['GET'])
 def missions(request):
     qs = RobotNavigationMission.objects.select_related('target_tag').all()
@@ -138,7 +123,6 @@ def missions(request):
     return JsonResponse([mission_snapshot(m) for m in qs[:100]], safe=False)
 
 
-@_auth
 @require_http_methods(['GET'])
 def current(request):
     m = current_mission(request.GET.get('robot_id', '')) if request.GET.get('robot_id') else None
@@ -165,7 +149,6 @@ def _map_sync_error(robot_id: str | None = None) -> str | None:
 
 
 @csrf_exempt
-@_auth
 @require_http_methods(['POST'])
 def start(request):
     body = _body(request)
@@ -183,7 +166,7 @@ def start(request):
         wh_id = int(body['warehouse_id']) if body.get('warehouse_id') else None
         current_tag = body.get('current_tag_id') or _nearest_tag(robot_id, wh_id)
         mission = create_mission(robot_id, int(body['target_tag_id']), wh_id, int(current_tag) if current_tag is not None else None)
-        result = async_to_sync(runtime.tag_command)('GO_TO_TAG', mission, request.api_user)
+        result = async_to_sync(runtime.tag_command)('GO_TO_TAG', mission, None)
         if not result.get('ok') and runtime.is_external: return _error('ROS bridge is offline', 503)
         return JsonResponse(mission_snapshot(mission), status=201)
     except (ValueError, TypeError) as exc: return _error(str(exc))
@@ -212,7 +195,7 @@ def _action(request, mission_id: int, action: str, status: str):
         'next_tag_id': mission.next_tag_id,
     }
     mission.status = status; mission.save(update_fields=['status', 'route', 'route_index', 'next_tag_id', 'updated_at'])
-    result = async_to_sync(runtime.tag_command)(action, mission, request.api_user)
+    result = async_to_sync(runtime.tag_command)(action, mission, None)
     if runtime.is_external and not result.get('ok'):
         # Do not leave a persisted mission in PAUSED/CANCELLED/REPLAN state
         # when ROS never accepted the command. Restore the exact DB state and
@@ -229,7 +212,6 @@ def _action(request, mission_id: int, action: str, status: str):
 
 
 @csrf_exempt
-@_auth
 @require_http_methods(['POST'])
 def mission_action(request, mission_id: int, action: str):
     mapping = {'pause': ('PAUSE_TAG_NAVIGATION', 'PAUSED'), 'resume': ('RESUME_TAG_NAVIGATION', 'NAVIGATING'),
@@ -239,21 +221,19 @@ def mission_action(request, mission_id: int, action: str):
 
 
 @csrf_exempt
-@_auth
 @require_http_methods(['POST'])
 def emergency_stop(request, robot_id: str):
     mission = current_mission(robot_id)
     result = async_to_sync(runtime.gateway().send_command)(robot_id, 'EMERGENCY_STOP', {'mission_id': mission.id if mission else None})
     if not result.get('ok'):
-        runtime.engine.emit('EMERGENCY_STOP_FAILED', 'USER', 'CRITICAL', f'Emergency stop failed: ROS bridge offline for {robot_id}', robot_id=robot_id)
+        runtime.engine.emit('EMERGENCY_STOP_FAILED', 'LOCAL', 'CRITICAL', f'Emergency stop failed: ROS bridge offline for {robot_id}', robot_id=robot_id)
         return _error('ROS bridge is offline; emergency stop was not acknowledged', 503)
     if mission: mission.status = 'EMERGENCY_STOPPED'; mission.save(update_fields=['status', 'updated_at'])
-    runtime.engine.emit('EMERGENCY_STOP', 'USER', 'CRITICAL', f'Emergency stop {robot_id}', robot_id=robot_id)
+    runtime.engine.emit('EMERGENCY_STOP', 'LOCAL', 'CRITICAL', f'Emergency stop {robot_id}', robot_id=robot_id)
     return JsonResponse({'ok': result.get('ok', False), 'mission': mission_snapshot(mission) if mission else None})
 
 
 @csrf_exempt
-@_auth
 @require_http_methods(['POST'])
 def clear_emergency_stop(request, robot_id: str):
     """Clear the ROS stop latch without resuming a mission automatically."""
@@ -281,14 +261,13 @@ def clear_emergency_stop(request, robot_id: str):
         return JsonResponse({'ok': False, 'code': 'CLEAR_ESTOP_UNCONFIRMED',
             'error': 'bridge response did not confirm an applied clear and terminal pre-stop navigation',
             'emergency_stop_active': applied.get('emergency_stop_active', True)}, status=502)
-    runtime.engine.emit('EMERGENCY_STOP_CLEARED', 'USER', 'HIGH', f'Emergency stop cleared for {robot_id}', robot_id=robot_id)
+    runtime.engine.emit('EMERGENCY_STOP_CLEARED', 'LOCAL', 'HIGH', f'Emergency stop cleared for {robot_id}', robot_id=robot_id)
     return JsonResponse({'ok': True, 'code': code, 'robot_id': robot_id,
         'emergency_stop_active': False, 'pre_stop_navigation_terminal': True,
         'message': applied.get('message'),
         'mission': mission_snapshot(current_mission(robot_id)) if current_mission(robot_id) else None})
 
 
-@_auth
 @require_http_methods(['GET'])
 def mission_events(request, mission_id: int):
     rows = EventLog.objects.filter(run_id=f'tag-{mission_id}')[:100]

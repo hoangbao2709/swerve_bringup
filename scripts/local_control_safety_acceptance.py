@@ -54,10 +54,10 @@ try:
  begin();start=time.monotonic();command('STOP');finish('WEB_MANUAL_STOP',start)
  begin();sender.hold(None);last=next(row['send_completed'] for row in reversed(sender.events) if row['action']=='FORWARD');finish('WEB_MANUAL_TIMEOUT_STOP',last)
  begin();sender.hold(None);start=time.monotonic();closed=True;ws.close();finish('WEB_DISCONNECT_STOP',start)
- ws=websocket.create_connection(backend.replace('http://','ws://')+'/ws?token='+token,timeout=5);ws.settimeout(.1)
+ ws=websocket.create_connection(backend.replace('http://','ws://')+'/ws',timeout=5);ws.settimeout(.1)
  closed=False;reader=threading.Thread(target=receive,daemon=True);reader.start()
  begin();sender.hold(None);start=mode('AUTONOMOUS');finish('MODE_CHANGE_STOP',start,applied_mode=data['arbiter'][-1][1]['active_control_mode'])
- begin();sender.hold(None);start=time.monotonic();response=a.http_json(backend+'/api/robots/R01/emergency-stop',{},token=token)
+ begin();sender.hold(None);start=time.monotonic();response=a.http_json(backend+'/api/robots/R01/emergency-stop',{})
  assert response['ok']
  assert wait(lambda:any(row[0]>=start and row[1] for row in list(data['estop'])) and data['arbiter'][-1][1]['estop_active'])
  receipt=next(row[0] for row in list(data['estop']) if row[0]>=start and row[1])
@@ -65,7 +65,7 @@ try:
  ros_zero=next(row[0] for row in list(data['/cmd_vel_selected']) if row[0]>=receipt and max(map(abs,row[1]))<=1e-6)
  estop['ros_receipt_zero_latency_ms']=1000*(ros_zero-receipt)
  assert estop['ros_receipt_zero_latency_ms']<=100
- start=time.monotonic();response=a.http_json(backend+'/api/robots/R01/clear-emergency-stop',{},token=token);assert response['ok']
+ start=time.monotonic();response=a.http_json(backend+'/api/robots/R01/clear-emergency-stop',{});assert response['ok']
  result=zero(start,window=2)
  result['passed']=bool(result['passed'] and not any(max(map(abs,row[1]))>1e-6 for row in list(data['/cmd_vel_selected']) if row[0]>=start) and not data['arbiter'][-1][1]['estop_active'])
  results['ESTOP_CLEAR_NO_RESUME']=result;save();print('ESTOP_CLEAR_NO_RESUME='+json.dumps(result),flush=True);assert result['passed']

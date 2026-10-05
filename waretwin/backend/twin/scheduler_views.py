@@ -37,7 +37,7 @@ from .schedule_services import (
     workpoint_to_dict,
 )
 from .order_import_services import auto_schedule_order, import_and_auto_schedule
-from .views import _audit, _body, _error, api_admin_required, api_user_required
+from .views import _audit, _body, _error
 
 
 def _notify(source: str = 'scheduler') -> None:
@@ -51,14 +51,12 @@ def _notify(source: str = 'scheduler') -> None:
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET'])
 def scheduler_overview(request):
     return JsonResponse(overview(runtime))
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def scheduler_sync(request):
     try:
@@ -67,13 +65,12 @@ def scheduler_sync(request):
         rp = sync_robot_profiles(wh, runtime.engine.state.get('robots') or {})
     except ValueError as exc:
         return _error(str(exc), 409)
-    _audit(request.api_user, 'SCHEDULER_SYNC', f'warehouse={wh.id}')
+    _audit(None, 'SCHEDULER_SYNC', f'warehouse={wh.id}')
     _notify('scheduler-sync')
     return JsonResponse({'warehouse_id': wh.id, 'workpoints': wp, 'robots': rp})
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET'])
 def workpoints(request):
     try:
@@ -90,7 +87,6 @@ def workpoints(request):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET'])
 def scheduler_robots(request):
     try:
@@ -155,7 +151,6 @@ def _nearest_outbound_point(warehouse, source: WorkPoint, requested: str = '') -
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET'])
 def shelf_inventory(request, rack_id: str):
     try:
@@ -188,7 +183,6 @@ def shelf_inventory(request, rack_id: str):
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def inventory_item_dispatch(request, item_id: int):
     data = _body(request)
@@ -268,16 +262,16 @@ def inventory_item_dispatch(request, item_id: int):
                     'source_shelf_code': item.shelf.layout_rack_id or item.shelf.code,
                     'prefer_unloaded_robot': prefer_unloaded,
                 },
-            }, request.api_user)
+            }, None)
             reserve_inventory_for_order(order, item_id=item.id)
             schedule = auto_schedule_order(
-                order, runtime, request.api_user, earliest_start=timezone.now(),
+                order, runtime, None, earliest_start=timezone.now(),
                 prefer_unloaded_robot=prefer_unloaded,
             )
             order.refresh_from_db()
             item.refresh_from_db()
 
-        _audit(request.api_user, 'DISPATCH_SHELF_ITEM', f'item={item.item_uid} action={action} robot={schedule.robot.robot_id}')
+        _audit(None, 'DISPATCH_SHELF_ITEM', f'item={item.item_uid} action={action} robot={schedule.robot.robot_id}')
         _notify('shelf-item-dispatch')
         return JsonResponse({
             'ok': True, 'action': action, 'prefer_unloaded_robot': prefer_unloaded,
@@ -293,7 +287,6 @@ def inventory_item_dispatch(request, item_id: int):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET', 'POST'])
 def orders(request):
     if request.method == 'GET':
@@ -306,22 +299,19 @@ def orders(request):
         if priority: q = q.filter(priority=priority.upper())
         limit = min(500, max(1, int(request.GET.get('limit') or 200)))
         return JsonResponse([order_to_dict(x) for x in q[:limit]], safe=False)
-    if getattr(request.api_user, 'waretwin_role', None) != 'admin':
-        return _error('admin privileges required', 403)
     try:
         ensure_scheduler_master_data(runtime)
-        obj = create_order(_body(request), request.api_user)
+        obj = create_order(_body(request), None)
     except (ValueError, KeyError, WorkPoint.DoesNotExist) as exc:
         return _error(str(exc), 400)
     except IntegrityError:
         return _error('order_no already exists', 409)
-    _audit(request.api_user, 'CREATE_ORDER', obj.order_no)
+    _audit(None, 'CREATE_ORDER', obj.order_no)
     _notify('order-created')
     return JsonResponse(order_to_dict(obj), status=201)
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def order_import(request):
     """Import one INBOUND *or* one OUTBOUND file, then auto-schedule.
@@ -347,18 +337,17 @@ def order_import(request):
         return _error('attach one inbound_file or outbound_file (.xlsx or .json)', 400)
 
     try:
-        result = import_and_auto_schedule(warehouse=wh, runtime=runtime, user=request.api_user, files=files)
+        result = import_and_auto_schedule(warehouse=wh, runtime=runtime, user=None, files=files)
     except ValueError as exc:
         return _error(str(exc), 400)
 
     summary = result.get('summary') or {}
-    _audit(request.api_user, 'IMPORT_AUTO_SCHEDULE_ORDERS', f"batch={result.get('batch_id')} rows={summary.get('rows', 0)} scheduled={summary.get('scheduled', 0)}")
+    _audit(None, 'IMPORT_AUTO_SCHEDULE_ORDERS', f"batch={result.get('batch_id')} rows={summary.get('rows', 0)} scheduled={summary.get('scheduled', 0)}")
     _notify('order-import-auto-schedule')
     return JsonResponse(result, status=201)
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['GET', 'PATCH', 'DELETE'])
 def order_detail(request, order_id: int):
     try:
@@ -375,7 +364,7 @@ def order_detail(request, order_id: int):
         # Deleting an unscheduled OUTBOUND/TRANSFER must not strand the exact
         # shelf item in RESERVED forever.
         release_inventory_reservation(obj)
-        obj.delete(); _audit(request.api_user, 'DELETE_ORDER', target); _notify('order-deleted'); return JsonResponse({'ok': True})
+        obj.delete(); _audit(None, 'DELETE_ORDER', target); _notify('order-deleted'); return JsonResponse({'ok': True})
     d = _body(request)
     if obj.status in ('RUNNING','COMPLETED'):
         return _error('running/completed orders cannot be edited', 409)
@@ -424,12 +413,11 @@ def order_detail(request, order_id: int):
         return _error('unknown or disabled work-point', 400)
     except (ValueError, TypeError) as exc:
         return _error(str(exc), 400)
-    _audit(request.api_user, 'UPDATE_ORDER', obj.order_no); _notify('order-updated')
+    _audit(None, 'UPDATE_ORDER', obj.order_no); _notify('order-updated')
     return JsonResponse(order_to_dict(obj))
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def order_cancel(request, order_id: int):
     try:
@@ -448,13 +436,12 @@ def order_cancel(request, order_id: int):
     if obj.status not in ('COMPLETED','FAILED'):
         obj.status = 'CANCELLED'; obj.save(update_fields=['status','updated_at'])
         release_inventory_reservation(obj)
-    _audit(request.api_user, 'CANCEL_ORDER', obj.order_no)
+    _audit(None, 'CANCEL_ORDER', obj.order_no)
     _notify('order-cancelled')
     return JsonResponse(order_to_dict(obj))
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET'])
 def schedules(request):
     try: wh = ensure_scheduler_master_data(runtime)
@@ -469,7 +456,6 @@ def schedules(request):
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def schedule_preview(request):
     try:
@@ -481,21 +467,19 @@ def schedule_preview(request):
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def schedule_create(request):
     try:
         ensure_scheduler_master_data(runtime)
-        obj = create_schedule(_body(request), runtime, request.api_user)
+        obj = create_schedule(_body(request), runtime, None)
     except (ValueError, KeyError, WarehouseOrder.DoesNotExist, RobotProfile.DoesNotExist) as exc:
         return _error(str(exc), 409)
-    _audit(request.api_user, 'CREATE_SCHEDULE', obj.schedule_id)
+    _audit(None, 'CREATE_SCHEDULE', obj.schedule_id)
     _notify('schedule-created')
     return JsonResponse(schedule_to_dict(obj), status=201)
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET'])
 def schedule_detail(request, schedule_id: int):
     try:
@@ -506,7 +490,6 @@ def schedule_detail(request, schedule_id: int):
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def schedule_cancel(request, schedule_id: int):
     try:
@@ -520,6 +503,6 @@ def schedule_cancel(request, schedule_id: int):
         from asgiref.sync import async_to_sync
         async_to_sync(runtime.gateway().send_command)(obj.robot.robot_id, 'CANCEL_NAVIGATION',
                                                        {'schedule_id': obj.schedule_id, 'stop_id': obj.current_leg})
-    _audit(request.api_user, 'CANCEL_SCHEDULE', obj.schedule_id)
+    _audit(None, 'CANCEL_SCHEDULE', obj.schedule_id)
     _notify('schedule-cancelled')
     return JsonResponse(schedule_to_dict(obj))

@@ -56,6 +56,7 @@ describe("Overview backend runtime data", () => {
     expect(Object.keys(useStore.getState().twin.robots)).toEqual([]);
     expect(container.textContent).toContain("UNKNOWN");
     expect(container.querySelector('[title="UNAVAILABLE"]')).not.toBeNull();
+    expect(container.textContent).not.toMatch(/\b(operator|admin|logout)\b/i);
   });
 
   it("renders the robot identity and fleet status received from backend state", async () => {

@@ -11,7 +11,8 @@ A Shelf stores physical geometry (`position`, `size`, `rotation`, `levels`, capa
 
 ## Frontend
 
-Admin route: `/admin/warehouse`
+The legacy warehouse administration UI is not available in the retained local
+application; active warehouse geometry remains visible on `/`.
 
 Functions:
 
@@ -49,7 +50,8 @@ GET    /api/warehouse-tree
 POST   /api/warehouse-sync/from-layout
 ```
 
-Read operations require an authenticated user. Create/update/delete/sync operations require an admin user.
+The legacy administration APIs are not part of the retained local application
+surface. Browser user accounts and role checks are not used by the runtime.
 
 ## Upgrade / run
 
@@ -59,9 +61,8 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py seed_demo
 python manage.py sync_master_data
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 127.0.0.1:8000
 ```
 
-Then run the frontend and open `/admin/warehouse`.
+Then run the frontend and open `/` to view the active map.

@@ -1,6 +1,5 @@
 from datetime import timedelta
 
-from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 
@@ -19,7 +18,7 @@ class SchedulerTests(TestCase):
         self.old_runtime_mode = runtime.runtime_mode
         runtime.runtime_mode = 'LOCAL_SIM'
         runtime.reset()
-        self.user = User.objects.create_user('admin2', password='password123')
+        self.user = None
         size = runtime.layout.get('size') or {}
         self.wh = Warehouse.objects.create(
             code='WH-SCHED', name='Scheduler Test', status='ACTIVE',

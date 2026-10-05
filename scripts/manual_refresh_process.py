@@ -1,8 +1,8 @@
 """Isolate the existing refresh worker from the diagnostic ROS probe's GIL.
 
-Only acceptance uses this adapter. Commands still use an authenticated Django
-WebSocket. One synchronous IPC command is in flight; there is no command FIFO.
-Secrets travel through stdin, never process arguments or diagnostic output.
+Only acceptance uses this adapter. Commands use the local Django WebSocket
+without a user session. One synchronous IPC command is in flight; there is no
+command FIFO.
 """
 import json
 import subprocess

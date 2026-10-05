@@ -17,7 +17,6 @@ The sandbox cannot install Django/npm dependencies because external package reso
 cd backend
 python manage.py migrate
 python manage.py test twin.tests.test_warehouse_crud
-python manage.py seed_demo
 python manage.py sync_master_data
 
 cd ../frontend

@@ -151,7 +151,7 @@ class UnifiedPreviewTests(IsolatedAsyncioTestCase):
                 'x': 1.5, 'y': 2.5, 'yaw': 0.25, 'frame_id': 'map',
                 'active_map_id': active_map['active_map_id'],
                 'active_map_revision': active_map['active_map_revision'],
-            }, None)
+            })
 
             gateway.send_command.assert_awaited_once()
             self.assertEqual(gateway.send_command.await_args.args[1], 'PATH_PREVIEW')

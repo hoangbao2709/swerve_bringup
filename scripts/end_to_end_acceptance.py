@@ -748,11 +748,9 @@ class MotionProbe(Node):
         }
 
 
-def http_json(url: str, body=None, token=None, timeout=8.0):
+def http_json(url: str, body=None, timeout=8.0):
     data = json.dumps(body).encode('utf-8') if body is not None else None
     headers = {'Content-Type': 'application/json'} if data is not None else {}
-    if token:
-        headers['Authorization'] = f'Bearer {token}'
     request = urllib.request.Request(url, data=data, headers=headers,
                                      method='POST' if data is not None else 'GET')
     try:
@@ -760,19 +758,6 @@ def http_json(url: str, body=None, token=None, timeout=8.0):
             return json.loads(response.read().decode('utf-8'))
     except (OSError, ValueError, urllib.error.URLError) as exc:
         raise RuntimeError(f'{url} failed: {type(exc).__name__}: {exc}') from exc
-
-
-def authenticate(backend_url):
-    username = os.environ.get('TWIN_ADMIN_USERNAME', '').strip()
-    password = os.environ.get('TWIN_ADMIN_PASSWORD', '')
-    if not username or not password:
-        raise RuntimeError('TWIN_ADMIN_USERNAME or TWIN_ADMIN_PASSWORD is missing from backend/.env')
-    response = http_json(backend_url.rstrip('/') + '/api/auth/login',
-                         {'username': username, 'password': password})
-    token = str(response.get('access_token') or '')
-    if not token:
-        raise RuntimeError('Django login returned no access_token')
-    return token
 
 
 def find_goal_status(probe, x, y, robot_id):
@@ -1080,6 +1065,11 @@ def web_navigation(probe, ws, robot_id, timeout):
         ws.send(json.dumps({'type': 'NAV_CANCEL', 'robot_id': robot_id}))
         terminal = {'status': 'TIMEOUT', 'reason': f'no terminal NAV_STATUS within {timeout:.1f}s'}
 
+    # Nav2 can report its terminal result just before wheel/chassis motion has
+    # settled. Also, `goal` is in the active map frame while Gazebo ModelStates
+    # is in the world frame; only compare the target against map -> base TF.
+    settling = probe.wait_mechanical_settling(ws, timeout=20.0, wall_timeout=90.0)
+
     pose1, gazebo1 = probe.map_pose(), probe.gazebo_pose
     commands = probe.nav_cmd_events[command_index:]
     active_commands = [row for row in commands if any(abs(value) > 1e-4 for value in row[1:])]
@@ -1092,9 +1082,9 @@ def web_navigation(probe, ws, robot_id, timeout):
     drive_active = any(any(abs(value) > 1e-4 for value in row[1:]) for row in drives)
     pose_change = dist(pose0, pose1) if pose1 is not None else None
     physical_change = dist(gazebo0, gazebo1) if gazebo1 is not None else None
-    goal_distance = dist(gazebo1, goal) if gazebo1 is not None else None
-    goal_yaw_error = (abs(wrap_angle(gazebo1[2] - goal[2]))
-                      if gazebo1 is not None else None)
+    goal_distance = dist(pose1, goal) if pose1 is not None else None
+    goal_yaw_error = (abs(wrap_angle(pose1[2] - goal[2]))
+                      if pose1 is not None else None)
     status_name = str(terminal.get('status') or 'UNKNOWN').upper()
     accepted = accepted or status_name == 'SUCCEEDED'
     passed = bool(accepted and status_name == 'SUCCEEDED' and active_commands
@@ -1103,6 +1093,7 @@ def web_navigation(probe, ws, robot_id, timeout):
                   and pose_change > TRANSLATION_TOLERANCE_M
                   and physical_change is not None
                   and physical_change > TRANSLATION_TOLERANCE_M
+                  and settling.get('passed') is True
                   and goal_distance is not None
                   and goal_distance <= NAV_GOAL_XY_TOLERANCE_M
                   and goal_yaw_error is not None
@@ -1130,6 +1121,7 @@ def web_navigation(probe, ws, robot_id, timeout):
         'ros_goal': {'x': goal[0], 'y': goal[1], 'yaw': goal[2], 'frame_id': 'map'},
         'goal_reason': terminal.get('reason'), 'p0': pose0, 'p1': pose1,
         'gazebo_p0': gazebo0, 'gazebo_p1': gazebo1,
+        'settling': settling, 'goal_pose_frame': 'map',
         'displacement_m': pose_change, 'gazebo_displacement_m': physical_change,
         'goal_distance_m': goal_distance, 'goal_yaw_error_rad': goal_yaw_error,
         'goal_xy_tolerance_m': NAV_GOAL_XY_TOLERANCE_M,
@@ -1153,12 +1145,9 @@ def main() -> int:
     args = parser.parse_args()
 
     result = {'stages': {}, 'passed': False}
-    token = None
     try:
-        token = authenticate(args.backend_url)
         ws_url = args.backend_url.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws'
-        ws = websocket.create_connection(ws_url + '?token=' + token, timeout=5.0,
-                                         enable_multithread=True)
+        ws = websocket.create_connection(ws_url, timeout=5.0, enable_multithread=True)
         ws.settimeout(0.02)
     except Exception as exc:
         reason = f'{type(exc).__name__}:{exc}'
@@ -1460,11 +1449,6 @@ def main() -> int:
         probe.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-        if token:
-            try:
-                http_json(args.backend_url.rstrip('/') + '/api/auth/logout', {}, token=token)
-            except Exception:
-                pass
         if args.json:
             with open(args.json, 'w', encoding='utf-8') as stream:
                 json.dump(result, stream, indent=2)

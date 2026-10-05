@@ -3,14 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import shutil
 import time
 from datetime import datetime, timezone
-from functools import wraps
 from typing import Any
 
-from django.contrib.auth import authenticate
 from django.conf import settings
 from django.http import HttpRequest, JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -21,9 +18,6 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from pydantic import TypeAdapter, ValidationError
 
-from django.contrib.auth.models import User
-from accounts.models import ApiToken, UserProfile, ensure_profile, public_user, role_of
-from .auth import user_from_request
 from .models import EventLog
 from .warehouse_services import ensure_active_map, sync_from_layout, save_layout_to_map, publish_layout_to_map, master_to_layout
 from .map_sync import published_map_payload, map_sync_status
@@ -57,40 +51,13 @@ def _error(message: str, status: int = 400, details: dict[str, Any] | None = Non
     }, status=status)
 
 
-def _valid_password(password: str) -> str | None:
-    if len(password or '') < 8:
-        return 'password must be at least 8 characters'
-    if not re.search(r'[A-Za-z]', password) or not re.search(r'\d', password):
-        return 'password must contain letters and digits'
-    return None
-
-
-def api_user_required(view):
-    @wraps(view)
-    def wrapped(request, *args, **kwargs):
-        user = user_from_request(request)
-        if user is None:
-            return _error('authentication required', 401)
-        request.api_user = user
-        return view(request, *args, **kwargs)
-    return wrapped
-
-
-def api_admin_required(view):
-    @wraps(view)
-    def wrapped(request, *args, **kwargs):
-        user = user_from_request(request)
-        if user is None:
-            return _error('authentication required', 401)
-        if role_of(user) != 'admin':
-            return _error('admin privileges required', 403)
-        request.api_user = user
-        return view(request, *args, **kwargs)
-    return wrapped
-
-
-def _audit(user: User, action: str, target: str | None = None):
-    runtime.engine.emit('ADMIN_ACTION', 'USER', 'INFO', f"ADMIN_ACTION admin={user.username} action={action}" + (f" target={target}" if target else ''), payload={'action': action, 'admin': user.username, 'target': target, 'result': 'SUCCESS'})
+def _audit(_user, action: str, target: str | None = None):
+    """Record a local operation without attaching an account identity."""
+    runtime.engine.emit(
+        'LOCAL_ACTION', 'LOCAL', 'INFO',
+        f"LOCAL_ACTION action={action}" + (f" target={target}" if target else ''),
+        payload={'action': action, 'actor': 'local', 'target': target, 'result': 'SUCCESS'},
+    )
 
 
 def _broadcast_layout_update(map_obj, source: str) -> None:
@@ -135,7 +102,6 @@ def root(request):
     })
 
 
-@api_user_required
 @require_http_methods(['GET'])
 def conveyors(request):
     """Authoritative PLC-backed conveyor state, including tracked belt items."""
@@ -143,7 +109,6 @@ def conveyors(request):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def conveyor_command(request, conveyor_id: str):
     body = _body(request)
@@ -158,7 +123,6 @@ def conveyor_command(request, conveyor_id: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def conveyor_handshake(request, conveyor_id: str):
     body = _body(request)
@@ -172,150 +136,6 @@ def conveyor_handshake(request, conveyor_id: str):
     except (KeyError, ValueError) as exc:
         return _error(str(exc))
     return JsonResponse(result)
-
-
-@csrf_exempt
-@require_http_methods(['POST'])
-def auth_register(request):
-    d = _body(request)
-    username = str(d.get('username', '')).strip()
-    email = str(d.get('email', '')).strip()
-    password = str(d.get('password', ''))
-    if len(username) < 3:
-        return _error('invalid username')
-    if '@' not in email:
-        return _error('invalid email')
-    err = _valid_password(password)
-    if err:
-        return _error(err)
-    if User.objects.filter(email__iexact=email).exists():
-        return _error('email already exists', 409)
-    try:
-        user = User.objects.create_user(username=username, email=email, password=password)
-    except IntegrityError:
-        return _error('username or email already exists', 409)
-    return JsonResponse(public_user(user), status=201)
-
-
-@csrf_exempt
-@require_http_methods(['POST'])
-def auth_login(request):
-    d = _body(request)
-    user = authenticate(request, username=d.get('username', ''), password=d.get('password', ''))
-    if user is None or not user.is_active:
-        return _error('Invalid username or password', 401)
-    token = ApiToken.issue(user)
-    return JsonResponse({'access_token': token.key, 'token_type': 'bearer', 'user': public_user(user)})
-
-
-@csrf_exempt
-@api_user_required
-@require_http_methods(['POST'])
-def auth_logout(request):
-    token = request.headers.get('Authorization', '').removeprefix('Bearer ').strip()
-    if token:
-        ApiToken.objects.filter(key=token).delete()
-    return JsonResponse({'ok': True})
-
-
-@api_user_required
-@require_http_methods(['GET'])
-def auth_me(request):
-    return JsonResponse(public_user(request.api_user))
-
-
-@csrf_exempt
-@api_admin_required
-@require_http_methods(['GET', 'POST'])
-def admin_users(request):
-    if request.method == 'GET':
-        return JsonResponse([public_user(u) for u in User.objects.order_by('id')], safe=False)
-    d = _body(request)
-    err = _valid_password(str(d.get('password', '')))
-    if err:
-        return _error(err)
-    if User.objects.filter(email__iexact=str(d.get('email', '')).strip()).exists():
-        return _error('email already exists', 409)
-    try:
-        user = User.objects.create_user(
-            username=str(d.get('username', '')).strip(),
-            email=str(d.get('email', '')).strip(),
-            password=str(d.get('password', '')),
-            is_active=bool(d.get('is_active', True)),
-        )
-        ensure_profile(user, d.get('role', 'user') if d.get('role') in ('admin', 'user') else 'user')
-    except IntegrityError:
-        return _error('username or email already exists', 409)
-    _audit(request.api_user, 'CREATE_USER', str(user.id))
-    return JsonResponse(public_user(user), status=201)
-
-
-@csrf_exempt
-@api_admin_required
-@require_http_methods(['GET', 'PATCH', 'DELETE'])
-def admin_user_detail(request, user_id: int):
-    try:
-        user = User.objects.get(id=user_id)
-    except User.DoesNotExist:
-        return _error('user not found', 404)
-    if request.method == 'GET':
-        return JsonResponse(public_user(user))
-    if request.method == 'DELETE':
-        if user.id == request.api_user.id:
-            return _error('cannot delete yourself')
-        if role_of(user) == 'admin' and UserProfile.objects.filter(role='admin', user__is_active=True).count() <= 1:
-            return _error('cannot remove the last admin')
-        user.delete()
-        _audit(request.api_user, 'DELETE_USER', str(user_id))
-        return JsonResponse({'ok': True})
-    d = _body(request)
-    if d.get('role') == 'user' and role_of(user) == 'admin' and UserProfile.objects.filter(role='admin', user__is_active=True).count() <= 1:
-        return _error('cannot remove the last admin')
-    if d.get('is_active') is False and user.id == request.api_user.id:
-        return _error('cannot disable yourself')
-    if d.get('role') == 'user' and user.id == request.api_user.id:
-        return _error('cannot demote yourself')
-    if 'username' in d:
-        user.username = str(d['username']).strip()
-    if 'email' in d:
-        new_email = str(d['email']).strip()
-        if User.objects.exclude(id=user.id).filter(email__iexact=new_email).exists():
-            return _error('email already exists', 409)
-        user.email = new_email
-    if d.get('role') in ('admin', 'user'):
-        ensure_profile(user, d['role'])
-    if 'is_active' in d:
-        user.is_active = bool(d['is_active'])
-    if d.get('password'):
-        err = _valid_password(str(d['password']))
-        if err:
-            return _error(err)
-        user.set_password(str(d['password']))
-    try:
-        user.save()
-    except IntegrityError:
-        return _error('username or email already exists', 409)
-    _audit(request.api_user, 'UPDATE_USER', str(user_id))
-    return JsonResponse(public_user(user))
-
-
-@csrf_exempt
-@api_admin_required
-@require_http_methods(['POST'])
-def admin_reset_password(request, user_id: int):
-    try:
-        user = User.objects.get(id=user_id)
-    except User.DoesNotExist:
-        return _error('user not found', 404)
-    password = str(_body(request).get('password', ''))
-    err = _valid_password(password)
-    if err:
-        return _error(err)
-    user.set_password(password)
-    user.save(update_fields=['password'])
-    ApiToken.objects.filter(user=user).delete()
-    _audit(request.api_user, 'RESET_PASSWORD', str(user_id))
-    return JsonResponse(public_user(user))
 
 
 def _database_probe() -> tuple[bool, str | None]:
@@ -657,7 +477,6 @@ def _validate_layout_doc(doc: dict[str, Any]) -> list[str]:
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def layout_validate(request):
     errors = _validate_layout_doc(_body(request))
@@ -682,7 +501,6 @@ def _layout_revision_conflict(request, active):
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['GET', 'PUT'])
 def layout_draft(request):
     active = ensure_active_map(runtime.layout)
@@ -702,10 +520,10 @@ def layout_draft(request):
     if errors:
         return _error('; '.join(errors[:10]))
     try:
-        active = save_layout_to_map(body, user=request.api_user, fallback_layout=runtime.layout)
+        active = save_layout_to_map(body, user=None, fallback_layout=runtime.layout)
     except IntegrityError as exc:
         return _error(f'layout/master-data conflict: {exc}', 409)
-    _audit(request.api_user, 'SAVE_AND_SYNC_LAYOUT', str(body.get('id', 'layout')))
+    _audit(None, 'SAVE_AND_SYNC_LAYOUT', str(body.get('id', 'layout')))
     _broadcast_layout_update(active, 'WAREHOUSE_EDITOR_SAVE')
     return JsonResponse({
         'ok': True, 'status': 'SYNCED', 'layout_id': body.get('id'),
@@ -715,7 +533,6 @@ def layout_draft(request):
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def layout_publish(request):
     current = ensure_active_map(runtime.layout)
@@ -727,7 +544,7 @@ def layout_publish(request):
     if errors:
         return _error('; '.join(errors[:10]))
     try:
-        active = publish_layout_to_map(body, user=request.api_user, fallback_layout=runtime.layout)
+        active = publish_layout_to_map(body, user=None, fallback_layout=runtime.layout)
     except IntegrityError as exc:
         return _error(f'layout/master-data conflict: {exc}', 409)
     except ValueError as exc:
@@ -737,7 +554,7 @@ def layout_publish(request):
         # successful DB publish when an external artifact failed.
         log.exception('Map publish failed while generating artifacts: %s', type(exc).__name__)
         return _error(f'publish artifacts failed: {exc}', 500)
-    _audit(request.api_user, 'PUBLISH_LAYOUT', f"{body.get('name', 'warehouse')}@{active.published_version}")
+    _audit(None, 'PUBLISH_LAYOUT', f"{body.get('name', 'warehouse')}@{active.published_version}")
     _broadcast_layout_update(active, 'WAREHOUSE_EDITOR_PUBLISH')
     map_payload = published_map_payload(active)
     async_to_sync(runtime.map_published)(map_payload)
@@ -750,7 +567,6 @@ def layout_publish(request):
     })
 
 
-@api_user_required
 @require_http_methods(['GET'])
 def map_sync_status_view(request):
     active = ensure_active_map(runtime.layout)
@@ -790,7 +606,6 @@ def map_sync_status_view(request):
     })
 
 
-@api_admin_required
 @require_http_methods(['GET'])
 def layout_versions(request):
     active = ensure_active_map(runtime.layout)
@@ -854,7 +669,6 @@ def events(request):
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def inject(request):
     try:
@@ -862,12 +676,11 @@ def inject(request):
     except ValidationError as exc:
         return _error(str(exc)[:300])
     runtime.engine.inject(inj.model_dump(exclude_none=True))
-    _audit(request.api_user, 'INJECT_SCENARIO', str(inj.kind))
+    _audit(None, 'INJECT_SCENARIO', str(inj.kind))
     return JsonResponse({'ok': True})
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def inject_clear(request):
     d = _body(request)
@@ -875,12 +688,11 @@ def inject_clear(request):
     if not kind or not target_id:
         return _error('kind and target_id are required')
     runtime.engine.clear_injection(kind, target_id)
-    _audit(request.api_user, 'CLEAR_SCENARIO', str(target_id))
+    _audit(None, 'CLEAR_SCENARIO', str(target_id))
     return JsonResponse({'ok': True})
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def tasks(request):
     d = _body(request)
@@ -892,12 +704,11 @@ def tasks(request):
             runtime.engine.assign_task(task['id'], d['robot_id'], source='USER')
     except (KeyError, ValueError) as exc:
         return _error(str(exc), 409)
-    _audit(request.api_user, 'CREATE_TASK', task['id'])
+    _audit(None, 'CREATE_TASK', task['id'])
     return JsonResponse(task, status=201)
 
 
 @csrf_exempt
-@api_admin_required
 @require_http_methods(['POST'])
 def task_assign(request, task_id: str):
     robot_id = _body(request).get('robot_id')
@@ -907,12 +718,11 @@ def task_assign(request, task_id: str):
         task = runtime.engine.assign_task(task_id, robot_id, source='USER')
     except ValueError as exc:
         return _error(str(exc), 409)
-    _audit(request.api_user, 'ASSIGN_TASK', f'{task_id}->{robot_id}')
+    _audit(None, 'ASSIGN_TASK', f'{task_id}->{robot_id}')
     return JsonResponse(task)
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def copilot(request):
     question = str(_body(request).get('question', '')).strip()
@@ -923,7 +733,6 @@ def copilot(request):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def vlm_observe(request):
     d = _body(request)
@@ -941,7 +750,6 @@ def vlm_observe(request):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def whatif(request):
     try:
@@ -966,7 +774,6 @@ def ai_status(request):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def sim(request):
     d = _body(request)
@@ -985,5 +792,5 @@ def sim(request):
             return _error('invalid speed')
         runtime.speed = speed
         runtime.paused = speed == 0
-    _audit(request.api_user, f'SIM_{action}', None)
+    _audit(None, f'SIM_{action}', None)
     return health(request)

@@ -53,7 +53,7 @@ class RealtimeDispatchTests(IsolatedAsyncioTestCase):
                 await asyncio.wait_for(pending, 1)
         self.assertEqual(received[-1]['type'], 'ASSIGN_TASK')
 
-    async def test_connect_authentication_keeps_framework_cleanup(self):
+    async def test_connect_keeps_framework_cleanup_without_user_authentication(self):
         from unittest.mock import AsyncMock, patch
         consumer = TwinConsumer()
         consumer.connect = AsyncMock()
@@ -65,22 +65,39 @@ class RealtimeDispatchTests(IsolatedAsyncioTestCase):
     async def test_manual_only_connection_skips_visualization_registration(self):
         from unittest.mock import AsyncMock, patch
         consumer = TwinConsumer()
-        consumer.scope = {'query_string': b'token=valid&control_only=1'}
+        consumer.scope = {'query_string': b'control_only=1'}
         consumer.accept = AsyncMock()
         consumer.send_json = AsyncMock()
-        with patch('twin.consumers.resolve_user', new_callable=AsyncMock,
-                   return_value=object()):
-            await consumer.connect()
+        await consumer.connect()
         self.assertTrue(consumer.control_only)
         consumer.accept.assert_awaited_once()
         consumer.send_json.assert_awaited_once_with({'type': 'ROBOT_MANUAL_CHANNEL_READY'})
         self.assertFalse(hasattr(consumer, 'visualization_outbox'))
 
+    async def test_full_websocket_connection_accepts_without_user_session_or_token(self):
+        from unittest.mock import AsyncMock, patch
+        consumer = TwinConsumer()
+        consumer.scope = {'query_string': b''}
+        consumer.channel_name = 'anonymous-local-browser'
+        consumer.channel_layer = AsyncMock()
+        consumer.accept = AsyncMock()
+        consumer.send_json = AsyncMock()
+        consumer.send = AsyncMock()
+        with patch('twin.consumers.runtime.ensure_started', new_callable=AsyncMock), \
+                patch('twin.consumers.runtime.full_message', return_value={'type': 'FULL'}), \
+                patch('twin.consumers.runtime.runtime_status_message', return_value={'type': 'RUNTIME_STATUS'}):
+            await consumer.connect()
+        consumer.accept.assert_awaited_once()
+        consumer.send_json.assert_any_await({'type': 'FULL'})
+        consumer.send_json.assert_any_await({'type': 'RUNTIME_STATUS'})
+        self.assertNotIn('waretwin_user', consumer.scope)
+        await consumer.disconnect(1000)
+
     async def test_manual_only_connection_rejects_non_manual_frames(self):
         from unittest.mock import AsyncMock, patch
         consumer = TwinConsumer()
         consumer.control_only = True
-        consumer.scope = {'waretwin_user': object()}
+        consumer.scope = {}
         consumer._message_window_started = 0.
         consumer._message_window_count = 0
         consumer.send_json = AsyncMock()
@@ -97,7 +114,7 @@ class RealtimeDispatchTests(IsolatedAsyncioTestCase):
     async def test_manual_frame_keeps_original_receive_validation(self):
         from unittest.mock import AsyncMock, patch
         consumer = TwinConsumer()
-        consumer.scope = {'waretwin_user': object()}
+        consumer.scope = {}
         consumer._message_window_started = 0.
         consumer._message_window_count = 0
         with patch('twin.consumers.runtime.handle_message', new_callable=AsyncMock) as route:
@@ -110,7 +127,7 @@ class RealtimeDispatchTests(IsolatedAsyncioTestCase):
     async def test_malformed_type_reaches_existing_error_validation(self):
         from unittest.mock import AsyncMock, patch
         consumer = TwinConsumer()
-        consumer.scope = {'waretwin_user': object()}
+        consumer.scope = {}
         consumer._message_window_started = 0.
         consumer._message_window_count = 0
         consumer.send_json = AsyncMock()

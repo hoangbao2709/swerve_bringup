@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
-import { useStore } from "./state/store";
 import { useBackendRealtime } from "./services/backendRuntime";
-import { AuthPage } from "./components/auth/AuthPage";
 import { OverviewPage } from "./components/overview/OverviewPage";
 import { RobotControlPage } from "./components/control/RobotControlPage";
 import { RobotControlDetailPage } from "./components/control/RobotControlDetailPage";
-import { bootstrapAuth } from "./services/auth";
 
 /** The retained console is designed for desktop, with the original compact
  * fallback message kept for narrower Robot Control screens. */
@@ -52,33 +49,12 @@ export default function App() {
   const [path, navigate] = usePathname();
   const detailMatch = path.match(/^\/robots\/([^/]+)\/control\/?$/);
   const detailRobotId = detailMatch ? decodeRouteSegment(detailMatch[1]) : null;
-  const authStatus = useStore((state) => state.authStatus);
-  const authUser = useStore((state) => state.authUser);
-
-  useEffect(() => { void bootstrapAuth(); }, []);
 
   useEffect(() => {
-    if (authStatus === "loading") return;
-    const loggedIn = authStatus === "authenticated" && Boolean(authUser);
-    if (!loggedIn) {
-      if (path !== "/login" && path !== "/register") {
-        if (detailRobotId) {
-          try { window.sessionStorage.setItem("waretwin.robot-control.return-path", path); } catch { /* storage may be disabled */ }
-        }
-        navigate("/login");
-      }
-      return;
-    }
     const retainedRoute = path === "/" || path === "/control" || Boolean(detailRobotId);
     if (!retainedRoute) navigate("/");
-  }, [authStatus, authUser, detailRobotId, path]);
+  }, [detailRobotId, path]);
 
-  if (authStatus === "loading") {
-    return <div className="auth-shell"><div className="auth-card"><div className="brand"><span className="ai">Ware</span><span>Twin</span></div><p className="hint">Restoring session...</p></div></div>;
-  }
-
-  const loggedIn = authStatus === "authenticated" && Boolean(authUser);
-  if (!loggedIn) return <AuthPage mode={path === "/register" ? "register" : "login"} />;
   if (path === "/control") return <NarrowScreenGate><RobotControlPage /></NarrowScreenGate>;
   if (detailRobotId) return <NarrowScreenGate><RobotControlDetailPage robotId={detailRobotId} /></NarrowScreenGate>;
   return <OverviewPage />;

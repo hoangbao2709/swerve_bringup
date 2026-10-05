@@ -7,11 +7,9 @@ import zlib
 from pathlib import Path
 from unittest.mock import patch
 
-from django.contrib.auth.models import User
 from django.http import JsonResponse
 from django.test import Client, TestCase, override_settings
 
-from accounts.models import ApiToken
 from twin.local_control import (
     get_robot_map,
     get_robot_slam_session,
@@ -349,9 +347,6 @@ class Vda5050ConfigurationTests(TestCase):
 class LocalControlApiTests(TestCase):
     def setUp(self):
         self.client = Client()
-        user = User.objects.create_user(username='local-control-test', password='test-only-password')
-        token = ApiToken.issue(user)
-        self.client.defaults['HTTP_AUTHORIZATION'] = f'Bearer {token.key}'
         robots = runtime.engine.state.setdefault('robots', {})
         self.previous_robot = deepcopy(robots.get('R01'))
         robots['R01'] = {

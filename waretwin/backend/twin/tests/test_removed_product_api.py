@@ -1,12 +1,17 @@
-from django.test import SimpleTestCase
+from django.test import TestCase
 from django.urls import Resolver404, resolve
 
 
-class RetainedProductApiSurfaceTests(SimpleTestCase):
+class RetainedProductApiSurfaceTests(TestCase):
     removed_paths = (
-        '/api/scheduler/sync',
+        '/api/auth/login',
+        '/api/auth/logout',
+        '/api/auth/me',
+        '/api/auth/register',
         '/api/admin/users',
+        '/api/admin/users/1',
         '/api/admin/users/1/reset-password',
+        '/api/scheduler/sync',
         '/api/warehouses',
         '/api/warehouses/1',
         '/api/warehouse/1/export/gazebo/',
@@ -43,13 +48,16 @@ class RetainedProductApiSurfaceTests(SimpleTestCase):
                     response = method(path, data={})
                     self.assertEqual(response.status_code, 404, f'{path}: {response.status_code}')
 
+    def test_django_admin_is_not_exposed(self):
+        for method in (self.client.get, self.client.post):
+            self.assertEqual(method('/django-admin/').status_code, 404)
+
     def test_shelf_catalog_is_read_only(self):
-        self.assertEqual(self.client.get('/api/shelves').status_code, 401)
+        self.assertEqual(self.client.get('/api/shelves').status_code, 200)
         self.assertEqual(self.client.post('/api/shelves', data={}).status_code, 404)
 
     def test_overview_and_robot_control_runtime_endpoints_remain_routed(self):
         retained_paths = (
-            '/api/auth/login',
             '/api/health',
             '/api/system/status',
             '/api/layout',
@@ -68,3 +76,9 @@ class RetainedProductApiSurfaceTests(SimpleTestCase):
                     resolve(path)
                 except Resolver404 as exc:
                     self.fail(f'retained endpoint {path} no longer resolves: {exc}')
+
+    def test_direct_runtime_apis_work_without_credentials(self):
+        for path in ('/api/health', '/api/system/status', '/api/layout'):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertNotEqual(response.status_code, 401)

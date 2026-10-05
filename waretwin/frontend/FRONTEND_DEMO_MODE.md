@@ -1,6 +1,8 @@
 # WareTwin Frontend Demo Mode
 
-The frontend defaults to `VITE_DEMO_MODE=true`. In this mode authentication and backend availability are not required to render the console or `/admin/*` routes, including `/admin/warehouse-editor`.
+This file describes the legacy frontend-only showcase profile. The local
+Gazebo/ROS application opens directly at `/` and does not use login or user
+authentication.
 
 Run with:
 
@@ -9,7 +11,7 @@ npm install
 npm run dev
 ```
 
-For authenticated backend deployment set:
+For the local backend-connected runtime set:
 
 ```env
 VITE_DEMO_MODE=false

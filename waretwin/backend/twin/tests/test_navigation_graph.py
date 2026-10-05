@@ -4,11 +4,7 @@ import math
 from unittest.mock import AsyncMock, patch
 
 from django.test import TestCase
-from django.contrib.auth.models import User
 from django.test import Client
-from unittest.mock import patch
-
-from accounts.models import ApiToken
 from twin.models import NavigationTag, NavigationTagEdge, RobotMapRegistration, RobotNavigationMission, WarehouseMap
 from twin.navigation_targets import NavigationTargetError, navigation_tag_registry, resolve_navigation_target
 from twin.runtime import runtime
@@ -220,12 +216,8 @@ class NavigationTargetResolutionTests(TestCase):
                                       active_map=stale_map, tag_id=1)
         self.assertEqual(stale.exception.code, 'TAG_MAP_REGISTRATION_REQUIRED')
 
-    def test_admin_can_register_exact_active_map_and_registration_is_versioned(self):
-        admin = User.objects.create_superuser(
-            username='map-registration-admin', email='map-registration@example.test',
-            password='registration-test-password')
-        token = ApiToken.issue(admin)
-        client = Client(HTTP_AUTHORIZATION=f'Bearer {token.key}')
+    def test_local_caller_can_register_exact_active_map_and_registration_is_versioned(self):
+        client = Client()
         local_map = {**self.active_map, 'active_map_id': 'SLAM-session-4',
                      'active_map_revision': 'slam-rev-12', 'map_sync_status': 'LOCAL_ONLY'}
         payload = {
@@ -261,9 +253,7 @@ class NavigationTargetResolutionTests(TestCase):
                          'ACTIVE_MAP_REVISION_MISMATCH')
 
     def test_external_legacy_tag_missions_cannot_bypass_preview_and_nav2_goal(self):
-        user = User.objects.create_user(username='legacy-tag-user', password='test-only-password')
-        token = ApiToken.issue(user)
-        client = Client(HTTP_AUTHORIZATION=f'Bearer {token.key}')
+        client = Client()
         tag = NavigationTag.objects.get(warehouse=self.warehouse_map.warehouse, tag_id=1)
         mission = RobotNavigationMission.objects.create(
             warehouse=self.warehouse_map.warehouse, robot_id='R01', target_tag=tag,
@@ -290,10 +280,8 @@ class NavigationTargetResolutionTests(TestCase):
         mission.refresh_from_db()
         self.assertEqual(mission.status, 'PAUSED')
 
-    def test_robot_tag_api_is_authenticated_and_returns_only_map_compatible_registry(self):
-        user = User.objects.create_user(username='tag-registry-test', password='test-only-password')
-        token = ApiToken.issue(user)
-        client = Client(HTTP_AUTHORIZATION=f'Bearer {token.key}')
+    def test_robot_tag_api_works_without_identity_and_returns_only_map_compatible_registry(self):
+        client = Client()
         with patch.object(runtime, 'active_map_state', return_value=self.active_map):
             response = client.get('/api/robots/R01/navigation-tags')
         self.assertEqual(response.status_code, 200)
@@ -319,7 +307,7 @@ class NavigationTargetResolutionTests(TestCase):
         self.assertEqual(response.json()['active_map_id'], 'CANONICAL')
 
         anonymous = Client().get('/api/robots/R01/navigation-tags')
-        self.assertEqual(anonymous.status_code, 401)
+        self.assertEqual(anonymous.status_code, 200)
 
     def test_tag_preview_uses_common_nav2_pipeline_and_rejects_stale_or_wrong_source_tokens(self):
         registry = navigation_tag_registry(self.active_map)
@@ -340,7 +328,7 @@ class NavigationTargetResolutionTests(TestCase):
                 'tag_revision': tag_revision or tag_record['tag_revision'],
                 'registry_revision': registry_revision or registry['registry_revision'], 'frame_id': 'map',
                 'active_map_id': 'CANONICAL', 'active_map_revision': '7',
-            }, None)
+            })
             return request_id
 
         def planner_result(request_id, goal=(2.0, 5.0, 0.25)):
@@ -357,7 +345,7 @@ class NavigationTargetResolutionTests(TestCase):
                 'frame_id': 'map', 'preview_request_id': request_id,
                 'active_map_id': 'CANONICAL', 'active_map_revision': '7',
                 'source_type': source_type, 'source_id': source_id,
-            }, None)
+            })
 
         with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
                 patch.object(runtime, 'operation_mode', 'NAVIGATION'), \
@@ -375,7 +363,7 @@ class NavigationTargetResolutionTests(TestCase):
                 'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 2.0, 'y': 5.0, 'yaw': 0.25,
                 'frame_id': 'map', 'active_map_id': 'CANONICAL', 'active_map_revision': '7',
                 'source_type': 'TAG', 'source_id': '1',
-            }, None)
+            })
             self.assertEqual(capture.send_json.await_args.args[0]['code'], 'PATH_PREVIEW_REQUIRED')
             self.assertFalse(any(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list))
 
@@ -467,7 +455,7 @@ class NavigationTargetResolutionTests(TestCase):
                 'registry_revision': registry['registry_revision'],
                 'frame_id': 'map', 'active_map_id': 'SLAM-session-4',
                 'active_map_revision': 'slam-rev-12',
-            }, None)
+            })
 
         self.assertEqual(capture.send_json.await_count, 0)
         sent = gateway.send_command.await_args.args[2]

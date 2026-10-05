@@ -10,22 +10,19 @@ const summary = values => {
     max:sorted.length?Math.max(...sorted):null,count:sorted.length};
 };
 (async () => {
-  let login;
+  let health;
   for(let attempt=0;attempt<30;attempt++) {
-    try { login=await fetch(`${process.env.BACKEND_URL}/api/auth/login`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({username:process.env.TWIN_ADMIN_USERNAME,password:process.env.TWIN_ADMIN_PASSWORD}),
-    });break; }catch(error){if(attempt===29)throw error;await sleep(1000);}
+    try { health=await fetch(`${process.env.BACKEND_URL}/api/health`); if (health.ok) break; }
+    catch(error){if(attempt===29)throw error;}
+    if(attempt<29) await sleep(1000);
   }
-  if (!login.ok) throw Error(`login HTTP ${login.status}`);
-  const auth = await login.json();
+  if (!health?.ok) throw Error(`backend health HTTP ${health?.status ?? 'unavailable'}`);
   const browser = await chromium.launch({headless:true,args:['--no-sandbox']});
   const result = { switches:[], errors:[] };
   let page;
   try {
     const context = await browser.newContext({viewport:{width:1500,height:1000}});
-    await context.addInitScript(({auth,origin}) => {
-      if (location.origin === origin) localStorage.setItem('waretwin.auth',JSON.stringify({token:auth.access_token,user:auth.user}));
+    await context.addInitScript(() => {
       window.__ROBOT_DETAIL_PERFORMANCE__=true;
       window.__viewTrace=[];
       const add = row => {window.__viewTrace.push(row); if(window.__viewTrace.length>2000)window.__viewTrace.shift();};
@@ -44,7 +41,7 @@ const summary = values => {
         });}
         send(raw){try{const m=JSON.parse(raw);if(m.type==='ROBOT_DETAIL_VIEW')add({stage:'send',at_ms:performance.timeOrigin+performance.now(),...m});}catch{}return super.send(raw);}
       };
-    },{auth,origin:new URL(process.env.FRONTEND_URL).origin});
+    });
     page=await context.newPage();
     const network=await context.newCDPSession(page);
     await network.send('Network.enable');

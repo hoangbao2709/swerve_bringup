@@ -106,9 +106,8 @@ try:
     begin(); sender.hold(None)
     results['MODE_CHANGE'] = stopped(mode('AUTONOMOUS'))
     begin(); sender.hold(None)
-    estop_token = a.authenticate(backend)
     triggered = time.monotonic()
-    assert a.http_json(backend + '/api/robots/R01/emergency-stop', {}, token=estop_token)['ok']
+    assert a.http_json(backend + '/api/robots/R01/emergency-stop', {})['ok']
     assert wait(lambda: data['arbiter'][-1][1]['estop_active'])
     receipt = next(row[0] for row in list(data['estop']) if row[0] >= triggered and row[1])
     results['E_STOP'] = stopped(triggered, estop=True)
@@ -117,7 +116,7 @@ try:
     results['E_STOP']['ros_receipt_zero_latency_ms'] = (zero - receipt) * 1000
     results['E_STOP']['passed'] &= results['E_STOP']['ros_receipt_zero_latency_ms'] <= 100
     clear_start = time.monotonic()
-    assert a.http_json(backend + '/api/robots/R01/clear-emergency-stop', {}, token=a.authenticate(backend))['ok']
+    assert a.http_json(backend + '/api/robots/R01/clear-emergency-stop', {})['ok']
     assert wait(lambda: not data['arbiter'][-1][1]['estop_active'])
     time.sleep(2)
     results['E_STOP_CLEAR_NO_RESUME'] = {'passed': all(max(map(abs, row[1])) <= 1e-6

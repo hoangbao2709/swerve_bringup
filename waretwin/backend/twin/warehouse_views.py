@@ -15,7 +15,6 @@ from django.http import HttpRequest, HttpResponseNotFound, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .auth import user_from_request
 from .models import Warehouse, Zone, Shelf, WarehouseMap
 from .runtime import runtime
 from .warehouse_services import (
@@ -26,7 +25,6 @@ from .warehouse_services import (
 )
 from .map_artifacts import artifact_revision_dir
 from .map_sync import published_map_payload
-from accounts.models import role_of
 
 log = logging.getLogger(__name__)
 
@@ -48,17 +46,9 @@ def _error(message: str, status: int = 400):
     }, status=status)
 
 
-def _user(request: HttpRequest, *, admin: bool = False):
-    user = user_from_request(request)
-    if user is None:
-        return None, _error('authentication required', 401)
-    if admin and role_of(user) != 'admin':
-        return None, _error('admin privileges required', 403)
-    return user, None
-
-
 def _audit(user, action: str, target: str):
-    runtime.engine.emit('ADMIN_ACTION', 'USER', 'INFO', f'ADMIN_ACTION admin={user.username} action={action} target={target}', payload={'action': action, 'admin': user.username, 'target': target, 'result': 'SUCCESS'})
+    runtime.engine.emit('LOCAL_ACTION', 'LOCAL', 'INFO', f'LOCAL_ACTION action={action} target={target}',
+                        payload={'action': action, 'actor': 'local', 'target': target, 'result': 'SUCCESS'})
 
 
 def _map_meta(map_obj: WarehouseMap) -> dict[str, Any]:
@@ -135,9 +125,7 @@ def warehouse_export_gazebo(request: HttpRequest, warehouse_id: int):
     revision before returning the canonical JSON, ROS metadata and Gazebo world
     paths. This keeps export and runtime deployment on the same source of truth.
     """
-    user, error = _user(request, admin=True)
-    if error:
-        return error
+    user = None
     try:
         warehouse = Warehouse.objects.get(pk=warehouse_id)
     except Warehouse.DoesNotExist:
@@ -216,8 +204,7 @@ def _save(obj, apply, data, **kwargs):
 @csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def warehouses(request: HttpRequest):
-    user, error = _user(request, admin=request.method == 'POST')
-    if error: return error
+    user = None
     if request.method == 'GET':
         q = Warehouse.objects.annotate(zone_count=Count('zones', distinct=True), shelf_count=Count('zones__shelves', distinct=True))
         search = request.GET.get('search', '').strip()
@@ -236,8 +223,7 @@ def warehouses(request: HttpRequest):
 @csrf_exempt
 @require_http_methods(['GET', 'PATCH', 'DELETE'])
 def warehouse_detail(request: HttpRequest, warehouse_id: int):
-    user, error = _user(request, admin=request.method != 'GET')
-    if error: return error
+    user = None
     try: obj = Warehouse.objects.get(id=warehouse_id)
     except Warehouse.DoesNotExist: return _error('warehouse not found', 404)
     if request.method == 'GET': return JsonResponse(warehouse_to_dict(obj))
@@ -261,8 +247,7 @@ def warehouse_detail(request: HttpRequest, warehouse_id: int):
 @csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def zones(request: HttpRequest):
-    user, error = _user(request, admin=request.method == 'POST')
-    if error: return error
+    user = None
     if request.method == 'GET':
         q = Zone.objects.select_related('warehouse').annotate(shelf_count=Count('shelves'))
         warehouse_id = request.GET.get('warehouse')
@@ -290,8 +275,7 @@ def zones(request: HttpRequest):
 @csrf_exempt
 @require_http_methods(['GET', 'PATCH', 'DELETE'])
 def zone_detail(request: HttpRequest, zone_id: int):
-    user, error = _user(request, admin=request.method != 'GET')
-    if error: return error
+    user = None
     try: obj = Zone.objects.select_related('warehouse').get(id=zone_id)
     except Zone.DoesNotExist: return _error('zone not found', 404)
     if request.method == 'GET': return JsonResponse(zone_to_dict(obj))
@@ -334,8 +318,6 @@ def shelves(request: HttpRequest):
     # administration is no longer a public product surface.
     if request.method != 'GET':
         return HttpResponseNotFound()
-    user, error = _user(request)
-    if error: return error
     q = Shelf.objects.select_related('zone', 'zone__warehouse')
     warehouse_id = request.GET.get('warehouse')
     zone_id = request.GET.get('zone')
@@ -355,8 +337,7 @@ def shelves(request: HttpRequest):
 @csrf_exempt
 @require_http_methods(['GET', 'PATCH', 'DELETE'])
 def shelf_detail(request: HttpRequest, shelf_id: int):
-    user, error = _user(request, admin=request.method != 'GET')
-    if error: return error
+    user = None
     try: obj = Shelf.objects.select_related('zone', 'zone__warehouse').get(id=shelf_id)
     except Shelf.DoesNotExist: return _error('shelf not found', 404)
     if request.method == 'GET': return JsonResponse(shelf_to_dict(obj))
@@ -381,8 +362,6 @@ def shelf_detail(request: HttpRequest, shelf_id: int):
 
 @require_http_methods(['GET'])
 def warehouse_tree(request: HttpRequest):
-    _, error = _user(request)
-    if error: return error
     warehouses_q = Warehouse.objects.annotate(zone_count=Count('zones', distinct=True), shelf_count=Count('zones__shelves', distinct=True))
     zones_q = Zone.objects.annotate(shelf_count=Count('shelves')).order_by('floor', 'code')
     by_wh: dict[int, list[dict[str, Any]]] = {}
@@ -399,8 +378,7 @@ def warehouse_tree(request: HttpRequest):
 @csrf_exempt
 @require_http_methods(['POST'])
 def warehouse_sync_from_layout(request: HttpRequest):
-    user, error = _user(request, admin=True)
-    if error: return error
+    user = None
     active = ensure_active_map(runtime.layout)
     try:
         result = sync_from_layout(active.layout, warehouse=active.warehouse, prune=False)
@@ -413,8 +391,6 @@ def warehouse_sync_from_layout(request: HttpRequest):
 
 @require_http_methods(['GET'])
 def warehouse_maps(request: HttpRequest):
-    _, error = _user(request)
-    if error: return error
     ensure_active_map(runtime.layout)
     for warehouse in Warehouse.objects.all():
         ensure_warehouse_map(warehouse, None)
@@ -428,8 +404,7 @@ def warehouse_maps(request: HttpRequest):
 @csrf_exempt
 @require_http_methods(['POST'])
 def warehouse_map_activate(request: HttpRequest, warehouse_id: int):
-    user, error = _user(request, admin=True)
-    if error: return error
+    user = None
     try:
         warehouse = Warehouse.objects.get(pk=warehouse_id)
     except Warehouse.DoesNotExist:

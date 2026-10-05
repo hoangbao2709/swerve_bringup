@@ -1,17 +1,13 @@
 from unittest.mock import AsyncMock, patch
 
-from django.contrib.auth.models import User
 from django.test import Client, TestCase
 
-from accounts.models import ApiToken
 from twin.runtime import runtime
 
 
 class ClearEmergencyStopAcknowledgementTests(TestCase):
     def setUp(self):
-        user = User.objects.create_user(username='clear-estop-test', password='test-only-password')
-        token = ApiToken.issue(user)
-        self.client = Client(HTTP_AUTHORIZATION=f'Bearer {token.key}')
+        self.client = Client()
 
     def post_clear(self):
         return self.client.post('/api/robots/R01/clear-emergency-stop')

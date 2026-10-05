@@ -183,8 +183,6 @@ function downloadJsonExample(
 export function InboundOutboundModal() {
   const openWindow = useStore((state) => state.openWindow);
 
-  const authUser =
-    useStore((state) => state.authUser);
 
   const [mode, setMode] =
     useState<FlowMode>("INBOUND");
@@ -526,19 +524,6 @@ export function InboundOutboundModal() {
 
   const importAndSchedule =
     async () => {
-      if (
-        authUser?.role !== "admin"
-      ) {
-        setMessage({
-          kind: "error",
-
-          text:
-            "Chỉ tài khoản Admin mới được import và tạo lịch robot.",
-        });
-
-        return;
-      }
-
       if (
         !inboundFile &&
         !outboundFile
@@ -1032,8 +1017,6 @@ export function InboundOutboundModal() {
                 disabled={
                   busy ||
                   loading ||
-                  authUser?.role !==
-                    "admin" ||
                   !currentFile
                 }
                 onClick={() =>
@@ -1047,14 +1030,6 @@ export function InboundOutboundModal() {
                     ? "Import INBOUND & Auto Schedule"
                     : "Import OUTBOUND & Auto Schedule"}
               </button>
-
-              {authUser?.role !==
-                "admin" && (
-                <small className="flow-readonly">
-                  Tài khoản Admin
-                  mới có quyền import.
-                </small>
-              )}
 
               {/* ===== RESULT ===== */}
 
@@ -1441,11 +1416,7 @@ export function InboundOutboundModal() {
                             </td>
 
                             <td>
-                              {ACTIVE.has(
-                                order.status,
-                              ) &&
-                              authUser?.role ===
-                                "admin" ? (
+                              {ACTIVE.has(order.status) ? (
                                 <button
                                   type="button"
                                   className="flow-btn danger"

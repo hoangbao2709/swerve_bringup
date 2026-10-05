@@ -267,9 +267,7 @@ export const testVda5050Connection = async (robotId: string, config: Partial<Vda
 };
 
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const token = useStore.getState().authToken;
   const headers = new Headers(init.headers ?? {});
-  if (token) headers.set("authorization", `Bearer ${token}`);
   if (init.body && !headers.has("content-type") && !(init.body instanceof FormData)) {
     headers.set("content-type", "application/json");
   }

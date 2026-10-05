@@ -9,7 +9,6 @@ const robotId = process.env.ROBOT_ID || 'R01';
 const mapName = process.env.SAVED_MAP_NAME || 'slam_accumulated_20261001_01';
 const skipResumeRequest = process.env.SLAM_RESUME_SKIP_REQUEST === '1';
 const restoreEvidencePath = process.env.SLAM_RESUME_RESTORE_EVIDENCE;
-const authStorageKey = 'waretwin.auth';
 const readinessGateNames = [
   'CLOCK_FRESH', 'GAZEBO_PHYSICS_ACTIVE', 'CONTROLLERS_ACTIVE',
   'COMMAND_ARBITER_READY', 'SWERVE_CONTROLLER_READY', 'JOINT_STATES_FRESH',
@@ -43,21 +42,9 @@ const waitForFreshReadinessLease = async timeoutMs => {
 
 (async () => {
   fs.mkdirSync(dir, { recursive: true });
-  const login = await fetch(`${backend}/api/auth/login`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: process.env.TWIN_ADMIN_USERNAME,
-      password: process.env.TWIN_ADMIN_PASSWORD }),
-  });
-  if (!login.ok) throw Error(`Django login failed with HTTP ${login.status}`);
-  const auth = await login.json();
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   try {
     const context = await browser.newContext({ viewport: { width: 1500, height: 1000 } });
-    const origin = new URL(frontend).origin;
-    await context.addInitScript(({ key, session, expectedOrigin }) => {
-      if (location.origin === expectedOrigin) localStorage.setItem(key, JSON.stringify(session));
-    }, { key: authStorageKey, expectedOrigin: origin,
-      session: { token: auth.access_token, user: auth.user } });
     const page = await context.newPage();
     const browserErrors = [];
     const received = [];

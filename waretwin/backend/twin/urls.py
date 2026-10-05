@@ -23,10 +23,6 @@ urlpatterns = [
     # shelf catalog. Warehouse administration/editor endpoints are not part of
     # this product surface.
     path('shelves', warehouse_views.shelves),
-    path('auth/register', views.auth_register),
-    path('auth/login', views.auth_login),
-    path('auth/logout', views.auth_logout),
-    path('auth/me', views.auth_me),
     path('health', views.health),
     path('health/', views.health),
     path('system/status', views.system_status),

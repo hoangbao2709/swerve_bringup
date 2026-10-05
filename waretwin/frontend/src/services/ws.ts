@@ -16,7 +16,7 @@ import { detailFramePatch, detailViewStatusPatch } from "../components/control/d
 import { THRESHOLDS } from "../schema/twin_state";
 import { useStore } from "../state/store";
 
-export type ConnState = "connecting" | "online" | "reconnecting" | "offline" | "error" | "unauthorized";
+export type ConnState = "connecting" | "online" | "reconnecting" | "offline" | "error";
 
 type RuntimeLocation = Pick<Location, "protocol" | "hostname">;
 type RuntimeUrls = { apiUrl: string; wsUrl: string };
@@ -89,10 +89,7 @@ async function refreshLayout(meta: Extract<ServerMessage, { type: "LAYOUT_UPDATE
       layoutListeners.forEach((fn) => fn(meta));
       return;
     }
-    const token = useStore.getState().authToken;
-    const headers: Record<string, string> = {};
-    if (token) headers.authorization = `Bearer ${token}`;
-    const response = await fetch(`${API_URL}/api/layout`, { headers, credentials: "omit" });
+    const response = await fetch(`${API_URL}/api/layout`, { credentials: "omit" });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     const next = await response.json();
     useStore.getState().setLayout(next, {
@@ -108,10 +105,7 @@ async function refreshLayout(meta: Extract<ServerMessage, { type: "LAYOUT_UPDATE
 
 async function refreshMapSyncStatus() {
   try {
-    const token = useStore.getState().authToken;
-    const headers: Record<string, string> = {};
-    if (token) headers.authorization = `Bearer ${token}`;
-    const response = await fetch(`${API_URL}/api/map/sync-status`, { headers, credentials: "omit" });
+    const response = await fetch(`${API_URL}/api/map/sync-status`, { credentials: "omit" });
     if (!response.ok) return;
     const data = await response.json() as Record<string, unknown>;
     useStore.getState().setMapSync({
@@ -190,16 +184,8 @@ function open() {
   onStateChange?.("connecting");
   let ws: WebSocket;
   try {
-    const token = useStore.getState().authToken;
-    // Django Channels requires the auth token. Do not hammer /ws with requests
-    // that are guaranteed to be rejected before login/session restore completes.
-    if (!token) {
-      onStateChange?.("unauthorized");
-      return;
-    }
-    const url = `${WS_URL}${WS_URL.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
     // https 頁面開 ws:// 會同步丟 SecurityError（沒設 VITE_WS_URL 時），要接住，否則整個 App 掛掉
-    ws = new WebSocket(url);
+    ws = new WebSocket(WS_URL);
   } catch (e) {
     console.warn("[ws] cannot open", WS_URL, e, "— backend unavailable");
     onStateChange?.("error");
@@ -212,10 +198,7 @@ function open() {
     void refreshMapSyncStatus();
     // Pull the database-backed map once on connect so / always matches admin pages.
     const st = useStore.getState();
-    const token = st.authToken;
-    const headers: Record<string, string> = {};
-    if (token) headers.authorization = `Bearer ${token}`;
-    fetch(`${API_URL}/api/layout`, { headers, credentials: "omit" })
+    fetch(`${API_URL}/api/layout`, { credentials: "omit" })
       .then(async (r) => {
         if (!r.ok) throw new Error(`${r.status}`);
         const next = await r.json();
@@ -237,15 +220,9 @@ function open() {
     catch (e) { console.warn("[ws] invalid server message", e); }
   };
   ws.onerror = () => { onStateChange?.("error"); };
-  ws.onclose = (ev) => {
+  ws.onclose = () => {
     clearTimeout(timeout);
     if (socket === ws) socket = null;
-    const authFailed = ev.code === 4401 || ev.code === 4403;
-    if (authFailed) {
-      if (whatifPending) { const id = whatifPending; whatifPending = null; whatifErrorListeners.forEach((fn) => fn("authentication failed — please log in again", id)); }
-      onStateChange?.("unauthorized");
-      return;
-    }
     if (whatifPending) { const id = whatifPending; whatifPending = null; whatifErrorListeners.forEach((fn) => fn("connection lost — please run again", id)); }
     if (!stopped) {
       onStateChange?.("reconnecting");

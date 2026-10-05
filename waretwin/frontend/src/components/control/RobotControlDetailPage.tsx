@@ -128,7 +128,6 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const useLiveSlamMap = slamRuntimeActive && !activeLocalMapId;
   const activeMapSnapshot = useLiveSlamMap ? slam2dMap : runtimeMapSnapshot;
   const setRobotDetail = useStore((state) => state.setRobotDetail);
-  const authToken = useStore((state) => state.authToken);
   const appliedMode = useStore((state) => state.robotDetail[robotId]?.appliedMode);
   const requestedMode = useStore((state) => state.robotDetail[robotId]?.requestedMode);
   const modeTransitionState = useStore((state) => state.robotDetail[robotId]?.modeTransitionState);
@@ -360,9 +359,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     }
   }, [controlOnline, robotId]);
 
-  // Auth refresh replaces the dedicated control worker; stop the old owner's
-  // command before its socket is closed and never carry the latch into the new worker.
-  useEffect(() => () => stopManual(), [authToken, stopManual]);
+  useEffect(() => () => stopManual(), [stopManual]);
 
   const previousRuntime = useRef({ runtimeMode, runtimeState });
   useEffect(() => {
@@ -386,7 +383,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [stopManual]);
 
   useEffect(() => {
-    if (!controlOnline || !authToken || typeof Worker === "undefined") return;
+    if (!controlOnline || typeof Worker === "undefined") return;
     let worker: Worker;
     try {
       worker = new Worker(new URL("../../services/manualCommand.worker.ts", import.meta.url), { type: "module" });
@@ -405,13 +402,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       stopManual(true);
       setError("Manual refresh worker failed; the backend timeout stop is active");
     };
-    worker.postMessage({ type: "CONNECT", url: WS_URL, token: authToken });
+    worker.postMessage({ type: "CONNECT", url: WS_URL });
     return () => {
       if (manualWorker.current === worker) manualWorker.current = null;
       worker.postMessage({ type: "DISCONNECT", robot_id: robotId });
       window.setTimeout(() => worker.terminate(), 150);
     };
-  }, [authToken, controlOnline, robotId, stopManual]);
+  }, [controlOnline, robotId, stopManual]);
 
   const estopActive = Boolean(detailDiagnostics?.command_ownership?.estop_active
     ?? diagnostics?.command_ownership?.estop_active);

@@ -1,6 +1,6 @@
 /* Exercise real production Web renderers and pointer teleop against ROS truth.
  * Run after starting mapping --gui --rviz and pose_alignment_observer.py.
- * Requires POSE_ALIGNMENT_DIR, BACKEND_URL, FRONTEND_URL and admin credentials. */
+ * Requires POSE_ALIGNMENT_DIR, BACKEND_URL and FRONTEND_URL. */
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert/strict');
@@ -42,11 +42,6 @@ async function settled() {
 (async () => {
   if (!dir || !backend || !frontend) throw Error('missing runtime configuration');
   assert(['gazebo','web-manual'].includes(positionMethod),'invalid position method');
-  const response = await fetch(`${backend}/api/auth/login`, { method:'POST',
-    headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-      username:process.env.TWIN_ADMIN_USERNAME, password:process.env.TWIN_ADMIN_PASSWORD }) });
-  assert(response.ok, 'login failed');
-  const auth = await response.json();
   const browser = await chromium.launch({headless:false, args:['--no-sandbox', '--ozone-platform=x11',
     '--ignore-gpu-blocklist', '--use-angle=gl']});
   const report = { limits:{distance_m:.05,yaw_rad:.05}, position_method:positionMethod,
@@ -58,8 +53,6 @@ async function settled() {
   },20000);
   try {
     const context = await browser.newContext({viewport:{width:1200,height:800}});
-    await context.addInitScript(session => localStorage.setItem('waretwin.auth', JSON.stringify(session)),
-      {token:auth.access_token,user:auth.user});
     warehouse = await context.newPage();
     control = await context.newPage();
     async function screenshot(page, name) {

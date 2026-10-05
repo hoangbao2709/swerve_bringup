@@ -121,6 +121,7 @@ function settleUi() { return new Promise<void>((resolve) => window.setTimeout(re
 
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  vi.stubGlobal("Worker", undefined);
   window.history.replaceState({}, "", "/");
   useStore.setState({ ...initialState, twin: { ...initialState.twin, robots: { R01: r01() } }, quickDetailRobotId: null, robotDetail: {} });
   container = document.createElement("div");
@@ -142,6 +143,7 @@ afterEach(() => {
   container.remove();
   useStore.setState(initialState);
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("robot quick detail workflow", () => {
@@ -383,13 +385,12 @@ describe("robot detail route stability", () => {
       constructor(url: URL, options: WorkerOptions) { constructWorker(url, options); }
     }
     vi.stubGlobal("Worker", FakeWorker);
-    useStore.setState({ authToken: "test-access-token" });
     setOnlineRobot();
     vi.mocked(wsManualCommand).mockClear();
     renderNode(<RobotControlDetailPage robotId="R01" />);
     await act(async () => { await settleUi(); });
     expect(constructWorker).toHaveBeenCalledWith(expect.any(URL), { type: "module" });
-    expect(postMessage).toHaveBeenCalledWith({ type: "CONNECT", url: "ws://127.0.0.1:8001/ws", token: "test-access-token" });
+    expect(postMessage).toHaveBeenCalledWith({ type: "CONNECT", url: "ws://127.0.0.1:8001/ws" });
 
     const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
     const left = container.querySelector<HTMLButtonElement>(".manual-key-left")!;
@@ -410,36 +411,6 @@ describe("robot detail route stability", () => {
     root = createRoot(container);
     expect(postMessage).toHaveBeenCalledWith({ type: "DISCONNECT", robot_id: "R01" });
   });
-  it("clears the UI latch and stops the old worker when auth replaces its command owner", () => {
-    const workers: Array<{ messages: Array<Record<string, unknown>> }> = [];
-    class FakeWorker {
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      onerror: ((event: ErrorEvent) => void) | null = null;
-      messages: Array<Record<string, unknown>> = [];
-      postMessage = (request: Record<string, unknown>) => this.messages.push(request);
-      terminate = vi.fn();
-      constructor() { workers.push(this); }
-    }
-    vi.stubGlobal("Worker", FakeWorker);
-    useStore.setState({ authToken: "old-access-token" });
-    setOnlineRobot("MAPPING");
-    renderNode(<RobotControlDetailPage robotId="R01" />);
-    const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
-    act(() => forward.click());
-    expect(workers[0]?.messages).toContainEqual({ type: "HOLD", robot_id: "R01", action: "FORWARD" });
-
-    act(() => useStore.setState({ authToken: "refreshed-access-token" }));
-
-    expect(workers).toHaveLength(2);
-    expect(workers[0]?.messages).toContainEqual({ type: "STOP", robot_id: "R01" });
-    expect(workers[0]?.messages).toContainEqual({ type: "DISCONNECT", robot_id: "R01" });
-    expect(workers[1]?.messages).toContainEqual({
-      type: "CONNECT", url: "ws://127.0.0.1:8001/ws", token: "refreshed-access-token",
-    });
-    expect(workers[1]?.messages.some((request) => request.type === "HOLD")).toBe(false);
-    expect(container.querySelector<HTMLButtonElement>(".manual-key-forward")?.getAttribute("aria-pressed")).toBe("false");
-    expect(container.textContent).toContain("STOPPED");
-  });
   it("does not resume a worker command when E-STOP clears", () => {
     const workers: Array<{ messages: Array<Record<string, unknown>> }> = [];
     class FakeWorker {
@@ -451,7 +422,6 @@ describe("robot detail route stability", () => {
       constructor() { workers.push(this); }
     }
     vi.stubGlobal("Worker", FakeWorker);
-    useStore.setState({ authToken: "test-access-token" });
     setOnlineRobot("MAPPING");
     renderNode(<RobotControlDetailPage robotId="R01" />);
     const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;

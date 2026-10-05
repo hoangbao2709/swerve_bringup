@@ -14,7 +14,6 @@ After updating an existing database, run once:
 
 ```bash
 python manage.py migrate
-python manage.py seed_demo
 python manage.py sync_master_data
 ```
 

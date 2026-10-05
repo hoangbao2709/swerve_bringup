@@ -8,15 +8,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py seed_demo
 python manage.py sync_master_data
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 127.0.0.1:8000
 ```
-
-Configured admin account from `backend/.env`:
-
-- username: `admin`
-- password: value of `TWIN_ADMIN_PASSWORD` (only used when the account is created)
 
 ## 2. Configure frontend
 
@@ -45,10 +39,10 @@ CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://<FRONTEN
 ```bash
 cd frontend
 npm ci
-npm run dev -- --host 0.0.0.0
+npm run dev -- --host 127.0.0.1
 ```
 
-Open `http://<FRONTEND_PC_IP>:5173`.
+Open `http://127.0.0.1:5173/`. The local application has no login step.
 
 ## Data flow
 
@@ -64,17 +58,9 @@ TwinState
 
 In backend mode, Django is authoritative. If WebSocket is lost, the UI displays OFFLINE and keeps the last confirmed state; it does not start a local simulation.
 
-## Warehouse master data CRUD
-
-After migration/login, open:
-
-```text
-http://127.0.0.1:5173/admin/warehouse
-```
-
-The page provides CRUD for Warehouse -> Zone -> Shelf, search/filter, protected delete, position/access-point fields and a preview. Use **Sync published layout** to import/update the current warehouse geometry into Django master data.
-
-If upgrading an existing database, run `python manage.py migrate` before starting the backend.
+The retained frontend routes are `/`, `/control`, and
+`/robots/:robotId/control`. Legacy admin and product pages are unavailable and
+unknown routes return to `/`.
 
 ## Synchronized warehouse maps (new)
 
@@ -84,18 +70,11 @@ After updating to this build, run the new database migration:
 cd backend
 source .venv/bin/activate
 python manage.py migrate
-python manage.py seed_demo
 python manage.py sync_master_data
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 127.0.0.1:8000
 ```
 
-Then start the frontend as usual and use:
-
-- `http://localhost:5173/` — live map
-- `http://localhost:5173/admin/warehouse` — Warehouse/Zone/Shelf data
-- `http://localhost:5173/admin/warehouse-editor` — map editor
-
-All three pages use the same database-backed active WarehouseMap. Use **Use on live map** in Warehouse Data to switch the active warehouse.
+Then start the frontend and open `http://127.0.0.1:5173/` for the live map.
 
 
 ## Robot Scheduler + Orders
@@ -106,17 +85,12 @@ After this build, run migration `0004_scheduler_orders_workpoints`:
 cd backend
 source .venv/bin/activate
 python manage.py migrate
-python manage.py seed_demo
 python manage.py sync_master_data
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 127.0.0.1:8000
 ```
 
-Frontend pages:
-
-- `http://localhost:5173/` — simplified Overview dashboard
-- `http://localhost:5173/operations` — detailed legacy operations console
-- **Robot Schedule** — persistent orders/schedules modal
-- `/admin/warehouse` and `/admin/warehouse-editor` — map/master-data management
+The Overview is available at `/`; Robot Control and robot details remain at
+`/control` and `/robots/:robotId/control`.
 
 All order, route, assignment, reservation and schedule data is stored in Django DB. The mock robots execute scheduled route legs through the existing A* simulation engine.
 
@@ -128,4 +102,4 @@ After installing dependencies and migrating, run:
 python manage.py test twin.tests.test_scheduler
 ```
 
-The scheduler stores orders, schedules, ordered stops and resource reservations in Django DB. `/` is the simplified overview; `/operations` keeps the full diagnostic console.
+The scheduler stores orders, schedules, ordered stops and resource reservations in Django DB.

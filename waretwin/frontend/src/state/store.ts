@@ -52,9 +52,7 @@ export function labelZIndexRange(priority: number): [number, number] {
   const p = Math.max(1, Math.min(9, Math.round(priority)));
   return [p * 10 + 9, p * 10];
 }
-export type AuthStatus = "loading" | "guest" | "authenticated";
 export type WebSocketState = "CONNECTING" | "CONNECTED" | "RECONNECTING" | "DISCONNECTED" | "ERROR";
-export type AuthUser = { id: number; username: string; email: string; role: "admin" | "user"; is_active?: boolean };
 export type ModalKind = "audit" | "tasks" | "robot" | "fleet" | "scheduler" | "flows" | "shelf" | "conveyor";
 export type TagGraph = {
   warehouse_id: number | null;
@@ -175,11 +173,11 @@ interface Store {
   seed: number;
   setSpeed: (v: 0 | 1 | 2 | 5 | 10) => void;
   setPaused: (p: boolean) => void;
-  /** Replaced by authenticated backend WebSocket snapshots and patches. */
+  /** Replaced by backend WebSocket snapshots and patches. */
   setTwin: (t: TwinState) => void;
   /** Backend connection state; offline never becomes a synthetic runtime source. */
-  source: "connecting" | "online" | "offline" | "unauthorized";
-  setSource: (s: "connecting" | "online" | "offline" | "unauthorized") => void;
+  source: "connecting" | "online" | "offline";
+  setSource: (s: "connecting" | "online" | "offline") => void;
   /** Backend-reported heatmap layer, keyed by kind and floor. */
   heat: Record<string, HeatmapLayer> | null;
   setHeat: (l: HeatmapLayer | null) => void;
@@ -210,14 +208,9 @@ interface Store {
   /** 最近一次 What-if 結果（後端回傳，含 schema 外的 window 對照資料） */
   whatif: unknown | null;
   setWhatIf: (r: unknown | null) => void;
-  authStatus: AuthStatus;
-  authToken: string | null;
-  authUser: AuthUser | null;
-  setAuth: (next: { status?: AuthStatus; token?: string | null; user?: AuthUser | null }) => void;
-  clearAuth: () => void;
 }
 
-/** Empty initial state until the authenticated backend sends a FULL snapshot. */
+/** Empty initial state until the backend sends a FULL snapshot. */
 const EMPTY: TwinState = {
   schema_version: "1.0", layout_id: layout.id,
   sim: { tick: 0, tick_ms: 100, speed: 1, mode: "PAUSED", seed: 42, baseline_snapshot_id: null },
@@ -287,15 +280,6 @@ export const useStore = create<Store>((set) => ({
   speed: 1, paused: false, seed: 42,
   source: "connecting",
   setSource: (source) => set({ source }),
-  authStatus: "loading",
-  authToken: null,
-  authUser: null,
-  setAuth: (next) => set((st) => ({
-    authStatus: next.status ?? st.authStatus,
-    authToken: next.token === undefined ? st.authToken : next.token,
-    authUser: next.user === undefined ? st.authUser : next.user,
-  })),
-  clearAuth: () => set({ authStatus: "guest", authToken: null, authUser: null, source: "connecting" }),
   modal: null,
   activeWindowId: null,
   windows: [], minimizedWindows: [], windowOrder: [],

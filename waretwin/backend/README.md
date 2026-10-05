@@ -27,8 +27,6 @@ browser simulation khi bridge mất kết nối.
 
 ## What is already supported
 
-- Authentication: register, login, logout, current user.
-- Admin user management: create, update, disable, delete, reset password.
 - Django Channels WebSocket at `/ws`.
 - `FULL`, `PATCH`, `HEATMAP`, `ERROR`, `COPILOT_REPLY`, `WHATIF_RESULT` messages.
 - Simulation controls: play, pause, reset, speed.
@@ -41,7 +39,7 @@ browser simulation khi bridge mất kết nối.
 - What-if simulation.
 - Copilot rule-based fallback without any external AI API.
 - VLM simulated observation without any external AI API.
-- SQLite persistence for users, tokens, warehouse master data, orders, missions,
+- SQLite persistence for warehouse master data, orders, missions,
   reservations, audit/events and robot profiles.
 - `RobotGateway` boundary for the Central Django -> authenticated ROS bridge -> ROS 2 path.
 
@@ -52,8 +50,8 @@ browser simulation khi bridge mất kết nối.
   intentionally single-process for the Ubuntu development stack.
 
 `LOCAL_SIM` remains an in-process UI/demo provider. In `GAZEBO_ROS` and
-`REAL_ROBOT`, robot pose/status is accepted only from the authenticated ROS
-bridge; a lost bridge marks robots offline and does not simulate movement.
+`REAL_ROBOT`, robot pose/status is accepted only from the ROS bridge's own
+connection handshake; a lost bridge marks robots offline and does not simulate movement.
 The bridge registry routes commands by `robot_id`, while the default launch
 still runs one robot for backward compatibility.
 
@@ -67,26 +65,15 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Set a private non-default TWIN_ADMIN_PASSWORD in .env before the first seed.
 python manage.py migrate
-python manage.py seed_demo
 python manage.py sync_master_data
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 127.0.0.1:8000
 ```
 
 Or simply:
 
 ```bash
 ./run.sh
-```
-
-The configured admin is created from `TWIN_ADMIN_*` in `.env`. A non-default
-`TWIN_ADMIN_PASSWORD` is required only when that user does not exist; rerunning
-the command preserves an existing password and never prints it.
-
-```text
-username: admin
-password: value from TWIN_ADMIN_PASSWORD
 ```
 
 ## Frontend configuration
@@ -107,7 +94,8 @@ npm install
 npm run dev
 ```
 
-Open the frontend and log in with the development admin account.
+Open the frontend at `http://127.0.0.1:5173/`. The local application has no
+user account or login flow.
 
 When the base URLs are empty, the browser hostname plus
 `VITE_BACKEND_PORT` is used automatically. Legacy `VITE_API_URL` and
@@ -116,18 +104,6 @@ When the base URLs are empty, the browser hostname plus
 ## Main REST endpoints
 
 ```text
-POST   /api/auth/register
-POST   /api/auth/login
-POST   /api/auth/logout
-GET    /api/auth/me
-
-GET    /api/admin/users
-POST   /api/admin/users
-GET    /api/admin/users/:id
-PATCH  /api/admin/users/:id
-DELETE /api/admin/users/:id
-POST   /api/admin/users/:id/reset-password
-
 GET    /api/health
 GET    /api/health/
 GET    /api/system/status/
@@ -193,10 +169,6 @@ config/
   urls.py
   asgi.py
 
-accounts/
-  models.py
-  management/commands/seed_demo.py
-
 twin/
   consumers.py          # WebSocket contract
   runtime.py            # mock realtime twin runtime
@@ -248,7 +220,7 @@ The Django backend now includes persistent warehouse master data with the hierar
 
 `Warehouse 1 -> N Zone 1 -> N Shelf`
 
-Main API endpoints (Bearer auth required; mutations require admin):
+Legacy warehouse-master endpoints are local-only and do not use browser user credentials:
 
 - `GET/POST /api/warehouses`
 - `GET/PATCH/DELETE /api/warehouses/{id}`
@@ -265,7 +237,6 @@ After pulling this version run:
 
 ```bash
 python manage.py migrate
-python manage.py seed_demo
 python manage.py sync_master_data
 ```
 

@@ -1,9 +1,7 @@
 import logging
 import time
 from urllib.parse import parse_qs
-from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
-from .auth import user_from_token
 from .runtime import runtime
 from .control_timing import profile_async
 from .realtime_consumer import RealtimeDispatchMixin
@@ -11,21 +9,11 @@ from .visualization_outbox import VisualizationOutbox
 
 log = logging.getLogger(__name__)
 
-@database_sync_to_async
-def resolve_user(token: str | None):
-    return user_from_token(token)
-
 class TwinConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
     database_free_types = frozenset({'ROBOT_MANUAL', 'ROBOT_MODE', 'ROBOT_DETAIL_VIEW', 'ROBOT_DETAIL_FRAME_RECEIVED'})
 
     async def connect(self):
         query = parse_qs(self.scope.get('query_string', b'').decode())
-        token = (query.get('token') or [None])[0]
-        user = await resolve_user(token)
-        if user is None:
-            await self.close(code=4401)
-            return
-        self.scope['waretwin_user'] = user
         self.control_only = (query.get('control_only') or ['0'])[0] == '1'
         self._message_window_started = time.monotonic()
         self._message_window_count = 0
@@ -91,7 +79,7 @@ class TwinConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
             elif content.get('type') == 'ROBOT_DETAIL_VIEW':
                 self.visualization_outbox.delivery_ack = content.get('delivery_ack') is True
                 content = dict(content, _view_received_ms=time.time() * 1000)
-            await runtime.handle_message(self, content, self.scope.get('waretwin_user'))
+            await runtime.handle_message(self, content)
         except Exception as exc:
             # Keep a malformed/failed command isolated to this frame. The
             # runtime loop and other clients must remain available.

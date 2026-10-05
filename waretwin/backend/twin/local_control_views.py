@@ -25,7 +25,7 @@ from .local_control import (
 )
 from .models import RobotVda5050Configuration
 from .runtime import runtime
-from .views import _body, _error, api_user_required
+from .views import _body, _error
 from .vda5050 import (
     apply_configuration, decrypt_password, encrypt_password, ensure_configuration_active,
     public_configuration, test_connection, validate_configuration,
@@ -293,7 +293,6 @@ def _pose_within_active_map(robot_id: str, pose: dict[str, float]) -> bool:
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET'])
 def local_maps(request, robot_id: str):
     problem = _robot_available(robot_id)
@@ -325,7 +324,6 @@ def local_maps(request, robot_id: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET', 'POST'])
 def local_runtime_mode(request, robot_id: str):
     adapter = _runtime_adapter(runtime.runtime_mode)
@@ -387,7 +385,6 @@ def local_runtime_mode(request, robot_id: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def mapping_command(request, robot_id: str, action: str):
     if action not in ('start', 'stop'):
@@ -418,7 +415,6 @@ def mapping_command(request, robot_id: str, action: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def save_robot_map(request, robot_id: str):
     problem = _robot_available(robot_id)
@@ -480,7 +476,6 @@ def save_robot_map(request, robot_id: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def load_robot_map(request, robot_id: str):
     problem = _robot_available(robot_id)
@@ -637,7 +632,6 @@ def load_robot_map(request, robot_id: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def resume_robot_slam_session(request, robot_id: str):
     """Restart the supervised Mapping runtime with one registered pose graph.
@@ -769,7 +763,6 @@ def resume_robot_slam_session(request, robot_id: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def initialize_robot_pose(request, robot_id: str):
     problem = _robot_available(robot_id)
@@ -828,7 +821,6 @@ def _get_vda_config(robot_id: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['GET', 'PUT'])
 def vda5050_configuration(request, robot_id: str):
     if request.method == 'GET':
@@ -897,7 +889,6 @@ def vda5050_configuration(request, robot_id: str):
 
 
 @csrf_exempt
-@api_user_required
 @require_http_methods(['POST'])
 def vda5050_test_connection(request, robot_id: str):
     body = _body(request)

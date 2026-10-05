@@ -7,12 +7,12 @@ log = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = 'Synchronize warehouse/layout master data without changing user credentials.'
+    help = 'Synchronize warehouse/layout master data.'
 
     def handle(self, *args, **options):
         # The dashboard performs concurrent reads while the scheduler occasionally
         # persists status transitions. WAL lets readers proceed during a writer and
-        # is much more suitable than SQLite's default rollback journal for ASGI dev.
+        # is more suitable than SQLite's default rollback journal for ASGI dev.
         try:
             from django.db import connection
 

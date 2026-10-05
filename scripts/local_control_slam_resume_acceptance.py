@@ -1273,7 +1273,7 @@ def teleop_readiness_lease_evidence(command_marker, max_age_ms=500):
 
 def web_manual_teleop_evidence(sent_frames, command_marker, end_marker,
                                max_gap_ms=500):
-    """Measure command refresh continuity from the authenticated WebSocket frames."""
+    """Measure command refresh continuity from local browser WebSocket frames."""
     sent_frames = sent_frames if isinstance(sent_frames, list) else []
     command_marker = command_marker if isinstance(command_marker, dict) else {}
     end_marker = end_marker if isinstance(end_marker, dict) else {}
@@ -1389,8 +1389,7 @@ def main() -> int:
     }
     rclpy.init()
     probe = ResumeMotionProbe()
-    token = acceptance.authenticate(backend)
-    ws_url = backend.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws?token=' + token
+    ws_url = backend.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws'
     ws = websocket.create_connection(ws_url, timeout=5.0, enable_multithread=True)
     ws.settimeout(0.02)
     readiness = None
@@ -1403,7 +1402,7 @@ def main() -> int:
             and probe.sim_time() > 0 and probe.runtime_status is not None
             and robot_id in (probe.runtime_status.get('connected_robot_ids') or []), 45.0, ws)
         if not ready:
-            raise RuntimeError('live Gazebo pose, clock, or authenticated bridge was not ready')
+            raise RuntimeError('live Gazebo pose, clock, or ROS bridge was not ready')
         runtime_state = str(probe.runtime_status.get('runtime_state') or '').upper()
         if runtime_state not in ('NAVIGATION', 'MAPPING'):
             raise RuntimeError(

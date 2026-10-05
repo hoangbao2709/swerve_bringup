@@ -1,8 +1,8 @@
 # Django runtime connection
 
-Django is the frontend's runtime authority. The frontend authenticates with
-Django REST endpoints and consumes runtime state over the authenticated
-WebSocket. It does not fall back to local simulation when disconnected.
+Django is the frontend's runtime authority. The local frontend calls Django
+REST endpoints and consumes runtime state over its WebSocket without a browser
+user identity. It does not fall back to local simulation when disconnected.
 
 ## Runtime path
 
@@ -22,17 +22,17 @@ bridge. The browser does not generate motion or synthetic telemetry.
 - `VITE_BACKEND_PORT`: backend port when the hostname is derived from the
   browser location.
 
-Login and logout use Django authentication. REST sends
-`Authorization: Bearer <token>`; the WebSocket authenticates with the same
-session token. Backend disconnection leaves last-confirmed state visible and
-marks the runtime offline; unknown measurements remain unknown.
+REST and WebSocket requests do not send user credentials or browser tokens.
+Backend disconnection leaves last-confirmed state visible and marks the runtime
+offline; unknown measurements remain unknown. The separate ROS bridge
+connection keeps its robot-service handshake.
 
 ## Development
 
 ```bash
 # backend
 python manage.py migrate
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 127.0.0.1:8000
 
 # frontend
 npm ci

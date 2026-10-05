@@ -504,7 +504,7 @@ class TwinRuntime:
         from .visualization_outbox import VISUALIZATION_TYPES
         if payload.get('type') in VISUALIZATION_TYPES:
             # Avoid Channels' deep-copy/FIFO backlog for disposable clouds.
-            # Each authenticated consumer owns one bounded latest-only lane.
+            # Each connected browser consumer owns one bounded latest-only lane.
             for client in tuple(self.visualization_clients):
                 client.visualization_outbox.offer(payload)
             return
@@ -733,9 +733,11 @@ class TwinRuntime:
             self.map_sync_error = 'waiting for robot map revision status' if robot_ids else None
             return
         stale_after = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
+        now = time.monotonic()
         fresh_rows = {
             rid: row for rid, row in rows.items()
-            if time.monotonic() - row['received_monotonic'] <= stale_after
+            if isinstance(row.get('received_monotonic'), (int, float))
+            and 0 <= now - row['received_monotonic'] <= stale_after
         }
 
         def common_revision(key):
@@ -1512,7 +1514,7 @@ class TwinRuntime:
             scen.external_scheduler = False
             return await asyncio.to_thread(run_whatif, base, scen, req, start_tick)
 
-    async def handle_message(self, consumer, data: dict[str, Any], user) -> None:
+    async def handle_message(self, consumer, data: dict[str, Any]) -> None:
         route_monotonic = time.monotonic()
         consumer_monotonic = data.get('_consumer_monotonic')
         view_received_ms = data.get('_view_received_ms')
@@ -1524,8 +1526,6 @@ class TwinRuntime:
             return
         t = msg.type
         eng = self.engine
-        is_admin = getattr(user, 'role', None) == 'admin'
-
         if t == 'RESYNC':
             await consumer.send_json(self.full_message())
         elif t == 'SIM_CONTROL':
@@ -1554,21 +1554,12 @@ class TwinRuntime:
             eng.state['sim']['mode'] = 'PAUSED' if self.paused else 'LIVE'
             await self.broadcast({'type': 'PATCH', 'base_tick': eng.state['sim']['tick'], 'tick': eng.state['sim']['tick'], 'patch': {'sim': eng.state['sim']}, 'events': []})
         elif t == 'INJECT':
-            if not is_admin:
-                await consumer.send_json({'type': 'ERROR', 'code': 'FORBIDDEN', 'message': 'Admin privileges required for scenario injection'})
-                return
             eng.inject(msg.injection.model_dump(exclude_none=True))
             await self.broadcast_full()
         elif t == 'CLEAR_INJECTION':
-            if not is_admin:
-                await consumer.send_json({'type': 'ERROR', 'code': 'FORBIDDEN', 'message': 'Admin privileges required for scenario injection'})
-                return
             eng.clear_injection(msg.kind, msg.target_id)
             await self.broadcast_full()
         elif t == 'CREATE_TASK':
-            if not is_admin:
-                await consumer.send_json({'type': 'ERROR', 'code': 'FORBIDDEN', 'message': 'Admin privileges required for task management'})
-                return
             nt = msg.task
             try:
                 task = eng.create_task(nt.type, nt.priority, nt.source, nt.destination, nt.load_units)
@@ -1585,9 +1576,6 @@ class TwinRuntime:
                 return
             await self.broadcast_full()
         elif t == 'ASSIGN_TASK':
-            if not is_admin:
-                await consumer.send_json({'type': 'ERROR', 'code': 'FORBIDDEN', 'message': 'Admin privileges required for task management'})
-                return
             try:
                 eng.assign_task(msg.task_id, msg.robot_id, source='USER')
             except ValueError as exc:

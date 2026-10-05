@@ -1,7 +1,6 @@
 import { apiFetch } from "./api";
 import { useStore, type AuthUser } from "../state/store";
 import { wsDisconnect } from "./ws";
-import { DEMO_MODE, DEMO_USER } from "../config";
 
 const STORAGE_KEY = "waretwin.auth";
 
@@ -29,12 +28,6 @@ function writeStoredSession(session: StoredSession | null) {
 }
 
 export async function bootstrapAuth() {
-  // Demo mode is intentionally backend-independent.
-  if (DEMO_MODE) {
-    useStore.getState().setAuth({ status: "authenticated", token: null, user: DEMO_USER });
-    return { token: "", user: DEMO_USER };
-  }
-
   const session = readStoredSession();
   if (!session) {
     useStore.getState().setAuth({ status: "guest", token: null, user: null });
@@ -94,4 +87,3 @@ export async function logout() {
 export function restoreStoredSession(): StoredSession | null {
   return readStoredSession();
 }
-

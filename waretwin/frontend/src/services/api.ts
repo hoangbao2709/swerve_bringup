@@ -40,6 +40,11 @@ export type RobotNavigationTag = {
   map_revision: string;
   navigation_pose: { x: number; y: number; yaw: number } | null;
   navigation_pose_source: string | null;
+  canonical_map_id?: string;
+  canonical_map_revision?: string;
+  canonical_navigation_pose?: { x: number; y: number; yaw: number } | null;
+  registration_revision?: number;
+  registration_source?: string;
   tag_revision: string;
   metadata: Record<string, unknown>;
 };
@@ -51,6 +56,8 @@ export type RobotNavigationTagRegistry = {
   warehouse_code?: string;
   map_id: string | null;
   map_revision: string | null;
+  canonical_map_id?: string | null;
+  canonical_map_revision?: string | null;
   active_map_id?: string | null;
   active_map_revision?: string | null;
   frame_id: "map";
@@ -58,7 +65,18 @@ export type RobotNavigationTagRegistry = {
   reason: string | null;
   registration_required?: boolean;
   transform_source?: string | null;
-  registration_revision?: string | null;
+  registration_revision?: number | null;
+  registration?: {
+    canonical_map_id: string;
+    canonical_map_revision: string;
+    active_map_id: string;
+    active_map_revision: string;
+    tx: number;
+    ty: number;
+    yaw: number;
+    registration_revision: number;
+    source: string;
+  } | null;
   registry_revision: string | null;
   tags: RobotNavigationTag[];
 };
@@ -71,7 +89,7 @@ export async function getRobotNavigationTags(robotId: string): Promise<RobotNavi
 
 export const startTagMission = (robot_id: string, target_tag_id: number) => {
   const state = useStore.getState();
-  if (state.runtimeMode !== "LOCAL_SIM" && state.mapSync.status !== "SYNCED") {
+  if (state.mapSync.status !== "SYNCED") {
     return Promise.reject(new Error(`Cannot start mission: map revision mismatch (${state.mapSync.status})`));
   }
   return navigationApi("missions/start", { method: "POST", body: JSON.stringify({ robot_id, target_tag_id }) }) as Promise<TagNavigationState>;

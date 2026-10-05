@@ -11,8 +11,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
-    "sim:stats": "tsx tests/stats.ts"
+    "test": "vitest run"
   },
   "dependencies": {
     "@react-three/drei": "^9.114.0",

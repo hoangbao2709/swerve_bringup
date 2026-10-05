@@ -84,7 +84,6 @@ export const schedulerApi = {
   conveyorCommand: (id: string, action: ConveyorCommand, body: Record<string, unknown> = {}) => apiFetch(`/api/conveyors/${encodeURIComponent(id)}/command`, { method: "POST", body: JSON.stringify({ ...body, action }) }).then(json<Record<string, unknown>>),
   conveyorHandshake: (id: string, body: { robot_id: string; item_id: string; phase: string }) => apiFetch(`/api/conveyors/${encodeURIComponent(id)}/handshake`, { method: "POST", body: JSON.stringify(body) }).then(json<Record<string, unknown>>),
   overview: () => apiFetch("/api/scheduler/overview").then(json<SchedulerOverview>),
-  sync: () => apiFetch("/api/scheduler/sync", { method: "POST" }).then(json<Record<string, unknown>>),
   workpoints: () => apiFetch("/api/scheduler/workpoints").then(json<WorkPoint[]>),
   robots: () => apiFetch("/api/scheduler/robots").then(json<ManagedRobot[]>),
   orders: () => apiFetch("/api/orders?limit=500").then(json<WarehouseOrder[]>),

@@ -67,8 +67,9 @@ export function SelectedRobotPanel() {
   if (liftId && !id) return <LiftPanel id={liftId} />;
   if (!r) return <Panel title="Selected Robot"><div style={{ color: "var(--muted)", padding: "12px 0" }}>Click a robot or a lift in the 3D view</div></Panel>;
   const col = STATUS_COLOR[r.status];
-  const estH = (r.battery / 100) * 3.1;
-  const batteryStr = r.battery.toFixed(r.battery < 10 ? 1 : 0);
+  const battery = r.battery;
+  const estH = battery == null ? null : (battery / 100) * 3.1;
+  const batteryStr = battery == null ? "NOT REPORTED" : battery.toFixed(battery < 10 ? 1 : 0);
   const robotTasks = Object.values(tasks)
     .filter((t) => t.assigned_robot === r.id && (t.status === "ASSIGNED" || t.status === "IN_PROGRESS"))
     .sort((a, b) => {
@@ -86,18 +87,18 @@ export function SelectedRobotPanel() {
       </div>
       <div className="robot-img"><RobotThumb status={r.status} /></div>
       <div className="battery">
-        <span className="bar"><span className="fill" style={{ width: `${r.battery}%`, background: r.battery < 10 ? "#ef4444" : r.battery < 20 ? "#f97316" : "#22c55e" }} /></span>
-        <span className="pct">{batteryStr}%</span>
-        <span className="est">Estimated {estH.toFixed(1)} h</span>
+        <span className="bar"><span className="fill" style={{ width: `${battery ?? 0}%`, background: battery == null ? "#64748b" : battery < 10 ? "#ef4444" : battery < 20 ? "#f97316" : "#22c55e" }} /></span>
+        <span className="pct">{battery == null ? batteryStr : `${batteryStr}%`}</span>
+        <span className="est">Estimated {estH == null ? "NOT REPORTED" : `${estH.toFixed(1)} h`}</span>
       </div>
-      <div className="kv"><span className="k">State</span><span className="v" style={{ fontFamily: "var(--mono)", fontSize: 11.5 }}>{r.fsm}{r.velocity > 0.05 ? ` · ${r.velocity.toFixed(2)} m/s` : ""}{r.eta_s ? ` · ETA ${r.eta_s}s` : ""}</span></div>
+      <div className="kv"><span className="k">State</span><span className="v" style={{ fontFamily: "var(--mono)", fontSize: 11.5 }}>{r.fsm}{r.velocity != null && r.velocity > 0.05 ? ` · ${r.velocity.toFixed(2)} m/s` : ""}{r.eta_s ? ` · ETA ${r.eta_s}s` : ""}</span></div>
       <div className="kv"><span className="k">Perception</span><span className="v" style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: PERC_COLOR[r.perception?.state ?? "OFF"] }} title="Virtual LiDAR 270° / 4 m">{percText(r)}</span></div>
       <div className="kv"><span className="k">Current Task</span><span className="v">{task ? `#${task.id}  ${task.type[0] + task.type.slice(1).toLowerCase()}` : "—"}</span></div>
       <div className="kv"><span className="k">From</span><span className="v">{pretty(task?.source)}</span></div>
       <div className="kv"><span className="k">To</span><span className="v">{pretty(task?.destination ?? r.destination)}</span></div>
       <div className="robot-orders">
         <div className="robot-orders-head"><span>Orders on robot</span><b>{robotTasks.length}</b></div>
-        <div className="robot-load">Load: <strong>{r.load.current}</strong> / {r.load.capacity} units</div>
+        <div className="robot-load">Load: <strong>{r.load ? r.load.current : "NOT REPORTED"}</strong>{r.load ? ` / ${r.load.capacity} units` : ""}</div>
         {robotTasks.length ? robotTasks.map((order) => (
           <div className="robot-order" key={order.id}>
             <div><strong>#{order.id}</strong><span>{order.type} · {order.status.replace("_", " ")}</span></div>
@@ -117,7 +118,7 @@ export function SelectedRobotPanel() {
 
 const PERC_COLOR = { CLEAR: "#22d3ee", SLOWING: "#f59e0b", STOPPED: "#ef4444", OFF: "#64748b" } as const;
 export function percText(r: RobotState): string {
-  const P = r.perception; if (!P || P.state === "OFF") return "OFF";
+  const P = r.perception; if (P == null) return "UNAVAILABLE"; if (P.state === "OFF") return "OFF";
   const dyn = P.obstacles.find((o) => o.kind !== "RACK");
   const who = dyn ? ` · ${dyn.id} ${dyn.distance_m.toFixed(1)} m` : "";
   return `${P.state} · ahead ${P.ahead_m.toFixed(1)} m${who}`;

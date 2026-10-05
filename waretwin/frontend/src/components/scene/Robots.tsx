@@ -51,12 +51,12 @@ export function RobotMesh({ r, selected, onSelect, showLabel, labelZIndex = 8, l
         labelRef.current.dataset.renderY = String(g.position.z);
         labelRef.current.dataset.renderYaw = String(-g.rotation.y);
       }
-      if (wheelsRef.current && r.velocity > 0.05) wheelsRef.current.rotation.z -= (r.velocity / 0.12) * dt;
+      if (wheelsRef.current && (r.velocity ?? 0) > 0.05) wheelsRef.current.rotation.z -= ((r.velocity ?? 0) / 0.12) * dt;
     }
     if (ringRef.current) { const s = 1 + Math.sin(clock.elapsedTime * 3) * 0.08; ringRef.current.scale.set(s, s, s); }
     if (lampRef.current && (r.status === "ERROR" || r.status === "WARNING")) lampRef.current.opacity = 0.5 + Math.sin(clock.elapsedTime * 8) * 0.5;
   });
-  const loaded = r.load.current > 0;
+  const loaded = (r.load?.current ?? 0) > 0;
   return (
     <group name={`robot-${r.id}`} ref={groupRef} position={init.current.p} rotation-y={init.current.h}>
       <group onClick={(e) => { e.stopPropagation(); onSelect(); }} onPointerOver={() => (document.body.style.cursor = "pointer")} onPointerOut={() => (document.body.style.cursor = "")}>
@@ -175,7 +175,7 @@ function RobotPath({ r, selected }: { r: RobotState; selected: boolean }) {
   }, [r.path, r.path_index, r.position, r.floor]);
   if (!pts) return null;
   const end = pts[pts.length - 1];
-  const col = r.fsm === "GOING_TO_CHARGE" ? "#60a5fa" : r.load.current > 0 ? "#f59e0b" : "#22d3ee";
+  const col = r.fsm === "GOING_TO_CHARGE" ? "#60a5fa" : (r.load?.current ?? 0) > 0 ? "#f59e0b" : "#22d3ee";
   return (
     <group>
       <Line points={pts} color={selected ? "#ffffff" : col} lineWidth={selected ? 2.4 : 1.1} dashed dashSize={0.7} gapSize={0.4} transparent opacity={selected ? 1 : 0.5} />
@@ -187,7 +187,6 @@ function RobotPath({ r, selected }: { r: RobotState; selected: boolean }) {
 export function Robots({ lite = false }: { lite?: boolean }) {
   const robots = useStore((s) => s.twin.robots);
   const selected = useStore((s) => s.selectedRobot);
-  const openRobotQuickDetail = useStore((s) => s.openRobotQuickDetail);
   const showLabels = useStore((s) => s.showLabels);
   const robotLabels = useStore((s) => s.labelLayers.robots);
   const showPaths = useStore((s) => s.showPaths);
@@ -202,8 +201,8 @@ export function Robots({ lite = false }: { lite?: boolean }) {
         const r = robotForWarehouse(raw, runtimeMode, layout.coordinate_system?.frame ?? "", layoutRevision);
         return r ? [(
         <group key={r.id}>
-          <RobotMesh r={r} selected={r.id === selected} onSelect={() => { if (!lite) openRobotQuickDetail(r.id); }} showLabel={showLabels && robotLabels.visible && !lite} labelZIndex={robotLabels.zIndex} lite={lite} smooth={runtimeMode === "LOCAL_SIM"} />
-          {showPaths && runtimeMode === "LOCAL_SIM" && !lite && <RobotPath r={r} selected={r.id === selected} />}
+          <RobotMesh r={r} selected={r.id === selected} onSelect={() => { if (!lite) { window.history.pushState({}, "", `/robots/${encodeURIComponent(r.id)}/control`); window.dispatchEvent(new PopStateEvent("popstate")); } }} showLabel={showLabels && robotLabels.visible && !lite} labelZIndex={robotLabels.zIndex} lite={lite} smooth={false} />
+          {showPaths && !lite && <RobotPath r={r} selected={r.id === selected} />}
         </group>
       )] : [];
       })}

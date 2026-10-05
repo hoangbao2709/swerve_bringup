@@ -51,7 +51,6 @@ vi.mock("../src/components/control/RobotLidarViews", async () => {
     }),
   };
 });
-vi.mock("../src/simulation/runner", () => ({ useSimulationRunner: () => undefined }));
 
 import { RobotQuickDetailModal } from "../src/components/robot/RobotQuickDetailModal";
 import { RobotControlDetailPage } from "../src/components/control/RobotControlDetailPage";

@@ -48,6 +48,7 @@ export type RobotStatus =
 
 /** 規格 4️⃣ State Machine — 給模擬引擎用的「細部狀態」，UI 以 RobotStatus 為主 */
 export type RobotFsmState =
+  | "UNKNOWN"
   | "IDLE"
   | "TASK_ASSIGNED"
   | "NAVIGATING"
@@ -175,19 +176,19 @@ export interface RobotState {
   position: Vec3;
   /** 航向角 (弧度)，繞 y 軸，0 = +x 方向 */
   heading: number;
-  velocity: number;              // m/s，純量；方向由 heading 決定
-  max_speed: number;             // m/s
-  battery: number;               // 0..100
+  velocity: number | null;       // m/s, null when not reported
+  max_speed: number | null;      // m/s, null when not reported
+  battery: number | null;        // 0..100, null when not reported
   status: RobotStatus;
   fsm: RobotFsmState;
-  health: number;                // 0..100
+  health: number | null;         // 0..100, null when not reported
   current_task_id: TaskId | null;
   destination: LocationId | null;
   /** 目前路徑 (格點)，index 0 = 下一個格點 */
   path: GridCell[];
   /** 路徑上已走到第幾個 index，前端插值用 */
   path_index: number;
-  load: { current: number; capacity: number };
+  load: { current: number; capacity: number } | null;
   zone: ZoneId | null;
   eta_s: number | null;          // 到達目的地估計秒數 (模擬時間)
   /** 機器人進入目前 fsm 狀態時的 tick，用於 dwell time 計算與 UI */
@@ -199,16 +200,16 @@ export interface RobotState {
     energy_wh: number;
     busy_ticks: number;
     wait_ticks: number;
-  };
+  } | null;
   /** Phase 7：虛擬 LiDAR（270° / 4 m）感知與局部避障狀態 */
-  perception: Perception;
+  perception: Perception | null;
   vx?: number;
   vy?: number;
   wz?: number;
   navigation_state?: string;
-  control_mode?: "MANUAL" | "AUTONOMOUS";
+  control_mode?: "MANUAL" | "AUTONOMOUS" | null;
   last_telemetry_at?: string | null;
-  /** Map identity attached to the live pose; absent for LOCAL_SIM robots. */
+  /** Map identity attached to a measured runtime pose. */
   pose_frame_id?: string | null;
   /** Current runtime pose with its explicit active-map identity. */
   active_map_pose?: FramePose | null;
@@ -835,7 +836,7 @@ export type ServerMessage =
   | { type: "LAYOUT_UPDATED"; source: string; warehouse_id: number; layout_id?: string; revision: number; published_version?: number; is_active?: boolean; updated_at?: string | null }
   | { type: "map.published"; warehouse_id: number | string; revision: number; published_version: number; map_revision: number; artifact_manifest?: unknown }
   | { type: "SCHEDULE_UPDATED"; source: string }
-  | { type: "RUNTIME_STATUS"; runtime_mode: "LOCAL_SIM" | "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }>; local_active_maps?: Record<string, RobotLocalMapDiagnostics & { active_map_id?: string | null; active_map_revision?: string | null; map_source?: string | null }>; robot_capabilities?: Record<RobotId, RobotRuntimeCapabilities>; robot_mapping_sessions?: Record<string, string | null> }
+  | { type: "RUNTIME_STATUS"; runtime_mode: "GAZEBO_ROS" | "REAL_ROBOT"; runtime_state?: RuntimeState; bridge_state?: string; ros_connected: boolean; connected_robot_ids?: RobotId[]; nav2_state: string; last_telemetry_at: string | null; diagnostics?: RosDiagnostics; published_revision?: number | null; published_version?: number; ros_revision?: number | null; gazebo_revision?: number | null; nav2_revision?: number | null; tag_map_revision?: number | null; tf_status?: boolean; map_sync_status?: string; map_sync_error?: string | null; robot_map_sync?: Record<string, { ros_revision: number | null; gazebo_revision: number | null; nav2_revision: number | null; tag_map_revision: number | null; tf_status: boolean; error: string | null; status: string }>; local_active_maps?: Record<string, RobotLocalMapDiagnostics & { active_map_id?: string | null; active_map_revision?: string | null; map_source?: string | null }>; robot_capabilities?: Record<RobotId, RobotRuntimeCapabilities>; robot_mapping_sessions?: Record<string, string | null> }
   | { type: "ROBOT_CONTROL_STATUS"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS"; accepted: boolean; requested_mode?: "MANUAL" | "AUTONOMOUS"; applied_mode?: "MANUAL" | "AUTONOMOUS"; mode_transition_state?: "REQUESTED" | "APPLIED" | "FAILED"; request_id?: string | null; reason?: string | null; timestamp?: string }
   | { type: "TAG_NAV_STATUS"; mission?: TagNavigationState; mission_id?: number; robot_id: string; status?: string; state?: string; current_tag_id?: number | null; next_tag_id?: number | null; target_tag_id?: number | null; route?: number[]; route_index?: number; progress_percent?: number }
   | { type: "TAG_DETECTION"; robot_id: string; visible: boolean; tag_id?: number | null; offset_x?: number | null; offset_y?: number | null; yaw?: number | null; timestamp?: string }

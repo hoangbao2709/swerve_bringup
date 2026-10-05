@@ -1,4 +1,4 @@
-import { useStore, type ModalKind } from "../../state/store";
+import { useStore } from "../../state/store";
 
 type SidebarProps = {
   collapsed: boolean;
@@ -10,8 +10,6 @@ type MenuItem = {
   caption?: string;
   icon: string;
   path?: string;
-  modal?: ModalKind;
-  drawer?: "scenarios" | "ops" | "whatif";
 };
 
 function navigate(path: string) {
@@ -19,52 +17,26 @@ function navigate(path: string) {
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
-function isActive(item: MenuItem, pathname: string, activeWindowId: string | null) {
-  if (item.path) return pathname === item.path;
-  if (item.modal) return activeWindowId === item.modal;
-  return false;
+function isActive(item: MenuItem, pathname: string) {
+  return Boolean(item.path && pathname === item.path);
 }
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const source = useStore((s) => s.source);
   const authUser = useStore((s) => s.authUser);
-  const activeWindowId = useStore((s) => s.activeWindowId);
-  const setModal = useStore((s) => s.setModal);
-  const setDrawer = useStore((s) => s.setDrawer);
   const pathname = window.location.pathname;
 
   const workspace: MenuItem[] = [
     { label: "Overview", caption: "Operations overview", icon: "⌂", path: "/" },
-    { label: "Operations", caption: "Live warehouse console", icon: "◫", path: "/operations" },
     { label: "Robot Control", caption: "Tag navigation", icon: "◎", path: "/control" },
-    { label: "Diagnostics", caption: "System & ROS health", icon: "⚙", path: "/diagnostics" },
-    { label: "Robot Fleet", caption: "Fleet status", icon: "▣", modal: "fleet" },
-    { label: "Robot Scheduler", caption: "Plans & assignments", icon: "◌", modal: "scheduler" },
-    { label: "Inbound / Outbound", caption: "Order flows", icon: "⇄", modal: "flows" },
-    { label: "Tasks", caption: "Task queue", icon: "✓", modal: "tasks" },
-    { label: "Audit / Events", caption: "Activity log", icon: "≡", modal: "audit" },
-  ];
-
-  const operations: MenuItem[] = [
-    { label: "Scenarios", caption: "Run a scenario", icon: "▷", drawer: "scenarios" },
-    { label: "AI Ops", caption: "Decisions & insights", icon: "✦", drawer: "ops" },
-    { label: "What-if", caption: "Test an alternative", icon: "◇", drawer: "whatif" },
   ];
 
   const activate = (item: MenuItem) => {
-    if (item.path) {
-      if (pathname !== item.path) navigate(item.path);
-      return;
-    }
-    if (item.modal) {
-      setModal(item.modal);
-      return;
-    }
-    if (item.drawer) setDrawer(item.drawer);
+    if (item.path && pathname !== item.path) navigate(item.path);
   };
 
-  const statusLabel = source === "online" ? "Backend online" : source === "local" ? "Local simulator" : source;
-  const statusClass = source === "online" || source === "local" ? "online" : "degraded";
+  const statusLabel = source === "online" ? "Backend online" : source;
+  const statusClass = source === "online" ? "online" : "degraded";
 
   return (
     <aside className={`wt-sidebar${collapsed ? " collapsed" : ""}`} aria-label="WareTwin navigation">
@@ -86,30 +58,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <nav className="wt-sidebar-nav">
         <div className="wt-sidebar-section-label">Workspace</div>
         {workspace.map((item) => (
-          <button key={item.label} className={`wt-sidebar-item${isActive(item, pathname, activeWindowId) ? " active" : ""}`} onClick={() => activate(item)} title={collapsed ? item.label : undefined}>
+          <button key={item.label} className={`wt-sidebar-item${isActive(item, pathname) ? " active" : ""}`} onClick={() => activate(item)} title={collapsed ? item.label : undefined}>
             <span className="wt-sidebar-icon">{item.icon}</span>
             <span className="wt-sidebar-item-copy"><b>{item.label}</b><small>{item.caption}</small></span>
-            {isActive(item, pathname, activeWindowId) && <span className="wt-sidebar-active-mark" />}
+            {isActive(item, pathname) && <span className="wt-sidebar-active-mark" />}
           </button>
         ))}
-
-        <div className="wt-sidebar-section-label">Operations</div>
-        {operations.map((item) => (
-          <button key={item.label} className="wt-sidebar-item" onClick={() => activate(item)} title={collapsed ? item.label : undefined}>
-            <span className="wt-sidebar-icon">{item.icon}</span>
-            <span className="wt-sidebar-item-copy"><b>{item.label}</b><small>{item.caption}</small></span>
-          </button>
-        ))}
-
-        {authUser?.role === "admin" && <>
-          <div className="wt-sidebar-section-label">Administration</div>
-          <button className="wt-sidebar-item" onClick={() => navigate("/admin/warehouse")} title={collapsed ? "Warehouse Data" : undefined}>
-            <span className="wt-sidebar-icon">▤</span><span className="wt-sidebar-item-copy"><b>Warehouse Data</b><small>Layout & records</small></span>
-          </button>
-          <button className="wt-sidebar-item" onClick={() => navigate("/admin/warehouse-editor")} title={collapsed ? "Map Editor" : undefined}>
-            <span className="wt-sidebar-icon">⌗</span><span className="wt-sidebar-item-copy"><b>Map Editor</b><small>Configure workspace</small></span>
-          </button>
-        </>}
       </nav>
 
       <div className="wt-sidebar-footer">

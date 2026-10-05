@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { STATUS_COLOR, layout, useStore, type TagGraph } from "../../state/store";
 import { buildNavGrid } from "../../layout/navgrid";
-import { getEngine } from "../../simulation/runner";
 import { rackOccupancy } from "../../layout/shelfOccupancy";
 import { floorBoundary, polygonPoints, worldToSvgTransform } from "../../layout/coordinates";
 import { buildAisleFootprint, rackFootprint2D, resolveNavigationEdgeEndpoints, zoneLabelLayout } from "../../layout/geometry";
@@ -91,7 +90,6 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
   const hiddenRobotCount = externalRuntime ? Object.values(allRobots).filter((robot) => robot?.floor === mapFloor).length - Object.keys(robots).length : 0;
   const zones = twin?.zones && typeof twin.zones === "object" && !Array.isArray(twin.zones) ? twin.zones : EMPTY_ZONES;
   const selected = useStore((s) => s.selectedRobot);
-  const openRobotQuickDetail = useStore((s) => s.openRobotQuickDetail);
   const openWindow = useStore((s) => s.openWindow);
   const selectedShelf = useStore((s) => s.selectedShelf);
   const selectShelf = useStore((s) => s.selectShelf);
@@ -143,15 +141,12 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
     if (layer) {
       // 後端已降採樣到 2 m 格並正規化
       for (let i = 0; i < Math.min(v.length, layer.values.length); i++) v[i] = layer.values[i] * 100;
-    } else if (source !== "online") {
-      const eng = getEngine(); const g = eng.grid;
-      const src = (mode === "HEATMAP" ? eng.traffic : eng.trafficShort)[mapFloor];
-      if (src) for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) { const t = src[r * g.cols + c]; if (t > 0) v[Math.floor(r / cs) * cols + Math.floor(c / cs)] += t; }
     }
     if (mode === "TRAFFIC") {
       // 即時密度核心：半徑 ~5 m；停著不動且非閒置/充電的機器人權重加倍（瓶頸）
       for (const r of Object.values(robots)) {
         if (r.fsm === "IDLE" || r.fsm === "CHARGING" || r.fsm === "OFFLINE") continue;
+        if (r.velocity == null) continue;
         const w = r.velocity < 0.1 ? 60 : 30, cx = r.position[0] / cs, cz = r.position[2] / cs;
         for (let dr = -3; dr <= 3; dr++) for (let dc = -3; dc <= 3; dc++) { const rr = Math.floor(cz) + dr, cc = Math.floor(cx) + dc; if (rr < 0 || cc < 0 || rr >= rows || cc >= cols) continue; v[rr * cols + cc] += w * Math.exp(-(dr * dr + dc * dc) / 3); }
       }
@@ -298,7 +293,7 @@ function MapView2DCanvas({ mode, size, layout: mapLayout, layoutRevision }: MapV
       {Object.values(robots).map((r) => {
         const sel = r.id === selected;
         return (
-          <g key={r.id} data-robot-id={r.id} data-pose-source={r.pose_source} data-yaw={r.heading} transform={`translate(${r.position[0]},${r.position[2]})`} onClick={(event) => { event.stopPropagation(); openRobotQuickDetail(r.id); }} style={{ cursor: "pointer" }}>
+          <g key={r.id} data-robot-id={r.id} data-pose-source={r.pose_source} data-yaw={r.heading} transform={`translate(${r.position[0]},${r.position[2]})`} onClick={(event) => { event.stopPropagation(); window.history.pushState({}, "", `/robots/${encodeURIComponent(r.id)}/control`); window.dispatchEvent(new PopStateEvent("popstate")); }} style={{ cursor: "pointer" }}>
             {sel && <circle r="2.2" fill="none" stroke="#60a5fa" strokeWidth="0.3" />}
             <circle r="1" fill={STATUS_COLOR[r.status]} stroke={mapColors.robotStroke} strokeWidth="0.25" />
             <line x1="0" y1="0" x2={Math.cos(r.heading) * 1.6} y2={Math.sin(r.heading) * 1.6} stroke="#fff" strokeWidth="0.25" />

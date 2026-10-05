@@ -41,6 +41,9 @@ describe("robot pose and displayed map identity", () => {
   it("does not reinterpret a SLAM pose as canonical when canonical telemetry is missing", () => {
     expect(robotForWarehouse({ ...robot, canonical_pose: null, ...slamPose }, "GAZEBO_ROS", "map", 21)).toBeUndefined();
   });
+  it("does not allow LOCAL_SIM to bypass real map-pose identity", () => {
+    expect(robotForWarehouse({ ...robot, canonical_pose: null }, "LOCAL_SIM", "map", 21)).toBeUndefined();
+  });
   it("rejects offline, nonfinite and wrong-session named poses", () => {
     expect(robotForWarehouse({ ...robot, status: "OFFLINE" }, "GAZEBO_ROS", "map", 21)).toBeUndefined();
     expect(robotForWarehouse({ ...robot, canonical_pose: { ...canonical, x: NaN } }, "GAZEBO_ROS", "map", 21)).toBeUndefined();

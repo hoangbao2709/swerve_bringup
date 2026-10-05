@@ -2,7 +2,6 @@ import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useR
 import { apiFetch, clearEmergencyStop, emergencyStop, getRobotNavigationTags, type RobotNavigationTag, type RobotNavigationTagRegistry } from "../../services/api";
 import { WS_URL, wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
 import { MANUAL_COMMAND_REFRESH_MS, nextManualCommand, type ActiveManualCommand } from "../../services/manualCommand";
-import { useSimulationRunner } from "../../simulation/runner";
 import { layout, useStore } from "../../state/store";
 import type { FramePose, RobotDetailError, RobotDetailGoal, RobotDetailMapSnapshot, RobotDetailPath, RobotDetailPathPreview, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
 import type { WarehouseLayout } from "../../layout/types";
@@ -87,7 +86,6 @@ export function RobotControlDetailPage({ robotId }: { robotId: string }) {
 }
 
 function RobotControlDetailContent({ robotId }: { robotId: string }) {
-  useSimulationRunner();
 
   const robot = useStore((state) => state.twin?.robots?.[robotId]);
   const robotIdsKey = useStore((state) => Object.keys(state.twin?.robots ?? {}).join("\u0000"));
@@ -165,8 +163,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }>({ activate: () => undefined, stop: () => undefined });
 
   const robotBridgeOnline = connectedRobotIds.includes(robotId);
-  const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && (runtimeMode === "LOCAL_SIM" || (robotBridgeOnline && rosConnected && websocketState === "CONNECTED")));
-  const controlOnline = Boolean(robotOnline && runtimeMode !== "LOCAL_SIM" && robotBridgeOnline && rosConnected && websocketState === "CONNECTED");
+  const robotOnline = Boolean(robot && robot.status !== "OFFLINE" && robotBridgeOnline && rosConnected && websocketState === "CONNECTED");
+  const controlOnline = robotOnline;
   const localization = diagnostics?.localization ?? rawLocalization?.state ?? null;
   const canonicalMapReady = !activeLocalMapId && (robotMapSync?.status ?? mapSync.status) === "SYNCED";
   const activeMappingSnapshot = useLiveSlamMap && slam2dMap?.map_source === "SLAM_TOOLBOX"
@@ -202,10 +200,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     && slam3dAccumulatedCloud.slam_pose.map_id === `SLAM-${slam3dAccumulatedCloud.slam_pose.mapping_session_id}`
     && (!mappingSessionId || slam3dAccumulatedCloud.slam_pose.mapping_session_id === mappingSessionId)
     ? slam3dAccumulatedCloud : null;
-  const statePose = robot?.active_map_pose ?? (runtimeMode === "LOCAL_SIM" && robot ? {
-    x: robot.position[0], y: robot.position[2], yaw: robot.heading,
-    frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
-  } : null);
+  const statePose = robot?.active_map_pose ?? null;
   const informationalTagRegistry = tagRegistry?.reason === "TAG_MAP_REGISTRATION_REQUIRED";
   const compatibleTags = tagRegistry?.compatible || informationalTagRegistry ? tagRegistry.tags : [];
   const selectedTag = compatibleTags.find((tag) => tag.tag_id === selectedTagId) ?? null;

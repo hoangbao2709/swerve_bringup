@@ -93,8 +93,8 @@ function RobotControlContent() {
   const previousRobot = useRef<string | null>(null);
   const robotIds = useMemo(() => Object.keys(robots), [robots]);
   const robotId = selected ?? robotIds[0] ?? "";
-  const controlOnline = runtimeMode !== "LOCAL_SIM" && connectedRobotIds.includes(robotId) && ros && websocketState === "CONNECTED";
-  const missionControlAvailable = runtimeMode === "LOCAL_SIM" || controlOnline;
+  const controlOnline = connectedRobotIds.includes(robotId) && ros && websocketState === "CONNECTED";
+  const missionControlAvailable = controlOnline;
   const odomReady = Boolean(diagnostics?.ros && measuredTopics.some((topic) => topic === "/odom" || topic === "/odometry/filtered" || topic.endsWith("/odom") || topic.endsWith("/odometry/filtered")));
   const imuReady = Boolean(diagnostics?.ros && measuredTopics.some((topic) => topic === "/imu/data" || topic.endsWith("/imu/data")));
   const lidarReady = diagnostics?.lidar === true;

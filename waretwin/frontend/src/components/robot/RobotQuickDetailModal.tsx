@@ -5,6 +5,7 @@ import { useStore } from "../../state/store";
 import type { RobotSystemDiagnostics } from "../../schema/twin_state";
 
 function fmt(value: unknown, digits = 2, suffix = "") {
+  if (value === null || value === undefined || value === "") return "N/A";
   const number = Number(value);
   return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : "N/A";
 }
@@ -27,11 +28,7 @@ export function RobotQuickDetailModal() {
   const detail = useStore((state) => (robotId ? state.robotDetail[robotId] : undefined));
   const localization = useStore((state) => state.localization);
   const lastTelemetryAt = useStore((state) => state.lastTelemetryAt);
-  const runtimeMode = useStore((state) => state.runtimeMode);
-  const activePose = robot?.active_map_pose ?? (runtimeMode === "LOCAL_SIM" && robot ? {
-    x: robot.position[0], y: robot.position[2], yaw: robot.heading,
-    frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
-  } : null);
+  const activePose = robot?.active_map_pose ?? null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -47,10 +44,9 @@ export function RobotQuickDetailModal() {
   const online = useMemo(() => {
     if (!robot) return false;
     if (robot.status === "OFFLINE") return false;
-    if (runtimeMode === "LOCAL_SIM") return true;
     if (!robot.last_telemetry_at) return false;
     return Date.now() - Date.parse(robot.last_telemetry_at) < 5000;
-  }, [robot, runtimeMode]);
+  }, [robot]);
   const activeMission = mission?.robot_id === robotId ? mission : null;
   const robotDiagnostics = detail?.diagnostics ?? (ros as RobotSystemDiagnostics | null);
   const controllers = robotDiagnostics?.controllers ?? [];

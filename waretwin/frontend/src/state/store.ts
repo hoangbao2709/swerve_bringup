@@ -169,19 +169,18 @@ interface Store {
   resetLabelLayers: () => void;
   focus: (p: [number, number, number] | null) => void;
   setActiveCamera: (id: string) => void;
-  /** 模擬控制（Phase 2 本地；Phase 3 改送 SIM_CONTROL） */
+  /** Backend-reported compatibility controls; the browser never advances a simulation. */
   speed: 0 | 1 | 2 | 5 | 10;
   paused: boolean;
   seed: number;
   setSpeed: (v: 0 | 1 | 2 | 5 | 10) => void;
   setPaused: (p: boolean) => void;
-  /** 每 tick 由 runner (本地) 或 WebSocket (online) 呼叫 */
+  /** Replaced by authenticated backend WebSocket snapshots and patches. */
   setTwin: (t: TwinState) => void;
-  /** Data source. In backend mode, offline never falls back to the local engine. */
-  source: "connecting" | "online" | "offline" | "local" | "unauthorized";
-  setSource: (s: "connecting" | "online" | "offline" | "local" | "unauthorized") => void;
-  /** 後端送來的熱圖層（online 時）；local 時從本地引擎讀 */
-  /** 遠端熱圖層，key = `${kind}:${floor}`（每樓獨立） */
+  /** Backend connection state; offline never becomes a synthetic runtime source. */
+  source: "connecting" | "online" | "offline" | "unauthorized";
+  setSource: (s: "connecting" | "online" | "offline" | "unauthorized") => void;
+  /** Backend-reported heatmap layer, keyed by kind and floor. */
   heat: Record<string, HeatmapLayer> | null;
   setHeat: (l: HeatmapLayer | null) => void;
   /** Phase 4 UI：Modal / 抽屜 */
@@ -218,7 +217,7 @@ interface Store {
   clearAuth: () => void;
 }
 
-/** 空的初始 TwinState（runner 掛載後立刻被引擎快照取代） */
+/** Empty initial state until the authenticated backend sends a FULL snapshot. */
 const EMPTY: TwinState = {
   schema_version: "1.0", layout_id: layout.id,
   sim: { tick: 0, tick_ms: 100, speed: 1, mode: "PAUSED", seed: 42, baseline_snapshot_id: null },
@@ -264,11 +263,11 @@ export const useStore = create<Store>((set) => ({
   twin: EMPTY,
   runtimeMode: RUNTIME_MODE,
   setRuntimeMode: (runtimeMode) => set({ runtimeMode }),
-  runtimeState: RUNTIME_MODE === "LOCAL_SIM" ? "SIMULATION" : "IDLE",
+  runtimeState: "IDLE",
   setRuntimeState: (runtimeState) => set({ runtimeState }),
   robotCapabilities: {},
   setRobotCapabilities: (robotCapabilities) => set({ robotCapabilities }),
-  bridgeState: RUNTIME_MODE === "LOCAL_SIM" ? "LOCAL" : "DISCONNECTED",
+  bridgeState: "DISCONNECTED",
   setBridgeState: (bridgeState) => set({ bridgeState }),
   connectedRobotIds: [],
   setConnectedRobotIds: (connectedRobotIds) => set({ connectedRobotIds: [...new Set(connectedRobotIds)] }),
@@ -281,7 +280,7 @@ export const useStore = create<Store>((set) => ({
   setRosDiagnostics: (rosDiagnostics) => set({ rosDiagnostics }),
   rosConnected: false,
   setRosConnected: (rosConnected) => set({ rosConnected }),
-  nav2State: RUNTIME_MODE === "LOCAL_SIM" ? "LOCAL" : "OFFLINE",
+  nav2State: "OFFLINE",
   setNav2State: (nav2State) => set({ nav2State }),
   lastTelemetryAt: null,
   setLastTelemetryAt: (lastTelemetryAt) => set({ lastTelemetryAt }),

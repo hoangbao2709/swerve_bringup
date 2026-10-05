@@ -17,7 +17,7 @@ import {
   type WindowInstance,
 } from "../../state/store";
 
-import { simControl } from "../../simulation/runner";
+import { backendActions } from "../../services/backendRuntime";
 import { apiFetch } from "../../services/api";
 
 import type {
@@ -1747,8 +1747,8 @@ function TaskTable() {
             "ERROR" &&
           robot.fsm ===
             "IDLE" &&
-          robot.battery > 20 &&
-          robot.load.current ===
+          robot.battery != null && robot.battery > 20 &&
+          robot.load?.current ===
             0,
       )
       .sort((a, b) =>
@@ -1775,7 +1775,7 @@ function TaskTable() {
       return;
     }
 
-    simControl.createTask({
+    backendActions.createTask({
       type,
       priority,
       source,
@@ -1796,7 +1796,7 @@ function TaskTable() {
 
     setAssigning(taskId);
 
-    simControl.assignTask(
+    backendActions.assignTask(
       taskId,
       rid,
     );
@@ -1970,10 +1970,7 @@ function TaskTable() {
                     value={robot.id}
                   >
                     {robot.id} ·{" "}
-                    {robot.battery.toFixed(
-                      0,
-                    )}
-                    % ·{" "}
+                    {robot.battery?.toFixed(0) ?? "NOT REPORTED"}{robot.battery == null ? "" : "%"} ·{" "}
                     {robot.zone ??
                       "—"}
                   </option>
@@ -2167,10 +2164,9 @@ function TaskTable() {
                                   "ERROR" &&
                                 robot.fsm ===
                                   "IDLE" &&
-                                robot.battery >
+                                robot.battery != null && robot.battery >
                                   20 &&
-                                robot.load
-                                  .current ===
+                                robot.load?.current ===
                                   0),
                           )
                           .sort(
@@ -2198,10 +2194,7 @@ function TaskTable() {
                                   robot.id
                                 }{" "}
                                 ·{" "}
-                                {robot.battery.toFixed(
-                                  0,
-                                )}
-                                %
+                                {robot.battery?.toFixed(0) ?? "NOT REPORTED"}{robot.battery == null ? "" : "%"}
                               </option>
                             ),
                           )}
@@ -2324,15 +2317,13 @@ function FleetList() {
       ) => {
         switch (sort) {
           case "battery":
-            return robot.battery;
+            return robot.battery ?? Number.POSITIVE_INFINITY;
 
           case "tasks":
-            return -robot.stats
-              .tasks_completed;
+            return robot.stats ? -robot.stats.tasks_completed : Number.POSITIVE_INFINITY;
 
           case "distance":
-            return -robot.stats
-              .distance_m;
+            return robot.stats ? -robot.stats.distance_m : Number.POSITIVE_INFINITY;
 
           case "status":
             return robot.status;
@@ -2573,10 +2564,7 @@ function FleetList() {
                     </td>
 
                     <td>
-                      {robot.battery.toFixed(
-                        0,
-                      )}
-                      %
+                      {robot.battery == null ? "NOT REPORTED" : `${robot.battery.toFixed(0)}%`}
                     </td>
 
                     <td>
@@ -2592,7 +2580,7 @@ function FleetList() {
                     </td>
 
                     <td>
-                      {robot.velocity >
+                      {robot.velocity != null && robot.velocity >
                       0.05
                         ? `${robot.velocity.toFixed(
                             2,
@@ -2608,14 +2596,12 @@ function FleetList() {
 
                     <td>
                       {
-                        robot.stats
-                          .tasks_completed
+                        robot.stats?.tasks_completed ?? "NOT REPORTED"
                       }
                     </td>
 
                     <td>
-                      {robot.stats
-                        .distance_m >=
+                      {robot.stats && robot.stats.distance_m >=
                       1000
                         ? `${(
                             robot.stats
@@ -2624,9 +2610,9 @@ function FleetList() {
                           ).toFixed(
                             2,
                           )} km`
-                        : `${robot.stats.distance_m.toFixed(
+                        : robot.stats ? `${robot.stats.distance_m.toFixed(
                             0,
-                          )} m`}
+                          )} m` : "NOT REPORTED"}
                     </td>
                   </tr>
                 );
@@ -2721,12 +2707,7 @@ function RobotDetail({ robotId }: { robotId: string }) {
   const robot =
     useStore((s) => s.twin.robots[robotId]);
 
-  const runtimeMode = useStore((s) => s.runtimeMode);
-
-  const activePose = robot?.active_map_pose ?? (runtimeMode === "LOCAL_SIM" && robot ? {
-    x: robot.position[0], y: robot.position[2], yaw: robot.heading,
-    frame_id: "LOCAL_SIM", map_id: "LOCAL_SIM",
-  } : null);
+  const activePose = robot?.active_map_pose ?? null;
 
   const task =
     useStore((s) =>
@@ -3020,7 +3001,7 @@ function RobotDetail({ robotId }: { robotId: string }) {
 
               : "TRANSPORT";
 
-          simControl.createTask({
+          backendActions.createTask({
             type:
               localType,
 
@@ -3183,7 +3164,7 @@ function RobotDetail({ robotId }: { robotId: string }) {
           <button
             className="btn"
             onClick={() =>
-              simControl.clearInjection(
+              backendActions.clearInjection(
                 "ROBOT_FAILURE",
                 robot.id,
               )
@@ -3195,7 +3176,7 @@ function RobotDetail({ robotId }: { robotId: string }) {
           <button
             className="btn danger"
             onClick={() =>
-              simControl.inject({
+              backendActions.inject({
                 kind:
                   "ROBOT_FAILURE",
 
@@ -3566,9 +3547,9 @@ function RobotDetail({ robotId }: { robotId: string }) {
             "OFFLINE" &&
           robot.status !==
             "ERROR" &&
-          robot.battery >
+          robot.battery != null && robot.battery >
             20 &&
-          robot.load.current ===
+          robot.load?.current ===
             0 && (
             <div
               style={{
@@ -3658,7 +3639,7 @@ function RobotDetail({ robotId }: { robotId: string }) {
                   if (
                     taskToAssign
                   ) {
-                    simControl.assignTask(
+                    backendActions.assignTask(
                       taskToAssign,
                       robot.id,
                     );
@@ -3688,21 +3669,17 @@ function RobotDetail({ robotId }: { robotId: string }) {
 
             <KV
               k="Battery"
-              v={`${robot.battery.toFixed(
-                1,
-              )}%`}
+              v={robot.battery == null ? "NOT REPORTED" : `${robot.battery.toFixed(1)}%`}
             />
 
             <KV
               k="Speed"
-              v={`${robot.velocity.toFixed(
-                2,
-              )} m/s`}
+              v={robot.velocity == null ? "NOT REPORTED" : `${robot.velocity.toFixed(2)} m/s`}
             />
 
             <KV
               k="Health"
-              v={`${robot.health}%`}
+              v={robot.health == null ? "NOT REPORTED" : `${robot.health}%`}
             />
 
             <KV
@@ -3742,7 +3719,7 @@ function RobotDetail({ robotId }: { robotId: string }) {
 
             <KV
               k="Load"
-              v={`${robot.load.current} / ${robot.load.capacity}`}
+              v={robot.load ? `${robot.load.current} / ${robot.load.capacity}` : "NOT REPORTED"}
             />
 
             <KV
@@ -3769,45 +3746,28 @@ function RobotDetail({ robotId }: { robotId: string }) {
             <KV
               k="Tasks completed"
               v={
-                robot.stats
-                  .tasks_completed
+                robot.stats?.tasks_completed ?? "NOT REPORTED"
               }
             />
 
             <KV
               k="Distance"
-              v={`${robot.stats.distance_m.toFixed(
-                0,
-              )} m`}
+              v={robot.stats ? `${robot.stats.distance_m.toFixed(0)} m` : "NOT REPORTED"}
             />
 
             <KV
               k="Energy"
-              v={`${robot.stats.energy_wh.toFixed(
-                0,
-              )} Wh`}
+              v={robot.stats ? `${robot.stats.energy_wh.toFixed(0)} Wh` : "NOT REPORTED"}
             />
 
             <KV
               k="Busy"
-              v={`${(
-                robot.stats
-                  .busy_ticks /
-                10
-              ).toFixed(
-                0,
-              )} s`}
+              v={robot.stats ? `${(robot.stats.busy_ticks / 10).toFixed(0)} s` : "NOT REPORTED"}
             />
 
             <KV
               k="Waiting"
-              v={`${(
-                robot.stats
-                  .wait_ticks /
-                10
-              ).toFixed(
-                0,
-              )} s`}
+              v={robot.stats ? `${(robot.stats.wait_ticks / 10).toFixed(0)} s` : "NOT REPORTED"}
             />
 
             <KV

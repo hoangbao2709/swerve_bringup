@@ -66,7 +66,7 @@ export function robotForDisplayedMap(robot: RobotState, map: MapPoseIdentity): R
 }
 
 export function robotForWarehouse(robot: RobotState, runtimeMode: string, frame: string, revision: string | number): RobotState | undefined {
-  if (runtimeMode === "LOCAL_SIM") return robot;
+  void runtimeMode;
   return robotForDisplayedMap(robot, { frame_id: frame, active_map_id: "CANONICAL",
     active_map_revision: revision, map_source: "CANONICAL" });
 }

@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import yaml
@@ -39,6 +40,37 @@ def test_live_slam_nav2_has_no_map_server_and_costmap_subscribes_to_full_map():
     assert static_layer['map_subscribe_transient_local'] is True
     assert static_layer['subscribe_to_updates'] is False
     assert config['planner_server']['ros__parameters']['GridBased']['allow_unknown'] is False
+
+
+def test_unified_nav2_readiness_order_matches_lifecycle_manager_start_order():
+    readiness = (ROOT / 'scripts/navigation_readiness.py').read_text(encoding='utf-8')
+    launch = (ROOT / 'swerve_navigation/launch/navigation.launch.py').read_text(encoding='utf-8')
+    expected_order = (
+        'controller_server', 'planner_server', 'behavior_server',
+        'bt_navigator', 'waypoint_follower',
+    )
+    readiness_tree = ast.parse(readiness)
+    readiness_assignment = next(
+        node for node in readiness_tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name)
+                and target.id == 'NAV2_LIVE_SLAM_LIFECYCLE_NODES'
+                for target in node.targets)
+    )
+    readiness_order = ast.literal_eval(readiness_assignment.value)
+    assert readiness_order == expected_order
+    launch_tree = ast.parse(launch)
+    configured_order = None
+    for node in ast.walk(launch_tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and key.value == 'node_names'):
+                continue
+            if isinstance(value, ast.IfExp) and isinstance(value.orelse, ast.List):
+                configured_order = tuple(ast.literal_eval(value.orelse))
+                break
+    assert configured_order == expected_order
 
 
 def test_installed_humble_static_layer_exposes_configured_live_map_parameters():

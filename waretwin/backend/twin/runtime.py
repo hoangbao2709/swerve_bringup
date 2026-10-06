@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -24,6 +25,8 @@ from .sim.whatif import run_whatif
 from .conveyor_plc import PLCSimulator
 from .coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin, validated_canonical_pose
 from .control_timing import profile_async, profile_sync
+from .navigation_targets import plan_registered_tag_route
+from .map_registration import inverse_transform_active_pose
 
 log = logging.getLogger(__name__)
 TICK_S = SIM['TICK_S']
@@ -153,6 +156,8 @@ class TwinRuntime:
         self.path_preview_requests: dict[tuple[str, str], dict[str, Any]] = {}
         self.approved_path_previews: dict[tuple[str, str], dict[str, Any]] = {}
         self.path_preview_results: dict[tuple[str, str], dict[str, Any]] = {}
+        self.tag_route_executions: dict[str, dict[str, Any]] = {}
+        self.navigation_registration_leases: dict[str, dict[str, Any]] = {}
         self.expired_path_previews: dict[tuple[str, str], float] = {}
         self.path_preview_invalidations: dict[tuple[str, str], str] = {}
         self.command_ownership: dict[str, dict[str, Any]] = {}
@@ -1003,7 +1008,36 @@ class TwinRuntime:
                 now_monotonic = time.monotonic()
                 last_checked = self.simulation_registration_last_check.get(identity_key)
                 result = None
-                if last_checked is None or now_monotonic - last_checked >= 1.0:
+                registration_lease = self.navigation_registration_leases.get(rid)
+                lease_matches_active_map = bool(
+                    registration_lease
+                    and registration_lease.get('active_map_id') == identity_key[1]
+                    and str(registration_lease.get('active_map_revision') or '') == identity_key[2]
+                    and str(registration_lease.get('canonical_map_revision') or '')
+                        == str(active_identity.get('canonical_map_revision') or '')
+                )
+                if registration_lease and not lease_matches_active_map:
+                    # A map identity transition cannot inherit a lease from
+                    # coordinates that no longer name the active Nav2 frame.
+                    self.navigation_registration_leases.pop(rid, None)
+                    registration_lease = None
+                if lease_matches_active_map:
+                    # A canonical-derived preview is authorized against one
+                    # exact registered navigation raster. Re-estimating the
+                    # canonical-to-SLAM transform while its Nav2 action is
+                    # active moves that raster under the approved goal. Hold
+                    # the same registration for both TAG routes and canonical
+                    # MAP POINT actions; active-map points do not need a lease.
+                    if not registration_lease.get('registration_update_deferred_logged'):
+                        log.info(
+                            'MAP_REGISTRATION_UPDATE_DEFERRED robot=%s source=%s '
+                            'active_map=%s@%s registration_revision=%s preview_id=%s route_revision=%s',
+                            rid, registration_lease.get('source_type'), identity_key[1], identity_key[2],
+                            registration_lease.get('registration_revision'),
+                            registration_lease.get('preview_request_id'),
+                            registration_lease.get('route_revision'))
+                        registration_lease['registration_update_deferred_logged'] = True
+                elif last_checked is None or now_monotonic - last_checked >= 1.0:
                     self.simulation_registration_last_check[identity_key] = now_monotonic
                     result = await sync_to_async(update_gazebo_registration, thread_sensitive=True)(
                         robot_id=rid, active_map=active_identity,
@@ -1101,8 +1135,130 @@ class TwinRuntime:
         from .schedule_services import apply_external_nav_status
         changed = await sync_to_async(apply_external_nav_status, thread_sensitive=True)(data)
         self.nav2_state = str(data.get('status') or self.nav2_state)
+        robot_id = str(data.get('robot_id') or '')
+        lease = self.navigation_registration_leases.get(robot_id)
+        terminal_status = str(data.get('status') or '').upper() in (
+            'SUCCEEDED', 'FAILED', 'CANCELED', 'CANCELLED', 'EMERGENCY_STOPPED', 'REJECTED')
+        lease_matches_status = bool(lease and (
+            (lease.get('preview_request_id')
+             and str(data.get('preview_request_id') or '') == str(lease.get('preview_request_id'))) or
+            (lease.get('route_revision')
+             and str(data.get('route_revision') or '') == str(lease.get('route_revision')))
+        ))
+        if terminal_status and lease_matches_status:
+            self.navigation_registration_leases.pop(robot_id, None)
+            log.info(
+                'MAP_REGISTRATION_LEASE_RELEASED robot=%s source=%s preview_id=%s '
+                'registration_revision=%s status=%s',
+                robot_id, lease.get('source_type'), lease.get('preview_request_id'),
+                lease.get('registration_revision'), str(data.get('status') or '').upper())
+        execution = self.tag_route_executions.get(robot_id)
+        if (execution and str(data.get('route_revision') or '') == str(execution.get('route_revision') or '')
+                and str(data.get('status') or '').upper() in
+                ('SUCCEEDED', 'FAILED', 'CANCELED', 'CANCELLED', 'EMERGENCY_STOPPED', 'REJECTED')):
+            self.tag_route_executions.pop(robot_id, None)
         if changed:
             await self.broadcast({'type': 'SCHEDULE_UPDATED', 'source': 'ros-nav2'})
+
+    async def handle_tag_route_leg_auth_request(self, data: dict[str, Any]) -> None:
+        """Re-authorize every sequential TAG leg against current backend state."""
+        robot_id = str(data.get('robot_id') or '').strip()
+        execution = self.tag_route_executions.get(robot_id)
+        request_id = str(data.get('auth_request_id') or '')
+        reason_code = None
+        reason = None
+        route_plan = (execution or {}).get('route_plan') or {}
+        try:
+            index = int(data.get('route_index'))
+        except (TypeError, ValueError):
+            index = -1
+        points = route_plan.get('active_route_points') or []
+        if not execution:
+            reason_code, reason = 'TAG_ROUTE_AUTH_UNKNOWN', 'no approved active TAG route matches this robot'
+        elif (str(data.get('route_revision') or '') != str(execution.get('route_revision') or '')
+              or str(data.get('graph_revision') or '') != str(route_plan.get('graph_revision') or '')
+              or data.get('route_nodes') != route_plan.get('route_nodes')
+              or index < 1 or index >= len(points)):
+            reason_code, reason = 'TAG_ROUTE_REVISION_MISMATCH', 'route identity, graph, node sequence, or leg index changed'
+        else:
+            expected_node = points[index].get('tag_id')
+            reported_node = data.get('route_node_id')
+            if (expected_node is not None and str(reported_node) != str(expected_node)):
+                reason_code, reason = 'TAG_ROUTE_NODE_MISMATCH', 'requested next node is not the approved next route point'
+
+        active = self.active_map_state(robot_id) if robot_id else {}
+        if reason is None and (
+                active.get('active_map_id') != execution.get('active_map_id')
+                or str(active.get('active_map_revision') or '') != str(execution.get('active_map_revision') or '')
+                or str(active.get('canonical_map_revision') or '') != str(execution.get('canonical_map_revision') or '')):
+            reason_code, reason = 'PATH_PREVIEW_MAP_MISMATCH', 'active or canonical map identity changed during the TAG route'
+        if reason is None:
+            blocker = self.navigation_goal_blocker(robot_id, active_map=active)
+            if blocker:
+                reason_code, reason = blocker
+        current_registry = None
+        if reason is None:
+            from .navigation_targets import navigation_tag_registry
+            current_registry = await sync_to_async(navigation_tag_registry, thread_sensitive=True)(
+                active, robot_id=robot_id)
+            if (current_registry.get('compatible') is not True
+                    or current_registry.get('registry_revision') != execution.get('registry_revision')
+                    or current_registry.get('registration_revision') != execution.get('registration_revision')
+                    or current_registry.get('transform_source') != execution.get('registration_source')):
+                reason_code, reason = 'TAG_REGISTRY_OR_REGISTRATION_CHANGED', (
+                    'Tag registry or active-map registration changed during the TAG route')
+        if reason is None and current_registry is not None:
+            next_tag_id = points[index].get('tag_id')
+            if next_tag_id is not None:
+                current_tag = next((tag for tag in current_registry.get('tags', [])
+                                    if str(tag.get('tag_id')) == str(next_tag_id)), None)
+                expected_revision = (route_plan.get('route_tag_revisions') or {}).get(str(next_tag_id))
+                if (current_tag is None or not current_tag.get('navigable')
+                        or current_tag.get('tag_revision') != expected_revision):
+                    reason_code, reason = 'TAG_REVISION_MISMATCH', (
+                        f'Tag {next_tag_id} is no longer navigable at its approved revision')
+        if reason is None:
+            try:
+                canonical_revision = int(execution.get('canonical_map_revision'))
+                navigation_map_revision = execution.get('navigation_map_revision')
+                if str(self.robot_runtime_modes.get(robot_id) or self.operation_mode).upper() == 'UNIFIED':
+                    navigation_map = self.robot_navigation_maps.get(robot_id, {})
+                    if (navigation_map.get('ready') is not True
+                            or str(navigation_map.get('navigation_map_revision') or '')
+                                != str(navigation_map_revision or '')
+                            or navigation_map.get('registration_revision')
+                                != execution.get('registration_revision')):
+                        raise ValueError('full Nav2 map/registration revision changed')
+                from .models import WarehouseMap
+                from .navigation_graph import prepare_published_navigation
+                warehouse_map = await sync_to_async(
+                    lambda: WarehouseMap.objects.filter(is_active=True).order_by('id').first(),
+                    thread_sensitive=True)()
+                if warehouse_map is None or int(warehouse_map.revision) != canonical_revision:
+                    raise ValueError('published canonical revision changed')
+                graph = await sync_to_async(prepare_published_navigation, thread_sensitive=True)(
+                    warehouse_map.layout, canonical_revision)
+                if graph.get('tag_graph_revision') != route_plan.get('graph_revision'):
+                    raise ValueError('published Tag graph changed')
+            except Exception as exc:
+                reason_code, reason = 'TAG_ROUTE_REVISION_MISMATCH', str(exc)
+
+        approved = reason is None
+        payload = {
+            'auth_request_id': request_id,
+            'route_revision': str(data.get('route_revision') or ''),
+            'route_index': index,
+            'approved': approved,
+            'reason_code': reason_code,
+            'reason': reason,
+        }
+        result = await self.gateway().send_command(robot_id, 'TAG_ROUTE_LEG_AUTH', payload)
+        if approved and not result.get('ok'):
+            log.warning('TAG_ROUTE_LEG_AUTH_RESPONSE_LOST robot=%s request_id=%s route_revision=%s',
+                        robot_id, request_id, payload['route_revision'])
+        elif not approved:
+            log.warning('TAG_ROUTE_LEG_AUTH_DENIED robot=%s request_id=%s route_revision=%s code=%s reason=%s',
+                        robot_id, request_id, payload['route_revision'], reason_code, reason)
 
     async def handle_ros_message(self, data: dict[str, Any]) -> None:
         kind = str(data.get('type') or '').upper()
@@ -1114,6 +1270,8 @@ class TwinRuntime:
             # the browser needs the measured Nav2 state even when no schedule
             # row is associated with a manually selected map goal.
             await self.broadcast(data)
+        elif kind == 'TAG_ROUTE_LEG_AUTH_REQUEST':
+            await self.handle_tag_route_leg_auth_request(data)
         elif kind == 'HEARTBEAT':
             robot_id = str(data.get('robot_id') or '').strip()
             if not robot_id:
@@ -1250,6 +1408,16 @@ class TwinRuntime:
                 and str(data.get('navigation_map_revision') or '')
                     == str(request.get('navigation_map_revision') or '')
             )
+            route_matches = (request.get('source_type') != 'TAG' or (
+                str(data.get('route_revision') or '') == str(request.get('route_revision') or '')
+                and data.get('route_nodes') == (request.get('route_plan') or {}).get('route_nodes')
+                and data.get('route_segments') == (request.get('route_plan') or {}).get('route_segments')
+                and data.get('route_points') == (request.get('route_plan') or {}).get('active_route_points')
+                and data.get('canonical_route_points')
+                    == (request.get('route_plan') or {}).get('canonical_route_points')
+                and data.get('route_tag_revisions')
+                    == (request.get('route_plan') or {}).get('route_tag_revisions')
+            ))
             active_now = self.active_map_state(robot_id)
             current_navigation_map = self.robot_navigation_maps.get(robot_id, {})
             still_current = (
@@ -1298,9 +1466,24 @@ class TwinRuntime:
                 except Exception as exc:
                     source_still_current = False
                     data['reason'] = f'Navigation source could not be revalidated ({type(exc).__name__})'
-            if status == 'VALID' and not (path_is_valid and target_matches and map_matches and still_current and source_still_current):
+            if status == 'VALID' and not (path_is_valid and target_matches and map_matches
+                                          and still_current and source_still_current and route_matches):
                 status = 'INVALID'
-                data.setdefault('reason', 'planner result did not match the requested target, map, or localization state')
+                data.setdefault('reason', 'planner result did not match the requested target, route, map, or localization state')
+            route_plan = request.get('route_plan') if isinstance(request.get('route_plan'), dict) else None
+            canonical_path = None
+            if route_plan and path_is_valid:
+                transform = route_plan.get('registration_transform') or {'tx': 0.0, 'ty': 0.0, 'yaw': 0.0}
+                canonical_path = []
+                try:
+                    for point in path:
+                        canonical = inverse_transform_active_pose(
+                            {'x': float(point[0]), 'y': float(point[1]), 'yaw': 0.0}, transform)
+                        canonical_path.append([canonical['x'], canonical['y']])
+                except (KeyError, TypeError, ValueError):
+                    status = 'INVALID'
+                    canonical_path = []
+                    data['reason'] = 'canonical route preview could not be transformed through the approved registration'
             data.update({
                 'status': status,
                 'source_type': request['source_type'],
@@ -1322,8 +1505,22 @@ class TwinRuntime:
                 'navigation_map_revision': request.get('navigation_map_revision'),
                 'reason_code': data.get('reason_code'),
                 'coverage': data.get('coverage'),
+                'active_path': path,
+                'canonical_path': canonical_path,
                 'goal': {**request['goal'], 'frame_id': 'map'},
             })
+            if route_plan:
+                data.update({
+                    'route_nodes': route_plan.get('route_nodes'),
+                    'route_segments': route_plan.get('route_segments'),
+                    'route_points': route_plan.get('canonical_route_points'),
+                    'active_route_points': route_plan.get('active_route_points'),
+                    'canonical_route_points': route_plan.get('canonical_route_points'),
+                    'route_tag_revisions': route_plan.get('route_tag_revisions'),
+                    'graph_revision': route_plan.get('graph_revision'),
+                    'route_revision': request.get('route_revision'),
+                    'registration_transform': route_plan.get('registration_transform'),
+                })
             log.info('PATH_PREVIEW_%s robot=%s request_id=%s source=%s active_map=%s active_revision=%s registration_revision=%s reason=%s',
                 'VALID' if status == 'VALID' else 'INVALID', robot_id, request_id,
                 request.get('source_type'), request.get('active_map_id'),
@@ -1945,6 +2142,8 @@ class TwinRuntime:
             source_goal = None
             tag_revision = None
             registry_revision = None
+            route_plan: dict[str, Any] | None = None
+            route_revision = None
 
             async def preview_failure(status, reason):
                 log.warning('PATH_PREVIEW_INVALID robot=%s request_id=%s source=%s active_map=%s@%s reason=%s',
@@ -1973,6 +2172,10 @@ class TwinRuntime:
                         msg.robot_id, {}).get('navigation_map_id'),
                     'navigation_map_revision': self.robot_navigation_maps.get(
                         msg.robot_id, {}).get('navigation_map_revision'),
+                    **({key: route_plan.get(key) for key in (
+                        'route_nodes', 'route_segments', 'active_route_points',
+                        'canonical_route_points', 'graph_revision', 'route_revision')}
+                       if route_plan else {}),
                     'timestamp': datetime.now(timezone.utc).isoformat(),
                 })
 
@@ -2046,6 +2249,66 @@ class TwinRuntime:
                     await preview_failure('INVALID', 'TAG_REVISION_MISMATCH: Tag or registry data changed; select the Tag again')
                     return
                 source_id = str(resolved_target.get('source_id'))
+                robot_state = self.engine.state.get('robots', {}).get(msg.robot_id)
+                active_start_pose = robot_state.get('active_map_pose') if isinstance(robot_state, dict) else None
+                try:
+                    active_start_valid = (isinstance(active_start_pose, dict)
+                        and active_start_pose.get('valid') is True
+                        and all(math.isfinite(float(active_start_pose[axis]))
+                                for axis in ('x', 'y', 'yaw')))
+                except (KeyError, TypeError, ValueError):
+                    active_start_valid = False
+                if not active_start_valid:
+                    await preview_failure('INVALID', 'TAG_ROUTE_LOCALIZATION_REQUIRED: a fresh active-map pose is required to plan the Tag route')
+                    return
+                try:
+                    route_plan = await sync_to_async(plan_registered_tag_route, thread_sensitive=True)(
+                        robot_id=msg.robot_id, active_map=active,
+                        destination_tag_id=msg.tag_id,
+                        active_start_pose={axis: float(active_start_pose[axis]) for axis in ('x', 'y', 'yaw')},
+                    )
+                    route_goal = route_plan['active_route_points'][-1]
+                    if any(abs(float(route_goal[axis]) - target[axis]) > 1e-4 for axis in ('x', 'y', 'yaw')):
+                        raise ValueError('topological route destination does not match the registered Tag pose')
+                    from .navigation_targets import navigation_tag_registry
+                    current_tag_registry = await sync_to_async(
+                        navigation_tag_registry, thread_sensitive=True)(active, robot_id=msg.robot_id)
+                    route_plan['route_tag_revisions'] = {
+                        str(tag['tag_id']): tag['tag_revision']
+                        for tag in current_tag_registry.get('tags', [])
+                        if int(tag['tag_id']) in {int(node) for node in route_plan['route_nodes']}
+                    }
+                    if set(route_plan['route_tag_revisions']) != {
+                            str(node) for node in route_plan['route_nodes']}:
+                        raise ValueError('one or more route Tags have no current registry revision')
+                except Exception as exc:
+                    code = getattr(exc, 'code', 'TAG_ROUTE_UNAVAILABLE')
+                    await preview_failure('INVALID', f'{code}: {exc}')
+                    return
+                navigation_map_revision = (
+                    self.robot_navigation_maps.get(msg.robot_id, {}).get('navigation_map_revision')
+                    if str(self.robot_runtime_modes.get(msg.robot_id) or self.operation_mode).upper() == 'UNIFIED'
+                    else None
+                )
+                route_identity = {
+                    'graph_revision': route_plan.get('graph_revision'),
+                    'route_nodes': route_plan.get('route_nodes'),
+                    'route_segments': route_plan.get('route_segments'),
+                    'route_tag_revisions': route_plan.get('route_tag_revisions'),
+                    'destination_tag_id': int(msg.tag_id),
+                    'tag_revision': tag_revision,
+                    'registry_revision': registry_revision,
+                    'canonical_map_revision': active.get('canonical_map_revision'),
+                    'active_map_id': active.get('active_map_id'),
+                    'active_map_revision': active.get('active_map_revision'),
+                    'navigation_map_revision': navigation_map_revision,
+                    'registration_revision': target_metadata.get('registration_revision'),
+                }
+                route_revision = hashlib.sha256(json.dumps(
+                    route_identity, sort_keys=True, separators=(',', ':'), allow_nan=False
+                ).encode('utf-8')).hexdigest()
+                route_plan['route_revision'] = route_revision
+                route_plan['navigation_map_revision'] = navigation_map_revision
 
             for key, pending in list(self.path_preview_requests.items()):
                 if now - float(pending.get('created_monotonic', now)) > 120.0:
@@ -2077,6 +2340,8 @@ class TwinRuntime:
                 'tag_revision': tag_revision,
                 'registry_revision': registry_revision,
                 'target_metadata': target_metadata,
+                'route_plan': route_plan,
+                'route_revision': route_revision,
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
                 'map_content_revision': active.get('map_content_revision'),
@@ -2110,6 +2375,15 @@ class TwinRuntime:
                 **({'navigation_map_revision': request['navigation_map_revision']}
                    if request['navigation_map_revision'] is not None else {}),
                 'canonical_map_revision': active['canonical_map_revision'],
+                **({
+                    'route_nodes': route_plan['route_nodes'],
+                    'route_segments': route_plan['route_segments'],
+                    'route_points': route_plan['active_route_points'],
+                    'canonical_route_points': route_plan['canonical_route_points'],
+                    'route_tag_revisions': route_plan['route_tag_revisions'],
+                    'graph_revision': route_plan['graph_revision'],
+                    'route_revision': route_revision,
+                } if route_plan else {}),
             })
             if not result.get('ok'):
                 self.path_preview_requests.pop(key, None)
@@ -2217,6 +2491,14 @@ class TwinRuntime:
                     await consumer.send_json({
                         'type': 'ERROR', 'code': 'NO_VALID_PATH',
                         'message': 'Nav2 did not return a valid path for this preview',
+                    })
+                    return
+                if (preview.get('source_type') == 'TAG'
+                        and str(getattr(msg, 'route_revision', '') or '')
+                            != str(preview.get('route_revision') or '')):
+                    await consumer.send_json({
+                        'type': 'ERROR', 'code': 'TAG_ROUTE_REVISION_MISMATCH',
+                        'message': 'the submitted Tag route does not match the approved preview route',
                     })
                     return
                 if (preview.get('active_map_id') != active['active_map_id']
@@ -2329,6 +2611,31 @@ class TwinRuntime:
                         return
                 self.approved_path_previews.pop(key, None)
                 self.path_preview_results.pop(key, None)
+                if (source_type in ('TAG', 'CANONICAL_MAP_POINT')
+                        and preview.get('registration_revision') is not None):
+                    self.navigation_registration_leases[msg.robot_id] = {
+                        'source_type': source_type,
+                        'preview_request_id': preview_id,
+                        'route_revision': preview.get('route_revision'),
+                        'registration_revision': preview.get('registration_revision'),
+                        'active_map_id': preview.get('active_map_id'),
+                        'active_map_revision': preview.get('active_map_revision'),
+                        'canonical_map_revision': preview.get('canonical_map_revision'),
+                    }
+                if source_type == 'TAG':
+                    self.tag_route_executions[msg.robot_id] = {
+                        'route_revision': preview['route_revision'],
+                        'route_plan': preview.get('route_plan') or {},
+                        'tag_id': preview.get('tag_id'),
+                        'tag_revision': preview.get('tag_revision'),
+                        'registry_revision': preview.get('registry_revision'),
+                        'registration_revision': preview.get('registration_revision'),
+                        'registration_source': preview.get('registration_source'),
+                        'active_map_id': preview.get('active_map_id'),
+                        'active_map_revision': preview.get('active_map_revision'),
+                        'canonical_map_revision': preview.get('canonical_map_revision'),
+                        'navigation_map_revision': preview.get('navigation_map_revision'),
+                    }
                 result = await self.gateway().send_command(msg.robot_id, 'NAVIGATE', {
                     'x': target['x'], 'y': target['y'], 'yaw': target['yaw'], 'frame_id': msg.frame_id,
                     'source_type': source_type, 'source_id': source_id,
@@ -2346,7 +2653,21 @@ class TwinRuntime:
                     **({'navigation_map_revision': preview['navigation_map_revision']}
                        if preview.get('navigation_map_revision') is not None else {}),
                     'canonical_map_revision': active['canonical_map_revision'],
+                    **({
+                        'route_revision': preview['route_revision'],
+                        'route_nodes': (preview.get('route_plan') or {}).get('route_nodes'),
+                        'route_segments': (preview.get('route_plan') or {}).get('route_segments'),
+                        'route_tag_revisions': (preview.get('route_plan') or {}).get('route_tag_revisions'),
+                        'route_points': (preview.get('route_plan') or {}).get('active_route_points'),
+                        'graph_revision': (preview.get('route_plan') or {}).get('graph_revision'),
+                    } if source_type == 'TAG' else {}),
                 })
+                if not result.get('ok'):
+                    if source_type == 'TAG':
+                        self.tag_route_executions.pop(msg.robot_id, None)
+                    lease = self.navigation_registration_leases.get(msg.robot_id)
+                    if lease and lease.get('preview_request_id') == preview_id:
+                        self.navigation_registration_leases.pop(msg.robot_id, None)
                 if result.get('ok'):
                     log.info('NAV_GOAL_SENT robot=%s preview_id=%s source=%s source_map=%s@%s active_map=%s@%s registration_revision=%s target=(%.3f,%.3f,%.3f)',
                         msg.robot_id, preview_id, source_type, preview.get('source_map_id'),

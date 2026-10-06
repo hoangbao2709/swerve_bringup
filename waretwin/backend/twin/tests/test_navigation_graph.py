@@ -1,7 +1,10 @@
 from asgiref.sync import async_to_sync
 from types import SimpleNamespace
 import math
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
+import time
 
 from django.test import TestCase
 from django.test import Client
@@ -10,6 +13,11 @@ from twin.navigation_targets import NavigationTargetError, navigation_tag_regist
 from twin.runtime import runtime
 from twin.tag_navigation import shortest_tag_route
 from twin.warehouse_services import sync_from_layout
+from twin.navigation_graph import (
+    generate_orthogonal_edges, plan_orthogonal_tag_route,
+    prepare_published_navigation, validate_orthogonal_edges,
+    validate_orthogonal_route,
+)
 
 
 class NavigationGraphSyncTests(TestCase):
@@ -18,6 +26,7 @@ class NavigationGraphSyncTests(TestCase):
             'id': 'graph-test', 'name': 'Graph Test', 'units': 'm',
             'size': {'width': 20, 'depth': 10, 'height': 4},
             'floors': [{'id': 'F1', 'boundary': [[0, 0], [20, 0], [20, 10], [0, 10]]}],
+            'aisles': [{'id': 'A', 'floor_id': 'F1', 'centerline': [[2, 5], [14, 5]], 'width': 2.0, 'direction': 'bidirectional'}],
             'navigation_tags': [
                 {'uuid': 't1', 'tag_id': 1, 'family': 'APRILTAG', 'size': 0.2, 'lane_id': 'A-01', 'floor_id': 'F1', 'x': 2, 'y': 5, 'z': 0.15, 'yaw': 0},
                 {'uuid': 't2', 'tag_id': 2, 'floor_id': 'F1', 'x': 8, 'y': 5, 'yaw': 0},
@@ -43,8 +52,7 @@ class NavigationGraphSyncTests(TestCase):
         self.assertEqual(tag.lane_id, 'A-01')
         self.assertAlmostEqual(tag.z, 0.15)
         self.assertEqual(shortest_tag_route(1, 3), [1, 2, 3])
-        with self.assertRaises(ValueError):
-            shortest_tag_route(3, 1)
+        self.assertEqual(shortest_tag_route(3, 1), [3, 2, 1])
 
     def test_bidirectional_and_stale_edges(self):
         layout = self.layout()
@@ -54,7 +62,116 @@ class NavigationGraphSyncTests(TestCase):
         self.assertEqual(shortest_tag_route(2, 1), [2, 1])
         layout['navigation_edges'] = layout['navigation_edges'][:1]
         sync_from_layout(layout, prune=True)
-        self.assertEqual(NavigationTagEdge.objects.count(), 1)
+        # A published aisle remains the authority for adjacent edges even if
+        # the stale serialized edge list is shortened.
+        self.assertEqual(NavigationTagEdge.objects.count(), 2)
+        self.assertEqual(shortest_tag_route(3, 1), [3, 2, 1])
+
+
+class OrthogonalTagRouteTests(TestCase):
+    def layout(self):
+        tags = [
+            {'uuid': 'a', 'tag_id': 1, 'floor_id': 'F1', 'x': 10, 'y': 5, 'yaw': 0,
+             'source_aisles': ['H1'], 'semantic_role': 'intersection'},
+            {'uuid': 'b', 'tag_id': 2, 'floor_id': 'F1', 'x': 15, 'y': 5, 'yaw': 0,
+             'source_aisles': ['H1', 'V2'], 'semantic_role': 'intersection'},
+            {'uuid': 'c', 'tag_id': 3, 'floor_id': 'F1', 'x': 15, 'y': 15, 'yaw': 0,
+             'source_aisles': ['V2', 'H2'], 'semantic_role': 'intersection'},
+            {'uuid': 'd', 'tag_id': 4, 'floor_id': 'F1', 'x': 20, 'y': 15, 'yaw': 0,
+             'source_aisles': ['H2'], 'semantic_role': 'intersection'},
+        ]
+        return {
+            'id': 'orthogonal-route-test', 'size': {'width': 30, 'depth': 25, 'height': 4},
+            'floors': [{'id': 'F1', 'boundary': [[0, 0], [30, 0], [30, 25], [0, 25]]}],
+            'aisles': [
+                {'id': 'H1', 'floor_id': 'F1', 'centerline': [[10, 5], [15, 5]], 'width': 1.5, 'direction': 'bidirectional'},
+                {'id': 'V2', 'floor_id': 'F1', 'centerline': [[15, 5], [15, 15]], 'width': 1.5, 'direction': 'bidirectional'},
+                {'id': 'H2', 'floor_id': 'F1', 'centerline': [[15, 15], [20, 15]], 'width': 1.5, 'direction': 'bidirectional'},
+            ],
+            'navigation_tags': tags, 'navigation_edges': [],
+            'racks': [], 'stations': [], 'obstacles': [], 'columns': [], 'conveyors': [],
+        }
+
+    def test_generated_graph_and_route_are_orthogonal_and_visit_intermediate_nodes(self):
+        layout = self.layout()
+        edges = generate_orthogonal_edges(layout)
+        self.assertEqual([(edge['from_tag_id'], edge['to_tag_id'], edge['axis']) for edge in edges],
+                         [(1, 2, 'X'), (2, 3, 'Y'), (3, 4, 'X')])
+        self.assertFalse(validate_orthogonal_edges({**layout, 'navigation_edges': edges}))
+        self.assertFalse(any({edge['from_tag_id'], edge['to_tag_id']} == {1, 3} for edge in edges))
+        route = plan_orthogonal_tag_route(layout, {'x': 10, 'y': 5, 'yaw': 0}, 4)
+        self.assertEqual(route['route_nodes'], [1, 2, 3, 4])
+        self.assertEqual([segment['axis'] for segment in route['route_segments']], ['X', 'Y', 'X'])
+        self.assertTrue(validate_orthogonal_route(route['route_points']))
+        self.assertIn('X', {segment['axis'] for segment in route['route_segments']})
+        self.assertIn('Y', {segment['axis'] for segment in route['route_segments']})
+
+    def test_nearby_graph_entry_uses_tag_pose_instead_of_an_arbitrary_micro_goal(self):
+        route = plan_orthogonal_tag_route(
+            self.layout(), {'x': 10.06, 'y': 5.01, 'yaw': -0.2}, 4)
+        self.assertEqual(route['route_nodes'], [1, 2, 3, 4])
+        self.assertEqual(route['route_points'][1]['kind'], 'TAG')
+        self.assertEqual(route['route_points'][1]['tag_id'], 1)
+        self.assertAlmostEqual(route['route_points'][1]['yaw'], 0.0)
+        self.assertEqual(route['route_segments'][0]['from'], 'ROBOT_START')
+        self.assertEqual(route['route_segments'][0]['to'], 1)
+        self.assertTrue(validate_orthogonal_route(route['route_points']))
+
+    def test_short_but_real_l_shaped_entry_connector_remains_explicit(self):
+        route = plan_orthogonal_tag_route(
+            self.layout(), {'x': 15.1, 'y': 5.1, 'yaw': 0.0}, 4)
+        self.assertEqual(route['route_nodes'], [2, 3, 4])
+        self.assertEqual([point['kind'] for point in route['route_points'][:4]],
+                         ['START', 'LANE_CONNECTOR', 'LANE_CONNECTOR', 'TAG'])
+        self.assertEqual([segment['axis'] for segment in route['route_segments'][:2]], ['Y', 'X'])
+        self.assertTrue(validate_orthogonal_route(route['route_points']))
+
+    def test_route_graph_revision_uses_active_published_revision_not_stale_layout_revision(self):
+        layout = self.layout()
+        layout['revision'] = 21
+        expected = prepare_published_navigation(layout, canonical_revision=22)['tag_graph_revision']
+        route = plan_orthogonal_tag_route(
+            layout, {'x': 10, 'y': 5, 'yaw': 0}, 4, canonical_revision=22)
+        stale = prepare_published_navigation(layout)['tag_graph_revision']
+        self.assertEqual(route['graph_revision'], expected)
+        self.assertNotEqual(route['graph_revision'], stale)
+
+    def test_complete_published_tag_graph_has_no_diagonal_edges(self):
+        repository = Path(__file__).resolve().parents[4]
+        source = repository / 'generated/maps/WH-TEST-01/22/canonical_map.json'
+        published = json.loads(source.read_text())
+        graph = prepare_published_navigation(published, 22)
+        self.assertEqual(len(graph['navigation_edges']), 47)
+        self.assertFalse(validate_orthogonal_edges(graph))
+        self.assertTrue(all(edge['axis'] in ('X', 'Y') for edge in graph['navigation_edges']))
+
+    def test_shelf_width_axis_uses_actual_rotated_rack_long_axis(self):
+        layout = {
+            'id': 'rotated-rack', 'size': {'width': 20, 'depth': 20, 'height': 4},
+            'floors': [{'id': 'F1', 'boundary': [[0, 0], [20, 0], [20, 20], [0, 20]]}],
+            'aisles': [], 'navigation_edges': [],
+            'racks': [{'id': 'rack-A', 'floor': 'F1', 'position': [5, 0, 5],
+                       'size': [4, 2, 2], 'rotation': 30}],
+            'navigation_tags': [{'uuid': 'shelf-tag', 'tag_id': 7, 'floor_id': 'F1',
+                'x': 10, 'y': 10, 'yaw': 0, 'semantic_role': 'shelf_service',
+                'metadata': {'rack_id': 'rack-A'}}],
+        }
+        tag = prepare_published_navigation(layout)['navigation_tags'][0]
+        rack_long_axis = math.radians(30)
+        robot_width_axis = tag['yaw'] + math.pi / 2
+        error = abs(math.atan2(math.sin(robot_width_axis - rack_long_axis),
+                               math.cos(robot_width_axis - rack_long_axis)))
+        self.assertEqual(tag['metadata']['orientation_policy'], 'SHELF_WIDTH_PARALLEL')
+        self.assertLess(error, 1e-9)
+
+    def test_non_shelf_axis_orientation_policy_is_cardinal(self):
+        layout = self.layout()
+        layout['navigation_tags'][0]['metadata'] = {'orientation_policy': 'AXIS_Y_PARALLEL'}
+        tag = prepare_published_navigation(layout)['navigation_tags'][0]
+        allowed = (0.0, math.pi / 2, math.pi, -math.pi / 2)
+        self.assertEqual(tag['metadata']['orientation_policy'], 'AXIS_Y_PARALLEL')
+        self.assertLess(min(abs(math.atan2(math.sin(tag['yaw'] - yaw),
+                                      math.cos(tag['yaw'] - yaw))) for yaw in allowed), 1e-9)
 
 
 class NavigationTargetResolutionTests(TestCase):
@@ -63,6 +180,9 @@ class NavigationTargetResolutionTests(TestCase):
             'id': 'target-resolution-test', 'name': 'Target Resolution Test', 'units': 'm',
             'size': {'width': 20, 'depth': 10, 'height': 4},
             'floors': [{'id': 'F1', 'boundary': [[0, 0], [20, 0], [20, 10], [0, 10]]}],
+            'aisles': [{'id': 'A-01', 'floor_id': 'F1',
+                        'centerline': [[2.0, 5.0], [8.0, 5.0]],
+                        'width': 1.5, 'direction': 'bidirectional'}],
             'navigation_tags': [
                 {'uuid': 't1', 'tag_id': 1, 'family': 'APRILTAG', 'label': 'Aisle node',
                  'floor_id': 'F1', 'lane_id': 'A-01', 'x': 2.0, 'y': 5.0, 'z': 0.0, 'yaw': 0.25},
@@ -82,11 +202,79 @@ class NavigationTargetResolutionTests(TestCase):
             'canonical_map_revision': 7, 'map_sync_status': 'CANONICAL',
         }
 
+    def test_tag_graph_endpoint_uses_the_active_published_geometry_and_revision(self):
+        response = Client().get('/api/navigation/tag-graph')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        expected = prepare_published_navigation(self.layout, canonical_revision=7)
+        self.assertEqual(payload['canonical_revision'], 7)
+        self.assertEqual(payload['graph_revision'], expected['tag_graph_revision'])
+        self.assertEqual(payload['tags'], expected['navigation_tags'])
+        self.assertEqual(payload['edges'], expected['navigation_edges'])
+        self.assertFalse(validate_orthogonal_edges(
+            {**self.layout, 'navigation_edges': payload['edges']}, payload['edges']))
+
     def resolve(self, tag_id, active_map=None):
         return resolve_navigation_target(
             robot_id='R01', source_type='TAG', active_map=active_map or self.active_map,
             tag_id=tag_id,
         )
+
+    def test_tag_route_leg_authorization_rechecks_current_graph_and_tag_revision(self):
+        registry = navigation_tag_registry(self.active_map, robot_id='R01')
+        tag = next(item for item in registry['tags'] if item['tag_id'] == 1)
+        graph = prepare_published_navigation(self.warehouse_map.layout, 7)
+        route_plan = {
+            'graph_revision': graph['tag_graph_revision'],
+            'route_nodes': [1],
+            'active_route_points': [
+                {'x': 0.0, 'y': 5.0, 'yaw': 0.0, 'tag_id': None},
+                {'x': 2.0, 'y': 5.0, 'yaw': 0.25, 'tag_id': 1},
+            ],
+            'route_tag_revisions': {'1': tag['tag_revision']},
+        }
+        execution = {
+            'route_revision': 'approved-route-revision', 'route_plan': route_plan,
+            'registry_revision': registry['registry_revision'],
+            'registration_revision': None, 'registration_source': None,
+            'active_map_id': 'CANONICAL', 'active_map_revision': '7',
+            'canonical_map_revision': 7, 'navigation_map_revision': None,
+        }
+        gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+        request = {
+            'robot_id': 'R01', 'auth_request_id': 'auth-1',
+            'route_revision': 'approved-route-revision',
+            'graph_revision': graph['tag_graph_revision'], 'route_nodes': [1],
+            'route_index': 1, 'route_node_id': 1,
+        }
+
+        with patch.object(runtime, 'tag_route_executions', {'R01': execution}), \
+                patch.object(runtime, 'robot_runtime_modes', {'R01': 'NAVIGATION'}), \
+                patch.object(runtime, 'operation_mode', 'NAVIGATION'), \
+                patch.object(runtime, 'robot_navigation_maps', {}), \
+                patch.object(runtime, 'active_map_state', return_value=self.active_map), \
+                patch.object(runtime, 'navigation_goal_blocker', return_value=None), \
+                patch.object(runtime, 'gateway', return_value=gateway):
+            async_to_sync(runtime.handle_tag_route_leg_auth_request)(request)
+
+        gateway.send_command.assert_awaited_once()
+        self.assertEqual(gateway.send_command.await_args.args[:2], ('R01', 'TAG_ROUTE_LEG_AUTH'))
+        self.assertTrue(gateway.send_command.await_args.args[2]['approved'])
+        self.assertEqual(gateway.send_command.await_args.args[2]['route_index'], 1)
+
+        stale_plan = {**route_plan, 'route_tag_revisions': {'1': 'old-tag-revision'}}
+        stale_execution = {**execution, 'route_plan': stale_plan}
+        gateway.send_command.reset_mock()
+        with patch.object(runtime, 'tag_route_executions', {'R01': stale_execution}), \
+                patch.object(runtime, 'robot_runtime_modes', {'R01': 'NAVIGATION'}), \
+                patch.object(runtime, 'operation_mode', 'NAVIGATION'), \
+                patch.object(runtime, 'robot_navigation_maps', {}), \
+                patch.object(runtime, 'active_map_state', return_value=self.active_map), \
+                patch.object(runtime, 'navigation_goal_blocker', return_value=None), \
+                patch.object(runtime, 'gateway', return_value=gateway):
+            async_to_sync(runtime.handle_tag_route_leg_auth_request)(request)
+        self.assertFalse(gateway.send_command.await_args.args[2]['approved'])
+        self.assertEqual(gateway.send_command.await_args.args[2]['reason_code'], 'TAG_REVISION_MISMATCH')
 
     def test_valid_tag_resolves_registered_navigation_node_with_registry_hash(self):
         target = self.resolve(1)
@@ -332,11 +520,18 @@ class NavigationTargetResolutionTests(TestCase):
             return request_id
 
         def planner_result(request_id, goal=(2.0, 5.0, 0.25)):
+            preview_payload = gateway.send_command.await_args.args[2]
             async_to_sync(runtime.handle_ros_message)({
                 'type': 'PATH_PREVIEW_RESULT', 'robot_id': 'R01', 'request_id': request_id,
                 'status': 'VALID', 'path': [[0.0, 0.0], [goal[0], goal[1]]],
                 'goal': {'x': goal[0], 'y': goal[1], 'yaw': goal[2]},
                 'active_map_id': 'CANONICAL', 'active_map_revision': '7',
+                'route_revision': preview_payload['route_revision'],
+                'route_nodes': preview_payload['route_nodes'],
+                'route_segments': preview_payload['route_segments'],
+                'route_points': preview_payload['route_points'],
+                'canonical_route_points': preview_payload['canonical_route_points'],
+                'route_tag_revisions': preview_payload['route_tag_revisions'],
             })
 
         def send_goal(request_id, source_id='1', source_type='TAG', goal=(2.0, 5.0, 0.25)):
@@ -346,6 +541,8 @@ class NavigationTargetResolutionTests(TestCase):
                 'active_map_id': 'CANONICAL', 'active_map_revision': '7',
                 'source_type': source_type, 'source_id': source_id,
                 'source_map_id': 'CANONICAL', 'source_map_revision': '7',
+                'route_revision': runtime.path_preview_results.get(
+                    ('R01', request_id), {}).get('route_revision'),
             })
 
         with patch.object(runtime, 'runtime_mode', 'GAZEBO_ROS'), \
@@ -360,7 +557,13 @@ class NavigationTargetResolutionTests(TestCase):
                 patch.object(runtime, 'approved_path_previews', {}), \
                 patch.object(runtime, 'path_preview_results', {}), \
                 patch.object(runtime, 'expired_path_previews', {}), \
-                patch.object(runtime, 'path_preview_invalidations', {}):
+                patch.object(runtime, 'path_preview_invalidations', {}), \
+                patch.object(runtime.engine, 'state', {'robots': {'R01': {
+                    'active_map_pose': {'valid': True, 'frame_id': 'map',
+                        'map_id': 'CANONICAL', 'map_revision': '7', 'map_source': 'CANONICAL',
+                        'pose_source': 'TF', 'x': 2.0, 'y': 5.0, 'yaw': 0.0},
+                }}}), \
+                patch.object(runtime, 'robot_pose_heartbeats', {'R01': time.monotonic()}):
             async_to_sync(runtime.handle_message)(capture, {
                 'type': 'NAV_GOAL', 'robot_id': 'R01', 'x': 2.0, 'y': 5.0, 'yaw': 0.25,
                 'frame_id': 'map', 'active_map_id': 'CANONICAL', 'active_map_revision': '7',
@@ -378,15 +581,24 @@ class NavigationTargetResolutionTests(TestCase):
 
             capture.send_json.reset_mock()
             request_id = request_preview()
-            gateway.send_command.assert_awaited_with('R01', 'PATH_PREVIEW', {
+            preview_call = gateway.send_command.await_args
+            self.assertEqual(preview_call.args[:2], ('R01', 'PATH_PREVIEW'))
+            sent_preview = preview_call.args[2]
+            self.assertEqual({key: sent_preview[key] for key in (
+                'request_id', 'x', 'y', 'yaw', 'frame_id', 'source_type', 'source_id',
+                'tag_id', 'tag_revision', 'registry_revision', 'source_map_id',
+                'source_map_revision', 'registration_revision', 'registration_source',
+                'active_map_id', 'active_map_revision', 'canonical_map_revision')}, {
                 'request_id': request_id, 'x': 2.0, 'y': 5.0, 'yaw': 0.25, 'frame_id': 'map',
                 'source_type': 'TAG', 'source_id': '1', 'tag_id': 1,
                 'tag_revision': tag_record['tag_revision'], 'registry_revision': registry['registry_revision'],
                 'source_map_id': 'CANONICAL', 'source_map_revision': '7',
                 'registration_revision': None, 'registration_source': None,
-                'map_content_revision': None,
                 'active_map_id': 'CANONICAL', 'active_map_revision': '7', 'canonical_map_revision': 7,
             })
+            self.assertEqual(sent_preview['route_nodes'], [1])
+            self.assertTrue(sent_preview['route_revision'])
+            self.assertEqual(sent_preview['route_points'][-1]['tag_id'], 1)
             self.assertFalse(any(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list))
             planner_result(request_id)
 
@@ -397,20 +609,23 @@ class NavigationTargetResolutionTests(TestCase):
 
             capture.send_json.reset_mock()
             send_goal(request_id)
-            gateway.send_command.assert_awaited_with('R01', 'NAVIGATE', {
-                'x': 2.0, 'y': 5.0, 'yaw': 0.25, 'frame_id': 'map',
-                'source_type': 'TAG', 'source_id': '1', 'tag_id': 1,
-                'tag_revision': tag_record['tag_revision'], 'registry_revision': registry['registry_revision'],
-                'source_map_id': 'CANONICAL', 'source_map_revision': '7',
-                'registration_revision': None, 'registration_source': None,
-                'map_content_revision': None,
-                'preview_request_id': request_id, 'active_map_id': 'CANONICAL',
-                'active_map_revision': '7', 'canonical_map_revision': 7,
-            })
+            nav_call = gateway.send_command.await_args
+            self.assertEqual(nav_call.args[:2], ('R01', 'NAVIGATE'))
+            sent_goal = nav_call.args[2]
+            self.assertEqual(sent_goal['route_revision'], sent_preview['route_revision'])
+            self.assertEqual(sent_goal['route_nodes'], sent_preview['route_nodes'])
+            self.assertEqual(sent_goal['route_points'], sent_preview['route_points'])
+            self.assertEqual((sent_goal['x'], sent_goal['y'], sent_goal['yaw']), (2.0, 5.0, 0.25))
+            self.assertEqual(sent_goal['preview_request_id'], request_id)
 
             tag = NavigationTag.objects.get(warehouse=self.warehouse_map.warehouse, tag_id=1)
             tag.x = 2.25
             tag.save(update_fields=['x', 'updated_at'])
+            current_layout = dict(self.warehouse_map.layout)
+            current_tags = [dict(item) for item in current_layout['navigation_tags']]
+            current_tags[0]['x'] = 2.25
+            self.warehouse_map.layout = {**current_layout, 'navigation_tags': current_tags}
+            self.warehouse_map.save(update_fields=['layout', 'updated_at'])
             updated_registry = navigation_tag_registry(self.active_map)
             updated_tag = next(item for item in updated_registry['tags'] if item['tag_id'] == 1)
             changed_request = request_preview(tag_revision=updated_tag['tag_revision'],
@@ -456,7 +671,13 @@ class NavigationTargetResolutionTests(TestCase):
                 patch.object(runtime, 'approved_path_previews', {}), \
                 patch.object(runtime, 'path_preview_results', {}), \
                 patch.object(runtime, 'expired_path_previews', {}), \
-                patch.object(runtime, 'path_preview_invalidations', {}):
+                patch.object(runtime, 'path_preview_invalidations', {}), \
+                patch.object(runtime.engine, 'state', {'robots': {'R01': {
+                    'active_map_pose': {'valid': True, 'frame_id': 'map',
+                        'map_id': 'SLAM-session-4', 'map_revision': 'slam-rev-12',
+                        'map_source': 'SLAM_TOOLBOX', 'pose_source': 'TF',
+                        'x': 5.0, 'y': 0.0, 'yaw': math.pi / 2},
+                }}}):
             async_to_sync(runtime.handle_message)(capture, {
                 'type': 'PATH_PREVIEW_REQUEST', 'robot_id': 'R01',
                 'request_id': request_id, 'source_type': 'TAG', 'tag_id': 1,
@@ -481,6 +702,11 @@ class NavigationTargetResolutionTests(TestCase):
             'canonical_map_revision': 7,
         }
         self.assertEqual(gateway.send_command.await_args.args[:2], ('R01', 'PATH_PREVIEW'))
-        self.assertAlmostEqual(sent.pop('y'), 0.0)
-        expected.pop('y')
-        self.assertEqual(sent, expected)
+        for key, value in expected.items():
+            if isinstance(value, float):
+                self.assertAlmostEqual(sent[key], value)
+            else:
+                self.assertEqual(sent[key], value)
+        self.assertEqual(sent['route_nodes'], [1])
+        self.assertEqual(sent['route_points'][-1]['tag_id'], 1)
+        self.assertTrue(sent['route_revision'])

@@ -276,9 +276,36 @@ describe("robot detail route stability", () => {
     act(() => useStore.getState().setRobotDetail("R01", { pathPreview: {
       robot_id: "R01", request_id: request.request_id, source_type: "TAG", source_id: "1301", tag_id: 1301,
       tag_revision: "tag-1301-rev1", registry_revision: "registry-current", status: "VALID", frame_id: "map",
-      path: [[0, 0], [2.5, 3.5]], path_length_m: 4.3, goal: { x: 2.5, y: 3.5, yaw: 1.2 },
+      path: [[0, 0], [2.5, 3.5]], active_path: [[0, 0], [0, 3], [2.5, 3], [2.5, 3.5]],
+      canonical_path: [[0, 0], [0, 3], [2.5, 3], [2.5, 3.5]],
+      route_nodes: [1302, 1301], route_segments: [
+        { from: "START", to: 1302, axis: "Y", length_m: 3 },
+        { from: 1302, to: 1301, axis: "X", length_m: 2.5 },
+        { from: 1301, to: 1301, axis: "Y", length_m: 0.5 },
+      ],
+      active_route_points: [
+        { x: 0, y: 0, yaw: 0, kind: "START", tag_id: null },
+        { x: 0, y: 3, yaw: Math.PI / 2, kind: "TAG", tag_id: 1302 },
+        { x: 2.5, y: 3, yaw: 0, kind: "TAG", tag_id: 1301 },
+        { x: 2.5, y: 3.5, yaw: 1.2, kind: "TAG_SERVICE", tag_id: 1301 },
+      ],
+      canonical_route_points: [
+        { x: 0, y: 0, yaw: 0, kind: "START", tag_id: null },
+        { x: 0, y: 3, yaw: Math.PI / 2, kind: "TAG", tag_id: 1302 },
+        { x: 2.5, y: 3, yaw: 0, kind: "TAG", tag_id: 1301 },
+        { x: 2.5, y: 3.5, yaw: 1.2, kind: "TAG_SERVICE", tag_id: 1301 },
+      ],
+      graph_revision: "graph-rev-21", route_revision: "route-rev-21",
+      path_length_m: 4.3, goal: { x: 2.5, y: 3.5, yaw: 1.2 },
       active_map_id: "CANONICAL", active_map_revision: "21", timestamp: new Date().toISOString(),
     } }));
+    expect(container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')?.dataset.previewPathFrame).toBe("CANONICAL");
+    expect(container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')?.dataset.previewPathPointCount).toBe("4");
+    expect(container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')?.dataset.previewRouteNodeCount).toBe("3");
+    await act(async () => { buttonNamed("MAP VIEW 2D")?.click(); await settleUi(); });
+    const activeCanvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas');
+    expect(activeCanvas?.dataset.navigationPathPointCount).toBe("4");
+    expect(activeCanvas?.dataset.previewRouteNodeCount).toBe("3");
     expect(container.textContent).toContain("PREVIEW VALID · 4.30 m");
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(false);
     await act(async () => { buttonNamed("SEND GOAL")?.click(); });
@@ -286,7 +313,7 @@ describe("robot detail route stability", () => {
       .find((message) => message.type === "NAV_GOAL");
     expect(goalMessage).toMatchObject({ type: "NAV_GOAL", robot_id: "R01", source_type: "TAG", source_id: "1301",
       preview_request_id: request.request_id, x: 2.5, y: 3.5, yaw: 1.2,
-      active_map_id: "CANONICAL", active_map_revision: "21" });
+      active_map_id: "CANONICAL", active_map_revision: "21", route_revision: "route-rev-21" });
   });
 
   it("surfaces Tag registry failures and incompatible maps", async () => {
@@ -626,6 +653,39 @@ describe("robot detail route stability", () => {
     act(() => buttonNamed("MAP VIEW 2D")?.click());
     act(() => buttonNamed("MAP VIEW 3D")?.click());
     expect(container.querySelector('[data-testid="slam-map-3d"]')?.getAttribute("data-accumulated-points")).toBe("12");
+  });
+
+  it("keeps accumulated occupancy as the LIDAR 2D base and updates only the restrained scan overlay", async () => {
+    setOnlineRobot("MAPPING");
+    const slamMap = { robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX" as const,
+      mapping_session_id: "session-1", active_map_id: "SLAM-session-1",
+      active_map_revision: "session-session-1", map_content_revision: "cells-before",
+      width: 2, height: 2, resolution: .05, origin: { x: 0, y: 0, yaw: 0 },
+      data: [-1, 0, 100, -1], known_cells: 2, unknown_cells: 2, occupied_cells: 1, free_cells: 1 };
+    const scan = { robot_id: "R01", topic: "/scan", source_frame_id: "lidar_link",
+      mapping_session_id: "session-1", frame_id: "map", angle_min: 0, angle_max: 1,
+      angle_increment: .1, range_min: .1, range_max: 10, point_count: 1,
+      points: [[1, 1] as [number, number]], timestamp: new Date().toISOString() };
+    useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1",
+      slam2dMap: slamMap, scan });
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { buttonNamed("MAP VIEW 2D")?.click(); await settleUi(); });
+
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="slam-map-2d-canvas"]');
+    const baseMap = useStore.getState().robotDetail.R01.slam2dMap;
+    expect(canvas?.dataset.occupancyLayer).toBe("accumulated-map-snapshot");
+    expect(canvas?.dataset.scanLayer).toBe("low-opacity-current-scan-overlay");
+    expect(canvas?.dataset.scanRenderMode).toBe("points-only");
+    expect(baseMap?.map_content_revision).toBe("cells-before");
+
+    await act(async () => { useStore.getState().setRobotDetail("R01", { scan: {
+      ...scan, point_count: 3, points: [[1, 1], [1.1, 1], [1.2, 1]] as [number, number][],
+      timestamp: new Date(Date.now() + 1).toISOString(),
+    } }); await settleUi(); });
+    expect(canvas?.dataset.occupancyLayer).toBe("accumulated-map-snapshot");
+    expect(canvas?.dataset.scanLayer).toBe("low-opacity-current-scan-overlay");
+    expect(useStore.getState().robotDetail.R01.slam2dMap).toBe(baseMap);
+    expect(useStore.getState().robotDetail.R01.slam2dMap?.map_content_revision).toBe("cells-before");
   });
 
   it("shows live SLAM and ready Nav2 together in Unified without disabling goals because SLAM is active", async () => {

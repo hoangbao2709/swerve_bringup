@@ -7,6 +7,7 @@ from django.db import transaction
 from .models import Warehouse, Zone, Shelf, NavigationTag, NavigationTagEdge
 from .canonical_map import canonicalize_layout, validate_canonical_layout
 from .map_artifacts import build_revision_artifacts, cleanup_artifact_dir
+from .navigation_graph import prepare_published_navigation
 
 log = logging.getLogger(__name__)
 
@@ -335,6 +336,7 @@ def sync_from_layout(layout: dict[str, Any], *, warehouse: Warehouse | None = No
     When ``prune=True`` (editor publish), zones/shelves removed from the layout are
     removed from master data too. Normal imports keep historical master rows.
     """
+    layout = prepare_published_navigation(layout)
     size = layout.get('size') or {}
     layout_id = str(layout.get('id') or 'warehouse')
     if warehouse is None:
@@ -463,6 +465,13 @@ def sync_from_layout(layout: dict[str, Any], *, warehouse: Warehouse | None = No
         tag.zone = zone_map.get(str(raw_tag.get('zone_id') or raw_tag.get('zone') or ''))
         raw_metadata = raw_tag.get('metadata')
         tag.metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        # Keep geometric associations and orientation semantics with the
+        # relational Tag registry used by TAG routing; IDs carry no geometry.
+        for field in ('source_aisles', 'semantic_role', 'orientation_policy',
+                      'approach_pose', 'service_pose', 'navigation_pose',
+                      'goal_pose', 'rack_id', 'shelf_id'):
+            if field in raw_tag and field not in tag.metadata:
+                tag.metadata[field] = raw_tag[field]
         tag.enabled = bool(raw_tag.get('enabled', True))
         tag.label = str(raw_tag.get('label') or raw_tag.get('uuid') or '')
         tag.save()
@@ -565,7 +574,7 @@ def commit_master_to_map(warehouse: Warehouse, *, user=None, source: str = 'WARE
 @transaction.atomic
 def save_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout: dict[str, Any] | None = None):
     """Save editor geometry as the shared current map without creating a published version."""
-    layout = canonicalize_layout(layout, fallback_layout)
+    layout = prepare_published_navigation(canonicalize_layout(layout, fallback_layout))
     active = ensure_active_map(fallback_layout or layout)
     sync_from_layout(layout, warehouse=active.warehouse, prune=True)
     active.refresh_from_db()
@@ -579,7 +588,7 @@ def save_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout: di
 
 def publish_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout: dict[str, Any] | None = None):
     from .models import WarehouseMap, WarehouseMapVersion
-    layout = canonicalize_layout(layout, fallback_layout)
+    layout = prepare_published_navigation(canonicalize_layout(layout, fallback_layout))
     validation_errors = validate_canonical_layout(layout)
     if validation_errors:
         raise ValueError('; '.join(validation_errors[:20]))
@@ -592,6 +601,7 @@ def publish_layout_to_map(layout: dict[str, Any], *, user=None, fallback_layout:
             locked = WarehouseMap.objects.select_for_update().select_related('warehouse').get(pk=active.pk)
             next_revision = int(locked.revision or 0) + 1
             next_version = int(locked.published_version or 0) + 1
+            layout = prepare_published_navigation(layout, next_revision)
             # Build every external artifact while the map row is locked.  Any
             # exporter failure therefore leaves both the DB and artifact tree
             # untouched.

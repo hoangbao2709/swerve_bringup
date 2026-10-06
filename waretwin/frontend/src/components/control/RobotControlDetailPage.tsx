@@ -228,8 +228,14 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       && candidatePreview?.source_type === goalPreview.source_type
       && candidatePreview.source_map_id === goalPreview.source_map_id
       && candidatePreview.source_map_revision === goalPreview.source_map_revision);
+  const tagRoutePreviewComplete = targetMethod !== "TAG" || Boolean(
+    candidatePreview?.route_revision && candidatePreview.route_nodes?.length
+    && Array.isArray(candidatePreview.route_segments)
+    && candidatePreview.active_path?.length && candidatePreview.canonical_path?.length
+    && candidatePreview.active_route_points?.length && candidatePreview.canonical_route_points?.length);
   const approvedPreview: RobotDetailPathPreview | null = candidatePreview
     && candidatePreview.status === "VALID" && candidatePreview.path.length > 0
+    && tagRoutePreviewComplete
     && candidatePreview.active_map_id === activeMapId
     && candidatePreview.active_map_revision === activeMapRevision
     && (targetMethod === "TAG" || Boolean(isMapPointTarget(goalPreview)
@@ -529,7 +535,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
       map_revision: approvedPreview.active_map_revision!, source_type: approvedPreview.source_type ?? "MAP_POINT",
       source_id: approvedPreview.source_id ?? undefined,
       source_map_id: approvedPreview.source_map_id ?? undefined,
-      source_map_revision: approvedPreview.source_map_revision ?? undefined })) {
+      source_map_revision: approvedPreview.source_map_revision ?? undefined,
+      route_revision: approvedPreview.source_type === "TAG" ? approvedPreview.route_revision ?? undefined : undefined })) {
       setError("Navigation goal was not sent");
       return;
     }
@@ -768,7 +775,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
           </div>}
           <div className="robot-detail-view-stack" key={robotId}>
             <div className={"robot-detail-view-layer " + (detailView === "GLOBAL" ? "is-active" : "")} data-view="GLOBAL" aria-hidden={detailView !== "GLOBAL"}><DetailMapCanvas active={detailView === "GLOBAL"} robotId={robotId} robot={robot} canonicalRevision={canonicalMapRevision} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} selectedTag={selectedMapTag} onGoalSelect={selectMapPoint} pickMapIdentity={detailView === "GLOBAL" ? displayedMapPointPickIdentity : null} /></div>
-            {visitedViews.current.has("LIDAR_2D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_2D" ? "is-active" : "")} data-view="LIDAR_2D" aria-hidden={detailView !== "LIDAR_2D"}><ActiveNavigationMap2DView map={activeMap2dSnapshot} robot={robot} scan={mappingScan} target={isMapPointTarget(goalPreview) ? goalPreview : null} navigationPath={approvedPreview?.path ?? []} canPick={detailView === "LIDAR_2D" && Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} /></div>}
+            {visitedViews.current.has("LIDAR_2D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_2D" ? "is-active" : "")} data-view="LIDAR_2D" aria-hidden={detailView !== "LIDAR_2D"}><ActiveNavigationMap2DView map={activeMap2dSnapshot} robot={robot} scan={mappingScan} target={isMapPointTarget(goalPreview) ? goalPreview : null} navigationPath={approvedPreview?.active_path ?? approvedPreview?.path ?? []} routeNodes={approvedPreview?.active_route_points ?? []} canPick={detailView === "LIDAR_2D" && Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} /></div>}
             {visitedViews.current.has("LIDAR_3D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_3D" ? "is-active" : "")} data-view="LIDAR_3D" aria-hidden={detailView !== "LIDAR_3D"}><RobotLidar3DView active={detailView === "LIDAR_3D"} frame={currentSlam3dCloud} robot={robot} slamMap={currentSlam2dMap} /></div>}
           </div>
           <div className="robot-detail-goal-toolbar">
@@ -938,6 +945,9 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
   const [showPaths, setShowPaths] = useState(true);
   const layoutRevision = useStore((state) => state.layoutRevision);
   const runtimeState = useStore((state) => state.runtimeState);
+  const canonicalTagPreview = showPaths && pathPreview?.source_type === "TAG"
+    && pathPreview.status === "VALID" && pathPreview.canonical_path?.length
+    ? { ...pathPreview, path: pathPreview.canonical_path } : null;
 
   useEffect(() => {
     setFollow(true);
@@ -987,10 +997,11 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
     // GLOBAL is always the canonical warehouse frame. Unified SLAM/Nav2 paths
     // use the active SLAM map frame and are rendered only in the SLAM views.
     const canonicalPaths = runtimeState === "MAPPING" || runtimeState === "UNIFIED" ? false : showPaths;
+    const showCanonicalPaths = canonicalPaths || Boolean(canonicalTagPreview);
     drawDetailMap(ctx, size.width, size.height, transform, bounds, null, null, displayedPose, robot,
       canonicalPaths ? globalPath : null, canonicalPaths ? localPath : null, canonicalPaths ? goal : null,
-      canonicalPaths ? goalPreview : null, canonicalPaths ? pathPreview : null,
-      { showGrid, showLidar: false, showPaths: canonicalPaths, showWarehouse: true });
+      canonicalPaths ? goalPreview : null, canonicalTagPreview ?? (canonicalPaths ? pathPreview : null),
+      { showGrid, showLidar: false, showPaths: showCanonicalPaths, showWarehouse: true });
     if (selectedTag?.navigation_pose) drawSelectedTag(ctx, selectedTag, transform.toCanvas);
     detailPerformance("view_render", { view: "GLOBAL", useful: true, robot_id: robotId });
   }, [active, bounds, goal, goalPreview, globalPath, localPath, pathPreview, selectedTag, displayedPose, robot, runtimeState, showGrid, showPaths, size.height, size.width, transform]);
@@ -1009,6 +1020,9 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
   return <div className="robot-detail-map-host" ref={hostRef}>
     <canvas ref={canvasRef} className="robot-detail-map-canvas" data-testid="global-warehouse-map"
       data-map-source="CANONICAL_WAREHOUSE" data-pose-source={displayedPose?.pose_source}
+      data-preview-path-frame={canonicalTagPreview ? "CANONICAL" : undefined}
+      data-preview-path-point-count={canonicalTagPreview?.path.length ?? 0}
+      data-preview-route-node-count={canonicalTagPreview?.canonical_route_points?.filter((point) => point.tag_id !== null).length ?? 0}
       data-render-x={displayedPose?.x} data-render-y={displayedPose?.y}
       data-render-yaw={displayedPose?.yaw}
       data-selected-tag-id={selectedTag?.tag_id}
@@ -1076,6 +1090,9 @@ function drawDetailMap(ctx: CanvasRenderingContext2D, width: number, height: num
     drawPath(ctx, globalPath?.frame_id === "map" ? globalPath.points : [], worldToCanvas, "#9b87ff", 2.6, false);
     drawPath(ctx, localPath?.frame_id === "map" ? localPath.points : [], worldToCanvas, "#33c7ff", 1.8, true);
     drawPath(ctx, pathPreview?.status === "VALID" ? pathPreview.path : [], worldToCanvas, "#f4cf52", 2.8, false);
+    if (pathPreview?.status === "VALID" && pathPreview.source_type === "TAG") {
+      drawRouteNodes(ctx, pathPreview.canonical_route_points ?? [], worldToCanvas);
+    }
   }
   const actualGoal = goalPreview ?? (goal?.frame_id === "map" ? goal : null);
   if (actualGoal) drawGoal(ctx, actualGoal, worldToCanvas, goalPreview ? "#facc15" : "#b08cff");
@@ -1145,4 +1162,17 @@ function drawPolyline(ctx: CanvasRenderingContext2D, points: Array<[number, numb
 function drawPath(ctx: CanvasRenderingContext2D, points: Array<[number, number]>, worldToCanvas: MapTransform["toCanvas"], color: string, width: number, dashed: boolean) { if (!points.length) return; ctx.save(); ctx.setLineDash(dashed ? [6, 5] : []); drawPolyline(ctx, points, worldToCanvas, color, width); ctx.restore(); }
 function drawGoal(ctx: CanvasRenderingContext2D, goal: WorldGoal | RobotDetailGoal, worldToCanvas: MapTransform["toCanvas"], color: string) { const p = worldToCanvas(goal.x, goal.y); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + Math.cos(goal.yaw) * 16, p.y - Math.sin(goal.yaw) * 16); ctx.stroke(); ctx.fillRect(p.x - 2, p.y - 2, 4, 4); }
 function drawSelectedTag(ctx: CanvasRenderingContext2D, tag: RobotNavigationTag, worldToCanvas: MapTransform["toCanvas"]) { const pose = tag.navigation_pose; if (!pose) return; const p = worldToCanvas(pose.x, pose.y); ctx.save(); ctx.strokeStyle = "#e19aff"; ctx.fillStyle = "#f2c7ff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(p.x - 15, p.y); ctx.lineTo(p.x + 15, p.y); ctx.moveTo(p.x, p.y - 15); ctx.lineTo(p.x, p.y + 15); ctx.stroke(); ctx.font = "bold 10px JetBrains Mono, monospace"; ctx.fillText(`${tag.tag_id} · ${tag.label}`, p.x + 15, p.y - 12); ctx.restore(); }
+function drawRouteNodes(ctx: CanvasRenderingContext2D, points: NonNullable<RobotDetailPathPreview["canonical_route_points"]>, worldToCanvas: MapTransform["toCanvas"]) {
+  ctx.save();
+  for (const point of points) {
+    if (point.tag_id === null || point.kind === "START") continue;
+    const p = worldToCanvas(point.x, point.y);
+    ctx.beginPath(); ctx.arc(p.x, p.y, point.kind === "TAG_SERVICE" ? 7 : 5, 0, Math.PI * 2);
+    ctx.fillStyle = point.kind === "TAG_SERVICE" ? "#ffd166" : "#e8b8ff";
+    ctx.strokeStyle = "#08111d"; ctx.lineWidth = 1.5; ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#f2e8ff"; ctx.font = "bold 9px JetBrains Mono, monospace";
+    ctx.fillText(String(point.tag_id), p.x + 7, p.y - 6);
+  }
+  ctx.restore();
+}
 function drawRobot(ctx: CanvasRenderingContext2D, robotId: string, status: string, pose: FramePose, worldToCanvas: MapTransform["toCanvas"], scale: number) { const p = worldToCanvas(pose.x, pose.y); const color = status === "ERROR" ? "#ef6262" : status === "WARNING" ? "#f3c64e" : "#37d6c1"; ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(-pose.yaw); ctx.fillStyle = "rgba(14, 29, 45, .95)"; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.rect(-0.60 * scale, -0.30 * scale, 1.20 * scale, 0.60 * scale); ctx.fill(); ctx.stroke(); ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(0.60 * scale, 0); ctx.lineTo(0.36 * scale, -0.12 * scale); ctx.lineTo(0.36 * scale, 0.12 * scale); ctx.closePath(); ctx.fill(); ctx.restore(); ctx.fillStyle = "#e8f3ff"; ctx.font = "bold 10px JetBrains Mono, monospace"; ctx.fillText(robotId, p.x + 0.64 * scale, p.y - 0.38 * scale); }

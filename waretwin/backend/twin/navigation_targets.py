@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .models import NavigationTag, RobotMapRegistration, WarehouseMap
-from .map_registration import transform_canonical_pose
+from .map_registration import inverse_transform_active_pose, transform_canonical_pose
 
 
 class NavigationTargetError(ValueError):
@@ -75,7 +75,7 @@ def _canonical_map(active_map: dict[str, Any]) -> tuple[WarehouseMap | None, str
 
 def _tag_navigation_pose(tag: NavigationTag, map_revision: str) -> tuple[dict[str, float] | None, str | None, str | None]:
     metadata = tag.metadata if isinstance(tag.metadata, dict) else {}
-    pose_key = next((key for key in ('approach_pose', 'navigation_pose', 'goal_pose') if key in metadata), None)
+    pose_key = next((key for key in ('service_pose', 'approach_pose', 'navigation_pose', 'goal_pose') if key in metadata), None)
     if pose_key is None:
         raw_pose: dict[str, Any] = {'x': tag.x, 'y': tag.y, 'yaw': tag.yaw}
         pose_source = 'REGISTERED_NAVIGATION_NODE'
@@ -431,6 +431,11 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
             'canonical_map_revision': registry.get('canonical_map_revision'),
             'registration_revision': registry.get('registration_revision'),
             'registration_source': registry.get('transform_source'),
+            'registration_transform': ({key: registry['registration'][key]
+                                        for key in ('tx', 'ty', 'yaw')}
+                                       if isinstance(registry.get('registration'), dict) else
+                                       {'tx': 0.0, 'ty': 0.0, 'yaw': 0.0}
+                                       if map_id == 'CANONICAL' else None),
             'source_map_id': registry.get('canonical_map_id'),
             'source_map_revision': registry.get('canonical_map_revision'),
             'source_pose': record.get('canonical_navigation_pose') or record['navigation_pose'],
@@ -440,3 +445,86 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
         },
     )
     return target.as_dict()
+
+
+def plan_registered_tag_route(*, robot_id: str, active_map: dict[str, Any],
+                              destination_tag_id: int | str,
+                              active_start_pose: dict[str, Any]) -> dict[str, Any]:
+    """Plan a canonical topological route and transform it through the exact
+    current registration into the active Nav2 frame.
+
+    The route resolver is generic: it consumes canonical geometry and a
+    versioned transform, without knowing whether that transform came from the
+    Gazebo alignment provider or a future physical-robot calibration provider.
+    """
+    map_id = str(active_map.get('active_map_id') or '')
+    map_revision = str(active_map.get('active_map_revision') or '')
+    try:
+        canonical_revision = int(str(active_map.get('canonical_map_revision')
+                                     or active_map.get('active_map_revision') or ''))
+        target_id = int(destination_tag_id)
+    except (TypeError, ValueError):
+        raise NavigationTargetError('TAG_MAP_REVISION_MISMATCH', 'canonical map revision is missing or invalid') from None
+    warehouse_map = (WarehouseMap.objects.select_related('warehouse')
+                     .filter(is_active=True).order_by('id').first())
+    if warehouse_map is None or int(warehouse_map.revision) != canonical_revision:
+        raise NavigationTargetError('TAG_MAP_REVISION_MISMATCH',
+            'Tag graph canonical revision does not match the active published map')
+    transform = {'tx': 0.0, 'ty': 0.0, 'yaw': 0.0}
+    registration_revision = None
+    registration_source = 'IDENTITY_CANONICAL_MAP'
+    if map_id == 'CANONICAL':
+        if map_revision != str(canonical_revision) or active_map.get('map_sync_status') != 'CANONICAL':
+            raise NavigationTargetError('TAG_MAP_REVISION_MISMATCH', 'active canonical Tag map identity changed')
+    else:
+        registration = _active_registration(str(robot_id), active_map,
+                                             canonical_revision, warehouse_map)
+        if registration is None:
+            raise NavigationTargetError('TAG_MAP_REGISTRATION_REQUIRED',
+                'orthogonal Tag routing requires the exact active-map registration')
+        transform = {'tx': registration.tx, 'ty': registration.ty, 'yaw': registration.yaw}
+        registration_revision = registration.registration_revision
+        registration_source = registration.source
+    from .navigation_graph import plan_orthogonal_tag_route
+    try:
+        canonical_start = inverse_transform_active_pose(active_start_pose, transform)
+        route = plan_orthogonal_tag_route(
+            warehouse_map.layout, canonical_start, target_id,
+            canonical_revision=canonical_revision,
+        )
+    except Exception as exc:
+        raise NavigationTargetError('TAG_ROUTE_UNAVAILABLE', str(exc)) from exc
+    canonical_points = [{key: point[key] for key in ('x', 'y', 'yaw', 'kind', 'tag_id')}
+                        for point in route['route_points']]
+    active_points = []
+    for point in canonical_points:
+        transformed = transform_canonical_pose(point, transform)
+        active_points.append({**point, **transformed})
+    # Bind the final node to the exact resolver result (including its selected
+    # service/approach policy) rather than duplicating target resolution here.
+    final_tag = NavigationTag.objects.filter(warehouse=warehouse_map.warehouse,
+                                             tag_id=target_id, enabled=True).first()
+    if final_tag is None:
+        raise NavigationTargetError('TAG_UNKNOWN', f'Tag {target_id} is not enabled')
+    record = _tag_record(final_tag, 'CANONICAL', str(canonical_revision))
+    canonical_goal = record.get('navigation_pose')
+    if canonical_goal is None:
+        raise NavigationTargetError('TAG_NOT_NAVIGABLE', f'Tag {target_id} has no valid navigation pose')
+    expected_goal = transform_canonical_pose(canonical_goal, transform)
+    if math.hypot(active_points[-1]['x'] - expected_goal['x'],
+                  active_points[-1]['y'] - expected_goal['y']) > 1e-4:
+        raise NavigationTargetError('TAG_ROUTE_TARGET_MISMATCH',
+            'topological route destination does not match the registered Tag service pose')
+    active_points[-1] = {**active_points[-1], **expected_goal}
+    return {
+        **route,
+        'canonical_path': [[point['x'], point['y']] for point in canonical_points],
+        'active_route_points': active_points,
+        'canonical_route_points': canonical_points,
+        'registration_revision': registration_revision,
+        'registration_source': registration_source,
+        'registration_transform': transform,
+        'active_map_id': map_id,
+        'active_map_revision': map_revision,
+        'canonical_map_revision': canonical_revision,
+    }

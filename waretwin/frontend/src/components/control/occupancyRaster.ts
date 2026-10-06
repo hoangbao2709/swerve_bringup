@@ -63,15 +63,18 @@ async function build(map: RobotDetailMapSnapshot): Promise<HTMLCanvasElement | n
   const image = context.createImageData(map.width, map.height);
   for (let row = 0; row < map.height; row++) for (let col = 0; col < map.width; col++) {
     const occupancy = source[row * map.width + col];
-    if (occupancy < 0) continue;
-    const alpha = Math.max(.08, Math.min(.9, occupancy / 100));
     const index = ((map.height - row - 1) * map.width + col) * 4;
-    if (occupancy > 65) {
+    if (occupancy < 0) {
+      // Unknown is a deliberate, subtle base color; it remains visually
+      // distinct from mapped free space without competing with the dark UI.
+      image.data[index] = 8; image.data[index + 1] = 18; image.data[index + 2] = 29;
+      image.data[index + 3] = 255;
+    } else if (occupancy > 65) {
       image.data[index] = 232; image.data[index + 1] = 92; image.data[index + 2] = 92;
-      image.data[index + 3] = Math.round(alpha * 255);
+      image.data[index + 3] = 242;
     } else {
-      image.data[index] = 24; image.data[index + 1] = 54; image.data[index + 2] = 77;
-      image.data[index + 3] = Math.round((.18 + alpha * .35) * 255);
+      image.data[index] = 31; image.data[index + 1] = 73; image.data[index + 2] = 96;
+      image.data[index + 3] = 220;
     }
   }
   context.putImageData(image, 0, 0);

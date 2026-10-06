@@ -40,10 +40,15 @@ controller_server:
       min_speed_theta: 0.0
       acc_lim_x: 0.45
       acc_lim_y: 0.45
-      acc_lim_theta: 0.20
+      # 1 rad/s^2 at a 0.300042 m module arm is 0.300042 m/s^2, or
+      # 4.45 rad/s^2 at the 0.0675 m wheel radius. This remains below the
+      # swerve actuator's 10 rad/s^2 wheel acceleration limit while giving
+      # the simulated-time controller enough dynamic window to rotate at
+      # this host's sub-real-time Gazebo factor.
+      acc_lim_theta: 1.0
       decel_lim_x: -1.10
       decel_lim_y: -1.10
-      decel_lim_theta: -0.30
+      decel_lim_theta: -1.0
       vx_samples: 21
       vy_samples: 21
       vtheta_samples: 20
@@ -65,9 +70,15 @@ controller_server:
       GoalAlign.forward_point_distance: 0.20
       PathDist.scale: 24.0
       GoalDist.scale: 30.0
-      RotateToGoal.scale: 2.0
+      # Give terminal orientation a weight comparable to path-alignment
+      # critics. With the previous scale of 2, DWB preferred near-zero
+      # angular samples and the swerve base could stall outside yaw tolerance.
+      RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 1.0
-      RotateToGoal.lookahead_time: -1.0
+      # Score the near-term heading error instead of a full 1 s projection;
+      # a full-horizon score prematurely selected tiny corrections and
+      # oscillated at Tag corner/service poses. Collision critics remain on.
+      RotateToGoal.lookahead_time: 0.25
       # The goal checker accepts heading error up to 0.05 rad. Reset the
       # oscillation sign history after that much measured angular progress so
       # small terminal-heading corrections cannot leave every DWB sample

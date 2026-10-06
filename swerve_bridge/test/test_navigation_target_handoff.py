@@ -11,6 +11,13 @@ from swerve_bridge.bridge_node import SwerveBridge
 
 def _compute_path_goal():
     return SimpleNamespace(
+        start=SimpleNamespace(
+            header=SimpleNamespace(frame_id='', stamp=None),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=0.0, y=0.0),
+                orientation=SimpleNamespace(z=0.0, w=1.0),
+            ),
+        ),
         goal=SimpleNamespace(
             header=SimpleNamespace(frame_id='', stamp=None),
             pose=SimpleNamespace(
@@ -49,6 +56,9 @@ def _nav_safety_bridge():
     bridge.cancel_pending = False
     bridge.pending_cancel_state = None
     bridge.pending_replan = None
+    bridge.tag_route_context = None
+    bridge.tag_route_waiting_auth = None
+    bridge.paused_pose_context = None
     bridge.nav_state = 'NAVIGATING'
     bridge.cmd_pub = SimpleNamespace(publish=Mock())
     bridge.estop_pub = SimpleNamespace(publish=Mock())
@@ -56,6 +66,109 @@ def _nav_safety_bridge():
     bridge.send_nav_status = Mock()
     bridge.now = lambda: '2026-10-03T00:00:00Z'
     return bridge
+
+
+def _tag_route_context():
+    return {
+        'robot_id': 'R01', 'frame_id': 'map', 'source_type': 'TAG',
+        'route_revision': 'route-revision-1', 'graph_revision': 'graph-revision-1',
+        'route_nodes': [11], 'route_tag_revisions': {'11': 'tag-revision-11'},
+        'route_points': [
+            {'x': 0.0, 'y': 0.0, 'yaw': 0.0, 'kind': 'START', 'tag_id': None},
+            {'x': 2.0, 'y': 0.0, 'yaw': 0.0, 'kind': 'TAG', 'tag_id': 11},
+        ],
+        'active_map_id': 'SLAM-session-1', 'active_map_revision': 'session-rev-1',
+        'navigation_map_revision': 'nav-rev-1', 'registration_revision': 3,
+        'route_index': 1,
+    }
+
+
+def test_tag_route_leg_waits_for_backend_authorization_before_nav2_planning(monkeypatch):
+    monkeypatch.setattr(bridge_node, 'ComputePathToPose', SimpleNamespace(Goal=_compute_path_goal))
+    bridge = _nav_safety_bridge()
+    context = _tag_route_context()
+    preview_action = Mock()
+    preview_action.send_goal_async.return_value = SimpleNamespace(add_done_callback=Mock())
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.navigation_grid_occupancy = None
+    bridge._tag_route_authorized_now = Mock(return_value=(True, None))
+    bridge._lookup_robot_pose = Mock(return_value=({'x': 1.0, 'y': 0.5, 'yaw': math.pi / 2}, 'map'))
+    bridge.path_preview_client = SimpleNamespace(send_goal_async=preview_action.send_goal_async)
+    bridge.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: 'stamp'))
+
+    bridge.tag_route_context = dict(context)
+    bridge._request_tag_route_leg(context)
+
+    auth_request = bridge.send.call_args.args[0]
+    assert auth_request['type'] == 'TAG_ROUTE_LEG_AUTH_REQUEST'
+    assert auth_request['route_revision'] == context['route_revision']
+    assert auth_request['route_index'] == 1
+    assert auth_request['route_node_id'] == 11
+    preview_action.send_goal_async.assert_not_called()
+
+    bridge.accept_tag_route_leg_auth({
+        'auth_request_id': auth_request['auth_request_id'],
+        'route_revision': context['route_revision'], 'route_index': 1, 'approved': True,
+    })
+    goal = preview_action.send_goal_async.call_args.args[0]
+    assert goal.start.header.frame_id == 'map'
+    assert (goal.start.pose.position.x, goal.start.pose.position.y) == (1.0, 0.5)
+    assert (goal.goal.pose.position.x, goal.goal.pose.position.y) == (2.0, 0.0)
+    assert goal.use_start is True
+
+
+def test_tag_route_leg_auth_timeout_stops_route_and_rejects_late_approval(monkeypatch):
+    bridge = _nav_safety_bridge()
+    context = _tag_route_context()
+    preview_action = Mock()
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.navigation_grid_occupancy = None
+    bridge._tag_route_authorized_now = Mock(return_value=(True, None))
+    bridge._lookup_robot_pose = Mock(return_value=({'x': 0.0, 'y': 0.0, 'yaw': 0.0}, 'map'))
+    bridge.path_preview_client = SimpleNamespace(send_goal_async=preview_action.send_goal_async)
+    bridge.get_parameter = lambda _name: SimpleNamespace(value=0.5)
+    bridge.get_logger = lambda: SimpleNamespace(warning=Mock())
+    bridge.tag_route_context = dict(context)
+
+    bridge._request_tag_route_leg(context)
+    auth_request = bridge.send.call_args.args[0]
+    waiting = bridge.tag_route_waiting_auth
+    waiting['requested_monotonic'] = time.monotonic() - 1.0
+    bridge._expire_tag_route_leg_auth()
+    bridge.accept_tag_route_leg_auth({
+        'auth_request_id': auth_request['auth_request_id'],
+        'route_revision': context['route_revision'], 'route_index': 1, 'approved': True,
+    })
+
+    preview_action.send_goal_async.assert_not_called()
+    bridge.cmd_pub.publish.assert_called()
+    assert bridge.tag_route_context is None
+    assert bridge.tag_route_waiting_auth is None
+    assert bridge.send_nav_status.call_args.args[1] == 'FAILED'
+    assert 'TAG_ROUTE_AUTH_TIMEOUT' in bridge.send_nav_status.call_args.args[2]
+
+
+def test_cancel_while_waiting_for_tag_route_auth_prevents_late_nav2_dispatch():
+    bridge = _nav_safety_bridge()
+    context = _tag_route_context()
+    bridge.tag_route_context = dict(context)
+    bridge.tag_route_waiting_auth = {
+        'auth_request_id': 'request-1', 'route_revision': context['route_revision'],
+        'route_index': 1, 'context': context, 'requested_monotonic': time.monotonic(),
+    }
+    bridge._dispatch_tag_route_leg = Mock()
+
+    bridge.cancel_navigation({'type': 'NAV_CANCEL'})
+    bridge.accept_tag_route_leg_auth({
+        'auth_request_id': 'request-1', 'route_revision': context['route_revision'],
+        'route_index': 1, 'approved': True,
+    })
+
+    bridge._dispatch_tag_route_leg.assert_not_called()
+    bridge.cmd_pub.publish.assert_called_once()
+    assert bridge.tag_route_context is None
+    assert bridge.tag_route_waiting_auth is None
+    assert bridge.send_nav_status.call_args.args[1] == 'CANCELLED'
 
 
 def _accepted_pose_handle():
@@ -83,7 +196,7 @@ def test_nav2_readiness_requires_both_path_and_navigation_action_servers():
     assert not bridge.nav2_action_servers_ready()
 
 
-def test_tag_resolved_pose_uses_shared_compute_path_and_navigate_to_pose_actions(monkeypatch):
+def test_active_map_point_uses_shared_compute_path_and_navigate_to_pose_actions(monkeypatch):
     map_identity = {
         'active_map_id': 'CANONICAL',
         'active_map_revision': '21',
@@ -119,7 +232,7 @@ def test_tag_resolved_pose_uses_shared_compute_path_and_navigate_to_pose_actions
     request_id = 'tag-preview-1301'
     bridge.preview_path({
         'type': 'PATH_PREVIEW', 'request_id': request_id, **target, 'frame_id': 'map',
-        'source_type': 'TAG', 'source_id': '1301', 'tag_id': 1301,
+        'source_type': 'ACTIVE_MAP_POINT',
         'active_map_id': 'CANONICAL', 'active_map_revision': '21',
     })
 
@@ -138,7 +251,7 @@ def test_tag_resolved_pose_uses_shared_compute_path_and_navigate_to_pose_actions
     }
     nav_data = {
         'type': 'NAV_GOAL', **target, 'frame_id': 'map', 'preview_request_id': request_id,
-        'source_type': 'TAG', 'source_id': '1301', 'tag_id': 1301,
+        'source_type': 'ACTIVE_MAP_POINT',
         'active_map_id': 'CANONICAL', 'active_map_revision': '21',
     }
     assert not bridge.consume_path_preview({**nav_data, 'x': target['x'] + 0.01})
@@ -207,7 +320,7 @@ def test_unified_preview_requires_registered_full_map_and_binds_its_revision(mon
     target = {'x': 16.49, 'y': 0.014, 'yaw': 0.0}
     base = {
         'type': 'PATH_PREVIEW', 'request_id': 'unified-tag-1204', **target,
-        'frame_id': 'map', 'source_type': 'TAG', 'source_id': '1204',
+        'frame_id': 'map', 'source_type': 'ACTIVE_MAP_POINT',
         'active_map_id': active['active_map_id'],
         'active_map_revision': active['active_map_revision'],
     }

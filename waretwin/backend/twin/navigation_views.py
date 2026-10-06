@@ -112,8 +112,37 @@ def register_robot_map(request, robot_id: str):
 
 @require_http_methods(['GET'])
 def tag_graph(request):
-    try: return JsonResponse(get_tag_graph(request.GET.get('warehouse_id')))
-    except Exception as exc: return _error(str(exc), 404)
+    """Serve the graph derived from the exact active published map revision.
+
+    The legacy NavigationTagEdge table is retained for historical missions,
+    but it is not the authority for current autonomous routing: published
+    aisle geometry is. Returning its generated graph here keeps diagnostics
+    and operator tooling aligned with route previews and the published bundle.
+    """
+    try:
+        maps = WarehouseMap.objects.filter(is_active=True).select_related('warehouse')
+        warehouse_id = request.GET.get('warehouse_id')
+        if warehouse_id:
+            maps = maps.filter(warehouse_id=int(warehouse_id))
+        warehouse_map = maps.order_by('id').first()
+        if warehouse_map is None:
+            return _error('no active published warehouse map is available', 404,
+                          {'code': 'PUBLISHED_MAP_UNAVAILABLE'})
+        from .navigation_graph import prepare_published_navigation
+        published = prepare_published_navigation(warehouse_map.layout, warehouse_map.revision)
+        return JsonResponse({
+            'warehouse_id': warehouse_map.warehouse_id,
+            'canonical_revision': warehouse_map.revision,
+            'graph_revision': published['tag_graph_revision'],
+            'frame_id': 'map',
+            'units': 'm',
+            'tags': published.get('navigation_tags', []),
+            'edges': published.get('navigation_edges', []),
+        })
+    except (TypeError, ValueError) as exc:
+        return _error(str(exc), 400, {'code': 'TAG_GRAPH_INVALID'})
+    except Exception as exc:
+        return _error(str(exc), 404)
 
 
 @require_http_methods(['GET'])

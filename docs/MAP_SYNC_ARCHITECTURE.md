@@ -1,6 +1,6 @@
 # Map synchronization architecture
 
-## Audited root causes (before implementation)
+## Historical root causes (before the map/runtime fixes)
 
 1. The database `WarehouseMapVersion` and its generated artifact directory are
    already the publish authority, but the bundle contains canonical JSON,
@@ -63,8 +63,10 @@
     goal transform failures so diagnostics report TF unavailable without
     terminating the telemetry process.
 
-These findings describe the checked-in code path; no runtime component is
-considered synchronized until it reports the loaded revision and required TF.
+The numbered findings are historical and are retained as audit context. The
+current runtime contract below supersedes the old `/map`/Nav2 ownership
+descriptions in those findings. No runtime component is considered
+synchronized until it reports the loaded revision and required TF.
 
 ## Intended invariant
 
@@ -122,18 +124,22 @@ acknowledged loading. Missions are blocked otherwise; Emergency Stop is not.
   measurements correct the global estimator, whose initial map prior is the
   same revision's selected robot spawn. This avoids both zero-origin rejection
   and an assumption that raw odometry is already in `map`.
-- In mapping mode, `slam.launch.py` starts `async_slam_toolbox_node` with
-  `/scan`, `map`/`odom`/`base_footprint`, 0.05 m resolution, scan matching and
-  loop closure enabled; its accumulated OccupancyGrid and `map -> odom` are
-  exposed as `/map` and TF. `system.launch.py` excludes map_server, V30E and
-  tag localization from both simulated mapping and the SLAM owner path. In
-  navigation mode, the saved/canonical map and selected localization owner
-  remain separate from SLAM mapping.
-- `/scan` is a display-only current-sensor overlay: the bridge samples valid
-  ranges and transforms them with tf2 to `map` at the scan timestamp. It never
-  adds scan points to the OccupancyGrid. Robot pose comes from TF `map ->
-  base_footprint`; the UI's bounded trajectory is likewise a visualization
-  layer. All four layers use one map/world-to-screen transform.
+- `slam.launch.py` starts `async_slam_toolbox_node` with `/scan`,
+  `map`/`odom`/`base_footprint`, 0.05 m resolution, scan matching and loop
+  closure enabled. SLAM Toolbox is the sole `map -> odom` owner and publishes
+  the accumulated live occupancy grid on `/map`.
+- The immutable published warehouse raster is served separately on
+  `/canonical_map`. In Unified mode, the exact versioned
+  `T_active_from_canonical` registration transforms that complete raster into
+  the active SLAM `map` frame as `/navigation_map`. Nav2's global static layer
+  consumes `/navigation_map`; the live SLAM grid never limits global
+  warehouse coverage. The local costmap continues to use live sensor layers.
+- `/map` is the accumulated Mapping visualization base. `/scan` is only a
+  current-sensor overlay: the bridge samples valid ranges and transforms them
+  with tf2 to `map` at the scan timestamp. It never adds scan points to the
+  OccupancyGrid or replaces its raster. Robot pose comes from TF
+  `map -> base_footprint`; the UI's bounded trajectory is likewise a
+  visualization layer. All layers use one map/world-to-screen transform.
 - Map content hashing, statistics, zlib encoding, and Web payload preparation
   run on an isolated bounded map worker. Only changed grid geometry/content
   advances `map_version`; a cached compressed snapshot is available to a newly
@@ -179,9 +185,13 @@ acknowledged loading. Missions are blocked otherwise; Emergency Stop is not.
    gracefully stops the owned ROS launch, and relaunches Gazebo, Nav2, tag
    consumers and bridge with the new revision. It retains and reports an
    invalid request; it never chooses a package world/map as fallback.
-5. The bridge reports the loaded Nav2 revision only after `/map` agrees with
-   the selected PGM/YAML in frame, dimensions, resolution, origin and cells.
-   Navigation tag revision is reported only after both tag-consuming ROS nodes
+5. The canonical map server reports `/canonical_map` only after loading the
+   selected immutable revision. The bridge reports the loaded Nav2 revision
+   only after the registered full `/navigation_map` matches the canonical
+   raster transformed through the current active-map registration, and Nav2's
+   global costmap reports the same frame, bounds and navigation-map revision.
+   Navigation tag revision is reported only after the generated graph and tag
+   records are read from that same canonical revision. Both tag-consuming ROS nodes
    (`v30e_sim_node` and `tag_route_planner`) are present; their launch
    parameters resolve to the verified revision files, and each node must have
    parsed its file to start. `map -> base_*` must be fresh. Until all required checks agree,
@@ -197,21 +207,39 @@ acknowledged loading. Missions are blocked otherwise; Emergency Stop is not.
 `./scripts/start_stack.sh unified --gui --rviz` reads the active published
 revision from Django, verifies the complete bundle for the selected robot, and
 logs the warehouse/revision/frame/artifact paths/spawn/ROS domain. Unified mode
-starts SLAM Toolbox and Nav2 together; Nav2's global static layer subscribes to
-the live SLAM `/map`, and no second `map_server` is launched. A missing or
-invalid published warehouse bundle fails before ROS starts. The packaged
+starts SLAM Toolbox, the canonical map server and Nav2 as distinct map
+consumers. SLAM Toolbox alone publishes live accumulated `/map` and owns
+`map -> odom`; the canonical map server publishes `/canonical_map`; the
+registration provider publishes the complete registered raster on
+`/navigation_map`; Nav2's global static layer subscribes only to
+`/navigation_map`. No two nodes publish the same authoritative map or global
+TF. A missing or invalid published warehouse bundle fails before ROS starts. The packaged
 demonstration world/map can only be selected explicitly with
 `--allow-dev-world` (or `WARETWIN_ALLOW_DEV_WORLD=true`); explicit `--world`/
 `--map` are also treated as development assets and require that opt-in.
 
-Unified startup runs the shared LiDAR pipeline, SLAM Toolbox, and deferred
-Nav2 lifecycle nodes. SLAM Toolbox must be the only `/map` publisher and the
-only `map -> odom` owner; Nav2 waits for live map/TF/sensor/controller
-readiness before its single lifecycle startup. The readiness gate verifies
-SLAM parameters, map ownership, scan/filtered-odometry frames and timestamped
-TF, then verifies the Nav2 lifecycle manager without expecting an absent
-`map_server`. Legacy `mapping` and `navigation` modes remain compatibility
+Unified startup runs the shared LiDAR pipeline, SLAM Toolbox, canonical map
+server, registration provider, and deferred Nav2 lifecycle nodes. SLAM Toolbox
+must be the only `/map` publisher and the only `map -> odom` owner. Nav2 waits
+for `/navigation_map`, live TF/sensor/controller readiness and both required
+action servers before lifecycle activation. The readiness gate verifies
+canonical and navigation-map source/revision/extent, distinct SLAM and
+navigation rasters, map ownership, scan/filtered-odometry frames and
+timestamped TF. Legacy `mapping` and `navigation` modes remain compatibility
 aliases only.
+
+### Tag routing contract
+
+The published `tag_graph.yaml` is generated from aisle/lane and obstacle
+geometry for the same canonical revision as the map and Tag registry. Edges
+are validated traversable X- or Y-axis lane segments; diagonal graph edges
+are rejected. TAG preview plans a route from the live localized pose through
+ordered intermediate Tags, previews every leg through Nav2, and binds the
+complete route/node sequence to a route revision. Execution sends each leg
+through `ComputePathToPose` and `NavigateToPose` sequentially, advancing only
+after arrival pose verification. A canonical path is displayed on GLOBAL;
+the exact registered active-frame path is displayed over accumulated `/map`
+in LIDAR 2D. The current `/scan` remains a separate low-opacity overlay.
 
 ## Troubleshooting
 
@@ -227,10 +255,10 @@ aliases only.
   global pose. For a path stamped just ahead of `map -> odom`, only the
   configured small future-TF tolerance may use the latest transform; older or
   larger gaps are surfaced as a TF error and are not rendered as global data.
-- `nav2_revision: null`: verify the canonical map server is active, the bridge
-  subscribes with reliable transient-local QoS, `/map` uses frame `map`, and
-  occupancy dimensions/origin/resolution/cells match the selected revision's
-  Nav2 YAML/image.
+- `nav2_revision: null`: verify the canonical map server is active, the
+  registered `/navigation_map` publisher and Nav2 global static layer report
+  the selected canonical/registration revisions, and the bridge receives the
+  full map with the expected frame, extent and geometry.
 - `tag_map_revision: null`: verify the DataMatrix and graph input paths both
   point into the same revision directory and the tag consumer restarted.
 - Development fallback is intentionally opt-in and is never a valid published

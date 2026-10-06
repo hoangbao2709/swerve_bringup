@@ -758,6 +758,7 @@ class CmdNavGoal(_Base):
     source_id: Optional[str] = Field(default=None, max_length=128)
     source_map_id: Optional[str] = Field(default=None, max_length=128)
     source_map_revision: Optional[str] = Field(default=None, max_length=128)
+    route_revision: Optional[str] = Field(default=None, max_length=128)
 
 
 class CmdNavControl(_Base):

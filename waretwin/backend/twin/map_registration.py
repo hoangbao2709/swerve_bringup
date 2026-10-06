@@ -60,6 +60,21 @@ def transform_canonical_pose(pose: dict[str, Any], transform: dict[str, Any]) ->
     }
 
 
+def inverse_transform_active_pose(pose: dict[str, Any], transform: dict[str, Any]) -> dict[str, float]:
+    """Apply the exact inverse of T_active_from_canonical to an active pose."""
+    x, y, yaw = (float(pose[key]) for key in ('x', 'y', 'yaw'))
+    tx, ty, angle = (float(transform[key]) for key in ('tx', 'ty', 'yaw'))
+    if not all(math.isfinite(value) for value in (x, y, yaw, tx, ty, angle)):
+        raise ValueError('pose and registration must be finite')
+    dx, dy = x - tx, y - ty
+    cosine, sine = math.cos(angle), math.sin(angle)
+    return {
+        'x': cosine * dx + sine * dy,
+        'y': -sine * dx + cosine * dy,
+        'yaw': normalize_yaw(yaw - angle),
+    }
+
+
 def _valid_pose(pose: Any) -> bool:
     if not isinstance(pose, dict) or pose.get('valid') is not True:
         return False

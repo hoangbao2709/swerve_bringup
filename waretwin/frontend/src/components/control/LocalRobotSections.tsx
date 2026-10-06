@@ -11,7 +11,7 @@ import {
   type LocalRobotMap,
   type Vda5050Configuration,
 } from "../../services/api";
-import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotRuntimeCapabilities, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
+import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailRoutePoint, RobotDetailScan, RobotLidarStreamDiagnostics, RobotRuntimeCapabilities, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
 import { occupancyRasterKey, occupancyRasters } from "./occupancyRaster";
 import { displayedFramePose, useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
@@ -294,12 +294,13 @@ export function AccumulatedSlamMap2DView({ map, robot, scan }: {
   </div>;
 }
 
-export function ActiveNavigationMap2DView({ map, robot, scan, target, navigationPath = [], canPick, onPick }: {
+export function ActiveNavigationMap2DView({ map, robot, scan, target, navigationPath = [], routeNodes = [], canPick, onPick }: {
   map: RobotDetailMapSnapshot | null;
   robot?: RobotState;
   scan: RobotDetailScan | null;
   target: MapPointNavigationTarget | null;
   navigationPath?: RobotWorldPoint[];
+  routeNodes?: RobotDetailRoutePoint[];
   canPick: boolean;
   onPick: (target: MapPointNavigationTarget) => void;
 }) {
@@ -327,7 +328,8 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
   };
   const selectedTarget = target?.frame_id === mapIdentity.frame_id
     && target.map_id === mapIdentity.map_id && target.map_revision === mapIdentity.map_revision ? target : null;
-  const path = selectedTarget ? navigationPath : [];
+  const path = selectedTarget || navigationPath.length ? navigationPath : [];
+  const visibleRouteNodes = path.length ? routeNodes : [];
   const title = slamMap ? "ACCUMULATED SLAM /map" : "ACTIVE NAVIGATION MAP";
   return <div className="robot-slam-map-2d" data-testid="active-navigation-map-2d"
     data-map-id={map.active_map_id} data-map-revision={map.active_map_revision}>
@@ -345,9 +347,9 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
     </div>
     <PosePickerMap map={map} poseMapIdentity={poseIdentity} robot={robot?.id === map.robot_id ? robot : undefined}
       scan={currentScan} trajectory={currentScan?.trajectory ?? []}
-      showRobot showScan={slamMap} showGrid={false} showPose={Boolean(selectedTarget)}
+      showRobot showScan={slamMap} showGrid={false} showPose={Boolean(selectedTarget || visibleRouteNodes.length)}
       pose={selectedTarget ?? { x: displayedPose?.x ?? 0, y: displayedPose?.y ?? 0, yaw: displayedPose?.yaw ?? 0 }}
-      navigationPath={path} pickInstruction={canPick ? "CLICK TO SELECT MAP POINT · YAW CONTROLS BELOW" : undefined}
+      navigationPath={path} routeNodes={visibleRouteNodes} pickInstruction={canPick ? "CLICK TO SELECT MAP POINT · YAW CONTROLS BELOW" : undefined}
       active={canPick} onPick={(point) => onPick(mapPointTarget(mapIdentity,
         { ...point, yaw: displayedPose?.yaw ?? 0 }))}
       ariaLabel={slamMap ? "Accumulated SLAM /map 2D view" : "Active navigation map 2D view"} />
@@ -417,8 +419,8 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
   </SectionFrame>;
 }
 
-type MapProps = { map: RobotDetailMapSnapshot; poseMapIdentity?: MapPoseIdentity; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; navigationPath?: RobotWorldPoint[]; pickInstruction?: string; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; pose: Pose; active: boolean; onPick: (point: Pick<Pose, "x" | "y">) => void; ariaLabel?: string };
-function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, trajectory = [], navigationPath = [], pickInstruction, showRobot = true, showScan = true, showGrid = false, showPose = true, pose, active, onPick, ariaLabel = "Select map frame initial robot position" }: MapProps) {
+type MapProps = { map: RobotDetailMapSnapshot; poseMapIdentity?: MapPoseIdentity; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; navigationPath?: RobotWorldPoint[]; routeNodes?: RobotDetailRoutePoint[]; pickInstruction?: string; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; pose: Pose; active: boolean; onPick: (point: Pick<Pose, "x" | "y">) => void; ariaLabel?: string };
+function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, trajectory = [], navigationPath = [], routeNodes = [], pickInstruction, showRobot = true, showScan = true, showGrid = false, showPose = true, pose, active, onPick, ariaLabel = "Select map frame initial robot position" }: MapProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -507,22 +509,29 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
       });
       context.strokeStyle = "#a78bfa"; context.lineWidth = 2.5; context.globalAlpha = 0.95; context.stroke(); context.globalAlpha = 1;
     }
+    for (const node of routeNodes) {
+      if (node.tag_id === null) continue;
+      const point = worldToScreen({ x: node.x, y: node.y }, transform);
+      context.beginPath(); context.arc(point.x, point.y, node.kind === "TAG_SERVICE" ? 6 : 4, 0, Math.PI * 2);
+      context.fillStyle = node.kind === "TAG_SERVICE" ? "#ffd166" : "#e8b8ff";
+      context.strokeStyle = "#07101c"; context.lineWidth = 1.5; context.fill(); context.stroke();
+      context.fillStyle = "#f2e8ff"; context.font = "bold 9px JetBrains Mono, monospace";
+      context.fillText(String(node.tag_id), point.x + 6, point.y - 5);
+    }
     if (showScan && scan?.frame_id === map.frame_id) {
       const origin = scan.sensor_pose;
-      context.fillStyle = "#27e0d0"; context.strokeStyle = "rgba(39,224,208,.16)"; context.lineWidth = 1;
-      if (origin) {
-        const center = worldToScreen({ x: origin.x, y: origin.y }, transform);
-        context.beginPath();
-        for (const [x, y] of scan.points) { const p = worldToScreen({ x, y }, transform); context.moveTo(center.x, center.y); context.lineTo(p.x, p.y); }
-        context.stroke();
-      }
-      for (const [x, y] of scan.points) { const p = worldToScreen({ x, y }, transform); context.fillRect(p.x - 1.5, p.y - 1.5, 3, 3); }
+      // Accumulated occupancy is the base layer; the current LaserScan is a
+      // restrained point overlay, not a fan/ray rendering that can dominate it.
+      context.save(); context.globalAlpha = 0.42; context.fillStyle = "#27e0d0";
+      for (const [x, y] of scan.points) { const p = worldToScreen({ x, y }, transform); context.fillRect(p.x - 1, p.y - 1, 2, 2); }
+      if (origin) { const center = worldToScreen({ x: origin.x, y: origin.y }, transform); context.globalAlpha = 0.75; context.fillRect(center.x - 2, center.y - 2, 4, 4); }
+      context.restore();
     }
     if (showRobot && displayedPose) drawPose(context, transform, displayedPose.x, displayedPose.y, displayedPose.yaw, "#42dfd2");
     if (showPose) drawPose(context, transform, pose.x, pose.y, pose.yaw, "#f6cf4f");
     context.fillStyle = "#8aa4bf"; context.font = "10px JetBrains Mono, monospace";
     context.fillText(active ? pickInstruction ?? "CLICK TO SET XY · YAW CONTROLS BELOW" : "MAP FRAME · METRES", 10, size.height - 10);
-  }, [active, bounds, displayedPose, map, navigationPath, pickInstruction, pose, raster, rasterMap, scan, showGrid, showPose, showRobot, showScan, size, trajectory, transform]);
+  }, [active, bounds, displayedPose, map, navigationPath, routeNodes, pickInstruction, pose, raster, rasterMap, scan, showGrid, showPose, showRobot, showScan, size, trajectory, transform]);
   const click = (event: MouseEvent<HTMLCanvasElement>) => {
     if (!active || !raster) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -530,6 +539,11 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
   };
   return <div ref={hostRef} className={`local-pose-map ${active ? "is-picking" : ""}`}><canvas ref={canvasRef}
     data-testid={map.map_source === "SLAM_TOOLBOX" ? "slam-map-2d-canvas" : undefined}
+    data-occupancy-layer="accumulated-map-snapshot"
+    data-scan-layer={showScan && scan ? "low-opacity-current-scan-overlay" : "disabled"}
+    data-scan-render-mode="points-only"
+    data-navigation-path-point-count={navigationPath.length}
+    data-preview-route-node-count={routeNodes.filter((node) => node.tag_id !== null).length}
     data-map-source={map.map_source} data-map-id={map.active_map_id}
     data-pose-source={displayedPose?.pose_source}
     data-render-x={displayedPose?.x} data-render-y={displayedPose?.y} data-render-yaw={displayedPose?.yaw}

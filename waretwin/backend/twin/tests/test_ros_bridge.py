@@ -485,6 +485,128 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             }))
             self.assertEqual(sum(call.args[1] == 'NAVIGATE' for call in gateway.send_command.await_args_list), 1)
 
+    async def test_canonical_map_point_goal_leases_registration_until_matching_terminal_status(self):
+        active_map = {
+            'active_map_id': 'SLAM-session-1',
+            'active_map_revision': 'session-session-1',
+            'canonical_map_revision': 22,
+            'map_source': 'SLAM_TOOLBOX',
+            'map_sync_status': 'LOCAL_ONLY',
+        }
+        localization = {
+            'frame_id': 'map', 'map_id': active_map['active_map_id'],
+            'map_revision': active_map['active_map_revision'],
+            'map_source': 'SLAM_TOOLBOX', 'pose_source': 'TF',
+        }
+        preview_id = 'canonical-preview-1'
+        preview = {
+            'status': 'VALID', 'path_found': True,
+            'created_monotonic': time.monotonic(),
+            'source_type': 'CANONICAL_MAP_POINT',
+            'source_map_id': 'CANONICAL', 'source_map_revision': '22',
+            'source_goal': {'x': 10.0, 'y': 5.0, 'yaw': 0.2},
+            'goal': {'x': 3.0, 'y': 4.0, 'yaw': 0.4},
+            'active_map_id': active_map['active_map_id'],
+            'active_map_revision': active_map['active_map_revision'],
+            'canonical_map_revision': '22',
+            'localization_state': localization,
+            'navigation_map_revision': 'nav-r22-registration-7',
+            'registration_revision': 7,
+            'registration_source': 'GAZEBO_CANONICAL_ALIGNMENT',
+            'path': [[1.0, 2.0], [3.0, 4.0]],
+        }
+        resolved = {
+            'x': 3.0, 'y': 4.0, 'yaw': 0.4,
+            'metadata': {
+                'registration_revision': 7,
+                'registration_source': 'GAZEBO_CANONICAL_ALIGNMENT',
+            },
+        }
+        capture = SimpleNamespace(send_json=AsyncMock())
+        gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+        old_values = {
+            'runtime_mode': runtime.runtime_mode,
+            'operation_mode': runtime.operation_mode,
+            'robot_runtime_modes': dict(runtime.robot_runtime_modes),
+            'robot_navigation_maps': dict(runtime.robot_navigation_maps),
+            'navigation_registration_leases': dict(runtime.navigation_registration_leases),
+            'tag_route_executions': dict(runtime.tag_route_executions),
+            'path_preview_results': dict(runtime.path_preview_results),
+            'approved_path_previews': dict(runtime.approved_path_previews),
+        }
+        try:
+            runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.operation_mode = 'UNIFIED'
+            runtime.robot_runtime_modes['R01'] = 'UNIFIED'
+            runtime.robot_navigation_maps['R01'] = {
+                'ready': True, 'navigation_map_revision': 'nav-r22-registration-7',
+            }
+            runtime.navigation_registration_leases.clear()
+            runtime.tag_route_executions.pop('R01', None)
+            runtime.path_preview_results.clear()
+            runtime.approved_path_previews.clear()
+            runtime.path_preview_results[('R01', preview_id)] = preview
+            runtime.approved_path_previews[('R01', preview_id)] = preview
+            with patch.object(runtime, 'active_map_state', return_value=active_map), \
+                    patch.object(runtime, 'robot_bridge_online', return_value=True), \
+                    patch.object(runtime, 'unified_navigation_blocker', return_value=None), \
+                    patch.object(runtime, 'navigation_localization_state', return_value=localization), \
+                    patch.object(runtime, 'resolve_navigation_target', new=AsyncMock(return_value=resolved)), \
+                    patch.object(runtime, 'gateway', return_value=gateway), \
+                    patch.object(runtime, 'broadcast', new=AsyncMock()):
+                await runtime.handle_message(capture, {
+                    'type': 'NAV_GOAL', 'robot_id': 'R01',
+                    'x': 3.0, 'y': 4.0, 'yaw': 0.4, 'frame_id': 'map',
+                    'preview_request_id': preview_id,
+                    'active_map_id': active_map['active_map_id'],
+                    'active_map_revision': active_map['active_map_revision'],
+                    'source_type': 'CANONICAL_MAP_POINT',
+                    'source_map_id': 'CANONICAL', 'source_map_revision': '22',
+                })
+                gateway.send_command.assert_awaited_once()
+                self.assertEqual(runtime.navigation_registration_leases['R01'], {
+                    'source_type': 'CANONICAL_MAP_POINT',
+                    'preview_request_id': preview_id,
+                    'route_revision': None,
+                    'registration_revision': 7,
+                    'active_map_id': active_map['active_map_id'],
+                    'active_map_revision': active_map['active_map_revision'],
+                    'canonical_map_revision': '22',
+                })
+
+                with patch('twin.schedule_services.apply_external_nav_status', return_value=False):
+                    await runtime.handle_nav_status({
+                        'robot_id': 'R01', 'preview_request_id': 'other-goal',
+                        'status': 'SUCCEEDED',
+                    })
+                    self.assertIn('R01', runtime.navigation_registration_leases)
+                    await runtime.handle_nav_status({
+                        'robot_id': 'R01', 'preview_request_id': preview_id,
+                        'status': 'PAUSED',
+                    })
+                    self.assertIn('R01', runtime.navigation_registration_leases)
+                    await runtime.handle_nav_status({
+                        'robot_id': 'R01', 'preview_request_id': preview_id,
+                        'status': 'SUCCEEDED',
+                    })
+                self.assertNotIn('R01', runtime.navigation_registration_leases)
+        finally:
+            for key, value in old_values.items():
+                if key == 'robot_runtime_modes':
+                    runtime.robot_runtime_modes.clear(); runtime.robot_runtime_modes.update(value)
+                elif key == 'robot_navigation_maps':
+                    runtime.robot_navigation_maps.clear(); runtime.robot_navigation_maps.update(value)
+                elif key == 'navigation_registration_leases':
+                    runtime.navigation_registration_leases.clear(); runtime.navigation_registration_leases.update(value)
+                elif key == 'tag_route_executions':
+                    runtime.tag_route_executions.clear(); runtime.tag_route_executions.update(value)
+                elif key == 'path_preview_results':
+                    runtime.path_preview_results.clear(); runtime.path_preview_results.update(value)
+                elif key == 'approved_path_previews':
+                    runtime.approved_path_previews.clear(); runtime.approved_path_previews.update(value)
+                else:
+                    setattr(runtime, key, value)
+
     async def test_gateway_does_not_publish_without_bridge(self):
         previous = registry.consumer
         registry.consumer = None
@@ -597,8 +719,141 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         finally:
             registry.consumer = previous
 
+    async def test_gateway_forwards_tag_route_leg_authorization_reply(self):
+        previous = registry.consumer
+
+        class Capture:
+            robot_id = 'R01'
+
+            async def send_json(self, payload):
+                self.payload = payload
+
+        capture = Capture()
+        registry.consumer = capture
+        try:
+            result = await RosBridgeGateway().send_command('R01', 'TAG_ROUTE_LEG_AUTH', {
+                'auth_request_id': 'auth-1', 'route_revision': 'route-r1',
+                'route_index': 2, 'approved': True, 'reason_code': None, 'reason': None,
+            })
+            self.assertTrue(result['ok'])
+            self.assertEqual(capture.payload, {
+                'auth_request_id': 'auth-1', 'route_revision': 'route-r1',
+                'route_index': 2, 'approved': True, 'reason_code': None,
+                'reason': None, 'robot_id': 'R01', 'type': 'TAG_ROUTE_LEG_AUTH',
+            })
+        finally:
+            registry.consumer = previous
+
 
 class RosTelemetryTests(IsolatedAsyncioTestCase):
+    async def test_gazebo_registration_is_leased_for_an_approved_tag_route(self):
+        active_map = {
+            'active_map_id': 'SLAM-session-1',
+            'active_map_revision': 'session-session-1',
+            'canonical_map_revision': 22,
+            'map_source': 'SLAM_TOOLBOX',
+            'map_sync_status': 'LOCAL_ONLY',
+        }
+        route = {
+            'route_revision': 'route-r1',
+            'active_map_id': active_map['active_map_id'],
+            'active_map_revision': active_map['active_map_revision'],
+            'canonical_map_revision': 22,
+            'registration_revision': 8,
+        }
+        canonical_pose = {
+            'valid': True, 'x': 10.0, 'y': 5.0, 'yaw': 0.0,
+            'frame_id': 'map', 'map_id': 'CANONICAL', 'map_revision': '22',
+            'pose_source': 'GAZEBO_MODEL_STATES',
+            'transform_source': 'VALIDATED_CANONICAL_WORLD_BUNDLE',
+        }
+        telemetry = {
+            'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 22,
+            'active_map_id': active_map['active_map_id'],
+            'active_map_revision': active_map['active_map_revision'],
+            'mapping_session_id': 'session-1', 'map_source': 'SLAM_TOOLBOX',
+            'pose_source': 'TF', 'x': 1.0, 'y': 2.0, 'z': 0.0, 'yaw': 0.0,
+            'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'timestamp': '2026-10-06T00:00:00+00:00',
+            'canonical_pose': canonical_pose,
+        }
+        old_state = {
+            'runtime_mode': runtime.runtime_mode,
+            'operation_mode': runtime.operation_mode,
+            'robots': deepcopy(runtime.engine.state['robots']),
+            'connected_robot_ids': runtime.connected_robot_ids,
+            'robot_runtime_modes': runtime.robot_runtime_modes,
+            'robot_mapping_sessions': runtime.robot_mapping_sessions,
+            'tag_route_executions': runtime.tag_route_executions,
+            'navigation_registration_leases': runtime.navigation_registration_leases,
+            'registration_last_check': runtime.simulation_registration_last_check,
+            'registration_drift': runtime.simulation_registration_drift,
+            'robot_map_registrations': runtime.robot_map_registrations,
+            'heartbeats': runtime.robot_bridge_heartbeats,
+            'pose_heartbeats': runtime.robot_pose_heartbeats,
+            'bridge_status': runtime.bridge_status,
+            'diagnostics': runtime.ros_diagnostics,
+            'last_telemetry_at': runtime.last_telemetry_at,
+            'last_telemetry_iso': runtime.last_telemetry_iso,
+            'published_revision': runtime.published_map_revision,
+            'client_count': runtime.client_count,
+        }
+        try:
+            runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.operation_mode = 'UNIFIED'
+            runtime.engine.state['robots'] = {}
+            runtime.connected_robot_ids = {'R01'}
+            runtime.robot_runtime_modes = {'R01': 'UNIFIED'}
+            runtime.robot_mapping_sessions = {'R01': 'session-1'}
+            runtime.tag_route_executions = {'R01': route}
+            runtime.navigation_registration_leases = {'R01': {
+                **route, 'source_type': 'TAG', 'preview_request_id': 'preview-tag-route',
+            }}
+            runtime.simulation_registration_last_check = {}
+            runtime.simulation_registration_drift = {}
+            runtime.robot_map_registrations = {}
+            runtime.robot_bridge_heartbeats = {}
+            runtime.robot_pose_heartbeats = {}
+            runtime.bridge_status = 'DISCONNECTED'
+            runtime.ros_diagnostics = {}
+            runtime.last_telemetry_at = 0.0
+            runtime.last_telemetry_iso = None
+            runtime.published_map_revision = 22
+            runtime.client_count = 0
+            with patch.object(runtime, 'active_map_state', return_value=active_map), \
+                    patch('twin.runtime.validated_canonical_pose', return_value=canonical_pose), \
+                    patch('twin.map_registration.update_gazebo_registration', return_value=None) as update_registration:
+                await runtime.update_external_robot_state(telemetry)
+                update_registration.assert_not_called()
+                self.assertTrue(runtime.navigation_registration_leases['R01']['registration_update_deferred_logged'])
+
+                # Once the route receives a terminal status and its execution
+                # lease is removed, telemetry resumes normal registration
+                # reconciliation for this same SLAM identity.
+                runtime.tag_route_executions.clear()
+                runtime.navigation_registration_leases.clear()
+                await runtime.update_external_robot_state(telemetry)
+                update_registration.assert_called_once()
+        finally:
+            runtime.runtime_mode = old_state['runtime_mode']
+            runtime.operation_mode = old_state['operation_mode']
+            runtime.engine.state['robots'] = old_state['robots']
+            runtime.connected_robot_ids = old_state['connected_robot_ids']
+            runtime.robot_runtime_modes = old_state['robot_runtime_modes']
+            runtime.robot_mapping_sessions = old_state['robot_mapping_sessions']
+            runtime.tag_route_executions = old_state['tag_route_executions']
+            runtime.navigation_registration_leases = old_state['navigation_registration_leases']
+            runtime.simulation_registration_last_check = old_state['registration_last_check']
+            runtime.simulation_registration_drift = old_state['registration_drift']
+            runtime.robot_map_registrations = old_state['robot_map_registrations']
+            runtime.robot_bridge_heartbeats = old_state['heartbeats']
+            runtime.robot_pose_heartbeats = old_state['pose_heartbeats']
+            runtime.bridge_status = old_state['bridge_status']
+            runtime.ros_diagnostics = old_state['diagnostics']
+            runtime.last_telemetry_at = old_state['last_telemetry_at']
+            runtime.last_telemetry_iso = old_state['last_telemetry_iso']
+            runtime.published_map_revision = old_state['published_revision']
+            runtime.client_count = old_state['client_count']
+
     async def test_external_robot_state_merges_pose_twist_and_metadata(self):
         old_mode = runtime.runtime_mode
         old_operation_mode = runtime.operation_mode

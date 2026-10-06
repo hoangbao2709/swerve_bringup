@@ -91,6 +91,16 @@ class SwerveBridge(Node):
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_footprint_frame', 'base_footprint')
         self.declare_parameter('base_link_frame', 'base_link')
+        # Intermediate Tag nodes are accepted only after fresh TF is within
+        # these bounded pose tolerances. Tune against the physical footprint,
+        # not against a UI-preview criterion.
+        self.declare_parameter('tag_route_xy_tolerance_m', 0.20)
+        self.declare_parameter('tag_route_yaw_tolerance_rad', math.radians(10.0))
+        # A route leg is not allowed to enter Nav2 until Django revalidates the
+        # current map, registration, graph, and Tag revisions. A lost backend
+        # response therefore expires closed instead of leaving a stale route
+        # queued indefinitely.
+        self.declare_parameter('tag_route_leg_auth_timeout_s', 5.0)
         self.declare_parameter('tf_max_age_s', 2.0)
         self.declare_parameter('tf_future_tolerance_s', 0.1)
         # Mapping scans/clouds can arrive slightly ahead of the TF listener on
@@ -284,6 +294,8 @@ class SwerveBridge(Node):
             'reason': 'WAITING_FOR_CANONICAL_MAP_AND_REGISTRATION',
         }
         self.path_preview_approvals = {}
+        self.tag_route_context = None
+        self.tag_route_waiting_auth = None
         self.paused_pose_context = None
         self.goal_request_pending = False
         self.cancel_pending = False
@@ -2438,6 +2450,7 @@ class SwerveBridge(Node):
 
     def process_commands(self):
         self.trace_control_callback('process_commands')
+        self._expire_tag_route_leg_auth()
         while True:
             try:
                 data = self.incoming.get_nowait()
@@ -2482,6 +2495,8 @@ class SwerveBridge(Node):
                             'FAILED', 'PATH_PREVIEW_INVALID: goal requires a current approved Nav2 preview')
                         continue
                     self.navigate(data)
+                elif kind == 'TAG_ROUTE_LEG_AUTH':
+                    self.accept_tag_route_leg_auth(data)
                 elif kind in ('CANCEL_NAVIGATION', 'TAG_NAV_CANCEL', 'TAG_NAV_PAUSE'):
                     self.cancel_navigation(data)
                 elif kind == 'TAG_NAV_RESUME':
@@ -2527,6 +2542,7 @@ class SwerveBridge(Node):
         navigation_map_revision = (navigation_map.get('navigation_map_revision')
                                    if self.runtime_state == 'UNIFIED' else None)
         coverage_error = None
+        route_points = data.get('route_points') if isinstance(data.get('route_points'), list) else None
 
         def result(status, reason=None, points=None, reason_code=None):
             points = points or []
@@ -2580,6 +2596,15 @@ class SwerveBridge(Node):
                 'local_goal': local_goal,
                 'path_length_m': path_length(points),
                 'goal': {**goal, 'frame_id': 'map'}, 'timestamp': self.now(),
+                **({
+                    'route_nodes': data.get('route_nodes'),
+                    'route_segments': data.get('route_segments'),
+                    'route_tag_revisions': data.get('route_tag_revisions'),
+                    'route_points': route_points,
+                    'canonical_route_points': data.get('canonical_route_points'),
+                    'graph_revision': data.get('graph_revision'),
+                    'route_revision': data.get('route_revision'),
+                } if str(data.get('source_type') or '').upper() == 'TAG' else {}),
             })
             if status == 'VALID' and points:
                 now = time.monotonic()
@@ -2591,6 +2616,13 @@ class SwerveBridge(Node):
                     'goal': dict(goal), 'active_map_id': active_map['active_map_id'],
                     'active_map_revision': active_map['active_map_revision'],
                     'navigation_map_revision': navigation_map_revision,
+                    'source_type': str(data.get('source_type') or '').upper(),
+                    'route_revision': data.get('route_revision'),
+                    'route_nodes': data.get('route_nodes'),
+                    'route_segments': data.get('route_segments'),
+                    'route_tag_revisions': data.get('route_tag_revisions'),
+                    'route_points': route_points,
+                    'graph_revision': data.get('graph_revision'),
                     'created_monotonic': now,
                 }
                 if len(self.path_preview_approvals) > 128:
@@ -2636,6 +2668,60 @@ class SwerveBridge(Node):
         if not self.path_preview_client.server_is_ready():
             result('NO_PATH', 'Nav2 ComputePathToPose action server is unavailable')
             return
+        if str(data.get('source_type') or '').upper() == 'TAG':
+            route_points = data.get('route_points')
+            canonical_route_points = data.get('canonical_route_points')
+            route_nodes = data.get('route_nodes')
+            route_tag_revisions = data.get('route_tag_revisions')
+            if (not data.get('route_revision') or not isinstance(route_nodes, list) or not route_nodes
+                    or not isinstance(route_tag_revisions, dict)
+                    or set(route_tag_revisions) != {str(node) for node in route_nodes}
+                    or any(not isinstance(revision, str) or not revision for revision in route_tag_revisions.values())
+                    or not isinstance(route_points, list) or len(route_points) < 2
+                    or not isinstance(canonical_route_points, list)
+                    or len(canonical_route_points) != len(route_points)):
+                result('INVALID', 'TAG_ROUTE_INVALID: a versioned orthogonal route is required',
+                       reason_code='TAG_ROUTE_INVALID')
+                return
+            try:
+                if any(not all(math.isfinite(float(point[axis])) for axis in ('x', 'y', 'yaw'))
+                       for point in (*route_points, *canonical_route_points)):
+                    raise ValueError('non-finite route coordinate')
+                for first, second in zip(canonical_route_points, canonical_route_points[1:]):
+                    if (abs(float(first['x']) - float(second['x'])) > 0.05
+                            and abs(float(first['y']) - float(second['y'])) > 0.05):
+                        raise ValueError('diagonal canonical route segment')
+                if any(not isinstance(node, int) for node in route_nodes):
+                    raise ValueError('route node IDs must be integers')
+                point_tag_ids = []
+                for point in route_points:
+                    tag_id = point.get('tag_id')
+                    if tag_id is not None and (not point_tag_ids or point_tag_ids[-1] != int(tag_id)):
+                        point_tag_ids.append(int(tag_id))
+                if point_tag_ids != route_nodes:
+                    raise ValueError('route point Tag sequence differs from route_nodes')
+                if any(abs(float(route_points[-1][axis]) - goal[axis]) > 1e-4
+                       for axis in ('x', 'y', 'yaw')):
+                    raise ValueError('route destination does not match the approved goal')
+            except (KeyError, TypeError, ValueError) as exc:
+                result('INVALID', f'TAG_ROUTE_INVALID: {exc}', reason_code='TAG_ROUTE_INVALID')
+                return
+            for route_point in route_points[1:]:
+                coverage_error = validate_target_coverage(
+                    self.navigation_grid_occupancy, x=float(route_point['x']), y=float(route_point['y']))
+                if coverage_error:
+                    coverage_error['route_node_id'] = route_point.get('tag_id')
+                    result('NO_PATH', f"{coverage_error.get('code')}: {json.dumps(coverage_error, sort_keys=True)}",
+                           reason_code=coverage_error.get('code', 'NAVIGATION_MAP_INVALID'))
+                    return
+            self.path_preview_goals[request_id] = goal
+            route_state = {
+                'request_id': request_id, 'data': data, 'goal': goal,
+                'route_points': route_points, 'index': 1, 'path': [],
+                'send_result': result,
+            }
+            self._preview_next_tag_route_leg(route_state)
+            return
         action_goal = ComputePathToPose.Goal()
         action_goal.goal.header.frame_id = 'map'
         action_goal.goal.header.stamp = self.get_clock().now().to_msg()
@@ -2648,6 +2734,77 @@ class SwerveBridge(Node):
         future = self.path_preview_client.send_goal_async(action_goal)
         future.add_done_callback(lambda completed: self.path_preview_goal_response(
             completed, request_id, goal, result))
+
+    def _preview_next_tag_route_leg(self, state):
+        points = state['route_points']
+        index = state['index']
+        if index >= len(points):
+            self.path_preview_goals.pop(state['request_id'], None)
+            state['send_result']('VALID', None, state['path'])
+            return
+        start, target = points[index - 1], points[index]
+        action_goal = ComputePathToPose.Goal()
+        action_goal.start.header.frame_id = 'map'
+        action_goal.start.header.stamp = self.get_clock().now().to_msg()
+        action_goal.start.pose.position.x = float(start['x'])
+        action_goal.start.pose.position.y = float(start['y'])
+        action_goal.start.pose.orientation.z = math.sin(float(start['yaw']) / 2.0)
+        action_goal.start.pose.orientation.w = math.cos(float(start['yaw']) / 2.0)
+        action_goal.goal.header.frame_id = 'map'
+        action_goal.goal.header.stamp = self.get_clock().now().to_msg()
+        action_goal.goal.pose.position.x = float(target['x'])
+        action_goal.goal.pose.position.y = float(target['y'])
+        action_goal.goal.pose.orientation.z = math.sin(float(target['yaw']) / 2.0)
+        action_goal.goal.pose.orientation.w = math.cos(float(target['yaw']) / 2.0)
+        action_goal.use_start = True
+        try:
+            future = self.path_preview_client.send_goal_async(action_goal)
+            future.add_done_callback(lambda completed: self._tag_route_preview_goal_response(
+                completed, state, index))
+        except Exception as exc:
+            self.path_preview_goals.pop(state['request_id'], None)
+            state['send_result']('NO_PATH', f'NAV2_PLANNER_ABORTED: failed to request Tag leg {index}: {type(exc).__name__}',
+                                 reason_code='NAV2_PLANNER_ABORTED')
+
+    def _tag_route_preview_goal_response(self, future, state, index):
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self.path_preview_goals.pop(state['request_id'], None)
+            state['send_result']('NO_PATH', f'NAV2_PLANNER_ABORTED: Tag leg {index} request failed: {type(exc).__name__}',
+                                 reason_code='NAV2_PLANNER_ABORTED')
+            return
+        if handle is None or not handle.accepted:
+            self.path_preview_goals.pop(state['request_id'], None)
+            state['send_result']('NO_PATH', f'NAV2_PLANNER_ABORTED: Nav2 rejected Tag leg {index}',
+                                 reason_code='NAV2_PLANNER_ABORTED')
+            return
+        handle.get_result_async().add_done_callback(
+            lambda completed: self._tag_route_preview_leg_result(completed, state, index))
+
+    def _tag_route_preview_leg_result(self, future, state, index):
+        try:
+            response = future.result()
+            poses = response.result.path.poses
+            if not successful_path_result(response.status, GoalStatus.STATUS_SUCCEEDED, len(poses)):
+                reason = ('NAV2_PLANNER_ABORTED' if response.status != GoalStatus.STATUS_SUCCEEDED
+                          else 'NO_VALID_PATH')
+                self.path_preview_goals.pop(state['request_id'], None)
+                state['send_result']('NO_PATH', f'{reason}: Nav2 rejected Tag route leg {index}',
+                                     reason_code=reason)
+                return
+            leg = self._pose_path_payload(response.result.path, self.robot_id)['points']
+            aggregate = state['path']
+            if aggregate and leg and math.hypot(aggregate[-1][0] - leg[0][0],
+                                                 aggregate[-1][1] - leg[0][1]) <= 1e-3:
+                leg = leg[1:]
+            aggregate.extend(leg)
+            state['index'] = index + 1
+            self._preview_next_tag_route_leg(state)
+        except Exception as exc:
+            self.path_preview_goals.pop(state['request_id'], None)
+            state['send_result']('NO_PATH', f'NAV2_PLANNER_ABORTED: Tag route leg {index} result failed: {type(exc).__name__}',
+                                 reason_code='NAV2_PLANNER_ABORTED')
 
     def consume_path_preview(self, data):
         request_id = str(data.get('preview_request_id') or '')
@@ -2678,6 +2835,13 @@ class SwerveBridge(Node):
                 if self.runtime_state == 'UNIFIED' else '')
             and goal_matches
         )
+        if str(preview.get('source_type') or '') == 'TAG':
+            valid = valid and (
+                str(data.get('route_revision') or '') == str(preview.get('route_revision') or '')
+                and data.get('route_nodes') == preview.get('route_nodes')
+                and data.get('route_tag_revisions') == preview.get('route_tag_revisions')
+                and data.get('route_points') == preview.get('route_points')
+            )
         if valid:
             self.path_preview_approvals.pop(request_id, None)
         return valid
@@ -3021,6 +3185,13 @@ class SwerveBridge(Node):
         self.pending_replan = None
         self.cmd_pub.publish(Twist())
         self.estop_pub.publish(Bool(data=True))
+        waiting = getattr(self, 'tag_route_waiting_auth', None)
+        if isinstance(waiting, dict):
+            route_context = waiting.get('context') or self.tag_route_context or {'robot_id': self.robot_id}
+            self.tag_route_waiting_auth = None
+            self.tag_route_context = None
+            self.send_nav_status(route_context, 'EMERGENCY_STOPPED',
+                                 'emergency stop asserted before the next Tag leg was authorized')
         if (self.active_goal is not None or self.active_pose_goal is not None) and not self.cancel_pending:
             self.cancel_pending = True
             try:
@@ -3108,6 +3279,14 @@ class SwerveBridge(Node):
             except Exception as exc:
                 self.cancel_pending = False
                 self.get_logger().warning(f'failed to cancel autonomous goal before manual mode: {exc}')
+        if mode == 'MANUAL' and isinstance(getattr(self, 'tag_route_waiting_auth', None), dict):
+            waiting = self.tag_route_waiting_auth
+            route_context = waiting.get('context') or self.tag_route_context or {'robot_id': self.robot_id}
+            self.tag_route_waiting_auth = None
+            self.tag_route_context = None
+            self.cmd_pub.publish(Twist())
+            self.send_nav_status(route_context, 'CANCELLED',
+                                 'Tag route stopped because MANUAL mode was requested')
         previous_mode = self.control_mode
         self.control_mode = mode
         self.requested_mode = mode
@@ -3255,11 +3434,21 @@ class SwerveBridge(Node):
             'active_map_revision': data.get('active_map_revision'),
             'map_content_revision': data.get('map_content_revision'),
             'source_type': data.get('source_type'),
+            'source_id': data.get('source_id'),
             'source_map_id': data.get('source_map_id'),
             'source_map_revision': data.get('source_map_revision'),
             'registration_revision': data.get('registration_revision'),
             'registration_source': data.get('registration_source'),
             'navigation_map_revision': data.get('navigation_map_revision'),
+            'tag_id': data.get('tag_id'),
+            'tag_revision': data.get('tag_revision'),
+            'registry_revision': data.get('registry_revision'),
+            'route_revision': data.get('route_revision'),
+            'graph_revision': data.get('graph_revision'),
+            'route_nodes': data.get('route_nodes'),
+            'route_segments': data.get('route_segments'),
+            'route_tag_revisions': data.get('route_tag_revisions'),
+            'route_points': data.get('route_points'),
         }
         vda_context = data.get('vda_order_context')
         if isinstance(vda_context, dict):
@@ -3309,6 +3498,35 @@ class SwerveBridge(Node):
             self.nav_state = 'FAILED'
             self.send_nav_status(context, 'FAILED', 'NavigateToPose action server unavailable')
             return
+        if context.get('route_revision'):
+            route_points = context.get('route_points')
+            if (context.get('source_type') != 'TAG' or not isinstance(route_points, list)
+                    or len(route_points) < 2 or not context.get('route_nodes')):
+                self.send_nav_status(context, 'FAILED', 'TAG_ROUTE_INVALID: the approved multi-node route is incomplete')
+                return
+            try:
+                final_point = route_points[-1]
+                if any(abs(float(final_point[axis]) - float(context[axis])) > 1e-4
+                       for axis in ('x', 'y', 'yaw')):
+                    raise ValueError('final Tag pose differs from the approved route')
+                if any(not all(math.isfinite(float(point[axis])) for axis in ('x', 'y', 'yaw'))
+                       for point in route_points):
+                    raise ValueError('route contains non-finite pose data')
+            except (KeyError, TypeError, ValueError) as exc:
+                self.send_nav_status(context, 'FAILED', f'TAG_ROUTE_INVALID: {exc}')
+                return
+            try:
+                route_index = int(data.get('route_index', 1))
+            except (TypeError, ValueError):
+                route_index = 0
+            if route_index < 1 or route_index >= len(route_points):
+                self.send_nav_status(context, 'FAILED',
+                    'TAG_ROUTE_INVALID: resume/goal route index is outside the approved route')
+                return
+            context['route_index'] = route_index
+            self.tag_route_context = dict(context)
+            self._request_tag_route_leg(self.tag_route_context)
+            return
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = context['frame_id']
         goal.pose.header.stamp = self.get_clock().now().to_msg()
@@ -3325,6 +3543,251 @@ class SwerveBridge(Node):
             self.goal_request_pending = False
             self.nav_state = 'FAILED'
             self.send_nav_status(context, 'FAILED', f'failed to send NavigateToPose goal: {exc}')
+
+    def _tag_route_authorized_now(self, context):
+        if self.control_mode != 'AUTONOMOUS' or self.emergency_stop_active:
+            return False, 'TAG_ROUTE_SAFETY_GATE: AUTONOMOUS mode and confirmed clear E-stop are required'
+        if self.local_map_load_pending:
+            return False, 'TAG_ROUTE_MAP_TRANSITION: map transition blocks the next Tag leg'
+        active = self.active_map_identity()
+        if (str(context.get('active_map_id') or '') != str(active.get('active_map_id') or '')
+                or str(context.get('active_map_revision') or '') != str(active.get('active_map_revision') or '')):
+            return False, 'PATH_PREVIEW_MAP_MISMATCH: active map identity changed during the Tag route'
+        if self.runtime_state == 'UNIFIED':
+            navigation_map = self.navigation_map_status
+            if (navigation_map.get('ready') is not True
+                    or str(context.get('navigation_map_revision') or '')
+                        != str(navigation_map.get('navigation_map_revision') or '')
+                    or str(navigation_map.get('active_map_id') or '') != str(active.get('active_map_id') or '')
+                    or str(navigation_map.get('active_map_revision') or '')
+                        != str(active.get('active_map_revision') or '')
+                    or str(navigation_map.get('canonical_map_revision') or '')
+                        != str(active.get('canonical_map_revision') or '')):
+                return False, 'NAVIGATION_MAP_REVISION_MISMATCH: full navigation map changed during the Tag route'
+            if (context.get('registration_revision') is not None
+                    and str(context.get('registration_revision'))
+                        != str(navigation_map.get('registration_revision'))):
+                return False, 'MAP_REGISTRATION_REVISION_MISMATCH: registration changed during the Tag route'
+        if not self.path_preview_client.server_is_ready() or not self.nav_pose_client.server_is_ready():
+            return False, 'NAV2_NOT_READY: ComputePathToPose and NavigateToPose must remain ready'
+        try:
+            pose, _frame = self._lookup_robot_pose()
+            if not all(math.isfinite(float(pose[key])) for key in ('x', 'y', 'yaw')):
+                raise TransformException('active map pose is non-finite')
+        except (TransformException, KeyError, TypeError, ValueError) as exc:
+            return False, f'LOCALIZATION_NOT_READY: fresh map-to-base TF is required ({exc})'
+        return True, None
+
+    def _request_tag_route_leg(self, route_context):
+        context = dict(route_context)
+        authorized, reason = self._tag_route_authorized_now(context)
+        if not authorized:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', reason)
+            return
+        points = context.get('route_points') or []
+        index = int(context.get('route_index', 1))
+        if index >= len(points):
+            self.tag_route_context = None
+            self.nav_state = 'IDLE'
+            self.send_nav_status(context, 'SUCCEEDED')
+            return
+        target = points[index]
+        try:
+            goal_x, goal_y, goal_yaw = (float(target[key]) for key in ('x', 'y', 'yaw'))
+        except (KeyError, TypeError, ValueError):
+            self.tag_route_context = None
+            self.send_nav_status(context, 'FAILED', 'TAG_ROUTE_INVALID: next route pose is incomplete')
+            return
+        coverage = validate_target_coverage(
+            self.navigation_grid_occupancy, x=goal_x, y=goal_y) if self.runtime_state == 'UNIFIED' else None
+        if coverage:
+            self.tag_route_context = None
+            self.send_nav_status(context, 'FAILED',
+                f"{coverage.get('code', 'NAVIGATION_MAP_INVALID')}: {json.dumps(coverage, sort_keys=True)}")
+            return
+        try:
+            start_pose, _frame = self._lookup_robot_pose()
+        except TransformException as exc:
+            self.tag_route_context = None
+            self.send_nav_status(context, 'FAILED', f'LOCALIZATION_NOT_READY: {exc}')
+            return
+        leg_context = {
+            **context, 'x': goal_x, 'y': goal_y, 'yaw': goal_yaw,
+            'route_index': index, 'route_node_id': target.get('tag_id'),
+        }
+        auth_request_id = uuid.uuid4().hex
+        leg_context['auth_request_id'] = auth_request_id
+        self.tag_route_waiting_auth = {
+            'auth_request_id': auth_request_id,
+            'route_revision': context.get('route_revision'),
+            'route_index': index,
+            'context': leg_context,
+            'requested_monotonic': time.monotonic(),
+        }
+        self.nav_state = 'PLANNING'
+        self.send_nav_status(leg_context, 'PLANNING')
+        self.send({
+            'type': 'TAG_ROUTE_LEG_AUTH_REQUEST', 'robot_id': self.robot_id,
+            'auth_request_id': auth_request_id,
+            'route_revision': context.get('route_revision'),
+            'graph_revision': context.get('graph_revision'),
+            'route_nodes': context.get('route_nodes'),
+            'route_index': index, 'route_node_id': target.get('tag_id'),
+        })
+
+    def accept_tag_route_leg_auth(self, data):
+        waiting = self.tag_route_waiting_auth
+        if not isinstance(waiting, dict):
+            return
+        if str(data.get('auth_request_id') or '') != str(waiting.get('auth_request_id') or ''):
+            return
+        context = waiting.get('context') or {}
+        self.tag_route_waiting_auth = None
+        try:
+            response_index = int(data.get('route_index', -1))
+        except (TypeError, ValueError):
+            response_index = -1
+        if (str(data.get('route_revision') or '') != str(waiting.get('route_revision') or '')
+                or response_index != int(waiting.get('route_index', -2))):
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED',
+                'TAG_ROUTE_AUTH_INVALID: backend authorization does not match the requested next leg')
+            return
+        if data.get('approved') is not True:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED',
+                f"{data.get('reason_code') or 'TAG_ROUTE_AUTH_DENIED'}: "
+                f"{data.get('reason') or 'backend did not authorize the next route leg'}")
+            return
+        self._dispatch_tag_route_leg(context)
+
+    def _expire_tag_route_leg_auth(self):
+        waiting = getattr(self, 'tag_route_waiting_auth', None)
+        if not isinstance(waiting, dict):
+            return
+        try:
+            timeout = max(0.5, float(self.get_parameter('tag_route_leg_auth_timeout_s').value))
+        except (AttributeError, TypeError, ValueError):
+            timeout = 5.0
+        if time.monotonic() - float(waiting.get('requested_monotonic', time.monotonic())) <= timeout:
+            return
+        context = waiting.get('context') or self.tag_route_context or {'robot_id': self.robot_id}
+        self.tag_route_waiting_auth = None
+        self.tag_route_context = None
+        self.cmd_pub.publish(Twist())
+        self.nav_state = 'FAILED'
+        self.get_logger().warning(
+            f'TAG_ROUTE_AUTH_TIMEOUT robot={self.robot_id} '
+            f'route_revision={context.get("route_revision")} index={context.get("route_index")}')
+        self.send_nav_status(context, 'FAILED',
+                             'TAG_ROUTE_AUTH_TIMEOUT: backend did not reauthorize the next route leg')
+
+    def _dispatch_tag_route_leg(self, leg_context):
+        authorized, reason = self._tag_route_authorized_now(leg_context)
+        if not authorized:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(leg_context, 'FAILED', reason)
+            return
+        target = (leg_context.get('route_points') or [])[int(leg_context['route_index'])]
+        coverage = validate_target_coverage(
+            self.navigation_grid_occupancy, x=float(target['x']), y=float(target['y'])) \
+            if self.runtime_state == 'UNIFIED' else None
+        if coverage:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(leg_context, 'FAILED',
+                f"{coverage.get('code', 'NAVIGATION_MAP_INVALID')}: {json.dumps(coverage, sort_keys=True)}")
+            return
+        try:
+            start_pose, _frame = self._lookup_robot_pose()
+        except (TransformException, KeyError, TypeError, ValueError) as exc:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(leg_context, 'FAILED', f'LOCALIZATION_NOT_READY: {exc}')
+            return
+        action_goal = ComputePathToPose.Goal()
+        action_goal.start.header.frame_id = 'map'
+        action_goal.start.header.stamp = self.get_clock().now().to_msg()
+        action_goal.start.pose.position.x = float(start_pose['x'])
+        action_goal.start.pose.position.y = float(start_pose['y'])
+        action_goal.start.pose.orientation.z = math.sin(float(start_pose['yaw']) / 2.0)
+        action_goal.start.pose.orientation.w = math.cos(float(start_pose['yaw']) / 2.0)
+        action_goal.goal.header.frame_id = 'map'
+        action_goal.goal.header.stamp = self.get_clock().now().to_msg()
+        action_goal.goal.pose.position.x = float(leg_context['x'])
+        action_goal.goal.pose.position.y = float(leg_context['y'])
+        action_goal.goal.pose.orientation.z = math.sin(float(leg_context['yaw']) / 2.0)
+        action_goal.goal.pose.orientation.w = math.cos(float(leg_context['yaw']) / 2.0)
+        action_goal.use_start = True
+        self.nav_state = 'PLANNING'
+        try:
+            future = self.path_preview_client.send_goal_async(action_goal)
+            future.add_done_callback(lambda completed: self._tag_route_leg_preview_response(
+                completed, leg_context))
+        except Exception as exc:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(leg_context, 'FAILED',
+                f'NAV2_PLANNER_ABORTED: cannot plan next Tag leg ({type(exc).__name__})')
+
+    def _tag_route_leg_preview_response(self, future, context):
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED',
+                f'NAV2_PLANNER_ABORTED: next Tag leg request failed ({type(exc).__name__})')
+            return
+        if handle is None or not handle.accepted:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', 'NAV2_PLANNER_ABORTED: Nav2 rejected the next Tag leg')
+            return
+        handle.get_result_async().add_done_callback(
+            lambda completed: self._tag_route_leg_preview_result(completed, context))
+
+    def _tag_route_leg_preview_result(self, future, context):
+        try:
+            response = future.result()
+            poses = response.result.path.poses
+            if not successful_path_result(response.status, GoalStatus.STATUS_SUCCEEDED, len(poses)):
+                code = 'NAV2_PLANNER_ABORTED' if response.status != GoalStatus.STATUS_SUCCEEDED else 'NO_VALID_PATH'
+                raise RuntimeError(f'{code}: ComputePathToPose rejected route node {context.get("route_node_id")}')
+        except Exception as exc:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', str(exc))
+            return
+        authorized, reason = self._tag_route_authorized_now(context)
+        if not authorized:
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED', reason)
+            return
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = 'map'
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.pose.position.x = float(context['x'])
+        goal.pose.pose.position.y = float(context['y'])
+        goal.pose.pose.orientation.z = math.sin(float(context['yaw']) / 2.0)
+        goal.pose.pose.orientation.w = math.cos(float(context['yaw']) / 2.0)
+        self.goal_request_pending = True
+        self.nav_state = 'PENDING'
+        try:
+            self.nav_pose_client.send_goal_async(goal).add_done_callback(
+                lambda completed: self.pose_goal_response(completed, context))
+        except Exception as exc:
+            self.goal_request_pending = False
+            self.tag_route_context = None
+            self.nav_state = 'FAILED'
+            self.send_nav_status(context, 'FAILED',
+                f'failed to send NavigateToPose for Tag leg: {type(exc).__name__}')
 
     def send_nav_status(self, context, status, reason=None):
         payload = {
@@ -3345,6 +3808,8 @@ class SwerveBridge(Node):
             self.pending_replan = None
             self.cancel_pending = False
             self.nav_state = cancel_state or 'FAILED'
+            if context.get('route_revision'):
+                self.tag_route_context = None
             if cancel_state:
                 self.send_nav_status(context, cancel_state,
                                      'Nav2 goal ended before acceptance after cancellation was requested')
@@ -3357,6 +3822,8 @@ class SwerveBridge(Node):
             self.pending_replan = None
             self.cancel_pending = False
             self.nav_state = cancel_state or 'FAILED'
+            if context.get('route_revision'):
+                self.tag_route_context = None
             if cancel_state:
                 self.send_nav_status(context, cancel_state,
                                      'Nav2 rejected the goal before the pending cancellation completed')
@@ -3387,6 +3854,8 @@ class SwerveBridge(Node):
             self.pending_replan = None
             self.cancel_pending = False
             self.nav_state = cancel_state or 'FAILED'
+            if context.get('route_revision'):
+                self.tag_route_context = None
             if cancel_state:
                 self.send_nav_status(context, cancel_state,
                                      'Nav2 goal ended before acceptance after cancellation was requested')
@@ -3399,6 +3868,8 @@ class SwerveBridge(Node):
             self.pending_replan = None
             self.cancel_pending = False
             self.nav_state = cancel_state or 'FAILED'
+            if context.get('route_revision'):
+                self.tag_route_context = None
             if cancel_state:
                 self.send_nav_status(context, cancel_state,
                                      'Nav2 rejected the goal before the pending cancellation completed')
@@ -3466,6 +3937,7 @@ class SwerveBridge(Node):
             GoalStatus.STATUS_ABORTED: 'FAILED',
             GoalStatus.STATUS_CANCELED: 'CANCELED',
         }.get(status_code, 'FAILED')
+        reason = None
         pending_cancel_state = self.pending_cancel_state
         self.pending_cancel_state = None
         self.pending_replan = None
@@ -3473,6 +3945,52 @@ class SwerveBridge(Node):
             status = 'EMERGENCY_STOPPED'
         elif status == 'CANCELED' and pending_cancel_state:
             status = pending_cancel_state
+        route = self.tag_route_context if context.get('route_revision') else None
+        if status == 'SUCCEEDED' and route is not None:
+            try:
+                actual, _frame = self._lookup_robot_pose()
+                expected = context['route_points'][int(context['route_index'])]
+                xy_error = math.hypot(float(actual['x']) - float(expected['x']),
+                                      float(actual['y']) - float(expected['y']))
+                yaw_error = abs(math.atan2(math.sin(float(actual['yaw']) - float(expected['yaw'])),
+                                           math.cos(float(actual['yaw']) - float(expected['yaw']))))
+                xy_tolerance = max(0.01, float(self.get_parameter('tag_route_xy_tolerance_m').value))
+                yaw_tolerance = max(0.01, float(self.get_parameter('tag_route_yaw_tolerance_rad').value))
+                if xy_error > xy_tolerance or yaw_error > yaw_tolerance:
+                    status = 'FAILED'
+                    reason = (f'TAG_ROUTE_NODE_NOT_REACHED: node={context.get("route_node_id")} '
+                              f'xy_error={xy_error:.3f}m/{xy_tolerance:.3f}m '
+                              f'yaw_error={yaw_error:.3f}rad/{yaw_tolerance:.3f}rad')
+                else:
+                    self.get_logger().info(
+                        f'TAG_ROUTE_NODE_REACHED robot={self.robot_id} '
+                        f'route_revision={context.get("route_revision")} '
+                        f'index={context.get("route_index")} node={context.get("route_node_id")} '
+                        f'xy_error={xy_error:.3f} yaw_error={yaw_error:.3f}')
+                    self.send_nav_status(context, 'TAG_ROUTE_NODE_REACHED')
+                    next_index = int(context['route_index']) + 1
+                    if next_index < len(context['route_points']):
+                        next_context = {**context, 'route_index': next_index}
+                        self.tag_route_context = next_context
+                        if self.active_pose_goal is handle:
+                            self.active_pose_goal = None
+                            self.active_pose_context = None
+                            self.cancel_pending = False
+                        self._request_tag_route_leg(next_context)
+                        return
+                    self.get_logger().info(
+                        f'TAG_ROUTE_SUCCEEDED robot={self.robot_id} '
+                        f'route_revision={context.get("route_revision")} '
+                        f'nodes={context.get("route_nodes")} xy_error={xy_error:.3f} yaw_error={yaw_error:.3f}')
+                    self.tag_route_context = None
+            except (TransformException, KeyError, IndexError, TypeError, ValueError) as exc:
+                status = 'FAILED'
+                reason = f'LOCALIZATION_NOT_READY: Tag route arrival could not be verified ({exc})'
+        if status != 'SUCCEEDED' and route is not None:
+            self.get_logger().warning(
+                f'TAG_ROUTE_FAILED robot={self.robot_id} route_revision={context.get("route_revision")} '
+                f'index={context.get("route_index")} status={status} reason={reason or "Nav2 action failed"}')
+            self.tag_route_context = None
         self.nav_state = 'IDLE' if status == 'SUCCEEDED' else status
         if status == 'SUCCEEDED':
             self.get_logger().info(
@@ -3488,7 +4006,8 @@ class SwerveBridge(Node):
             self.active_pose_goal = None
             self.active_pose_context = None
             self.cancel_pending = False
-        reason = None if status != 'FAILED' else f'NavigateToPose finished with status code {status_code}'
+        if status == 'FAILED' and reason is None:
+            reason = f'NavigateToPose finished with status code {status_code}'
         self.send_nav_status(context, status, reason)
         if context.get('vda_order_id'):
             if status == 'SUCCEEDED':
@@ -3660,14 +4179,29 @@ class SwerveBridge(Node):
         cancel_state = ('EMERGENCY_STOPPED' if self.emergency_stop_active else
                         'PLANNING' if is_replan else
                         'PAUSED' if kind == 'TAG_NAV_PAUSE' else 'CANCELLED')
-        context = self.active_pose_context or self.active_context or self.paused_pose_context or {
+        context = (self.active_pose_context or self.active_context or self.paused_pose_context
+                   or self.tag_route_context or {
             'robot_id': self.robot_id,
             'schedule_id': data.get('schedule_id'),
             'stop_id': data.get('stop_id'),
             'target_tag_id': data.get('target_tag_id'),
-        }
+        })
         if is_replan and not data.get('target_tag_id'):
             data = {**data, 'target_tag_id': context.get('target_tag_id')}
+        if isinstance(getattr(self, 'tag_route_waiting_auth', None), dict):
+            waiting = self.tag_route_waiting_auth
+            route_context = waiting.get('context') or context
+            self.tag_route_waiting_auth = None
+            self.tag_route_context = None
+            if cancel_state == 'PAUSED':
+                self.paused_pose_context = dict(route_context)
+            elif not is_replan:
+                self.paused_pose_context = None
+            self.cmd_pub.publish(Twist())
+            self.nav_state = cancel_state
+            self.send_nav_status(route_context, cancel_state,
+                                 'Tag route stopped before the next leg was authorized')
+            return
         if self.active_pose_goal is not None:
             self.cancel_pose_navigation(context, cancel_state)
             return

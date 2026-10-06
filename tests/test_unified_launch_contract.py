@@ -57,6 +57,20 @@ def test_nav2_progress_checker_counts_terminal_yaw_without_weakening_stuck_limit
     follow_path = params['FollowPath']
     assert follow_path['Oscillation.oscillation_reset_angle'] == follow_path['xy_goal_tolerance']
     assert follow_path['critics'].count('Oscillation') == 1
+    assert 'RotateToGoal' in follow_path['critics']
+    assert 'BaseObstacle' in follow_path['critics']
+    assert follow_path['RotateToGoal.scale'] >= max(
+        follow_path['PathAlign.scale'], follow_path['GoalAlign.scale'])
+    assert 0 < follow_path['RotateToGoal.lookahead_time'] < follow_path['sim_time']
+    controller_frequency = params['controller_frequency']
+    theta_acceleration = follow_path['acc_lim_theta']
+    actuator = yaml.safe_load((ROOT / 'config/swerve_controller.yaml').read_text(encoding='utf-8'))
+    actuator_params = actuator['swerve_controller']['ros__parameters']
+    module_arm = (actuator_params['modules.front.x'] ** 2
+                  + actuator_params['modules.front.y'] ** 2) ** 0.5
+    wheel_acceleration = theta_acceleration * module_arm / actuator_params['wheel_radius']
+    assert theta_acceleration / controller_frequency >= 0.08
+    assert wheel_acceleration <= actuator_params['max_wheel_acceleration']
     bt_params = config['bt_navigator']['ros__parameters']
     assert bt_params['default_server_timeout'] == 500
 

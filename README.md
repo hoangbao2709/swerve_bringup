@@ -250,8 +250,10 @@ The local costmap uses a VoxelLayer with `/lidar/points_filtered` as
 `PointCloud2` (`marking: true`, `clearing: true`) and `/scan` as an additional
 observation. Its obstacle height is limited to `0.05..1.30 m`, so rack points
 above the robot clearance do not automatically block the 2D planner. The
-global costmap consumes the live SLAM Toolbox `/map` plus `/scan` updates in
-the production unified runtime; Nav2 does not start a second `map_server`.
+global costmap consumes the complete registered warehouse raster from
+`/navigation_map`; it does not use the explored extent of live SLAM `/map` as
+its global-planning boundary. Live `/scan` and point-cloud obstacle layers
+remain active in the costmaps.
 
 Start the complete production stack once:
 
@@ -259,11 +261,15 @@ Start the complete production stack once:
 ./scripts/start_stack.sh unified --gui --rviz
 ```
 
-Unified mode keeps SLAM Toolbox and Nav2 available together. SLAM Toolbox is
-the sole `map -> odom` owner; Nav2 consumes its live `/map` without a second
-`map_server`. Use MANUAL to explore unknown space and grow the map, then switch
-to AUTONOMOUS for preview/navigation through mapped, traversable space.
-Changing control mode must not restart Gazebo, ROS, Django, or the frontend.
+Unified mode keeps SLAM Toolbox, the published canonical map and Nav2
+available together. SLAM Toolbox is the sole `/map` publisher and sole
+`map -> odom` owner. `canonical_map_server` publishes the immutable warehouse
+raster on `/canonical_map`; its exact versioned registration creates the full
+active-frame `/navigation_map` consumed by Nav2's global static layer. The
+live accumulated `/map` remains available for Mapping visualization and
+diagnostics. Known published destinations are globally plannable at startup;
+the local costmap still reacts to live sensors. Changing control mode must not
+restart Gazebo, ROS, Django, or the frontend.
 
 Nav2 publishes to `/cmd_vel_nav`; `command_arbiter` selects it only in
 AUTONOMOUS mode. Django bridge teleop uses the leased `/cmd_vel_manual` input.
@@ -493,3 +499,16 @@ ros2 launch swerve_bringup display.launch.py use_joint_state_gui:=false
 5. CAD STL gốc là **mm** và không bị ghi đè. OBJ trong `meshes/visual/` đã
    được chuyển sang **m** (có normals và scale hình học giữ nguyên), nên URDF
    dùng `scale="1 1 1"`. Không dùng visual OBJ cho collision.
+
+
+## WareTwin maps and TAG navigation
+
+The unified runtime keeps map ownership explicit: `/map` is the live,
+accumulated SLAM occupancy grid and SLAM Toolbox is the sole `map -> odom`
+owner; `/canonical_map` is the published warehouse raster; the exact
+versioned canonical-to-active registration produces the full `/navigation_map`
+used by Nav2's global static layer. The local costmap continues to use live
+LiDAR. TAG routes use the published geometry-derived orthogonal lane graph,
+are previewed leg-by-leg with Nav2, and execute sequentially through their
+intermediate navigation nodes. In the LIDAR 2D view, accumulated `/map` is the
+base raster and the current `/scan` is only a restrained overlay.

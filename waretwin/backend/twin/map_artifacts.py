@@ -22,6 +22,7 @@ from django.conf import settings
 
 from .canonical_map import canonicalize_layout
 from .nav2_export import floor_artifact_name, render_nav2_map
+from .navigation_graph import prepare_published_navigation
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -141,14 +142,19 @@ def render_tag_graph_yaml(layout: dict[str, Any]) -> str:
             "from": from_id,
             "to": to_id,
             "aisle_id": raw.get("aisle_id", raw.get("aisle")),
+            "axis": raw.get("axis"),
+            "lane_id": raw.get("lane_id", raw.get("aisle_id", raw.get("aisle"))),
             "distance": float(raw.get("distance", 0) or 0),
             "cost": float(raw.get("cost", raw.get("distance", 0)) or 0),
+            "clearance_m": float(raw.get("clearance_m", 0) or 0),
             "direction": direction,
             "bidirectional": bidirectional,
             "enabled": enabled,
         })
     edges.sort(key=lambda edge: (edge["from"], edge["to"], str(edge.get("aisle_id") or ""), edge["direction"]))
-    lines = ["frame_id: map", "units: m", "tags:"]
+    lines = ["frame_id: map", "units: m",
+             f"canonical_revision: {int(layout.get('revision') or 0)}",
+             f"graph_revision: {_quoted(layout.get('tag_graph_revision') or '')}", "tags:"]
     for tag in tags:
         try:
             tag_id = int(tag["tag_id"])
@@ -163,14 +169,18 @@ def render_tag_graph_yaml(layout: dict[str, Any]) -> str:
         lines.append(f"    y: {_num(tag.get('y'))}")
         lines.append(f"    z: {_num(tag.get('z'))}")
         lines.append(f"    yaw: {_num(tag.get('yaw'))}")
+        metadata = tag.get('metadata') if isinstance(tag.get('metadata'), dict) else {}
+        lines.append(f"    orientation_policy: {_quoted(metadata.get('orientation_policy', 'EXPLICIT'))}")
         lines.append(f"    neighbors: {neighbour_text}")
     lines.append("edges:")
     for edge in edges:
         aisle = "null" if edge["aisle_id"] is None else _quoted(edge["aisle_id"])
         lines.append(
-            "  - {from: %d, to: %d, aisle_id: %s, distance: %s, cost: %s, direction: %s, bidirectional: %s, enabled: %s}"
+            "  - {from: %d, to: %d, aisle_id: %s, axis: %s, lane_id: %s, distance: %s, cost: %s, clearance_m: %s, direction: %s, bidirectional: %s, enabled: %s}"
             % (
-                edge["from"], edge["to"], aisle, _num(edge["distance"]), _num(edge["cost"]),
+                edge["from"], edge["to"], aisle,
+                _quoted(edge.get("axis") or ""), _quoted(edge.get("lane_id") or edge.get("aisle_id") or ""),
+                _num(edge["distance"]), _num(edge["cost"]), _num(edge.get("clearance_m", 0)),
                 _quoted(edge["direction"]), "true" if edge["bidirectional"] else "false",
                 "true" if edge["enabled"] else "false",
             )
@@ -199,7 +209,8 @@ def build_revision_artifacts(layout: dict[str, Any], *, warehouse_id: Any, revis
     The caller atomically renames the returned staging directory only after all
     files have been verified and the database transaction succeeds.
     """
-    doc = canonicalize_layout(layout)
+    doc = prepare_published_navigation(layout, int(revision))
+    doc['revision'] = int(revision)
     root = artifact_root()
     warehouse_dir = root / _safe_name(warehouse_id)
     warehouse_dir.mkdir(parents=True, exist_ok=True)
@@ -287,6 +298,7 @@ def build_revision_artifacts(layout: dict[str, Any], *, warehouse_id: Any, revis
             "canonical_bounds": world_bounds,
             "gazebo_bounds": world_bounds,
             "tag_map_revision": int(revision),
+            "tag_graph_revision": doc.get('tag_graph_revision'),
             # Gazebo spawn resolution reads the same canonical robot records
             # from the immutable manifest; do not discard them when wrapping
             # the exporter output in the backend artifact manifest.

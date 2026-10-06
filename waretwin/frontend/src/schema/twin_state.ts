@@ -674,6 +674,13 @@ export type RobotDetailPath = {
   points: RobotWorldPoint[];
   local_points?: RobotWorldPoint[];
 };
+export type RobotDetailRoutePoint = {
+  x: number; y: number; yaw: number; kind: string; tag_id: number | null;
+};
+export type RobotDetailRouteSegment = {
+  from: number | string; to: number | string; axis: "X" | "Y";
+  lane_id?: string | null; length_m: number; direction?: string;
+};
 export type RobotDetailView = "GLOBAL" | "LIDAR_2D" | "LIDAR_3D";
 export type RobotDetailViewStatus = {
   robot_id: RobotId; requested_view: RobotDetailView; applied_view?: RobotDetailView;
@@ -732,6 +739,15 @@ export type RobotDetailPathPreview = {
   reason?: string | null;
   frame_id?: "map";
   path: RobotWorldPoint[];
+  active_path?: RobotWorldPoint[] | null;
+  canonical_path?: RobotWorldPoint[] | null;
+  route_nodes?: number[] | null;
+  route_segments?: RobotDetailRouteSegment[] | null;
+  active_route_points?: RobotDetailRoutePoint[] | null;
+  canonical_route_points?: RobotDetailRoutePoint[] | null;
+  graph_revision?: string | null;
+  route_revision?: string | null;
+  reason_code?: string | null;
   local_path?: RobotWorldPoint[];
   path_length_m: number | null;
   goal: { x: number; y: number; yaw: number; frame_id?: string } | null;
@@ -873,7 +889,7 @@ export type ServerMessage =
   | { type: "NAV_GLOBAL_PATH"; path: RobotDetailPath }
   | { type: "NAV_LOCAL_PATH"; path: RobotDetailPath }
   | { type: "NAV_GOAL"; goal: RobotDetailGoal }
-  | { type: "PATH_PREVIEW_RESULT"; robot_id: RobotId; request_id: string; status: "VALID" | "INVALID" | "NO_PATH"; reason?: string | null; source_type?: "MAP_POINT" | "ACTIVE_MAP_POINT" | "CANONICAL_MAP_POINT" | "TAG"; source_id?: string | null; source_map_id?: string | null; source_map_revision?: string | null; source_goal?: { x: number; y: number; yaw: number } | null; registration_revision?: number | null; registration_source?: string | null; tag_id?: number | null; tag_revision?: string | null; registry_revision?: string | null; active_map_id?: string | null; active_map_revision?: string | null; map_content_revision?: string | null; map_content_revision_at_request?: string | null; canonical_map_revision?: string | number | null; frame_id?: "map"; path: RobotWorldPoint[]; local_path?: RobotWorldPoint[]; local_goal?: { x: number; y: number; yaw: number } | null; path_length_m: number | null; goal: { x: number; y: number; yaw: number; frame_id?: string } | null; timestamp?: string | null }
+  | { type: "PATH_PREVIEW_RESULT"; robot_id: RobotId; request_id: string; status: "VALID" | "INVALID" | "NO_PATH"; reason?: string | null; reason_code?: string | null; source_type?: "MAP_POINT" | "ACTIVE_MAP_POINT" | "CANONICAL_MAP_POINT" | "TAG"; source_id?: string | null; source_map_id?: string | null; source_map_revision?: string | null; source_goal?: { x: number; y: number; yaw: number } | null; registration_revision?: number | null; registration_source?: string | null; tag_id?: number | null; tag_revision?: string | null; registry_revision?: string | null; active_map_id?: string | null; active_map_revision?: string | null; map_content_revision?: string | null; map_content_revision_at_request?: string | null; canonical_map_revision?: string | number | null; frame_id?: "map"; path: RobotWorldPoint[]; active_path?: RobotWorldPoint[] | null; canonical_path?: RobotWorldPoint[] | null; route_nodes?: number[] | null; route_segments?: RobotDetailRouteSegment[] | null; active_route_points?: RobotDetailRoutePoint[] | null; canonical_route_points?: RobotDetailRoutePoint[] | null; graph_revision?: string | null; route_revision?: string | null; local_path?: RobotWorldPoint[]; local_goal?: { x: number; y: number; yaw: number } | null; path_length_m: number | null; goal: { x: number; y: number; yaw: number; frame_id?: string } | null; timestamp?: string | null }
   | { type: "LOCAL_MAP_STATUS"; robot_id: RobotId; loaded: boolean; map_id?: string | null; map_revision?: string | null; active_map_revision?: string | null; canonical_map_revision?: string | number | null; map_sync_status?: string | null; frame_id?: string; timestamp?: string | null }
   | { type: "COMMAND_DIAGNOSTICS"; robot_id: RobotId } & RobotCommandDiagnostics
   | { type: "LIDAR_STREAM_DIAGNOSTICS"; robot_id: RobotId } & RobotLidarStreamDiagnostics
@@ -894,7 +910,7 @@ export type ClientMessage =
   | { type: "SELECT_ROBOT"; robot_id: RobotId | null }           // 讓後端提高該機器人更新頻率 (可選)
   | { type: "ROBOT_MODE"; robot_id: RobotId; mode: "MANUAL" | "AUTONOMOUS" }
   | { type: "ROBOT_MANUAL"; robot_id: RobotId; action: "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT" | "STOP" }
-  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string; preview_request_id?: string; active_map_id?: string; active_map_revision?: string; map_id?: string; map_revision?: string; source_type?: "MAP_POINT" | "ACTIVE_MAP_POINT" | "CANONICAL_MAP_POINT" | "TAG"; source_id?: string; source_map_id?: string; source_map_revision?: string }
+  | { type: "NAV_GOAL"; robot_id: RobotId; x: number; y: number; yaw: number; frame_id?: string; preview_request_id?: string; active_map_id?: string; active_map_revision?: string; map_id?: string; map_revision?: string; source_type?: "MAP_POINT" | "ACTIVE_MAP_POINT" | "CANONICAL_MAP_POINT" | "TAG"; source_id?: string; source_map_id?: string; source_map_revision?: string; route_revision?: string }
   | { type: "PATH_PREVIEW_REQUEST"; robot_id: RobotId; request_id: string; x?: number; y?: number; yaw?: number; frame_id: "map"; active_map_id?: string; active_map_revision?: string; map_id?: string; map_revision?: string; source_type?: "MAP_POINT" | "ACTIVE_MAP_POINT" | "CANONICAL_MAP_POINT" | "TAG"; source_map_id?: string; source_map_revision?: string; map_content_revision?: string; tag_id?: number; tag_revision?: string; registry_revision?: string }
   | { type: "PATH_PREVIEW_INVALIDATE"; robot_id: RobotId }
   | { type: "ROBOT_DETAIL_VIEW"; robot_id: RobotId; view: RobotDetailView; request_id?: string; delivery_ack?: boolean }

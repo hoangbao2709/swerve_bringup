@@ -117,16 +117,18 @@ function setNavReadyCapabilities() {
   } } });
 }
 
-function navigationTag(tagId: number, x: number, y: number, navigable = true): RobotNavigationTag {
+function navigationTag(tagId: number, x: number, y: number, navigable = true, yaw = Math.PI / 2,
+  metadata: Record<string, unknown> = { semantic_role: "shelf_service", orientation_policy: "SHELF_WIDTH_PARALLEL", rack_id: "rack-A" }): RobotNavigationTag {
   return {
     id: tagId, tag_id: tagId, label: `tag-${tagId}`, family: "DATAMATRIX", floor_id: "F1",
-    lane_id: "LANE-1", zone_id: null, x, y, z: 0, yaw: Math.PI / 2,
+    lane_id: "LANE-1", zone_id: null, x, y, z: 0, yaw,
     enabled: navigable, navigable, reason: navigable ? null : "TAG_DISABLED", frame_id: "map",
-    map_id: "CANONICAL", map_revision: "21", navigation_pose: navigable ? { x, y, yaw: Math.PI / 2 } : null,
+    map_id: "CANONICAL", map_revision: "21", navigation_pose: navigable ? { x, y, yaw } : null,
     navigation_pose_source: navigable ? "REGISTERED_NAVIGATION_NODE" : null,
-    canonical_navigation_pose: { x, y, yaw: Math.PI / 2 },
+    canonical_navigation_pose: { x, y, yaw },
+    registration_revision: 23,
     tag_revision: `tag-${tagId}-revision-1`,
-    metadata: { semantic_role: "shelf_service", orientation_policy: "SHELF_WIDTH_PARALLEL", rack_id: "rack-A" },
+    metadata,
   };
 }
 
@@ -134,7 +136,7 @@ function tagRegistry(tags: RobotNavigationTag[]): RobotNavigationTagRegistry {
   return {
     robot_id: "R01", source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY", warehouse_id: 1,
     warehouse_code: "WH-TEST-01", map_id: "CANONICAL", map_revision: "21", frame_id: "map",
-    compatible: true, reason: null, registry_revision: "registry-current", tags,
+    compatible: true, reason: null, registry_revision: "registry-current", registration_revision: 23, tags,
   };
 }
 
@@ -156,7 +158,8 @@ function clickCanonicalTag(tag: RobotNavigationTag) {
   canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: point.x, clientY: point.y }));
 }
 
-async function completeTagWorkflow(selection: "dropdown" | "map", tag: RobotNavigationTag) {
+async function completeTagWorkflow(selection: "dropdown" | "map", tag: RobotNavigationTag,
+  resultYaw = tag.navigation_pose?.yaw ?? 0) {
   const registry = tagRegistry([tag]);
   setOnlineRobot();
   setNavReadyCapabilities();
@@ -203,16 +206,23 @@ async function completeTagWorkflow(selection: "dropdown" | "map", tag: RobotNavi
       { x: tag.canonical_navigation_pose!.x, y: tag.canonical_navigation_pose!.y,
         yaw: tag.canonical_navigation_pose!.yaw, kind: "TAG_SERVICE", tag_id: tag.tag_id }],
     route_revision: "route-revision-1204", graph_revision: "graph-revision-21", path_length_m: 1,
-    goal: { ...tag.navigation_pose! }, active_map_id: "CANONICAL", active_map_revision: "21",
+    goal: { ...tag.navigation_pose!, yaw: resultYaw }, registration_revision: tag.registration_revision,
+    active_map_id: "CANONICAL", active_map_revision: "21",
     timestamp: new Date().toISOString(),
   };
   act(() => useStore.getState().setRobotDetail("R01", { pathPreview: preview }));
+  expect(buttonNamed("PREVIEW PATH")?.dataset.previewApproved).toBe("true");
+  expect(buttonNamed("PREVIEW PATH")?.dataset.previewRejectReason).toBeUndefined();
+  expect(container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')?.dataset.previewPathPointCount)
+    .toBe("2");
+  expect(container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')?.dataset.previewRouteNodeCount)
+    .toBe("1");
   expect(buttonNamed("SEND GOAL")?.disabled).toBe(false);
   await act(async () => { buttonNamed("SEND GOAL")?.click(); });
   const navGoal = vi.mocked(wsSend).mock.calls.map(([message]) => message)
     .find((message) => message.type === "NAV_GOAL");
   if (!navGoal || navGoal.type !== "NAV_GOAL") throw new Error("Tag navigation goal was not emitted");
-  return { selectedInfo, previewRequest, navGoal };
+  return { selectedInfo, previewRequest, navGoal, preview };
 }
 
 function buttonNamed(name: string): HTMLButtonElement | undefined {
@@ -437,6 +447,31 @@ describe("robot detail route stability", () => {
     expect(mapClickFlow.previewRequest).toEqual(dropdownFlow.previewRequest);
     expect(mapClickFlow.navGoal).toEqual(dropdownFlow.navGoal);
     expect(buttonNamed("TAG")?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it.each([
+    { tagId: 1103, x: 10.5, yaw: -3.141440167775226, resultYaw: -3.141440167775226 + 2 * Math.PI,
+      role: "shelf_service", policy: "SHELF_WIDTH_PARALLEL" },
+    { tagId: 1203, x: 15, yaw: 0.00015, resultYaw: 0.00015,
+      role: "intersection", policy: "LANE_FORWARD" },
+    { tagId: 1303, x: 19.5, yaw: -3.141440167775226, resultYaw: -3.141440167775226 + 2 * Math.PI,
+      role: "shelf_service", policy: "SHELF_WIDTH_PARALLEL" },
+  ])("approves and renders the runtime-style $role Tag $tagId through the map-click preview flow", async ({ tagId, x, yaw, resultYaw, role, policy }) => {
+    const tag = navigationTag(tagId, x, 16.5, true, yaw, {
+      semantic_role: role, orientation_policy: policy, rack_id: role === "shelf_service" ? `rack-${tagId}` : undefined,
+    });
+    const result = await completeTagWorkflow("map", tag, resultYaw);
+
+    expect(result.preview.status).toBe("VALID");
+    expect(result.preview.route_revision).toBeTruthy();
+    expect(result.preview.route_nodes?.length).toBeGreaterThan(0);
+    expect(result.preview.route_segments).toBeDefined();
+    expect(result.preview.active_path?.length).toBeGreaterThan(0);
+    expect(result.preview.canonical_path?.length).toBeGreaterThan(0);
+    expect(result.preview.active_route_points?.length).toBeGreaterThan(0);
+    expect(result.preview.canonical_route_points?.length).toBeGreaterThan(0);
+    expect(result.navGoal).toMatchObject({ type: "NAV_GOAL", source_type: "TAG", source_id: String(tagId),
+      route_revision: result.preview.route_revision, yaw: resultYaw });
   });
 
   it("keeps empty MAP POINT clicks and gives a Tag hit priority while in MAP POINT mode", async () => {

@@ -12,6 +12,7 @@ import { RobotLidar3DView } from "./RobotLidarViews";
 import { occupancyRasters } from "./occupancyRaster";
 import { detailPerformance } from "./detailPerformance";
 import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, mapPointPreviewPayload, mapPointTarget, sameNavigationMapIdentity, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
+import { evaluatePreviewApproval } from "./navigationPreviewApproval";
 
 type WorldGoal = { x: number; y: number; yaw: number };
 type GoalSelection = WorldGoal & Partial<NavigationMapIdentity> & Partial<Pick<MapPointNavigationTarget, "source_map_id" | "source_map_revision">>;
@@ -210,43 +211,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     && tagRegistry?.compatible && tagRegistry.registry_revision
     && tag.map_id === activeMapId && tag.map_revision === activeMapRevision);
   const navigableTags = compatibleTags.filter(isTagNavigable);
-  const candidatePreview = pathPreview?.request_id === latestPathRequest.current ? pathPreview : null;
-  const previewAgeMs = candidatePreview?.timestamp ? clockNow - Date.parse(candidatePreview.timestamp) : Infinity;
-  const sourcePreviewPose = targetMethod === "MAP_POINT"
-    && goalPreview?.source_type === "CANONICAL_MAP_POINT"
-    ? candidatePreview?.source_goal : candidatePreview?.goal;
-  const previewTargetMatches = Boolean(sourcePreviewPose && goalPreview
-    && Math.abs(sourcePreviewPose.x - goalPreview.x) <= 1e-4
-    && Math.abs(sourcePreviewPose.y - goalPreview.y) <= 1e-4
-    && Math.abs(sourcePreviewPose.yaw - goalPreview.yaw) <= 1e-4);
-  const previewSourceMatches = targetMethod === "TAG"
-    ? Boolean(candidatePreview?.source_type === "TAG" && selectedTag
-      && candidatePreview.tag_id === selectedTag.tag_id
-      && candidatePreview.tag_revision === selectedTag.tag_revision
-      && candidatePreview.registry_revision === tagRegistry?.registry_revision
-      && candidatePreview.registration_revision === selectedTag.registration_revision)
-    : Boolean(isMapPointTarget(goalPreview)
-      && candidatePreview?.source_type === goalPreview.source_type
-      && candidatePreview.source_map_id === goalPreview.source_map_id
-      && candidatePreview.source_map_revision === goalPreview.source_map_revision);
-  const tagRoutePreviewComplete = targetMethod !== "TAG" || Boolean(
-    candidatePreview?.route_revision && candidatePreview.route_nodes?.length
-    && Array.isArray(candidatePreview.route_segments)
-    && candidatePreview.active_path?.length && candidatePreview.canonical_path?.length
-    && candidatePreview.active_route_points?.length && candidatePreview.canonical_route_points?.length);
-  const approvedPreview: RobotDetailPathPreview | null = candidatePreview
-    && candidatePreview.status === "VALID" && candidatePreview.path.length > 0
-    && tagRoutePreviewComplete
-    && candidatePreview.active_map_id === activeMapId
-    && candidatePreview.active_map_revision === activeMapRevision
-    && (targetMethod === "TAG" || Boolean(isMapPointTarget(goalPreview)
-      && (goalPreview.source_type === "CANONICAL_MAP_POINT"
-        ? goalPreview.source_map_id === "CANONICAL"
-          && goalPreview.source_map_revision === String(canonicalMapRevision)
-        : goalPreview.source_map_id === activeMapId
-          && goalPreview.source_map_revision === activeMapRevision)))
-    && previewTargetMatches && previewSourceMatches && Number.isFinite(previewAgeMs)
-    && previewAgeMs >= -5_000 && previewAgeMs <= 120_000 ? candidatePreview : null;
+  const previewApproval = evaluatePreviewApproval({
+    pathPreview, requestId: latestPathRequest.current, targetMethod, target: goalPreview,
+    activeMapId, activeMapRevision, canonicalMapRevision, selectedTag,
+    registryRevision: tagRegistry?.registry_revision ?? null, now: clockNow,
+  });
+  const candidatePreview = previewApproval.candidatePreview;
+  const approvedPreview: RobotDetailPathPreview | null = previewApproval.approvedPreview;
 
   const activeMap2dSnapshot = useLiveSlamMap ? currentSlam2dMap
     : runtimeMapSnapshot?.active_map_id === activeMapId
@@ -796,7 +767,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             <span>{targetMethod === "TAG" ? selectedTag ? !isTagNavigable(selectedTag) ? selectedTag.reason ?? tagRegistry?.reason ?? "TAG_DISABLED" : `TAG ${selectedTag.tag_id} SELECTED · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : candidatePreview?.status === "INVALID" || candidatePreview?.status === "NO_PATH" ? candidatePreview.reason ?? candidatePreview.status : "PATH PREVIEW REQUIRED"}` : !navigationUiAvailable ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : !navigationUiAvailable ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
-            <button type="button" disabled={!navigationUiAvailable || (!goalPreview || targetMethod === "TAG" && !isTagNavigable(selectedTag)) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
+            <button type="button" disabled={!navigationUiAvailable || (!goalPreview || targetMethod === "TAG" && !isTagNavigable(selectedTag)) || pathRequestState === "PLANNING"}
+              data-preview-status={pathPreview?.status ?? "NONE"}
+              data-preview-request-id={pathPreview?.request_id ?? ""}
+              data-preview-approved={previewApproval.approved ? "true" : "false"}
+              data-preview-reject-reason={previewApproval.rejectReason ?? undefined}
+              data-preview-gates={JSON.stringify(previewApproval.gates)}
+              onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
             <button type="button" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
             <button type="button" disabled={!goalPreview && selectedTagId === null} onClick={cancelPathPreview}>CANCEL</button>
           </div>

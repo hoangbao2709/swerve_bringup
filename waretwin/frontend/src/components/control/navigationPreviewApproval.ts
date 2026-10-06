@@ -43,6 +43,7 @@ export type PreviewApprovalInput = {
   activeMapRevision: string | null;
   canonicalMapRevision: string | number;
   selectedTag: PreviewTagIdentity | null;
+  orientationPolicy?: string | null;
   registryRevision: string | null;
   now: number;
 };
@@ -75,10 +76,17 @@ const ANGLE_TOLERANCE_RAD = 1e-4;
 const MAX_PREVIEW_AGE_MS = 120_000;
 const MAX_PREVIEW_FUTURE_SKEW_MS = 5_000;
 
-/** Smallest absolute angular difference, including the +/-pi wrap boundary. */
-export function angleDistanceRad(a: number, b: number): number {
+/** Smallest directional angular difference, including the +/-pi wrap boundary. */
+export function directionalAngleDistanceRad(a: number, b: number): number {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return Number.POSITIVE_INFINITY;
   return Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+}
+
+/** Smallest difference between undirected axes, where headings separated by pi are equivalent. */
+export function axisAngleDistanceRad(a: number, b: number): number {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return Number.POSITIVE_INFINITY;
+  const delta = a - b;
+  return Math.abs(0.5 * Math.atan2(Math.sin(2 * delta), Math.cos(2 * delta)));
 }
 
 export function evaluatePreviewApproval(input: PreviewApprovalInput): PreviewApprovalResult {
@@ -98,8 +106,11 @@ export function evaluatePreviewApproval(input: PreviewApprovalInput): PreviewApp
   const positionMatches = Boolean(targetCoordinatesValid && input.target && sourcePose
     && Math.abs(sourcePose.x - input.target.x) <= POSITION_TOLERANCE_M
     && Math.abs(sourcePose.y - input.target.y) <= POSITION_TOLERANCE_M);
+  const yawDistance = input.orientationPolicy === "SHELF_WIDTH_PARALLEL"
+    ? axisAngleDistanceRad
+    : directionalAngleDistanceRad;
   const yawMatches = Boolean(targetCoordinatesValid && input.target && sourcePose
-    && angleDistanceRad(sourcePose.yaw, input.target.yaw) <= ANGLE_TOLERANCE_RAD);
+    && yawDistance(sourcePose.yaw, input.target.yaw) <= ANGLE_TOLERANCE_RAD);
   const mapSourceMatches = input.targetMethod === "TAG" || Boolean(input.target
     && input.target.frame_id === "map" && input.target.map_id && input.target.map_revision
     && input.target.source_type && input.target.source_map_id && input.target.source_map_revision

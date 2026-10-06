@@ -214,6 +214,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const previewApproval = evaluatePreviewApproval({
     pathPreview, requestId: latestPathRequest.current, targetMethod, target: goalPreview,
     activeMapId, activeMapRevision, canonicalMapRevision, selectedTag,
+    orientationPolicy: typeof selectedTag?.metadata.orientation_policy === "string"
+      ? selectedTag.metadata.orientation_policy : null,
     registryRevision: tagRegistry?.registry_revision ?? null, now: clockNow,
   });
   const candidatePreview = previewApproval.candidatePreview;

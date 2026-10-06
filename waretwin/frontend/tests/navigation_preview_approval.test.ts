@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RobotDetailPathPreview } from "../src/schema/twin_state";
-import { angleDistanceRad, evaluatePreviewApproval, type PreviewApprovalInput } from "../src/components/control/navigationPreviewApproval";
+import { axisAngleDistanceRad, directionalAngleDistanceRad, evaluatePreviewApproval, type PreviewApprovalInput } from "../src/components/control/navigationPreviewApproval";
 
 const tag = { tag_id: 1103, tag_revision: "tag-r7", registration_revision: 23 };
 const timestamp = new Date("2026-10-07T00:00:00.000Z").toISOString();
@@ -27,7 +27,8 @@ function input(preview: RobotDetailPathPreview, overrides: Partial<PreviewApprov
     pathPreview: preview, requestId: "preview-1", targetMethod: "TAG",
     target: { x: 3, y: 4, yaw: -3.141440167775226 },
     activeMapId: "SLAM-session-a", activeMapRevision: "session-session-a", canonicalMapRevision: "23",
-    selectedTag: tag, registryRevision: "registry-r9", now: Date.parse(timestamp), ...overrides,
+    selectedTag: tag, orientationPolicy: "SHELF_WIDTH_PARALLEL",
+    registryRevision: "registry-r9", now: Date.parse(timestamp), ...overrides,
   };
 }
 
@@ -37,7 +38,8 @@ describe("navigation preview approval", () => {
     const wrappedPreviewYaw = selectedYaw + Math.PI * 2;
     const result = evaluatePreviewApproval(input(validPreview({ goal: { x: 3, y: 4, yaw: wrappedPreviewYaw } })));
 
-    expect(angleDistanceRad(wrappedPreviewYaw, selectedYaw)).toBeLessThan(1e-4);
+    expect(directionalAngleDistanceRad(wrappedPreviewYaw, selectedYaw)).toBeLessThan(1e-4);
+    expect(axisAngleDistanceRad(wrappedPreviewYaw, selectedYaw)).toBeLessThan(1e-4);
     expect(result.gates.targetPositionMatches).toBe(true);
     expect(result.gates.targetYawMatches).toBe(true);
     expect(result.approvedPreview?.status).toBe("VALID");
@@ -71,15 +73,54 @@ describe("navigation preview approval", () => {
     expect(yMismatch.rejectReason).toBe("TARGET_POSITION_MISMATCH");
   });
 
-  it("rejects the captured live shelf result when its yaw is pi radians from the registered service pose", () => {
+  it("accepts the captured live shelf result when yaw differs by pi on the undirected shelf axis", () => {
     const result = evaluatePreviewApproval(input(validPreview({
       goal: { x: 3, y: 4, yaw: 0.00015248581456694943 },
     })));
 
     expect(result.gates.targetPositionMatches).toBe(true);
+    expect(result.gates.targetYawMatches).toBe(true);
+    expect(result.rejectReason).toBeNull();
+    expect(result.approvedPreview?.goal?.yaw).toBe(0.00015248581456694943);
+  });
+
+  it.each([
+    { name: "captured shelf near -pi and opposite heading near zero", selected: -3.1414401678, preview: 0.0001524858 },
+    { name: "zero and pi", selected: 0, preview: Math.PI },
+    { name: "positive and negative pi over two", selected: Math.PI / 2, preview: -Math.PI / 2 },
+  ])("accepts SHELF_WIDTH_PARALLEL as an undirected axis: $name", ({ selected, preview }) => {
+    const result = evaluatePreviewApproval(input(validPreview({ goal: { x: 3, y: 4, yaw: preview } }), {
+      target: { x: 3, y: 4, yaw: selected }, orientationPolicy: "SHELF_WIDTH_PARALLEL",
+    }));
+    expect(result.gates.targetYawMatches).toBe(true);
+    expect(result.approved).toBe(true);
+  });
+
+  it("rejects a quarter-turn mismatch for SHELF_WIDTH_PARALLEL", () => {
+    const result = evaluatePreviewApproval(input(validPreview({ goal: { x: 3, y: 4, yaw: Math.PI / 2 } }), {
+      target: { x: 3, y: 4, yaw: 0 }, orientationPolicy: "SHELF_WIDTH_PARALLEL",
+    }));
     expect(result.gates.targetYawMatches).toBe(false);
     expect(result.rejectReason).toBe("TARGET_YAW_MISMATCH");
-    expect(result.approved).toBe(false);
+  });
+
+  it.each(["LANE_FORWARD", "LANE_REVERSE", "EXPLICIT"])("keeps %s direction-sensitive modulo 2pi", (orientationPolicy) => {
+    const opposite = evaluatePreviewApproval(input(validPreview({ goal: { x: 3, y: 4, yaw: Math.PI } }), {
+      target: { x: 3, y: 4, yaw: 0 }, orientationPolicy,
+    }));
+    expect(opposite.gates.targetYawMatches).toBe(false);
+    expect(opposite.rejectReason).toBe("TARGET_YAW_MISMATCH");
+
+    if (orientationPolicy === "LANE_FORWARD") {
+      const epsilon = 0.0002;
+      const wrapped = evaluatePreviewApproval(input(validPreview({
+        goal: { x: 3, y: 4, yaw: Math.PI + epsilon },
+      }), {
+        target: { x: 3, y: 4, yaw: -Math.PI + epsilon }, orientationPolicy,
+      }));
+      expect(directionalAngleDistanceRad(Math.PI + epsilon, -Math.PI + epsilon)).toBeLessThan(1e-4);
+      expect(wrapped.gates.targetYawMatches).toBe(true);
+    }
   });
 
   it("keeps request, source, map, registration, route completeness, and freshness gates fail-closed", () => {

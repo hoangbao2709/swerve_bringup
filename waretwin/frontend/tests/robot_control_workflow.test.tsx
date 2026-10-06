@@ -450,11 +450,11 @@ describe("robot detail route stability", () => {
   });
 
   it.each([
-    { tagId: 1103, x: 10.5, yaw: -3.141440167775226, resultYaw: -3.141440167775226 + 2 * Math.PI,
+    { tagId: 1103, x: 10.5, yaw: -3.141440167775226, resultYaw: 0.00015248581456694943,
       role: "shelf_service", policy: "SHELF_WIDTH_PARALLEL" },
     { tagId: 1203, x: 15, yaw: 0.00015, resultYaw: 0.00015,
       role: "intersection", policy: "LANE_FORWARD" },
-    { tagId: 1303, x: 19.5, yaw: -3.141440167775226, resultYaw: -3.141440167775226 + 2 * Math.PI,
+    { tagId: 1303, x: 19.5, yaw: -3.141440167775226, resultYaw: 0.00015248581456694943,
       role: "shelf_service", policy: "SHELF_WIDTH_PARALLEL" },
   ])("approves and renders the runtime-style $role Tag $tagId through the map-click preview flow", async ({ tagId, x, yaw, resultYaw, role, policy }) => {
     const tag = navigationTag(tagId, x, 16.5, true, yaw, {
@@ -472,6 +472,8 @@ describe("robot detail route stability", () => {
     expect(result.preview.canonical_route_points?.length).toBeGreaterThan(0);
     expect(result.navGoal).toMatchObject({ type: "NAV_GOAL", source_type: "TAG", source_id: String(tagId),
       route_revision: result.preview.route_revision, yaw: resultYaw });
+    expect(result.navGoal.yaw).toBe(result.preview.goal?.yaw);
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
   });
 
   it("keeps empty MAP POINT clicks and gives a Tag hit priority while in MAP POINT mode", async () => {

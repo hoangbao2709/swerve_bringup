@@ -148,6 +148,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const [goalPreview, setGoalPreview] = useState<GoalSelection | null>(null);
   const [pathRequestState, setPathRequestState] = useState<"IDLE" | "PLANNING">("IDLE");
   const latestPathRequest = useRef("");
+  const tagRegistryRequestVersion = useRef(0);
   const [error, setError] = useState("");
   const [safetyNotice, setSafetyNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -202,13 +203,13 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     ? slam3dAccumulatedCloud : null;
   const statePose = robot?.active_map_pose ?? null;
   const informationalTagRegistry = tagRegistry?.reason === "TAG_MAP_REGISTRATION_REQUIRED";
+  const availableTags = tagRegistry?.tags ?? [];
   const compatibleTags = tagRegistry?.compatible || informationalTagRegistry ? tagRegistry.tags : [];
-  const selectedTag = compatibleTags.find((tag) => tag.tag_id === selectedTagId) ?? null;
-  const navigableTags = compatibleTags.filter((tag) => tag.navigable
+  const selectedTag = availableTags.find((tag) => tag.tag_id === selectedTagId) ?? null;
+  const isTagNavigable = (tag: RobotNavigationTag | null | undefined) => Boolean(tag?.navigable
+    && tagRegistry?.compatible && tagRegistry.registry_revision
     && tag.map_id === activeMapId && tag.map_revision === activeMapRevision);
-  const selectedMapTag = selectedTag && selectedTag.map_id === "CANONICAL"
-    && selectedTag.map_revision === String(mapSync.publishedRevision ?? mapSync.rosRevision ?? layoutRevision)
-    ? selectedTag : null;
+  const navigableTags = compatibleTags.filter(isTagNavigable);
   const candidatePreview = pathPreview?.request_id === latestPathRequest.current ? pathPreview : null;
   const previewAgeMs = candidatePreview?.timestamp ? clockNow - Date.parse(candidatePreview.timestamp) : Infinity;
   const sourcePreviewPose = targetMethod === "MAP_POINT"
@@ -286,26 +287,29 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setRobotDetail(robotId, { pathPreview: null });
   }, [goalPreview?.source_type, registrationRevision, robotId, setRobotDetail, targetMethod]);
 
-  useEffect(() => {
-    if (targetMethod !== "TAG") return;
-    let current = true;
+  const loadTagRegistry = useCallback(() => {
+    if (!activeMapId || !activeMapRevision) return;
+    const requestVersion = ++tagRegistryRequestVersion.current;
     setTagRegistry(null);
     setTagRegistryError("");
     setTagRegistryState("LOADING");
-    setSelectedTagId(null);
     getRobotNavigationTags(robotId).then((registry) => {
-      if (!current) return;
+      if (requestVersion !== tagRegistryRequestVersion.current) return;
       if (registry.robot_id !== robotId) throw new Error("Tag registry response belongs to another robot");
       setTagRegistry(registry);
       setTagRegistryState("READY");
     }).catch((cause: unknown) => {
-      if (!current) return;
+      if (requestVersion !== tagRegistryRequestVersion.current) return;
       setTagRegistry(null);
       setTagRegistryError(cause instanceof Error ? cause.message : "Tag registry request failed");
       setTagRegistryState("ERROR");
     });
-    return () => { current = false; };
-  }, [activeMapId, activeMapRevision, runtimeCapabilities?.registration_revision, robotId, targetMethod]);
+  }, [activeMapId, activeMapRevision, robotId]);
+
+  useEffect(() => {
+    loadTagRegistry();
+    return () => { tagRegistryRequestVersion.current += 1; };
+  }, [loadTagRegistry, runtimeCapabilities?.registration_revision]);
 
   useEffect(() => {
     if (runtimeState === "MAPPING") setGoalPreview(null);
@@ -568,7 +572,10 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   }, [activeMapId, activeMapRevision, canonicalMapRevision, robotId, setRobotDetail]);
 
   const selectTargetMethod = (method: NavigationTargetMethod) => {
-    if (method === targetMethod) return;
+    if (method === targetMethod) {
+      if (method === "TAG" && tagRegistryState === "ERROR") loadTagRegistry();
+      return;
+    }
     wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
@@ -578,16 +585,17 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     setTargetMethod(method);
     setTagRegistryError("");
     setError("");
+    if (method === "TAG" && (tagRegistryState === "IDLE" || tagRegistryState === "ERROR")) loadTagRegistry();
   };
 
-  const selectTag = (rawTagId: string) => {
-    const tagId = rawTagId ? Number(rawTagId) : null;
-    const tag = tagId === null ? null : compatibleTags.find((candidate) => candidate.tag_id === tagId);
-    if (tagId !== null && (!tag || !tag.navigable)) return;
+  const selectTagById = (tagId: number | null) => {
+    const tag = tagId === null ? null : availableTags.find((candidate) => candidate.tag_id === tagId);
+    if (tagId !== null && !tag) return;
+    setTargetMethod("TAG");
     wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
-    setGoalPreview(tag?.navigation_pose ? { ...tag.navigation_pose } : null);
+    setGoalPreview(isTagNavigable(tag) && tag?.navigation_pose ? { ...tag.navigation_pose } : null);
     setSelectedTagId(tagId);
     setRobotDetail(robotId, { pathPreview: null });
     setError("");
@@ -596,7 +604,7 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const requestPathPreview = useCallback((target: GoalSelection) => {
     setGoalPreview(target);
     setError("");
-    if (targetMethod === "TAG" && (!selectedTag?.navigable || !tagRegistry?.registry_revision)) {
+    if (targetMethod === "TAG" && (!isTagNavigable(selectedTag) || !tagRegistry?.registry_revision)) {
       latestPathRequest.current = "";
       setPathRequestState("IDLE");
       setRobotDetail(robotId, { pathPreview: null });
@@ -747,9 +755,9 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
               <span>DESTINATION TAG</span>
               <select aria-label="Destination Tag" value={selectedTagId ?? ""}
                 disabled={tagRegistryState !== "READY" || (!tagRegistry?.compatible && !informationalTagRegistry) || compatibleTags.length === 0}
-                onChange={(event) => selectTag(event.currentTarget.value)}>
+                onChange={(event) => selectTagById(event.currentTarget.value ? Number(event.currentTarget.value) : null)}>
                 <option value="">{tagRegistryState === "LOADING" ? "Loading Tags…" : "Select a Tag…"}</option>
-                {compatibleTags.map((tag) => <option key={tag.tag_id} value={tag.tag_id} disabled={!tag.navigable}>
+                {compatibleTags.map((tag) => <option key={tag.tag_id} value={tag.tag_id} disabled={!isTagNavigable(tag)}>
                   {tag.tag_id} — {tag.label}{tag.navigable ? "" : ` · ${tag.reason ?? "DISABLED"}`}
                 </option>)}
               </select>
@@ -762,27 +770,33 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
             {tagRegistryState === "READY" && !tagRegistry?.compatible && !informationalTagRegistry && <span className="is-error">Tags unavailable: {tagRegistry?.reason ?? "active map is incompatible"}</span>}
             {tagRegistryState === "READY" && tagRegistry?.compatible && compatibleTags.length === 0 && <span>No Tags are registered for this active map.</span>}
             {tagRegistryState === "READY" && tagRegistry?.compatible && compatibleTags.length > 0 && navigableTags.length === 0 && <span className="is-error">No enabled, valid Tags are navigable on this map.</span>}
-            {selectedTag && selectedTag.navigation_pose && <div className="robot-detail-tag-summary" data-testid="selected-navigation-tag" data-tag-id={selectedTag.tag_id}>
+            {selectedTag && <div className="robot-detail-tag-summary" data-testid="selected-navigation-tag"
+              data-tag-id={selectedTag.tag_id} data-navigable={isTagNavigable(selectedTag)} data-reason={selectedTag.reason ?? undefined}>
               <span>TAG ID <b>{selectedTag.tag_id}</b></span>
               <span>LABEL <b>{selectedTag.label}</b></span>
               <span>TYPE <b>{selectedTag.family}</b></span>
               <span>MAP <b>{selectedTag.map_id}</b></span>
               <span>REVISION <b>{selectedTag.map_revision}</b></span>
-              <span>X <b>{safeNumber(selectedTag.navigation_pose.x, 3)}</b></span>
-              <span>Y <b>{safeNumber(selectedTag.navigation_pose.y, 3)}</b></span>
-              <span>YAW <b>{safeNumber(selectedTag.navigation_pose.yaw, 3)} rad</b></span>
+              <span>X <b>{safeNumber(selectedTag.navigation_pose?.x ?? selectedTag.canonical_navigation_pose?.x ?? selectedTag.x ?? Number.NaN, 3)}</b></span>
+              <span>Y <b>{safeNumber(selectedTag.navigation_pose?.y ?? selectedTag.canonical_navigation_pose?.y ?? selectedTag.y ?? Number.NaN, 3)}</b></span>
+              <span>YAW <b>{safeNumber(selectedTag.navigation_pose?.yaw ?? selectedTag.canonical_navigation_pose?.yaw ?? selectedTag.yaw ?? Number.NaN, 3)} rad</b></span>
+              {selectedTag.metadata?.semantic_role != null && <span>ROLE <b>{safeText(selectedTag.metadata.semantic_role)}</b></span>}
+              {selectedTag.metadata?.orientation_policy != null && <span>ORIENTATION <b>{safeText(selectedTag.metadata.orientation_policy)}</b></span>}
+              {selectedTag.metadata?.rack_id != null && <span>RACK <b>{safeText(selectedTag.metadata.rack_id)}</b></span>}
+              <span>NAVIGABLE <b>{isTagNavigable(selectedTag) ? "YES" : "NO"}</b></span>
+              {!isTagNavigable(selectedTag) && <span data-testid="selected-tag-blocker">REASON <b>{selectedTag.reason ?? tagRegistry?.reason ?? "TAG_DISABLED"}</b></span>}
             </div>}
           </div>}
           <div className="robot-detail-view-stack" key={robotId}>
-            <div className={"robot-detail-view-layer " + (detailView === "GLOBAL" ? "is-active" : "")} data-view="GLOBAL" aria-hidden={detailView !== "GLOBAL"}><DetailMapCanvas active={detailView === "GLOBAL"} robotId={robotId} robot={robot} canonicalRevision={canonicalMapRevision} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} selectedTag={selectedMapTag} onGoalSelect={selectMapPoint} pickMapIdentity={detailView === "GLOBAL" ? displayedMapPointPickIdentity : null} /></div>
+            <div className={"robot-detail-view-layer " + (detailView === "GLOBAL" ? "is-active" : "")} data-view="GLOBAL" aria-hidden={detailView !== "GLOBAL"}><DetailMapCanvas active={detailView === "GLOBAL"} robotId={robotId} robot={robot} canonicalRevision={canonicalMapRevision} globalPath={globalPath} localPath={localPath} goal={goal} goalPreview={goalPreview} pathPreview={approvedPreview} selectedTag={selectedTag} navigationTags={tagRegistryState === "READY" ? availableTags.map((tag) => ({ ...tag, navigable: isTagNavigable(tag) })) : []} onGoalSelect={selectMapPoint} onTagSelect={(tagId) => selectTagById(tagId)} pickMapIdentity={detailView === "GLOBAL" ? displayedMapPointPickIdentity : null} /></div>
             {visitedViews.current.has("LIDAR_2D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_2D" ? "is-active" : "")} data-view="LIDAR_2D" aria-hidden={detailView !== "LIDAR_2D"}><ActiveNavigationMap2DView map={activeMap2dSnapshot} robot={robot} scan={mappingScan} target={isMapPointTarget(goalPreview) ? goalPreview : null} navigationPath={approvedPreview?.active_path ?? approvedPreview?.path ?? []} routeNodes={approvedPreview?.active_route_points ?? []} canPick={detailView === "LIDAR_2D" && Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} /></div>}
             {visitedViews.current.has("LIDAR_3D") && <div className={"robot-detail-view-layer " + (detailView === "LIDAR_3D" ? "is-active" : "")} data-view="LIDAR_3D" aria-hidden={detailView !== "LIDAR_3D"}><RobotLidar3DView active={detailView === "LIDAR_3D"} frame={currentSlam3dCloud} robot={robot} slamMap={currentSlam2dMap} /></div>}
           </div>
           <div className="robot-detail-goal-toolbar">
-            <span>{targetMethod === "TAG" ? selectedTag ? `TAG ${selectedTag.tag_id} SELECTED · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : candidatePreview?.status === "INVALID" || candidatePreview?.status === "NO_PATH" ? candidatePreview.reason ?? candidatePreview.status : "PATH PREVIEW REQUIRED"}` : !navigationUiAvailable ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : !navigationUiAvailable ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
+            <span>{targetMethod === "TAG" ? selectedTag ? !isTagNavigable(selectedTag) ? selectedTag.reason ?? tagRegistry?.reason ?? "TAG_DISABLED" : `TAG ${selectedTag.tag_id} SELECTED · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : candidatePreview?.status === "INVALID" || candidatePreview?.status === "NO_PATH" ? candidatePreview.reason ?? candidatePreview.status : "PATH PREVIEW REQUIRED"}` : !navigationUiAvailable ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}` : "Select a compatible destination Tag" : goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}` : !navigationUiAvailable ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}` : mapSource === "LIDAR" && lidarDimension === "3D" ? "Use GLOBAL MAP or LIDAR 2D to select a target" : "Select destination, then preview the Nav2 path"}</span>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
             <button type="button" disabled={targetMethod === "TAG" || !isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
-            <button type="button" disabled={!navigationUiAvailable || (!goalPreview || targetMethod === "TAG" && !selectedTag?.navigable) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
+            <button type="button" disabled={!navigationUiAvailable || (!goalPreview || targetMethod === "TAG" && !isTagNavigable(selectedTag)) || pathRequestState === "PLANNING"} onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
             <button type="button" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
             <button type="button" disabled={!goalPreview && selectedTagId === null} onClick={cancelPathPreview}>CANCEL</button>
           </div>
@@ -932,9 +946,9 @@ function MetricContent({ label, value, mono = false, status = false }: { label: 
   return <div className="robot-detail-metric"><span>{label}</span>{status ? <StatusValue value={value} /> : <b className={mono ? "mono" : ""}>{safeText(value)}</b>}</div>;
 }
 
-type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; canonicalRevision: string | number; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; selectedTag: RobotNavigationTag | null; onGoalSelect: (goal: MapPointNavigationTarget) => void; pickMapIdentity: NavigationMapIdentity | null };
+type MapCanvasProps = { active?: boolean; robotId: string; robot?: RobotState; canonicalRevision: string | number; globalPath: RobotDetailPath | null; localPath: RobotDetailPath | null; goal: RobotDetailGoal | null; goalPreview: WorldGoal | null; pathPreview: RobotDetailPathPreview | null; selectedTag: RobotNavigationTag | null; navigationTags: RobotNavigationTag[]; onGoalSelect: (goal: MapPointNavigationTarget) => void; onTagSelect: (tagId: number) => void; pickMapIdentity: NavigationMapIdentity | null };
 
-function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, globalPath, localPath, goal, goalPreview, pathPreview, selectedTag, onGoalSelect, pickMapIdentity }: MapCanvasProps) {
+function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, globalPath, localPath, goal, goalPreview, pathPreview, selectedTag, navigationTags, onGoalSelect, onTagSelect, pickMapIdentity }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -943,6 +957,7 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
   const [follow, setFollow] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showPaths, setShowPaths] = useState(true);
+  const [hoveredTagId, setHoveredTagId] = useState<number | null>(null);
   const layoutRevision = useStore((state) => state.layoutRevision);
   const runtimeState = useStore((state) => state.runtimeState);
   const canonicalTagPreview = showPaths && pathPreview?.source_type === "TAG"
@@ -1002,21 +1017,41 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
       canonicalPaths ? globalPath : null, canonicalPaths ? localPath : null, canonicalPaths ? goal : null,
       canonicalPaths ? goalPreview : null, canonicalTagPreview ?? (canonicalPaths ? pathPreview : null),
       { showGrid, showLidar: false, showPaths: showCanonicalPaths, showWarehouse: true });
-    if (selectedTag?.navigation_pose) drawSelectedTag(ctx, selectedTag, transform.toCanvas);
+    drawNavigationTagMarkers(ctx, navigationTags, selectedTag?.tag_id ?? null, hoveredTagId, transform.toCanvas);
     detailPerformance("view_render", { view: "GLOBAL", useful: true, robot_id: robotId });
-  }, [active, bounds, goal, goalPreview, globalPath, localPath, pathPreview, selectedTag, displayedPose, robot, runtimeState, showGrid, showPaths, size.height, size.width, transform]);
+  }, [active, bounds, goal, goalPreview, globalPath, localPath, navigationTags, pathPreview, selectedTag, hoveredTagId, displayedPose, robot, runtimeState, showGrid, showPaths, size.height, size.width, transform]);
 
   const handleMapClick = (event: ReactMouseEvent<HTMLCanvasElement>) => {
-    if (!canPick) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const point = transform.toWorld(event.clientX - rect.left, event.clientY - rect.top);
+    const x = event.clientX - rect.left, y = event.clientY - rect.top;
+    const hitTag = findNavigationTagAtScreenPoint(navigationTags, x, y, transform.toCanvas);
+    if (hitTag) {
+      onTagSelect(hitTag.tag_id);
+      return;
+    }
+    if (!canPick) return;
+    const point = transform.toWorld(x, y);
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
     onGoalSelect(mapPointTarget(clickMapIdentity, { x: point.x, y: point.y, yaw: displayedPose?.yaw ?? 0 }));
     setFollow(false);
   };
 
+  const handleMapPointerMove = (event: ReactMouseEvent<HTMLCanvasElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const hitTag = findNavigationTagAtScreenPoint(
+      navigationTags, event.clientX - rect.left, event.clientY - rect.top, transform.toCanvas);
+    setHoveredTagId((current) => current === (hitTag?.tag_id ?? null) ? current : hitTag?.tag_id ?? null);
+    event.currentTarget.style.cursor = hitTag ? "pointer" : canPick ? "crosshair" : "default";
+  };
+
+  const clearMapPointer = (event: ReactMouseEvent<HTMLCanvasElement>) => {
+    setHoveredTagId(null);
+    event.currentTarget.style.cursor = canPick ? "crosshair" : "default";
+  };
+
   const fit = () => { setZoom(1); setCenter(null); setFollow(false); };
   const recenter = () => { setFollow(true); setCenter(null); };
+  const hoveredTag = navigationTags.find((tag) => tag.tag_id === hoveredTagId) ?? null;
   return <div className="robot-detail-map-host" ref={hostRef}>
     <canvas ref={canvasRef} className="robot-detail-map-canvas" data-testid="global-warehouse-map"
       data-map-source="CANONICAL_WAREHOUSE" data-pose-source={displayedPose?.pose_source}
@@ -1025,8 +1060,12 @@ function DetailMapCanvas({ active = true, robotId, robot, canonicalRevision, glo
       data-preview-route-node-count={canonicalTagPreview?.canonical_route_points?.filter((point) => point.tag_id !== null).length ?? 0}
       data-render-x={displayedPose?.x} data-render-y={displayedPose?.y}
       data-render-yaw={displayedPose?.yaw}
+      data-navigation-tag-count={navigationTags.length}
+      data-hovered-tag-id={hoveredTagId ?? undefined}
       data-selected-tag-id={selectedTag?.tag_id}
-      onClick={handleMapClick} aria-label="Canonical warehouse and robot pose map" />
+      onClick={handleMapClick} onMouseMove={handleMapPointerMove} onMouseLeave={clearMapPointer}
+      title={hoveredTag ? `${hoveredTag.tag_id} · ${hoveredTag.label}` : undefined}
+      aria-label="Canonical warehouse and robot pose map" />
     <div className="robot-detail-map-toolbar" role="toolbar" aria-label="Map controls">
       <button type="button" onClick={() => setZoom((value) => Math.min(8, value * 1.25))} aria-label="Zoom in">+</button>
       <button type="button" onClick={() => setZoom((value) => Math.max(0.25, value / 1.25))} aria-label="Zoom out">−</button>
@@ -1161,7 +1200,66 @@ function drawRect(ctx: CanvasRenderingContext2D, rect: [number, number, number, 
 function drawPolyline(ctx: CanvasRenderingContext2D, points: Array<[number, number]>, worldToCanvas: MapTransform["toCanvas"], color: string, width: number) { if (!points.length) return; ctx.beginPath(); points.forEach(([x, y], index) => { const p = worldToCanvas(x, y); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); }); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke(); }
 function drawPath(ctx: CanvasRenderingContext2D, points: Array<[number, number]>, worldToCanvas: MapTransform["toCanvas"], color: string, width: number, dashed: boolean) { if (!points.length) return; ctx.save(); ctx.setLineDash(dashed ? [6, 5] : []); drawPolyline(ctx, points, worldToCanvas, color, width); ctx.restore(); }
 function drawGoal(ctx: CanvasRenderingContext2D, goal: WorldGoal | RobotDetailGoal, worldToCanvas: MapTransform["toCanvas"], color: string) { const p = worldToCanvas(goal.x, goal.y); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + Math.cos(goal.yaw) * 16, p.y - Math.sin(goal.yaw) * 16); ctx.stroke(); ctx.fillRect(p.x - 2, p.y - 2, 4, 4); }
-function drawSelectedTag(ctx: CanvasRenderingContext2D, tag: RobotNavigationTag, worldToCanvas: MapTransform["toCanvas"]) { const pose = tag.navigation_pose; if (!pose) return; const p = worldToCanvas(pose.x, pose.y); ctx.save(); ctx.strokeStyle = "#e19aff"; ctx.fillStyle = "#f2c7ff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(p.x - 15, p.y); ctx.lineTo(p.x + 15, p.y); ctx.moveTo(p.x, p.y - 15); ctx.lineTo(p.x, p.y + 15); ctx.stroke(); ctx.font = "bold 10px JetBrains Mono, monospace"; ctx.fillText(`${tag.tag_id} · ${tag.label}`, p.x + 15, p.y - 12); ctx.restore(); }
+function canonicalTagPose(tag: RobotNavigationTag): { x: number; y: number; yaw: number } | null {
+  const pose = tag.canonical_navigation_pose
+    ?? (tag.map_id === "CANONICAL" ? tag.navigation_pose : null)
+    ?? (Number.isFinite(tag.x) && Number.isFinite(tag.y)
+      ? { x: tag.x as number, y: tag.y as number, yaw: tag.yaw ?? 0 } : null);
+  return pose && Number.isFinite(pose.x) && Number.isFinite(pose.y) && Number.isFinite(pose.yaw)
+    ? pose : null;
+}
+
+function findNavigationTagAtScreenPoint(
+  tags: RobotNavigationTag[], screenX: number, screenY: number,
+  worldToCanvas: MapTransform["toCanvas"], hitRadiusPx = 12,
+): RobotNavigationTag | null {
+  let nearest: RobotNavigationTag | null = null;
+  let nearestDistanceSquared = hitRadiusPx * hitRadiusPx;
+  for (const tag of tags) {
+    const pose = canonicalTagPose(tag);
+    if (!pose) continue;
+    const point = worldToCanvas(pose.x, pose.y);
+    const dx = point.x - screenX, dy = point.y - screenY;
+    const distanceSquared = dx * dx + dy * dy;
+    if (distanceSquared <= nearestDistanceSquared) {
+      nearest = tag;
+      nearestDistanceSquared = distanceSquared;
+    }
+  }
+  return nearest;
+}
+
+function drawNavigationTagMarkers(
+  ctx: CanvasRenderingContext2D, tags: RobotNavigationTag[], selectedTagId: number | null,
+  hoveredTagId: number | null, worldToCanvas: MapTransform["toCanvas"],
+) {
+  ctx.save();
+  for (const tag of tags) {
+    const pose = canonicalTagPose(tag);
+    if (!pose) continue;
+    const point = worldToCanvas(pose.x, pose.y);
+    const selected = tag.tag_id === selectedTagId;
+    const hovered = tag.tag_id === hoveredTagId;
+    const navigable = tag.navigable && tag.map_id && tag.map_revision;
+    const radius = selected ? 8 : hovered ? 7 : 5;
+    ctx.globalAlpha = navigable ? 1 : 0.48;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = selected ? "#f2c7ff" : hovered ? "#8de8dc" : "#f4b942";
+    ctx.strokeStyle = selected ? "#e19aff" : hovered ? "#37d6c1" : "#08111d";
+    ctx.lineWidth = selected || hovered ? 2.5 : 1.5;
+    ctx.fill();
+    ctx.stroke();
+    if (selected || hovered) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#f2e8ff";
+      ctx.font = "bold 10px JetBrains Mono, monospace";
+      ctx.fillText(`${tag.tag_id} · ${tag.label}`, point.x + radius + 4, point.y - radius - 3);
+    }
+  }
+  ctx.restore();
+}
+
 function drawRouteNodes(ctx: CanvasRenderingContext2D, points: NonNullable<RobotDetailPathPreview["canonical_route_points"]>, worldToCanvas: MapTransform["toCanvas"]) {
   ctx.save();
   for (const point of points) {

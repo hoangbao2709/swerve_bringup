@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { RobotState } from "../src/schema/twin_state";
-import { useStore } from "../src/state/store";
-import type { RobotNavigationTagRegistry } from "../src/services/api";
+import { layout, useStore } from "../src/state/store";
+import type { RobotNavigationTag, RobotNavigationTagRegistry } from "../src/services/api";
+import { floorBoundary, createWorldTransform, worldToScreen } from "../src/layout/coordinates";
 
 vi.mock("../src/services/api", () => ({
   apiFetch: vi.fn(() => Promise.resolve({ ok: false, status: 503 })),
@@ -114,6 +115,104 @@ function setNavReadyCapabilities() {
     goal_blocker_reason: null, map_ready: true, tag_navigation_available: false,
     registration_revision: null, registration_source: null,
   } } });
+}
+
+function navigationTag(tagId: number, x: number, y: number, navigable = true): RobotNavigationTag {
+  return {
+    id: tagId, tag_id: tagId, label: `tag-${tagId}`, family: "DATAMATRIX", floor_id: "F1",
+    lane_id: "LANE-1", zone_id: null, x, y, z: 0, yaw: Math.PI / 2,
+    enabled: navigable, navigable, reason: navigable ? null : "TAG_DISABLED", frame_id: "map",
+    map_id: "CANONICAL", map_revision: "21", navigation_pose: navigable ? { x, y, yaw: Math.PI / 2 } : null,
+    navigation_pose_source: navigable ? "REGISTERED_NAVIGATION_NODE" : null,
+    canonical_navigation_pose: { x, y, yaw: Math.PI / 2 },
+    tag_revision: `tag-${tagId}-revision-1`,
+    metadata: { semantic_role: "shelf_service", orientation_policy: "SHELF_WIDTH_PARALLEL", rack_id: "rack-A" },
+  };
+}
+
+function tagRegistry(tags: RobotNavigationTag[]): RobotNavigationTagRegistry {
+  return {
+    robot_id: "R01", source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY", warehouse_id: 1,
+    warehouse_code: "WH-TEST-01", map_id: "CANONICAL", map_revision: "21", frame_id: "map",
+    compatible: true, reason: null, registry_revision: "registry-current", tags,
+  };
+}
+
+function screenPointForCanonical(x: number, y: number) {
+  const boundary = floorBoundary(layout.floors[0], layout.size.width, layout.size.depth);
+  const bounds = {
+    minX: Math.min(...boundary.map((point) => point.x)), maxX: Math.max(...boundary.map((point) => point.x)),
+    minY: Math.min(...boundary.map((point) => point.y)), maxY: Math.max(...boundary.map((point) => point.y)),
+  };
+  const transform = createWorldTransform({ width: 640, height: 360 }, bounds, 1, null, 28);
+  return worldToScreen({ x, y }, transform);
+}
+
+function clickCanonicalTag(tag: RobotNavigationTag) {
+  const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]');
+  if (!canvas || tag.x === null || tag.y === null) throw new Error("Global Tag marker is not available");
+  const point = screenPointForCanonical(tag.canonical_navigation_pose?.x ?? tag.x,
+    tag.canonical_navigation_pose?.y ?? tag.y);
+  canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: point.x, clientY: point.y }));
+}
+
+async function completeTagWorkflow(selection: "dropdown" | "map", tag: RobotNavigationTag) {
+  const registry = tagRegistry([tag]);
+  setOnlineRobot();
+  setNavReadyCapabilities();
+  useStore.setState((state) => ({
+    twin: { ...state.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } },
+  }));
+  vi.mocked(api.getRobotNavigationTags).mockResolvedValue(registry);
+  renderNode(<RobotControlDetailPage robotId="R01" />);
+  await act(async () => { await settleUi(); });
+
+  if (selection === "dropdown") {
+    await act(async () => { buttonNamed("TAG")?.click(); });
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]');
+    if (!select) throw new Error("Destination Tag dropdown disappeared");
+    await act(async () => {
+      select.value = String(tag.tag_id);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  } else {
+    await act(async () => { buttonNamed("FIT")?.click(); });
+    await act(async () => { clickCanonicalTag(tag); });
+  }
+
+  const selectedInfo = container.querySelector<HTMLElement>('[data-testid="selected-navigation-tag"]')?.textContent ?? "";
+  expect(container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')?.dataset.selectedTagId)
+    .toBe(String(tag.tag_id));
+  expect(buttonNamed("PREVIEW PATH")?.disabled).toBe(false);
+  await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+  const previewRequest = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+    .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
+  if (!previewRequest || previewRequest.type !== "PATH_PREVIEW_REQUEST") throw new Error("Tag preview request was not emitted");
+
+  const preview = {
+    robot_id: "R01", request_id: previewRequest.request_id, source_type: "TAG" as const,
+    source_id: String(tag.tag_id), tag_id: tag.tag_id, tag_revision: tag.tag_revision,
+    registry_revision: registry.registry_revision, status: "VALID" as const, frame_id: "map" as const,
+    path: [[0, 0], [tag.navigation_pose!.x, tag.navigation_pose!.y]],
+    active_path: [[0, 0], [tag.navigation_pose!.x, tag.navigation_pose!.y]],
+    canonical_path: [[0, 0], [tag.canonical_navigation_pose!.x, tag.canonical_navigation_pose!.y]],
+    route_nodes: [tag.tag_id], route_segments: [{ from: "START", to: tag.tag_id, axis: "X", length_m: 1 }],
+    active_route_points: [{ x: 0, y: 0, yaw: 0, kind: "START", tag_id: null },
+      { x: tag.navigation_pose!.x, y: tag.navigation_pose!.y, yaw: tag.navigation_pose!.yaw, kind: "TAG_SERVICE", tag_id: tag.tag_id }],
+    canonical_route_points: [{ x: 0, y: 0, yaw: 0, kind: "START", tag_id: null },
+      { x: tag.canonical_navigation_pose!.x, y: tag.canonical_navigation_pose!.y,
+        yaw: tag.canonical_navigation_pose!.yaw, kind: "TAG_SERVICE", tag_id: tag.tag_id }],
+    route_revision: "route-revision-1204", graph_revision: "graph-revision-21", path_length_m: 1,
+    goal: { ...tag.navigation_pose! }, active_map_id: "CANONICAL", active_map_revision: "21",
+    timestamp: new Date().toISOString(),
+  };
+  act(() => useStore.getState().setRobotDetail("R01", { pathPreview: preview }));
+  expect(buttonNamed("SEND GOAL")?.disabled).toBe(false);
+  await act(async () => { buttonNamed("SEND GOAL")?.click(); });
+  const navGoal = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+    .find((message) => message.type === "NAV_GOAL");
+  if (!navGoal || navGoal.type !== "NAV_GOAL") throw new Error("Tag navigation goal was not emitted");
+  return { selectedInfo, previewRequest, navGoal };
 }
 
 function buttonNamed(name: string): HTMLButtonElement | undefined {
@@ -314,6 +413,112 @@ describe("robot detail route stability", () => {
     expect(goalMessage).toMatchObject({ type: "NAV_GOAL", robot_id: "R01", source_type: "TAG", source_id: "1301",
       preview_request_id: request.request_id, x: 2.5, y: 3.5, yaw: 1.2,
       active_map_id: "CANONICAL", active_map_revision: "21", route_revision: "route-rev-21" });
+  });
+
+  it("preserves dropdown selection and uses the same preview and Send Goal pipeline for Global Map clicks", async () => {
+    vi.stubGlobal("crypto", { randomUUID: () => "same-tag-preview-request" });
+    const tag = navigationTag(1204, 20, 12);
+    const registry = tagRegistry([tag]);
+    vi.mocked(api.getRobotNavigationTags).mockResolvedValue(registry);
+    vi.mocked(wsSend).mockClear();
+
+    const dropdownFlow = await completeTagWorkflow("dropdown", tag);
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Destination Tag"]')?.value).toBe("1204");
+    expect(dropdownFlow.previewRequest).toMatchObject({ tag_id: 1204, tag_revision: tag.tag_revision,
+      registry_revision: registry.registry_revision, source_type: "TAG" });
+
+    act(() => root.unmount());
+    useStore.setState({ ...initialState, twin: { ...initialState.twin, robots: { R01: r01() } }, robotDetail: {} });
+    root = createRoot(container);
+    vi.mocked(wsSend).mockClear();
+    const mapClickFlow = await completeTagWorkflow("map", tag);
+
+    expect(mapClickFlow.selectedInfo).toBe(dropdownFlow.selectedInfo);
+    expect(mapClickFlow.previewRequest).toEqual(dropdownFlow.previewRequest);
+    expect(mapClickFlow.navGoal).toEqual(dropdownFlow.navGoal);
+    expect(buttonNamed("TAG")?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("keeps empty MAP POINT clicks and gives a Tag hit priority while in MAP POINT mode", async () => {
+    const tag = navigationTag(1204, 20, 12);
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState((state) => ({ twin: { ...state.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } }));
+    vi.mocked(api.getRobotNavigationTags).mockResolvedValue(tagRegistry([tag]));
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { await settleUi(); });
+
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')!;
+    await act(async () => {
+      canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 30, clientY: 30 }));
+    });
+    expect(buttonNamed("MAP POINT")?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector('[data-testid="selected-navigation-tag"]')).toBeNull();
+    expect(buttonNamed("PREVIEW PATH")?.disabled).toBe(false);
+    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message).filter((message) =>
+      message.type === "PATH_PREVIEW_REQUEST").at(-1)).toMatchObject({ source_type: "CANONICAL_MAP_POINT" });
+
+    await act(async () => { clickCanonicalTag(tag); });
+    expect(buttonNamed("TAG")?.getAttribute("aria-pressed")).toBe("true");
+    expect(canvas.dataset.selectedTagId).toBe("1204");
+    expect(container.querySelector('[data-testid="selected-navigation-tag"]')?.textContent).toContain("TAG ID 1204");
+    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    const requests = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .filter((message) => message.type === "PATH_PREVIEW_REQUEST");
+    expect(requests.at(-1)).toMatchObject({ source_type: "TAG", tag_id: 1204 });
+    expect(requests.some((message) => message.type === "PATH_PREVIEW_REQUEST" && message.source_type === "CANONICAL_MAP_POINT")).toBe(true);
+  });
+
+  it("selects and explains a visible non-navigable Tag without enabling preview", async () => {
+    const tag = navigationTag(1205, 24, 16, false);
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState((state) => ({ twin: { ...state.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } }));
+    vi.mocked(api.getRobotNavigationTags).mockResolvedValue(tagRegistry([tag]));
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')!;
+    expect(canvas.dataset.navigationTagCount).toBe("1");
+    await act(async () => { buttonNamed("FIT")?.click(); });
+    const marker = screenPointForCanonical(24, 16);
+    await act(async () => {
+      canvas.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: marker.x, clientY: marker.y }));
+    });
+    expect(canvas.style.cursor).toBe("pointer");
+    expect(canvas.dataset.hoveredTagId).toBe("1205");
+    expect(canvas.title).toContain("1205 · tag-1205");
+    await act(async () => { clickCanonicalTag(tag); });
+
+    expect(canvas.dataset.selectedTagId).toBe("1205");
+    expect(container.querySelector('[data-testid="selected-navigation-tag"]')?.textContent)
+      .toContain("TAG ID 1205LABEL tag-1205TYPE DATAMATRIXMAP CANONICALREVISION 21");
+    expect(container.querySelector('[data-testid="selected-navigation-tag"]')?.textContent)
+      .toContain("ORIENTATION SHELF_WIDTH_PARALLELRACK rack-ANAVIGABLE NOREASON TAG_DISABLED");
+    expect(container.querySelector('[data-testid="selected-tag-blocker"]')?.textContent).toContain("TAG_DISABLED");
+    expect(buttonNamed("PREVIEW PATH")?.disabled).toBe(true);
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type))
+      .not.toContain("NAV_GOAL");
+  });
+
+  it("invalidates a previous preview when a different map-click Tag is selected", async () => {
+    const first = navigationTag(1204, 20, 12);
+    const next = navigationTag(1205, 24, 16);
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    vi.mocked(api.getRobotNavigationTags).mockResolvedValue(tagRegistry([first, next]));
+    renderNode(<RobotControlDetailPage robotId="R01" />);
+    await act(async () => { await settleUi(); });
+    await act(async () => { buttonNamed("FIT")?.click(); });
+    await act(async () => { clickCanonicalTag(first); });
+    act(() => useStore.getState().setRobotDetail("R01", { pathPreview: { status: "VALID", request_id: "stale-preview" } as never }));
+    await act(async () => { clickCanonicalTag(next); });
+    expect(container.querySelector<HTMLCanvasElement>('[data-testid="global-warehouse-map"]')?.dataset.selectedTagId).toBe("1205");
+    expect(useStore.getState().robotDetail.R01?.pathPreview).toBeNull();
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type).filter((type) => type === "PATH_PREVIEW_INVALIDATE").length)
+      .toBeGreaterThanOrEqual(2);
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
   });
 
   it("surfaces Tag registry failures and incompatible maps", async () => {

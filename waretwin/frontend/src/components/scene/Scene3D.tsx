@@ -12,7 +12,6 @@ import { Fixtures } from "./Fixtures";
 import { ZoneOverlay } from "./ZoneOverlay";
 import { Robots } from "./Robots";
 import { CameraGizmos } from "./Cameras";
-import { People } from "./People";
 import { Mezzanine, FLOOR_ELEV } from "./Mezzanine";
 import { canonicalFloorId, sameFloor } from "../../layout/types";
 import { robotForWarehouse } from "../../layout/robotPoseFrame";
@@ -136,7 +135,6 @@ export function SceneContent({ quality, lite = false, theme = "dark" }: { qualit
         </group>
       )}
       <ZoneOverlay labels={!lite} />
-      <People lite={lite} />
       <Robots lite={lite} />
       {!lite && showCameras && <CameraGizmos />}
       {!lite && quality === "high" && <ContactShadows position={[W / 2, 0.01, D / 2]} scale={[W, D]} blur={2} opacity={0.5} far={4} />}

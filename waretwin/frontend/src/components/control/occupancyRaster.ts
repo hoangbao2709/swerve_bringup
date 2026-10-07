@@ -37,8 +37,9 @@ export function occupancyRasterKey(map: RobotDetailMapSnapshot): string {
     for (const cell of map.data ?? []) hash = Math.imul(hash ^ (cell + 1), 16777619) >>> 0;
     payload = `raw:${map.data?.length}:${hash}`;
   }
-  const key = JSON.stringify([map.robot_id, map.active_map_id, map.active_map_revision,
-    map.map_revision, map.map_version, map.frame_id, map.width, map.height, map.resolution, map.origin, payload]);
+  const key = JSON.stringify([map.robot_id, map.map_source, map.mapping_session_id,
+    map.active_map_id, map.active_map_revision, map.map_revision, map.map_content_revision,
+    map.map_version, map.frame_id, map.width, map.height, map.resolution, map.origin, payload]);
   rasterKeys.set(map, key);
   return key;
 }

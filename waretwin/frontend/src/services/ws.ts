@@ -395,13 +395,27 @@ function handle(msg: ServerMessage) {
       break;
       }
     case "NAV_GLOBAL_PATH":
-      st.setRobotDetail(msg.path.robot_id, { globalPath: msg.path });
+      {
+        const current = st.robotDetail[msg.path.robot_id]?.globalPath;
+        const incomingAt = msg.path.timestamp ? Date.parse(msg.path.timestamp) : Number.NaN;
+        const currentAt = current?.timestamp ? Date.parse(current.timestamp) : Number.NaN;
+        if (!Number.isFinite(incomingAt) || !Number.isFinite(currentAt) || incomingAt >= currentAt) {
+          st.setRobotDetail(msg.path.robot_id, { globalPath: msg.path });
+        }
+      }
       break;
     case "NAV_LOCAL_PATH":
-      st.setRobotDetail(msg.path.robot_id, { localPath: msg.path });
+      {
+        const current = st.robotDetail[msg.path.robot_id]?.localPath;
+        const incomingAt = msg.path.timestamp ? Date.parse(msg.path.timestamp) : Number.NaN;
+        const currentAt = current?.timestamp ? Date.parse(current.timestamp) : Number.NaN;
+        if (!Number.isFinite(incomingAt) || !Number.isFinite(currentAt) || incomingAt >= currentAt) {
+          st.setRobotDetail(msg.path.robot_id, { localPath: msg.path });
+        }
+      }
       break;
     case "NAV_GOAL":
-      st.setRobotDetail(msg.goal.robot_id, { goal: msg.goal });
+      st.setRobotDetail(msg.goal.robot_id, { goal: msg.goal, globalPath: null, localPath: null });
       break;
     case "PATH_PREVIEW_RESULT":
       st.setRobotDetail(msg.robot_id, { pathPreview: msg });
@@ -461,8 +475,12 @@ function handle(msg: ServerMessage) {
       st.setRobotDetail(msg.robot_id, {
         navigationStatus: msg.status,
         errors,
+        ...(["CANCELLED", "CANCELED", "SUCCEEDED", "FAILED", "EMERGENCY_STOPPED", "IDLE"].includes(msg.status.toUpperCase())
+          ? { globalPath: null, localPath: null, goal: null }
+          : {}),
         goal: msg.x == null || msg.y == null || msg.yaw == null
-          ? st.robotDetail[msg.robot_id]?.goal ?? null
+          ? (["CANCELLED", "CANCELED", "SUCCEEDED", "FAILED", "EMERGENCY_STOPPED", "IDLE"].includes(msg.status.toUpperCase())
+            ? null : st.robotDetail[msg.robot_id]?.goal ?? null)
           : {
             robot_id: msg.robot_id,
             frame_id: "map",

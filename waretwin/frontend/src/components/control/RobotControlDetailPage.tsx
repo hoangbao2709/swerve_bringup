@@ -8,8 +8,9 @@ import { ActiveNavigationMap2DView, LocalRobotSection, type ActiveMapLayers } fr
 import type { ControlSection } from "../shell/Sidebar";
 import { occupancyRasters } from "./occupancyRaster";
 import { detailPerformance } from "./detailPerformance";
-import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, mapPointPreviewPayload, type MapPointNavigationTarget } from "./navigationMapIdentity";
+import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, mapPointPreviewPayload, mapPointTarget, type MapPointNavigationTarget } from "./navigationMapIdentity";
 import { evaluatePreviewApproval } from "./navigationPreviewApproval";
+import { resolveDemoRoute } from "./demoRoute";
 
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
 const MANUAL_ACTIONS: Array<{
@@ -116,6 +117,8 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const mappingScan = useStore((state) => state.robotDetail[robotId]?.scan ?? null);
   const mappingSessionId = useStore((state) => state.robotDetail[robotId]?.mappingSessionId ?? null);
   const navigationStatus = useStore((state) => state.robotDetail[robotId]?.navigationStatus ?? null);
+  const globalPath = useStore((state) => state.robotDetail[robotId]?.globalPath ?? null);
+  const navigationGoal = useStore((state) => state.robotDetail[robotId]?.goal ?? null);
   const lidarStreamDiagnostics = useStore((state) => state.robotDetail[robotId]?.lidarStreamDiagnostics ?? null);
   const pathPreview = useStore((state) => state.robotDetail[robotId]?.pathPreview ?? null);
   const activeLocalMapId = useStore((state) => state.robotDetail[robotId]?.activeLocalMapId ?? null);
@@ -132,6 +135,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const [activeManualCommand, setActiveManualCommand] = useState<ActiveManualCommand | null>(null);
   const [goalPreview, setGoalPreview] = useState<MapPointNavigationTarget | null>(null);
   const [pointYawPending, setPointYawPending] = useState(false);
+  const [pointSelectionResetVersion, setPointSelectionResetVersion] = useState(0);
   const [mapLayers, setMapLayers] = useState<ActiveMapLayers>({ robot: true, scan: true, path: true, trajectory: false, grid: false });
   const [systemInputsExpanded, setSystemInputsExpanded] = useState(true);
   const [statePanelExpanded, setStatePanelExpanded] = useState(true);
@@ -140,7 +144,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const [errorLogOpen, setErrorLogOpen] = useState(false);
   const closeErrorLog = useCallback(() => setErrorLogOpen(false), []);
   const panelId = useId();
-  const [pathRequestState, setPathRequestState] = useState<"IDLE" | "PLANNING">("IDLE");
+  const [pathRequestState, setPathRequestState] = useState<"IDLE" | "PLANNING" | "WAITING_FOR_NAV2">("IDLE");
   const latestPathRequest = useRef("");
   const [error, setError] = useState("");
   const [safetyNotice, setSafetyNotice] = useState("");
@@ -197,14 +201,34 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const activeMapReady = Boolean(activeMap2dSnapshot && activeMapId && activeMapRevision
     && activeMap2dSnapshot.frame_id === "map"
     && ["SLAM_TOOLBOX", "LOCAL_MAP", "NAV2_MAP"].includes(activeMap2dSnapshot.map_source ?? ""));
+  const nav2Ready = runtimeCapabilities?.nav2_ready === true && diagnostics?.nav2_ready === true;
   const navigationUiAvailable = Boolean(runtimeCapabilities?.goal_available
-    && runtimeCapabilities?.nav2_ready === true && diagnostics?.nav2_ready === true
-    && controlMode === "AUTONOMOUS" && controlOnline);
+    && nav2Ready && controlMode === "AUTONOMOUS" && controlOnline);
   const previewApproval = evaluatePreviewApproval({
     pathPreview, requestId: latestPathRequest.current, target: goalPreview,
     activeMapId, activeMapRevision, now: clockNow,
   });
   const approvedPreview: RobotDetailPathPreview | null = previewApproval.approvedPreview;
+  const displayedNavigationMapIdentity = getDisplayedNavigationMapIdentity({
+    active_map_id: activeMapId, active_map_revision: activeMapRevision,
+    map_snapshot: activeMap2dSnapshot,
+  });
+  const displayRoute = resolveDemoRoute({
+    navigationStatus: navigationStatus ?? null,
+    activeMapId,
+    activeMapRevision,
+    mapSource: activeMap2dSnapshot?.map_source ?? null,
+    mapContentRevision: activeMap2dSnapshot?.map_content_revision ?? null,
+    registrationRevision: runtimeCapabilities?.registration_revision,
+    approvedPreview,
+    globalPath,
+  });
+  const navigationIsActive = ["ACTIVE", "NAVIGATING", "PAUSED"].includes(String(navigationStatus ?? "").toUpperCase());
+  const activeGoalTarget = navigationIsActive && displayedNavigationMapIdentity && navigationGoal
+    && navigationGoal.frame_id === "map"
+    && navigationGoal.active_map_id === activeMapId
+    && String(navigationGoal.active_map_revision ?? "") === String(activeMapRevision ?? "")
+    ? mapPointTarget(displayedNavigationMapIdentity, navigationGoal) : null;
 
   const activeNavigationMapKey = JSON.stringify([robotId, activeMapId, activeMapRevision, activeMapReady]);
   const previousActiveNavigationMapKey = useRef(activeNavigationMapKey);
@@ -215,7 +239,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     setPointYawPending(false);
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
-    setRobotDetail(robotId, { pathPreview: null });
+    setRobotDetail(robotId, { pathPreview: null, globalPath: null, localPath: null });
   }, [robotId, select, setRobotDetail]);
 
   useEffect(() => {
@@ -226,7 +250,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     setPathRequestState("IDLE");
     setGoalPreview(null);
     setPointYawPending(false);
-    setRobotDetail(robotId, { pathPreview: null });
+    setRobotDetail(robotId, { pathPreview: null, globalPath: null, localPath: null, goal: null });
   }, [activeNavigationMapKey, robotId, setRobotDetail]);
 
   useEffect(() => {
@@ -251,12 +275,8 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   }, []);
 
   const detailView = "LIDAR_2D" as const;
-  const displayedNavigationMapIdentity = getDisplayedNavigationMapIdentity({
-    active_map_id: activeMapId, active_map_revision: activeMapRevision,
-    map_snapshot: activeMap2dSnapshot,
-  });
   const displayedMapPointPickIdentity = activeMapReady
-    && navigationUiAvailable && controlMode === "AUTONOMOUS" ? displayedNavigationMapIdentity : null;
+    && controlOnline && controlMode === "AUTONOMOUS" ? displayedNavigationMapIdentity : null;
   useEffect(() => {
     if (!robotBridgeOnline || websocketState !== "CONNECTED") return;
     const request_id = `${robotId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -383,7 +403,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     latestPathRequest.current = "";
     setGoalPreview(null);
     setPathRequestState("IDLE");
-    setRobotDetail(robotId, { pathPreview: null });
+    setRobotDetail(robotId, { pathPreview: null, globalPath: null, localPath: null });
     if (!controlOnline) { setError("MANUAL/AUTONOMOUS requires an online ROS bridge"); return; }
     if (!wsSetRobotMode(robotId, next)) { setError("Robot control channel is disconnected"); return; }
     setRobotDetail(robotId, { requestedMode: next, modeTransitionState: "REQUESTED" });
@@ -467,7 +487,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     setPointYawPending(false);
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
-    setRobotDetail(robotId, { pathPreview: null });
+    setRobotDetail(robotId, { pathPreview: null, globalPath: null, localPath: null });
     setError("");
   };
 
@@ -513,11 +533,10 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
       setError("Switch to online AUTONOMOUS mode to request a Nav2 path preview");
       return;
     }
-    if (!navigationUiAvailable) {
+    if (!nav2Ready || !runtimeCapabilities?.goal_available) {
       latestPathRequest.current = "";
-      setPathRequestState("IDLE");
+      setPathRequestState("WAITING_FOR_NAV2");
       setRobotDetail(robotId, { pathPreview: null });
-      setError("Nav2 is not ready for this active map and control mode");
       return;
     }
     const requestId = typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -539,13 +558,18 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
       return;
     }
     setGoalPreview(target);
-  }, [activeMap2dSnapshot?.map_content_revision, activeMapId, activeMapReady, activeMapRevision, activeMapStatus, controlMode, controlOnline, navigationUiAvailable, robotId, setRobotDetail]);
+  }, [activeMap2dSnapshot?.map_content_revision, activeMapId, activeMapReady, activeMapRevision, activeMapStatus, controlMode, controlOnline, nav2Ready, robotId, runtimeCapabilities?.goal_available, setRobotDetail]);
 
   const confirmMapPoint = useCallback((target: MapPointNavigationTarget) => {
     selectMapPoint(target);
     setPointYawPending(false);
     requestPathPreview(target);
   }, [requestPathPreview, selectMapPoint]);
+
+  useEffect(() => {
+    if (pathRequestState !== "WAITING_FOR_NAV2" || pointYawPending || !goalPreview || !navigationUiAvailable) return;
+    requestPathPreview(goalPreview);
+  }, [goalPreview, navigationUiAvailable, pathRequestState, pointYawPending, requestPathPreview]);
 
   useEffect(() => {
     if (pathPreview?.request_id && pathPreview.request_id === latestPathRequest.current) setPathRequestState("IDLE");
@@ -558,6 +582,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     setPointYawPending(false);
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
+    setPointSelectionResetVersion((version) => version + 1);
   };
 
   const navCommand = (type: "NAV_CANCEL" | "NAV_PAUSE" | "NAV_RESUME") => {
@@ -574,7 +599,6 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   }), [toggleManual]);
 
   const slamLive = diagnostics?.mapping?.slam_state === "ACTIVE" && diagnostics.mapping.map_live;
-  const nav2Ready = runtimeCapabilities?.nav2_ready === true && diagnostics?.nav2_ready === true;
   const rawNavigationState = String(navigationStatus ?? robot?.navigation_state ?? "").toUpperCase();
   const navigationLabel = ["", "IDLE"].includes(rawNavigationState)
     ? nav2Ready ? "READY" : "UNAVAILABLE"
@@ -603,7 +627,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   ];
 
   return (
-    <div className={`robot-detail-shell industrial-hmi${activeSection === "CONTROL" ? " is-control-view" : ""}`}>
+    <div className={`robot-detail-shell industrial-hmi${activeSection === "CONTROL" ? " is-control-view" : ""}${activeSection === "CONTROL" && import.meta.env.VITE_DEMO_COMPACT_VIEW === "true" ? " demo-compact-map" : ""}`}>
       <header className="robot-detail-header">
         <div className="robot-detail-identity">
           {activeSection === "CONTROL" && <span className="hmi-app-identity">WARETWIN</span>}
@@ -640,11 +664,14 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
             <div className="robot-detail-view-layer is-active" data-view="LIDAR_2D">
               <ActiveNavigationMap2DView map={activeMap2dSnapshot} robot={robot} scan={mappingScan}
                 compactWorkspace
-                target={isMapPointTarget(goalPreview) ? goalPreview : null}
-                navigationPath={approvedPreview?.active_path ?? approvedPreview?.path ?? []}
+                target={isMapPointTarget(goalPreview) ? goalPreview : activeGoalTarget}
+                navigationPath={displayRoute?.points ?? []} navigationPathKind={displayRoute?.kind ?? null}
                 layers={mapLayers} onLayerToggle={(layer) => setMapLayers((current) => ({ ...current, [layer]: !current[layer] }))}
                 errorLogCount={controlErrors.length} errorLogTone={errorLogTone} onOpenErrorLog={() => setErrorLogOpen(true)}
-                canPick={Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} onConfirmPoint={confirmMapPoint} />
+                canPick={Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} onConfirmPoint={confirmMapPoint}
+                pointSelectionResetVersion={pointSelectionResetVersion}
+                onCancelPointSelection={cancelPathPreview}
+                onInteractionModeChange={(mode) => { if (mode === "PAN" && pointYawPending) cancelPathPreview(); }} />
             </div>
           </div>
           <div className="hmi-dashboard-panels" aria-label="Map system status">
@@ -684,7 +711,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
             <button type="button" disabled={!controlOnline} onClick={() => navCommand("NAV_CANCEL")}>CANCEL NAV</button>
           </div>
           <div className="hmi-preview-state" role="status" data-testid="point-navigation-state">
-            {!goalPreview ? "WAITING FOR DESTINATION" : pointYawPending ? "SELECT YAW" : pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ?? "POINT SELECTED"}
+            {!goalPreview ? "WAITING FOR DESTINATION" : pointYawPending ? "SELECT YAW" : pathRequestState === "PLANNING" ? "PLANNING" : pathRequestState === "WAITING_FOR_NAV2" ? "WAITING FOR NAV2" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ?? "POINT SELECTED"}
           </div>
           </div>
         </aside>

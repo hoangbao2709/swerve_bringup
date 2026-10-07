@@ -43,20 +43,32 @@ async function decodeOccupancyGridSnapshot(snapshot: RobotDetailMapSnapshot): Pr
   }
 }
 
+export type OccupancyPointClassification = "FREE" | "UNKNOWN" | "OCCUPIED" | "OUTSIDE";
+
+/** Classify a world-frame point against the exact OccupancyGrid geometry/cells. */
+export function classifyOccupancyPoint(
+  snapshot: Pick<RobotDetailMapSnapshot, "width" | "height" | "resolution" | "origin">,
+  cells: Int8Array,
+  point: { x: number; y: number },
+): OccupancyPointClassification {
+  const { width, height, resolution, origin } = snapshot;
+  if (!Number.isFinite(resolution) || resolution <= 0 || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return "OUTSIDE";
+  const dx = point.x - origin.x;
+  const dy = point.y - origin.y;
+  const cos = Math.cos(origin.yaw), sin = Math.sin(origin.yaw);
+  const column = Math.floor((dx * cos + dy * sin) / resolution);
+  const row = Math.floor((-dx * sin + dy * cos) / resolution);
+  if (column < 0 || row < 0 || column >= width || row >= height || cells.length !== width * height) return "OUTSIDE";
+  const occupancy = cells[row * width + column];
+  if (occupancy < 0) return "UNKNOWN";
+  return occupancy <= 65 ? "FREE" : "OCCUPIED";
+}
+
 /** True only for a known-free OccupancyGrid cell at a world-frame position. */
 export function isFreeOccupancyPoint(
   snapshot: Pick<RobotDetailMapSnapshot, "width" | "height" | "resolution" | "origin">,
   cells: Int8Array,
   point: { x: number; y: number },
 ): boolean {
-  const { width, height, resolution, origin } = snapshot;
-  if (!Number.isFinite(resolution) || resolution <= 0 || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
-  const dx = point.x - origin.x;
-  const dy = point.y - origin.y;
-  const cos = Math.cos(origin.yaw), sin = Math.sin(origin.yaw);
-  const column = Math.floor((dx * cos + dy * sin) / resolution);
-  const row = Math.floor((-dx * sin + dy * cos) / resolution);
-  if (column < 0 || row < 0 || column >= width || row >= height || cells.length !== width * height) return false;
-  const occupancy = cells[row * width + column];
-  return occupancy >= 0 && occupancy <= 65;
+  return classifyOccupancyPoint(snapshot, cells, point) === "FREE";
 }

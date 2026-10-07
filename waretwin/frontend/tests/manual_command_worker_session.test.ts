@@ -76,6 +76,16 @@ describe("manual worker refresh state machine", () => {
     expect(session.activeManualCommand).toBe("LEFT");
   });
 
+  it("refreshes all eight translation directions and both rotations through the worker command session", () => {
+    const { session, socket } = setup();
+    const actions = ["FORWARD", "FORWARD_LEFT", "FORWARD_RIGHT", "LEFT", "RIGHT",
+      "BACKWARD", "BACKWARD_LEFT", "BACKWARD_RIGHT", "ROTATE_LEFT", "ROTATE_RIGHT"] as const;
+    for (const action of actions) session.setAction("R01", action);
+    expect(socket()?.sent.map(({ action }) => action)).toEqual(actions);
+    session.stop("R01");
+    expect(socket()?.sent.at(-1)?.action).toBe("STOP");
+  });
+
   it("STOP clears active motion, sends zero, and cancels future refreshes", () => {
     const { session, socket, timers } = setup();
     session.setAction("R01", "FORWARD");

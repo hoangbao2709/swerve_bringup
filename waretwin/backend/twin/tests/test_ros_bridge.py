@@ -693,11 +693,21 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         mode = TypeAdapter(ClientMessage).validate_python({
             'type': 'ROBOT_MODE', 'robot_id': 'R01', 'mode': 'MANUAL',
         })
-        command = TypeAdapter(ClientMessage).validate_python({
-            'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'FORWARD',
-        })
+        actions = (
+            'FORWARD', 'FORWARD_LEFT', 'FORWARD_RIGHT', 'LEFT', 'RIGHT',
+            'BACKWARD', 'BACKWARD_LEFT', 'BACKWARD_RIGHT',
+            'ROTATE_LEFT', 'ROTATE_RIGHT', 'STOP',
+        )
+        commands = [TypeAdapter(ClientMessage).validate_python({
+            'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': action,
+        }) for action in actions]
         self.assertEqual(mode.type, 'ROBOT_MODE')
-        self.assertEqual(command.type, 'ROBOT_MANUAL')
+        self.assertEqual([item.action for item in commands], list(actions))
+        self.assertTrue(all(item.type == 'ROBOT_MANUAL' for item in commands))
+        with self.assertRaises(ValueError):
+            TypeAdapter(ClientMessage).validate_python({
+                'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'TELEPORT',
+            })
         traced = TypeAdapter(ClientMessage).validate_python({
             'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'STOP',
             'sequence_id': 103, 'client_monotonic': 12.5,

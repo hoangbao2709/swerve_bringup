@@ -2,11 +2,10 @@
 
 import { ManualCommandWorkerSession } from "./manualCommandWorkerSession";
 import type { ManualWorkerSocket } from "./manualCommandWorkerSession";
-
-type MotionAction = "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT";
+import type { ActiveManualCommand } from "./manualCommand";
 type WorkerRequest =
   | { type: "CONNECT"; url: string }
-  | { type: "HOLD"; robot_id: string; action: MotionAction }
+  | { type: "HOLD"; robot_id: string; action: ActiveManualCommand }
   | { type: "STOP"; robot_id: string }
   | { type: "DISCONNECT"; robot_id: string };
 

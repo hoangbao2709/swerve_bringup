@@ -1456,13 +1456,22 @@ class SwerveBridge(Node):
                 pose.pose.position.x, pose.pose.position.y, frame, stamp)
             points.append([x, y])
         stamp = msg.header.stamp
+        active_map = self.active_map_identity()
+        navigation_map = self.navigation_map_status
         return {
             'robot_id': robot_id,
             'frame_id': str(self.get_parameter('map_frame').value or 'map'),
             'map_revision': self.ros_map_revision,
             'timestamp': datetime.now(timezone.utc).isoformat(),
-            'points': points,
             'stamp': float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+            'map_source': self.active_map_source(),
+            'active_map_id': active_map.get('active_map_id'),
+            'active_map_revision': active_map.get('active_map_revision'),
+            'map_content_revision': active_map.get('map_content_revision'),
+            'navigation_map_id': navigation_map.get('navigation_map_id'),
+            'navigation_map_revision': navigation_map.get('navigation_map_revision'),
+            'registration_revision': navigation_map.get('registration_revision'),
+            'points': points,
         }
 
     def _goal_payload(self, msg, robot_id, status=None):
@@ -1847,7 +1856,9 @@ class SwerveBridge(Node):
             msg = getattr(self, attr)
             if msg is None:
                 continue
-            signature = (len(msg.poses), tuple((round(float(p.pose.position.x), 3), round(float(p.pose.position.y), 3)) for p in msg.poses))
+            stamp = msg.header.stamp
+            signature = (int(stamp.sec), int(stamp.nanosec), str(msg.header.frame_id or ''),
+                         len(msg.poses), tuple((round(float(p.pose.position.x), 3), round(float(p.pose.position.y), 3)) for p in msg.poses))
             marker = 'last_global_path_signature' if kind == 'NAV_GLOBAL_PATH' else 'last_local_path_signature'
             if signature != getattr(self, marker):
                 try:

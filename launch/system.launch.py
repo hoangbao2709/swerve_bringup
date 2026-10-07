@@ -80,7 +80,9 @@ def generate_launch_description():
     interface_cfg = os.path.join(pkg, 'config', 'sim_real_interface.yaml')
     default_artifact_root = os.environ.get('WARETWIN_ARTIFACT_ROOT') or os.path.abspath(
         os.path.join(os.getcwd(), 'generated', 'maps'))
-    default_rviz_config = os.path.join(pkg, 'rviz', 'swerve.rviz')
+    demo_visual = os.environ.get('WARETWIN_DEMO_VISUAL', '').strip().lower() in ('1', 'true', 'yes', 'on')
+    default_rviz_config = os.path.join(
+        pkg, 'rviz', 'swerve_demo.rviz' if demo_visual else 'swerve.rviz')
 
     def validate_mode(context):
         selected = LaunchConfiguration('mode').perform(context).strip().lower()

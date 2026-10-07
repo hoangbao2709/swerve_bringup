@@ -41,7 +41,7 @@ import { RobotQuickDetailModal } from "../src/components/robot/RobotQuickDetailM
 import { AccumulatedSlamMap2DView } from "../src/components/control/LocalRobotSections";
 import { RobotControlDetailPage } from "../src/components/control/RobotControlDetailPage";
 import { Sidebar, type ControlSection } from "../src/components/shell/Sidebar";
-import { occupancyRasters } from "../src/components/control/occupancyRaster";
+import { occupancyRasterKey, occupancyRasters } from "../src/components/control/occupancyRaster";
 import * as api from "../src/services/api";
 import { wsSend, wsManualCommand, wsSetRobotMode } from "../src/services/ws";
 import type { LocalRobotMap } from "../src/services/api";
@@ -116,6 +116,19 @@ function setNavReadyCapabilities() {
     tf: true, lidar: true, nodes: [], topics: [], controllers: [],
     simulation_time: null, last_update_at: new Date().toISOString(),
   } });
+}
+
+function setNavBlockedCapabilities() {
+  const current = useStore.getState();
+  const capabilities = current.robotCapabilities?.R01;
+  useStore.setState({
+    robotCapabilities: capabilities ? { ...current.robotCapabilities, R01: { ...capabilities,
+      nav2_ready: false, goal_available: false, goal_blocker_code: "NAV2_LIFECYCLE_NOT_ACTIVE",
+      goal_blocker_reason: "Required Nav2 lifecycle node is inactive." } } : current.robotCapabilities,
+    rosDiagnostics: current.rosDiagnostics ? { ...current.rosDiagnostics, nav2_ready: false,
+      nav2_lifecycle_ready: false, nav2_lifecycle_blocker_code: "NAV2_LIFECYCLE_NOT_ACTIVE",
+      nav2_lifecycle_blocker_reason: "Required Nav2 lifecycle node is inactive." } : current.rosDiagnostics,
+  });
 }
 
 
@@ -218,6 +231,126 @@ describe("robot quick detail workflow", () => {
 
 describe("robot detail route stability", () => {
 
+  it("suppresses the map context menu without cancelling an idle POINT selection", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    vi.mocked(wsSend).mockClear();
+
+    const contextMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2,
+      clientX: 320, clientY: 180 });
+    await act(async () => { canvas.dispatchEvent(contextMenu); });
+
+    expect(contextMenu.defaultPrevented).toBe(true);
+    expect(canvas.dataset.pointSelectionState).toBe("WAITING_FOR_DESTINATION");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_INVALIDATE");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("NAV_CANCEL");
+  });
+
+  it("right-click cancels SELECT YAW and returns POINT mode to waiting", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(canvas.dataset.pointSelectionState).toBe("SELECT_YAW");
+    vi.mocked(wsSend).mockClear();
+
+    const contextMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2,
+      clientX: 320, clientY: 180 });
+    await act(async () => { canvas.dispatchEvent(contextMenu); await settleUi(); });
+
+    expect(contextMenu.defaultPrevented).toBe(true);
+    expect(canvas.dataset.pointSelectionState).toBe("WAITING_FOR_DESTINATION");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_INVALIDATE");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("NAV_CANCEL");
+  });
+
+  it("right-click cancels a PLANNING preview and clears the selected target", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 380, clientY: 220 })); });
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toBe("PLANNING");
+    vi.mocked(wsSend).mockClear();
+
+    const contextMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2,
+      clientX: 380, clientY: 220 });
+    await act(async () => { canvas.dispatchEvent(contextMenu); await settleUi(); });
+
+    expect(contextMenu.defaultPrevented).toBe(true);
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toBe("WAITING FOR DESTINATION");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
+    expect(useStore.getState().robotDetail.R01?.pathPreview).toBeNull();
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_INVALIDATE");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("NAV_CANCEL");
+  });
+
+  it("right-click cancels a valid preview but never cancels an already-sent Nav2 goal", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 380, clientY: 220 })); });
+    const request = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .find((message) => message.type === "PATH_PREVIEW_REQUEST");
+    if (!request || request.type !== "PATH_PREVIEW_REQUEST") throw new Error("path preview request was not emitted");
+    const approved = {
+      robot_id: "R01", request_id: request.request_id, status: "VALID" as const,
+      source_type: "ACTIVE_MAP_POINT" as const, source_map_id: "NAV2-R01-map", source_map_revision: "nav2-r21",
+      frame_id: "map" as const, path: [[0, 0], [1, 1]] as Array<[number, number]>, path_length_m: 1.4,
+      goal: { x: request.x!, y: request.y!, yaw: request.yaw! }, timestamp: new Date().toISOString(),
+      active_map_id: "NAV2-R01-map", active_map_revision: "nav2-r21",
+    };
+    act(() => useStore.getState().setRobotDetail("R01", { pathPreview: approved }));
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toContain("PREVIEW VALID");
+    vi.mocked(wsSend).mockClear();
+
+    const contextMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2,
+      clientX: 380, clientY: 220 });
+    await act(async () => { canvas.dispatchEvent(contextMenu); await settleUi(); });
+
+    expect(contextMenu.defaultPrevented).toBe(true);
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toBe("WAITING FOR DESTINATION");
+    expect(useStore.getState().robotDetail.R01?.pathPreview).toBeNull();
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_INVALIDATE");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("NAV_CANCEL");
+
+    // Start and approve another goal, send it, then verify right-click cannot
+    // reach the separate NAV_CANCEL command path.
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 380, clientY: 220 })); });
+    const nextRequest = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
+    if (!nextRequest || nextRequest.type !== "PATH_PREVIEW_REQUEST") throw new Error("replacement path preview request was not emitted");
+    act(() => useStore.getState().setRobotDetail("R01", { pathPreview: { ...approved,
+      request_id: nextRequest.request_id,
+      goal: { x: nextRequest.x!, y: nextRequest.y!, yaw: nextRequest.yaw! },
+    } }));
+    await act(async () => { buttonNamed("SEND GOAL")?.click(); });
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("NAV_GOAL");
+    vi.mocked(wsSend).mockClear();
+    const activeGoalContextMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2,
+      clientX: 380, clientY: 220 });
+    await act(async () => { canvas.dispatchEvent(activeGoalContextMenu); });
+    expect(activeGoalContextMenu.defaultPrevented).toBe(true);
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("NAV_CANCEL");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_INVALIDATE");
+  });
+
   it("uses PAN and POINT modes for drag, click, yaw preview, and Ctrl-wheel zoom", async () => {
     setOnlineRobot();
     setNavReadyCapabilities();
@@ -319,6 +452,25 @@ describe("robot detail route stability", () => {
     expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
     await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
     expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_REQUEST");
+  });
+
+  it("cancels a pending point and yaw transaction when switching to PAN", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...useStore.getState().twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>(".local-pose-map canvas")!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("SELECT YAW");
+    expect(canvas.dataset.pointSelectionState).toBe("SELECT_YAW");
+
+    await act(async () => { buttonNamed("PAN")?.click(); });
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
+    expect(canvas.dataset.directionPreview).toBe("hidden");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_INVALIDATE");
+    await act(async () => { buttonNamed("POINT")?.click(); });
+    expect(canvas.dataset.pointSelectionState).toBe("WAITING_FOR_DESTINATION");
   });
 
   it("uses one map workspace and shows the manual panel only in authoritative MANUAL mode", async () => {
@@ -463,12 +615,14 @@ describe("robot detail route stability", () => {
     expect(container.querySelector(".hmi-error-log-footer")).toBeNull();
   });
 
-  it("keeps all seven manual movement buttons in the right floating group and sends their existing commands", () => {
+  it("keeps all eleven manual actions in the right floating group and sends their existing commands", () => {
     setOnlineRobot("MAPPING");
     renderNode(<ControlDetailHarness robotId="R01" />);
     const actions = [
-      ["forward", "FORWARD"], ["backward", "BACKWARD"], ["left", "LEFT"], ["right", "RIGHT"],
-      ["rotate_left", "ROTATE_LEFT"], ["rotate_right", "ROTATE_RIGHT"], ["stop", "STOP"],
+      ["forward_left", "FORWARD_LEFT"], ["forward", "FORWARD"], ["forward_right", "FORWARD_RIGHT"],
+      ["left", "LEFT"], ["stop", "STOP"], ["right", "RIGHT"],
+      ["backward_left", "BACKWARD_LEFT"], ["backward", "BACKWARD"], ["backward_right", "BACKWARD_RIGHT"],
+      ["rotate_left", "ROTATE_LEFT"], ["rotate_right", "ROTATE_RIGHT"],
     ] as const;
     for (const [buttonClass, action] of actions) {
       const button = container.querySelector<HTMLButtonElement>(`.hmi-manual-jog-panel .manual-key-${buttonClass}`);
@@ -789,7 +943,9 @@ describe("robot detail route stability", () => {
     renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { await settleUi(); });
 
-    expect(container.textContent).toContain("SLAM /map");
+    expect(container.textContent).not.toContain("SLAM /map");
+    expect(container.querySelector(".hmi-map-info")).toBeNull();
+    expect(container.querySelector('[data-testid="slam-map-2d-metrics"]')?.getAttribute("data-map-source")).toBe("SLAM_TOOLBOX");
     expect(container.textContent).not.toContain("2D SLAM OCCUPANCY MAP");
     expect(container.textContent).not.toContain("GLOBAL MAP");
     expect(container.textContent).not.toContain("MAP VIEW 3D");
@@ -1007,6 +1163,128 @@ describe("robot detail route stability", () => {
     expect(container.textContent).toContain("NAV2_LIFECYCLE_NOT_ACTIVE");
     expect(container.textContent).toContain("/bt_navigator=inactive");
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+  });
+
+
+  it("allows the first POINT click while Nav2 is blocked and waits with the confirmed target until Nav2 returns", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    setNavBlockedCapabilities();
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); await settleUi(); });
+
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    expect(canvas).toBeTruthy();
+    const targetWorld = canvasScreenWorld(canvas, { x: 320, y: 180 });
+    const headingWorld = canvasScreenWorld(canvas, { x: 380, y: 220 });
+    const expectedYaw = Math.atan2(headingWorld.y - targetWorld.y, headingWorld.x - targetWorld.x);
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("SELECT YAW");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
+
+    await act(async () => {
+      mapPointer(canvas, "pointermove", 380, 220);
+      canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 380, clientY: 220 }));
+    });
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("POINT SELECTED");
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toBe("WAITING FOR NAV2");
+    expect(container.textContent).toContain("0.00 m");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+
+    act(() => setNavReadyCapabilities());
+    await act(async () => { await settleUi(); });
+    const previewRequest = vi.mocked(wsSend).mock.calls.map(([message]) => message)
+      .find((message) => message.type === "PATH_PREVIEW_REQUEST");
+    expect(previewRequest?.type).toBe("PATH_PREVIEW_REQUEST");
+    if (previewRequest?.type === "PATH_PREVIEW_REQUEST") expect(previewRequest.yaw).toBeCloseTo(expectedYaw, 2);
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("POINT SELECTED");
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toBe("PLANNING");
+  });
+
+  it("reports unknown and occupied cells while retaining the free-cell selection guard", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    const base = useStore.getState().robotDetail.R01!.runtimeMapSnapshot!;
+    const data = Array(100).fill(0);
+    data[55] = -1;
+    useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: { ...base, data } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); await settleUi(); });
+    let canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="map-pick-feedback"]')?.textContent).toContain("UNKNOWN / UNMAPPED CELL");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
+
+    data[55] = 100;
+    act(() => useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: { ...base, data: [...data] } }));
+    await act(async () => { await settleUi(); await settleUi(); });
+    canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="map-pick-feedback"]')?.textContent).toContain("OCCUPIED CELL");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
+
+    data[55] = 0;
+    act(() => useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: { ...base, data: [...data] } }));
+    await act(async () => { await settleUi(); await settleUi(); });
+    canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("SELECT YAW");
+  });
+
+  it("keeps the last complete SLAM snapshot interactive while the next raster is still building", async () => {
+    setOnlineRobot("UNIFIED");
+    setNavReadyCapabilities();
+    setNavBlockedCapabilities();
+    const common = { robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX" as const,
+      mapping_session_id: "point-session", active_map_id: "SLAM-point-session",
+      active_map_revision: "session-point-session", resolution: 1 };
+    const firstMap = { ...common, map_content_revision: "point-a", width: 10, height: 10,
+      origin: { x: -5, y: -5, yaw: 0 }, data: Array(100).fill(0) };
+    const nextCells = Array(144).fill(100);
+    const nextMap = { ...common, map_content_revision: "point-b", width: 12, height: 12,
+      origin: { x: -6, y: -6, yaw: 0 }, data: nextCells };
+    const robot = { ...r01(), control_mode: "AUTONOMOUS" as const,
+      slam_pose: { ...r01().slam_pose!, mapping_session_id: "point-session", map_id: "SLAM-point-session",
+        map_revision: "session-point-session" } };
+    useStore.setState({ twin: { ...initialState.twin, robots: { R01: robot } }, rosDiagnostics: {
+      ...useStore.getState().rosDiagnostics!, mapping: { slam_state: "ACTIVE", mapping_session_id: "point-session", map_live: true, scan_live: true },
+    } });
+    useStore.getState().setRobotDetail("R01", { mappingSessionId: "point-session", slam2dMap: firstMap });
+    let resolveFirstRaster!: (value: HTMLCanvasElement | null) => void;
+    let resolveNextRaster!: (value: HTMLCanvasElement | null) => void;
+    vi.mocked(occupancyRasters.get).mockImplementation((snapshot) => snapshot === firstMap
+      ? new Promise((resolve) => { resolveFirstRaster = resolve; })
+      : new Promise((resolve) => { resolveNextRaster = resolve; }));
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    let canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="map-pick-feedback"]')?.textContent).toContain("MAP UPDATING");
+    await act(async () => { resolveFirstRaster(document.createElement("canvas")); await settleUi(); await settleUi(); });
+    canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    expect(canvas.dataset.interactiveMapContentRevision).toBe("point-a");
+    expect(canvas.dataset.interactiveMapContentKey).toBe(canvas.dataset.rasterMapContentKey);
+
+    act(() => useStore.getState().setRobotDetail("R01", { slam2dMap: nextMap }));
+    await act(async () => { await settleUi(); });
+    canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    expect(canvas.dataset.interactiveMapContentRevision).toBe("point-a");
+    expect(container.querySelector('[data-testid="map-pick-feedback"]')?.textContent).not.toContain("MAP UPDATING");
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("SELECT YAW");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
+
+    await act(async () => { resolveNextRaster(document.createElement("canvas")); await settleUi(); });
+    canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    expect(canvas.dataset.interactiveMapContentRevision).toBe("point-b");
+    expect(canvas.dataset.interactiveMapContentKey).toBe(occupancyRasterKey(nextMap));
+    expect(canvas.dataset.interactiveMapContentKey).toBe(canvas.dataset.rasterMapContentKey);
+    await act(async () => { buttonNamed("PAN")?.click(); buttonNamed("POINT")?.click(); });
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="map-pick-feedback"]')?.textContent).toContain("OCCUPIED CELL");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
   });
 
 

@@ -1,0 +1,151 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Map
+      Name: Active map
+      Enabled: true
+      Alpha: 1
+      Color Scheme: map
+      Draw Behind: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /map
+      Use Timestamp: false
+      Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: Live LiDAR /scan
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /scan
+      Color Transformer: FlatColor
+      Color: 40; 218; 204
+      Decay Time: 0
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.025
+      Style: Points
+      Use Fixed Frame: true
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Name: Nav2 global route /plan
+      Enabled: true
+      Alpha: 1
+      Buffer Length: 1
+      Color: 25; 190; 85
+      Head Diameter: 0.12
+      Head Length: 0.12
+      Length: 0.3
+      Line Style: Lines
+      Line Width: 0.07
+      Offset: {X: 0, Y: 0, Z: 0.04}
+      Pose Color: 25; 190; 85
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.02
+      Shaft Length: 0.06
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /plan
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Name: Nav2 local route /local_plan
+      Enabled: true
+      Alpha: 1
+      Buffer Length: 1
+      Color: 255; 154; 48
+      Head Diameter: 0.08
+      Head Length: 0.08
+      Length: 0.3
+      Line Style: Lines
+      Line Width: 0.05
+      Offset: {X: 0, Y: 0, Z: 0.06}
+      Pose Color: 255; 154; 48
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.02
+      Shaft Length: 0.06
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_plan
+      Value: true
+    - Class: rviz_default_plugins/RobotModel
+      Name: Robot model
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+      TF Prefix: ""
+      Visual Enabled: true
+      Collision Enabled: false
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: false
+      Show Axes: true
+      Show Arrows: true
+      Update Interval: 0
+      Value: true
+    - Class: rviz_default_plugins/Pose
+      Name: Navigation goal /goal_pose
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /goal_pose
+      Shape: Arrow
+      Color: 255; 166; 45
+      Alpha: 1
+      Value: true
+  Global Options:
+    Fixed Frame: map
+    Background Color: 38; 42; 48
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetInitialPose
+    - Class: rviz_default_plugins/SetGoal
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Angle: -1.5708
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Invert Z Axis: false
+      Name: Demo top-down
+      Near Clip Distance: 0.01
+      Scale: 36
+      Target Frame: <Fixed Frame>
+      Value: TopDownOrtho (rviz_default_plugins)
+      X: 15
+      Y: 5.5
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400
+  X: 50
+  Y: 50

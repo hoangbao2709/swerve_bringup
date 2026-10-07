@@ -677,6 +677,14 @@ export type RobotDetailPath = {
   robot_id: RobotId;
   frame_id: string;
   timestamp?: string | null;
+  stamp?: number | null;
+  map_source?: string | null;
+  active_map_id?: string | null;
+  active_map_revision?: string | null;
+  map_content_revision?: string | null;
+  navigation_map_id?: string | null;
+  navigation_map_revision?: string | null;
+  registration_revision?: number | null;
   points: RobotWorldPoint[];
   local_points?: RobotWorldPoint[];
 };

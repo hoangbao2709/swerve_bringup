@@ -16,8 +16,8 @@ import {
 import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotRuntimeCapabilities, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
 import { centerMapViewportCamera, fitMapViewportCamera, fixedWorldTransform, MAP_PAN_THRESHOLD_PX, mapViewportSessionKey, occupancyMapWorldBounds, panMapViewportCamera, resolveMapViewport, zoomMapViewportCamera, zoomMapViewportCameraAt, type MapViewportState } from "../../layout/mapViewport";
-import { occupancyRasterKey, occupancyRasters, RasterRequestGeneration } from "./occupancyRaster";
-import { decodeOccupancyGrid, isFreeOccupancyPoint } from "./occupancyGrid";
+import { occupancyRasterKey, occupancyRasters } from "./occupancyRaster";
+import { classifyOccupancyPoint, decodeOccupancyGrid, isFreeOccupancyPoint } from "./occupancyGrid";
 import { displayedFramePose, useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
 import { mapPointTarget, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
 import { useStore } from "../../state/store";
@@ -471,12 +471,14 @@ export function AccumulatedSlamMap2DView({ map, robot, scan }: {
 export type ActiveMapLayers = { robot: boolean; scan: boolean; path: boolean; trajectory: boolean; grid: boolean };
 
 export function ActiveNavigationMap2DView({ map, robot, scan, target, navigationPath = [], canPick, onPick, onConfirmPoint,
-  layers, onLayerToggle, compactWorkspace = false, errorLogCount, errorLogTone, onOpenErrorLog }: {
+  navigationPathKind = null, layers, onLayerToggle, compactWorkspace = false, errorLogCount, errorLogTone, onOpenErrorLog, onInteractionModeChange,
+  pointSelectionResetVersion, onCancelPointSelection }: {
   map: RobotDetailMapSnapshot | null;
   robot?: RobotState;
   scan: RobotDetailScan | null;
   target: MapPointNavigationTarget | null;
   navigationPath?: RobotWorldPoint[];
+  navigationPathKind?: "PREVIEW" | "ACTIVE_NAV" | null;
   canPick: boolean;
   onPick: (target: MapPointNavigationTarget) => void;
   onConfirmPoint?: (target: MapPointNavigationTarget) => void;
@@ -486,6 +488,9 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
   errorLogCount?: number;
   errorLogTone?: "neutral" | "info" | "warning" | "error";
   onOpenErrorLog?: () => void;
+  onInteractionModeChange?: (mode: "PAN" | "POINT") => void;
+  pointSelectionResetVersion?: number;
+  onCancelPointSelection?: () => void;
 }) {
   if (!map || map.frame_id !== "map" || !map.active_map_id
       || (!map.active_map_revision && map.map_source !== "SLAM_TOOLBOX")
@@ -522,19 +527,22 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
       data-explored-area-m2={map.explored_area_m2?.toFixed?.(3) ?? map.explored_area_m2}
       data-scan-frame={currentScan?.frame_id} data-scan-points={currentScan?.point_count ?? 0}
       data-trajectory-points={currentScan?.trajectory?.length ?? 0} />
-    <div className={`robot-detail-view-readout${compactWorkspace ? " hmi-map-info" : ""}`}><span>{compactWorkspace ? slamMap ? "SLAM /map" : "NAVIGATION /map" : title}</span>
+    {!compactWorkspace && <div className="robot-detail-view-readout"><span>{title}</span>
       <span>{map.width} × {map.height} · {valueNumber(map.resolution, 3)} m/cell</span>
       {slamMap && <span>{map.explored_area_m2?.toFixed(2) ?? "—"} m² explored</span>}
       {!slamMap && <span>ACTIVE MAP</span>}
-    </div>
+    </div>}
     <PosePickerMap map={map} poseMapIdentity={poseIdentity} robot={robot?.id === map.robot_id ? robot : undefined}
       scan={currentScan} trajectory={layers?.trajectory ? currentScan?.trajectory ?? [] : []}
       showRobot={layers?.robot ?? true} showScan={slamMap && (layers?.scan ?? true)} showGrid={layers?.grid ?? false} showPose={Boolean(selectedTarget)}
       layerState={layers} onLayerToggle={onLayerToggle}
       errorLogCount={errorLogCount} errorLogTone={errorLogTone} onOpenErrorLog={onOpenErrorLog}
+      pointSelectionResetVersion={pointSelectionResetVersion} onCancelPointSelection={onCancelPointSelection}
       pose={selectedTarget ?? { x: displayedPose?.x ?? 0, y: displayedPose?.y ?? 0, yaw: displayedPose?.yaw ?? 0 }}
       defaultPickYaw={displayedPose?.yaw ?? 0}
-      navigationPath={path} pickInstruction={canPick ? "FIRST CLICK: DESTINATION · SECOND CLICK: CONFIRM HEADING" : undefined}
+      onInteractionModeChange={onInteractionModeChange}
+      navigationPath={path} navigationPathKind={navigationPathKind}
+      pickInstruction={canPick ? "FIRST CLICK: DESTINATION · SECOND CLICK: CONFIRM HEADING" : undefined}
       active={canPick} onPick={(point, yaw) => onPick(mapPointTarget(mapIdentity,
         { ...point, yaw: yaw ?? displayedPose?.yaw ?? 0 }))}
       onConfirmPoint={(point, yaw) => onConfirmPoint?.(mapPointTarget(mapIdentity, { ...point, yaw }))}
@@ -618,12 +626,13 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
   </SectionFrame>;
 }
 
-type MapProps = { map: RobotDetailMapSnapshot; poseMapIdentity?: MapPoseIdentity; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; navigationPath?: RobotWorldPoint[]; pickInstruction?: string; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; layerState?: ActiveMapLayers; onLayerToggle?: (layer: keyof ActiveMapLayers) => void; pose: Pose; defaultPickYaw?: number; active: boolean; onPick: (point: Pick<Pose, "x" | "y">, yaw?: number) => void; onConfirmPoint?: (point: Pick<Pose, "x" | "y">, yaw: number) => void; errorLogCount?: number; errorLogTone?: "neutral" | "info" | "warning" | "error"; onOpenErrorLog?: () => void; ariaLabel?: string };
+type MapProps = { map: RobotDetailMapSnapshot; poseMapIdentity?: MapPoseIdentity; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; navigationPath?: RobotWorldPoint[]; navigationPathKind?: "PREVIEW" | "ACTIVE_NAV" | null; pickInstruction?: string; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; layerState?: ActiveMapLayers; onLayerToggle?: (layer: keyof ActiveMapLayers) => void; pose: Pose; defaultPickYaw?: number; active: boolean; onPick: (point: Pick<Pose, "x" | "y">, yaw?: number) => void; onConfirmPoint?: (point: Pick<Pose, "x" | "y">, yaw: number) => void; onInteractionModeChange?: (mode: "PAN" | "POINT") => void; pointSelectionResetVersion?: number; onCancelPointSelection?: () => void; errorLogCount?: number; errorLogTone?: "neutral" | "info" | "warning" | "error"; onOpenErrorLog?: () => void; ariaLabel?: string };
 type MapInteractionMode = "PAN" | "POINT";
 type MapDrag = { pointerId: number; clientX: number; clientY: number; ratioX: number; ratioY: number; start: MapViewportState; moved: boolean; mode: "PAN" | "POINT" | "LEGACY" };
 type PointDirectionPreview = { start: { x: number; y: number }; end: { x: number; y: number } };
 type PointYawAnchor = { world: { x: number; y: number }; screen: { x: number; y: number } };
-function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, trajectory = [], navigationPath = [], pickInstruction, showRobot = true, showScan = true, showGrid = false, showPose = true, layerState, onLayerToggle, pose, defaultPickYaw, active, onPick, onConfirmPoint, errorLogCount, errorLogTone = "neutral", onOpenErrorLog, ariaLabel = "Select map frame initial robot position" }: MapProps) {
+type InteractiveMapSnapshot = { map: RobotDetailMapSnapshot; occupancyGrid: Int8Array | null; raster: HTMLCanvasElement; contentKey: string; identityKey: string };
+function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, trajectory = [], navigationPath = [], navigationPathKind = null, pickInstruction, showRobot = true, showScan = true, showGrid = false, showPose = true, layerState, onLayerToggle, pose, defaultPickYaw, active, onPick, onConfirmPoint, onInteractionModeChange, pointSelectionResetVersion, onCancelPointSelection, errorLogCount, errorLogTone = "neutral", onOpenErrorLog, ariaLabel = "Select map frame initial robot position" }: MapProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -632,63 +641,45 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
   const [interactionMode, setInteractionMode] = useState<MapInteractionMode>("POINT");
   const [directionPreview, setDirectionPreview] = useState<PointDirectionPreview | null>(null);
   const [pointYawAnchor, setPointYawAnchor] = useState<PointYawAnchor | null>(null);
-  const [occupancyGridState, setOccupancyGridState] = useState<{ key: string; cells: Int8Array | null } | null>(null);
+  const [interactiveMapState, setInteractiveMapState] = useState<InteractiveMapSnapshot | null>(null);
+  const [pickFeedback, setPickFeedback] = useState("");
   const drag = useRef<MapDrag | null>(null);
   const suppressClick = useRef(false);
   const suppressClickTimer = useRef<number | null>(null);
+  const pickFeedbackTimer = useRef<number | null>(null);
   const panFrame = useRef<number | null>(null);
   const pendingPan = useRef<MapViewportState | null>(null);
-  const rasterRequestGeneration = useRef(new RasterRequestGeneration());
   const displayedPose = useStableDisplayedFramePose(robot?.id === map.robot_id ? robot : undefined, poseMapIdentity);
   const hasInteractionModeToolbar = Boolean(layerState && onLayerToggle);
   const mapContentKey = occupancyRasterKey(map);
-  const occupancyGrid = occupancyGridState?.key === mapContentKey ? occupancyGridState.cells : null;
+  const mapIdentityKey = JSON.stringify([map.robot_id, map.frame_id, map.map_source, map.active_map_id,
+    map.active_map_revision, map.mapping_session_id]);
   useEffect(() => {
     let current = true;
-    const key = occupancyRasterKey(map);
-    setOccupancyGridState((previous) => previous?.key === key ? previous : null);
-    void decodeOccupancyGrid(map).then((cells) => {
-      if (current) setOccupancyGridState({ key, cells });
-    });
-    return () => { current = false; };
-  }, [map]);
-  const [rasterState, setRasterState] = useState<{ map: RobotDetailMapSnapshot; raster: HTMLCanvasElement } | null>(() => {
-    const raster = occupancyRasters.peek(map);
-    return raster ? { map, raster } : null;
-  });
-  useEffect(() => {
-    let cancelled = false;
-    const requestGeneration = rasterRequestGeneration.current.begin();
-    const cached = occupancyRasters.peek(map);
-    if (cached) setRasterState({ map, raster: cached });
-    else setRasterState((previous) => {
-      if (!previous || previous.map.robot_id !== map.robot_id
-          || previous.map.active_map_id !== map.active_map_id
-          || previous.map.frame_id !== map.frame_id || previous.map.map_source !== map.map_source) return null;
-      if (map.map_source === "SLAM_TOOLBOX"
-          && previous.map.mapping_session_id === map.mapping_session_id) return previous;
-      return previous.map.active_map_revision === map.active_map_revision
-        && occupancyRasterKey(previous.map) === occupancyRasterKey(map) ? previous : null;
-    });
-    void occupancyRasters.get(map).then((raster) => {
-      if (!cancelled && raster && rasterRequestGeneration.current.isCurrent(requestGeneration)) {
-        setRasterState({ map, raster });
+    // Publish geometry, clickable cells and raster atomically. During same-map
+    // content updates the last complete snapshot remains usable until this one
+    // has fully decoded and rasterized.
+    void Promise.all([decodeOccupancyGrid(map), occupancyRasters.get(map)]).then(([occupancyGrid, raster]) => {
+      if (current && raster) {
+        setInteractiveMapState((previous) => {
+          if (!occupancyGrid && previous?.identityKey === mapIdentityKey && previous.occupancyGrid) return previous;
+          return { map, occupancyGrid, raster, contentKey: mapContentKey, identityKey: mapIdentityKey };
+        });
       }
     });
-    return () => { cancelled = true; rasterRequestGeneration.current.invalidate(); };
-  }, [map]);
-  const retainedRasterMatches = Boolean(rasterState
-    && rasterState.map.robot_id === map.robot_id
-    && rasterState.map.active_map_id === map.active_map_id
-    && rasterState.map.frame_id === map.frame_id
-    && rasterState.map.map_source === map.map_source
-    && (map.map_source === "SLAM_TOOLBOX"
-      ? rasterState.map.mapping_session_id === map.mapping_session_id
-      : rasterState.map.active_map_revision === map.active_map_revision
-        && occupancyRasterKey(rasterState.map) === occupancyRasterKey(map)));
-  const raster = retainedRasterMatches ? rasterState?.raster ?? null : null;
-  const rasterMap = retainedRasterMatches ? rasterState?.map ?? map : map;
-  const bounds = useMemo<WorldBounds>(() => occupancyMapWorldBounds(map), [map]);
+    return () => { current = false; };
+  }, [map, mapContentKey, mapIdentityKey]);
+  const interactiveMapSnapshot = interactiveMapState?.identityKey === mapIdentityKey ? interactiveMapState : null;
+  const occupancyGrid = interactiveMapSnapshot?.occupancyGrid ?? null;
+  const raster = interactiveMapSnapshot?.raster ?? null;
+  const renderMap = interactiveMapSnapshot?.map ?? map;
+  useEffect(() => {
+    if (!interactiveMapSnapshot || pickFeedback !== "MAP UPDATING") return;
+    setPickFeedback("");
+    if (pickFeedbackTimer.current !== null) window.clearTimeout(pickFeedbackTimer.current);
+    pickFeedbackTimer.current = null;
+  }, [interactiveMapSnapshot, pickFeedback]);
+  const bounds = useMemo<WorldBounds>(() => occupancyMapWorldBounds(renderMap), [renderMap]);
   const viewportSessionKey = mapViewportSessionKey(map);
   const resolvedViewport = resolveMapViewport(viewportState, map, size);
   const camera = resolvedViewport?.camera ?? { centerX: 0, centerY: 0, scalePxPerMeter: 1, fitScalePxPerMeter: 1 };
@@ -705,7 +696,9 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     return () => {
       if (panFrame.current !== null) cancelAnimationFrame(panFrame.current);
       if (suppressClickTimer.current !== null) window.clearTimeout(suppressClickTimer.current);
+      if (pickFeedbackTimer.current !== null) window.clearTimeout(pickFeedbackTimer.current);
       suppressClickTimer.current = null;
+      pickFeedbackTimer.current = null;
       panFrame.current = null;
       pendingPan.current = null;
       drag.current = null;
@@ -717,6 +710,23 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
       setDirectionPreview(null);
     }
   }, [showPose]);
+  useEffect(() => {
+    setPointYawAnchor(null);
+    setDirectionPreview(null);
+    setPickFeedback("");
+  }, [pointSelectionResetVersion]);
+  const showPickFeedback = (message: string) => {
+    setPickFeedback(message);
+    if (pickFeedbackTimer.current !== null) window.clearTimeout(pickFeedbackTimer.current);
+    pickFeedbackTimer.current = window.setTimeout(() => {
+      setPickFeedback("");
+      pickFeedbackTimer.current = null;
+    }, 1800);
+  };
+  useEffect(() => {
+    setPickFeedback("");
+    if (pickFeedbackTimer.current !== null) window.clearTimeout(pickFeedbackTimer.current);
+  }, [mapIdentityKey]);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -756,29 +766,13 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.fillStyle = "#919191"; context.fillRect(0, 0, size.width, size.height);
     if (raster) {
-      const origin = worldToScreen({ x: rasterMap.origin.x, y: rasterMap.origin.y }, transform);
-      context.save(); context.translate(origin.x, origin.y); context.rotate(-rasterMap.origin.yaw);
-      context.scale(transform.scale * rasterMap.resolution, -transform.scale * rasterMap.resolution);
+      const origin = worldToScreen({ x: renderMap.origin.x, y: renderMap.origin.y }, transform);
+      context.save(); context.translate(origin.x, origin.y); context.rotate(-renderMap.origin.yaw);
+      context.scale(transform.scale * renderMap.resolution, -transform.scale * renderMap.resolution);
       context.imageSmoothingEnabled = false; context.drawImage(raster, 0, 0); context.restore();
     }
     if (showGrid) drawMappingGrid(context, size.width, size.height, transform, bounds);
-    if (trajectory.length > 1) {
-      context.beginPath();
-      trajectory.forEach(([x, y], index) => {
-        const point = worldToScreen({ x, y }, transform);
-        if (index === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
-      });
-      context.strokeStyle = "#f5a64a"; context.lineWidth = 2; context.globalAlpha = 0.85; context.stroke(); context.globalAlpha = 1;
-    }
-    if (navigationPath.length > 1) {
-      context.beginPath();
-      navigationPath.forEach(([x, y], index) => {
-        const point = worldToScreen({ x, y }, transform);
-        if (index === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
-      });
-      context.strokeStyle = "#20b85a"; context.lineWidth = 2.5; context.globalAlpha = 0.95; context.stroke(); context.globalAlpha = 1;
-    }
-    if (showScan && scan?.frame_id === map.frame_id) {
+    if (showScan && scan?.frame_id === renderMap.frame_id) {
       const origin = scan.sensor_pose;
       // Accumulated occupancy is the base layer; the current LaserScan is a
       // restrained point overlay, not a fan/ray rendering that can dominate it.
@@ -787,12 +781,33 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
       if (origin) { const center = worldToScreen({ x: origin.x, y: origin.y }, transform); context.globalAlpha = 0.75; context.fillRect(center.x - 2, center.y - 2, 4, 4); }
       context.restore();
     }
-    if (showRobot && displayedPose) drawPose(context, transform, displayedPose.x, displayedPose.y, displayedPose.yaw, "#42dfd2");
+    if (trajectory.length > 1) {
+      context.beginPath();
+      trajectory.forEach(([x, y], index) => {
+        const point = worldToScreen({ x, y }, transform);
+        if (index === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
+      });
+      context.strokeStyle = "#e18a2b"; context.lineWidth = 2; context.globalAlpha = 0.88; context.stroke(); context.globalAlpha = 1;
+    }
+    if (navigationPath.length > 1) {
+      context.beginPath();
+      navigationPath.forEach(([x, y], index) => {
+        const point = worldToScreen({ x, y }, transform);
+        if (index === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
+      });
+      context.strokeStyle = navigationPathKind === "ACTIVE_NAV" ? "#168346" : "#74c78e";
+      context.lineWidth = navigationPathKind === "ACTIVE_NAV" ? 3 : 2;
+      context.lineCap = "round"; context.lineJoin = "round";
+      context.setLineDash(navigationPathKind === "PREVIEW" ? [8, 5] : []);
+      context.globalAlpha = navigationPathKind === "ACTIVE_NAV" ? 1 : 0.92;
+      context.stroke(); context.setLineDash([]); context.globalAlpha = 1;
+    }
     if (showPose) drawPose(context, transform, pose.x, pose.y, pose.yaw, "#f6cf4f");
+    if (showRobot && displayedPose) drawPose(context, transform, displayedPose.x, displayedPose.y, displayedPose.yaw, "#1686d9");
     if (directionPreview) drawDirectionArrow(context, transform, directionPreview);
     context.fillStyle = "#8aa4bf"; context.font = "10px JetBrains Mono, monospace";
     context.fillText(active ? pickInstruction ?? (pointYawAnchor ? "SELECT YAW · CLICK TO CONFIRM" : "CLICK FREE CELL TO SET DESTINATION") : "MAP FRAME · METRES", 10, size.height - 10);
-  }, [active, bounds, directionPreview, displayedPose, map, navigationPath, pickInstruction, pointYawAnchor, pose, raster, rasterMap, scan, showGrid, showPose, showRobot, showScan, size, trajectory, transform]);
+  }, [active, bounds, directionPreview, displayedPose, map, navigationPath, navigationPathKind, pickInstruction, pointYawAnchor, pose, raster, renderMap, scan, showGrid, showPose, showRobot, showScan, size, trajectory, transform]);
   const pointAtClient = (clientX: number, clientY: number, canvas: HTMLCanvasElement, currentTransform = transform) => {
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
@@ -813,13 +828,16 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
       suppressClickTimer.current = null;
       return;
     }
-    if (!active || !raster || !isPointPickingMode) return;
-    if (!occupancyGrid) return;
+    if (!active || !isPointPickingMode) return;
+    if (!interactiveMapSnapshot || !raster || !occupancyGrid) {
+      showPickFeedback("MAP UPDATING");
+      return;
+    }
     const screen = canvasPointAtClient(event.clientX, event.clientY, event.currentTarget);
     const cursorWorld = screen ? screenToWorld(screen, transform) : null;
     if (!cursorWorld) return;
     if (!hasInteractionModeToolbar) {
-      if (isFreeOccupancyPoint(map, occupancyGrid, cursorWorld)) onPick(cursorWorld, defaultPickYaw ?? pose.yaw);
+      if (isFreeOccupancyPoint(interactiveMapSnapshot.map, occupancyGrid, cursorWorld)) onPick(cursorWorld, defaultPickYaw ?? pose.yaw);
       return;
     }
     if (pointYawAnchor) {
@@ -832,10 +850,16 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
       setDirectionPreview(null);
       return;
     }
-    if (!isFreeOccupancyPoint(map, occupancyGrid, cursorWorld)) return;
+    const classification = classifyOccupancyPoint(interactiveMapSnapshot.map, occupancyGrid, cursorWorld);
+    if (classification !== "FREE") {
+      showPickFeedback(classification === "OCCUPIED" ? "OCCUPIED CELL"
+        : classification === "UNKNOWN" ? "UNKNOWN / UNMAPPED CELL" : "OUTSIDE MAP");
+      return;
+    }
     const anchor = { world: cursorWorld, screen: screen! };
     setPointYawAnchor(anchor);
     setDirectionPreview(null);
+    setPickFeedback("");
     onPick(cursorWorld, defaultPickYaw ?? pose.yaw);
   };
   const flushPan = () => {
@@ -919,14 +943,17 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     {layerState && onLayerToggle && <div className="hmi-map-layer-toolbar" role="group" aria-label="Map interaction modes and layers" data-testid="robot-map-layers">
       <button type="button" aria-label="PAN" title="Pan map" aria-pressed={interactionMode === "PAN"}
         className={interactionMode === "PAN" ? "is-active" : ""} data-testid="map-mode-pan"
-        onClick={() => { setInteractionMode("PAN"); setDirectionPreview(null); }}>✋ PAN</button>
+        onClick={() => { setInteractionMode("PAN"); setPointYawAnchor(null); setDirectionPreview(null); setPickFeedback(""); onInteractionModeChange?.("PAN"); }}>✋ PAN</button>
       <button type="button" aria-label="POINT" title="Select a destination and yaw" aria-pressed={interactionMode === "POINT"}
         className={interactionMode === "POINT" ? "is-active" : ""} data-testid="map-mode-point"
-        onClick={() => setInteractionMode("POINT")}>⌖ POINT</button>
+        onClick={() => { setInteractionMode("POINT"); setPickFeedback(""); onInteractionModeChange?.("POINT"); }}>⌖ POINT</button>
       <span className="hmi-map-toolbar-separator" aria-hidden="true" />
       {(["robot", "scan", "path", "trajectory", "grid"] as const).map((layer) => <button
         key={layer} type="button" aria-pressed={layerState[layer]} className={layerState[layer] ? "is-active" : ""}
         onClick={() => onLayerToggle(layer)}>{layerState[layer] ? "✓ " : "□ "}{layer.toUpperCase()}</button>)}
+    </div>}
+    {active && isPointPickingMode && <div className="hmi-map-pick-feedback" role="status" aria-live="polite" data-testid="map-pick-feedback">
+      {pickFeedback || (!interactiveMapSnapshot ? "MAP UPDATING" : "")}
     </div>}
     <canvas ref={canvasRef}
     data-testid={map.map_source === "SLAM_TOOLBOX" ? "slam-map-2d-canvas" : undefined}
@@ -934,11 +961,15 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     data-scan-layer={showScan && scan ? "low-opacity-current-scan-overlay" : "disabled"}
     data-scan-render-mode="points-only"
     data-navigation-path-point-count={navigationPath.length}
+    data-navigation-path-kind={navigationPathKind ?? "none"}
     data-robot-layer={showRobot && displayedPose ? "visible" : "disabled"}
     data-grid-layer={showGrid ? "visible" : "disabled"}
     data-path-layer={navigationPath.length > 1 ? "visible" : "disabled"}
     data-trajectory-layer={trajectory.length > 1 ? "visible" : "disabled"}
-    data-map-source={map.map_source} data-map-id={map.active_map_id}
+    data-map-source={renderMap.map_source} data-map-id={renderMap.active_map_id}
+    data-interactive-map-content-key={interactiveMapSnapshot?.contentKey ?? ""}
+    data-raster-map-content-key={interactiveMapSnapshot?.contentKey ?? ""}
+    data-interactive-map-content-revision={renderMap.map_content_revision ?? renderMap.map_version ?? ""}
     data-interaction-mode={hasInteractionModeToolbar ? interactionMode : undefined}
     data-direction-preview={directionPreview ? "visible" : "hidden"}
     data-direction-preview-yaw={directionPreview ? Math.atan2(directionPreview.end.y - directionPreview.start.y,
@@ -949,6 +980,12 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     data-viewport-width={size.width} data-viewport-height={size.height}
     data-pose-source={displayedPose?.pose_source}
     data-render-x={displayedPose?.x} data-render-y={displayedPose?.y} data-render-yaw={displayedPose?.yaw}
+    onContextMenu={(event) => {
+      event.preventDefault();
+      // A context click only cancels a point/yaw/preview transaction. Once
+      // SEND GOAL clears the selection, right-click must not affect Nav2.
+      if (showPose || pointYawAnchor || directionPreview) onCancelPointSelection?.();
+    }}
     onPointerDown={(event) => {
       if (event.button !== 0 || drag.current || !resolvedViewport) return;
       const rect = event.currentTarget.getBoundingClientRect();

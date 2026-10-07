@@ -25,6 +25,15 @@ ROUTE_SAMPLE_STEP_M = 0.05
 # connector can demand an arbitrary heading at effectively the same position;
 # the entry Tag pose is a better-defined, already approved route target.
 TAG_ENTRY_CAPTURE_RADIUS_M = 0.15
+# Shelf-service associations are only inferred at a clearly aligned rack
+# endcap, on a published aisle, and within this stand-off band.  The current
+# WH-TEST-01 bundle places its service markers 2.5 m beyond rack end faces.
+# These limits reject unrelated aisle intersections and leave a documented
+# allowance for a half-metre tag-grid offset on the short rack axis.
+SHELF_SERVICE_MIN_STANDOFF_M = 0.5
+SHELF_SERVICE_MAX_STANDOFF_M = 3.0
+SHELF_SERVICE_ALIGNMENT_TOLERANCE_M = 0.6
+SHELF_SERVICE_CLEARANCE_M = 0.35
 
 
 def _tag_sources(tag: dict[str, Any]) -> set[str]:
@@ -174,6 +183,13 @@ def plan_orthogonal_tag_route(layout: dict[str, Any], start_pose: dict[str, Any]
         raise ValueError('start pose and destination Tag must be valid') from None
     if not all(math.isfinite(value) for value in (*start, start_yaw)):
         raise ValueError('start pose must contain finite coordinates')
+    # Swerve can traverse either warehouse axis with the same cardinal body
+    # heading (the perpendicular axis uses lateral velocity). Keep one
+    # cardinal transit heading through connector corners and intermediate
+    # graph nodes; rotating to every segment tangent creates tiny rotate-stop
+    # goals at L connectors and turns. Only the final destination restores its
+    # semantic service heading.
+    transit_yaw = _cardinal_yaw(start_yaw)
     tags = {int(tag['tag_id']): tag for tag in doc.get('navigation_tags') or []
             if tag.get('enabled', True)}
     target = tags.get(target_id)
@@ -300,6 +316,24 @@ def plan_orthogonal_tag_route(layout: dict[str, Any], start_pose: dict[str, Any]
     route_edges.reverse()
     route_nodes.reverse()
     route_cost = distances[terminal]
+    orientation_policy = str(target_metadata.get('orientation_policy') or '').upper()
+    if orientation_policy == 'SHELF_WIDTH_PARALLEL':
+        # The width-axis constraint is modulo pi: both robot headings whose
+        # base_link Y axes lie along the rack's long axis are valid service
+        # poses. Prefer the one matching the stable transit heading so the
+        # robot does not perform an unnecessary 180-degree spin at the shelf.
+        # For a rotated rack these candidates remain non-cardinal as required
+        # by its actual geometry; only the direction is selected here.
+        base_yaw = float(destination_pose['yaw'])
+        alternate_yaw = math.atan2(math.sin(base_yaw + math.pi),
+                                   math.cos(base_yaw + math.pi))
+        def heading_error(candidate: float) -> float:
+            return abs(math.atan2(math.sin(candidate - transit_yaw),
+                                  math.cos(candidate - transit_yaw)))
+        destination_pose = {
+            **destination_pose,
+            'yaw': min((base_yaw, alternate_yaw), key=heading_error),
+        }
     best_connector = chosen_connector
     entry_id = chosen_entry
     points: list[dict[str, Any]] = [{'x': start[0], 'y': start[1], 'yaw': start_yaw,
@@ -311,8 +345,8 @@ def plan_orthogonal_tag_route(layout: dict[str, Any], start_pose: dict[str, Any]
         if distance <= AXIS_TOLERANCE_M:
             current = (x, y)
             continue
-        yaw = math.atan2(y - current[1], x - current[0])
-        point = {'x': x, 'y': y, 'yaw': yaw, 'kind': 'LANE_CONNECTOR', 'tag_id': None}
+        point = {'x': x, 'y': y, 'yaw': transit_yaw,
+                 'kind': 'LANE_CONNECTOR', 'tag_id': None}
         segments.append({'from': points[-1].get('tag_id') or 'ROBOT_START', 'to': 'LANE_CONNECTOR',
                          'axis': axis, 'lane_id': lane_id, 'length_m': distance,
                          'direction': 'forward'})
@@ -320,7 +354,7 @@ def plan_orthogonal_tag_route(layout: dict[str, Any], start_pose: dict[str, Any]
         current = (x, y)
     for index, tag_id in enumerate(route_nodes):
         tag = tags[tag_id]
-        point = {'x': float(tag['x']), 'y': float(tag['y']), 'yaw': float(tag['yaw']),
+        point = {'x': float(tag['x']), 'y': float(tag['y']), 'yaw': transit_yaw,
                  'kind': 'TAG', 'tag_id': tag_id}
         if math.hypot(point['x'] - current[0], point['y'] - current[1]) > AXIS_TOLERANCE_M:
             edge = route_edges[index - 1] if index else None
@@ -347,7 +381,7 @@ def plan_orthogonal_tag_route(layout: dict[str, Any], start_pose: dict[str, Any]
                 continue
             segments.append({'from': target_id, 'to': 'TAG_SERVICE_POSE', 'axis': axis,
                              'lane_id': lane_id, 'length_m': distance, 'direction': 'forward'})
-            points.append({'x': x, 'y': y, 'yaw': math.atan2(y - current[1], x - current[0]),
+            points.append({'x': x, 'y': y, 'yaw': transit_yaw,
                            'kind': 'SERVICE_APPROACH', 'tag_id': target_id})
             current = (x, y)
     # Final service heading is applied at the final physical/approach position.
@@ -361,6 +395,7 @@ def plan_orthogonal_tag_route(layout: dict[str, Any], start_pose: dict[str, Any]
         'route_points': points,
         'route_cost_m': route_cost,
         'destination_pose': destination_pose,
+        'orientation_policy': orientation_policy or None,
         'graph_revision': doc.get('tag_graph_revision'),
         'turn_penalty_m': turn_penalty_m,
     }
@@ -380,25 +415,180 @@ def _aisle_at(tag: dict[str, Any], aisles: list[dict[str, Any]]) -> dict[str, An
     return None
 
 
+def _rack_service_geometry(tag: dict[str, Any], rack: dict[str, Any],
+                           layout: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate an endcap service pose against rack, floor and aisle geometry.
+
+    Rack map geometry follows the same lower-corner-plus-half-size convention
+    used by the canonical Nav2 rasterizer.  A valid shelf service point must
+    be outside the rack, close to exactly one longitudinal end face, aligned
+    with that rack's centreline, and inside one of the Tag's published aisles.
+    """
+    try:
+        metadata = tag.get('metadata') if isinstance(tag.get('metadata'), dict) else {}
+        pose_key = next((key for key in ('service_pose', 'approach_pose',
+                                         'navigation_pose', 'goal_pose')
+                         if key in metadata), None)
+        pose = metadata.get(pose_key) if pose_key else tag
+        if not isinstance(pose, dict):
+            return None
+        x, y = float(pose['x']), float(pose['y'])
+        floor_id = str(tag.get('floor_id', 1))
+        if str(rack.get('floor_id', rack.get('floor', 1))) != floor_id:
+            return None
+        position, size = rack.get('position') or [], rack.get('size') or []
+        if len(position) < 3 or len(size) < 3:
+            return None
+        sx, sy = float(size[0]), float(size[2])
+        if not all(math.isfinite(value) and value > 0 for value in (sx, sy)):
+            return None
+        # Position is the canonical lower corner; raster and route collision
+        # checks rotate the rectangle about this derived centre.
+        cx, cy = float(position[0]) + sx / 2, float(position[2]) + sy / 2
+        rack_yaw = math.radians(float(rack.get('rotation') or 0.0))
+        dx, dy = x - cx, y - cy
+        c, s = math.cos(rack_yaw), math.sin(rack_yaw)
+        local_x, local_y = c * dx + s * dy, -s * dx + c * dy
+        if sx >= sy:
+            along, across, half_long = local_x, local_y, sx / 2
+            long_yaw = rack_yaw
+        else:
+            along, across, half_long = local_y, local_x, sy / 2
+            long_yaw = rack_yaw + math.pi / 2
+        standoff = abs(along) - half_long
+        if not (SHELF_SERVICE_MIN_STANDOFF_M <= standoff <= SHELF_SERVICE_MAX_STANDOFF_M):
+            return None
+        if abs(across) > SHELF_SERVICE_ALIGNMENT_TOLERANCE_M:
+            return None
+
+        source_aisles = _tag_sources(tag)
+        aisle_matches = []
+        for aisle in layout.get('aisles') or []:
+            aisle_id = str(aisle.get('id') or aisle.get('uuid') or '')
+            if source_aisles and aisle_id not in source_aisles:
+                continue
+            if str(aisle.get('floor_id', aisle.get('floor', 1))) != floor_id:
+                continue
+            centerline = aisle.get('centerline') or []
+            projected = _project(centerline, x, y)
+            width = float(aisle.get('width') or 0.0)
+            if (projected is not None and width >= 2 * SHELF_SERVICE_CLEARANCE_M
+                    and projected[0] <= width / 2 - SHELF_SERVICE_CLEARANCE_M + 1e-9):
+                aisle_matches.append(aisle_id)
+        if not aisle_matches:
+            return None
+
+        floor = next((item for item in layout.get('floors') or []
+                      if str(item.get('id')) == floor_id), None)
+        if floor is None:
+            return None
+        default_floor = str((layout.get('floors') or [floor])[0].get('id'))
+        # A small radial footprint check prevents an otherwise aligned point
+        # from being classified as service when it overlaps a rack/wall.
+        for index in range(8):
+            angle = index * math.pi / 4
+            if _floor_obstacle(x + SHELF_SERVICE_CLEARANCE_M * math.cos(angle),
+                               y + SHELF_SERVICE_CLEARANCE_M * math.sin(angle),
+                               floor, layout, default_floor):
+                return None
+        return {
+            'rack_id': str(rack.get('id') or rack.get('uuid') or ''),
+            'service_face': ('LONG_AXIS_POSITIVE_END' if along >= 0
+                             else 'LONG_AXIS_NEGATIVE_END'),
+            'service_standoff_m': round(standoff, 6),
+            'rack_long_yaw': math.atan2(math.sin(long_yaw), math.cos(long_yaw)),
+            'aisle_id': sorted(aisle_matches)[0],
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _rack_service_candidates(tag: dict[str, Any], layout: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    matches = []
+    for rack in layout.get('racks') or []:
+        geometry = _rack_service_geometry(tag, rack, layout)
+        if geometry is not None:
+            matches.append((rack, geometry))
+    return matches
+
+
+def _associate_shelf_service_tags(layout: dict[str, Any],
+                                  canonical_revision: int | None) -> None:
+    """Set shelf semantics only for unambiguous, geometry-validated tags."""
+    racks = {str(rack.get('id') or rack.get('uuid') or ''): rack
+             for rack in layout.get('racks') or []}
+    for tag in layout.get('navigation_tags') or []:
+        metadata = dict(tag.get('metadata') or {})
+        role = str(tag.get('semantic_role') or '').strip().lower()
+        policy = str(metadata.get('orientation_policy') or '').strip().upper()
+        explicit_id = metadata.get('rack_id') or metadata.get('shelf_id')
+        declared_service = role in ('shelf_service', 'service') or bool(explicit_id) \
+            or policy == 'SHELF_WIDTH_PARALLEL'
+
+        if explicit_id:
+            rack = racks.get(str(explicit_id))
+            if rack is None:
+                raise ValueError(f"Tag {tag.get('tag_id')} references missing rack_id {explicit_id}")
+            geometry = _rack_service_geometry(tag, rack, layout)
+            if geometry is None:
+                raise ValueError(
+                    f"Tag {tag.get('tag_id')} is not a validated service point for rack {explicit_id}")
+            candidates = [(rack, geometry)]
+        else:
+            candidates = _rack_service_candidates(tag, layout)
+            if len(candidates) > 1:
+                raise ValueError(
+                    f"Tag {tag.get('tag_id')} has ambiguous shelf-service geometry; specify rack_id")
+            if declared_service and len(candidates) != 1:
+                raise ValueError(
+                    f"Tag {tag.get('tag_id')} declares shelf service but has no unique valid rack service point")
+            if not candidates:
+                if policy == 'SHELF_WIDTH_PARALLEL':
+                    raise ValueError(f"Tag {tag.get('tag_id')} requests shelf orientation without valid rack service geometry")
+                continue
+            # An authored non-shelf orientation policy is meaningful input,
+            # not missing metadata.  Do not silently reinterpret that Tag as
+            # a shelf service point just because it happens to lie near a rack.
+            if policy and policy not in ('SHELF_WIDTH_PARALLEL', 'EXPLICIT'):
+                continue
+            if role and role not in ('intersection', 'shelf_service', 'service'):
+                continue
+
+        rack, geometry = candidates[0]
+        if policy and policy not in ('SHELF_WIDTH_PARALLEL', 'EXPLICIT') and declared_service:
+            raise ValueError(
+                f"Tag {tag.get('tag_id')} shelf-service geometry conflicts with orientation_policy {policy}")
+        metadata['rack_id'] = geometry['rack_id']
+        metadata['orientation_policy'] = 'SHELF_WIDTH_PARALLEL'
+        metadata['service_face'] = geometry['service_face']
+        metadata['service_standoff_m'] = geometry['service_standoff_m']
+        metadata['service_aisle_id'] = geometry['aisle_id']
+        service_pose = dict(metadata.get('service_pose') or {})
+        service_pose.update({'frame_id': 'map', 'x': float(service_pose.get('x', tag['x'])),
+                             'y': float(service_pose.get('y', tag['y']))})
+        if canonical_revision is not None:
+            service_pose['map_revision'] = str(int(canonical_revision))
+        metadata['service_pose'] = service_pose
+        tag['metadata'] = metadata
+        tag['semantic_role'] = 'shelf_service'
+
+
 def _rack_for_tag(tag: dict[str, Any], layout: dict[str, Any]) -> dict[str, Any] | None:
     metadata = tag.get('metadata') if isinstance(tag.get('metadata'), dict) else {}
     explicit = metadata.get('rack_id') or metadata.get('shelf_id')
     racks = layout.get('racks') or []
     if explicit:
-        return next((rack for rack in racks if str(rack.get('id')) == str(explicit)), None)
-    # Shelf service semantics must be explicit; proximity alone must not turn
-    # an intersection/lane node into a shelf-service stop.
+        rack = next((item for item in racks
+                     if str(item.get('id') or item.get('uuid') or '') == str(explicit)), None)
+        if rack is None or _rack_service_geometry(tag, rack, layout) is None:
+            raise ValueError(f"Tag {tag.get('tag_id')} has invalid rack_id/service geometry")
+        return rack
     if str(tag.get('semantic_role') or '').lower() not in ('shelf_service', 'service'):
         return None
-    x, y = float(tag['x']), float(tag['y'])
-    candidates = []
-    for rack in racks:
-        position, size = rack.get('position') or [], rack.get('size') or []
-        if len(position) < 3 or len(size) < 3:
-            continue
-        rx, ry = float(position[0]) + float(size[0]) / 2, float(position[2]) + float(size[2]) / 2
-        candidates.append((math.hypot(x - rx, y - ry), rack))
-    return min(candidates, default=(math.inf, None), key=lambda item: item[0])[1]
+    candidates = _rack_service_candidates(tag, layout)
+    if len(candidates) != 1:
+        raise ValueError(f"Tag {tag.get('tag_id')} requires one unambiguous rack_id service association")
+    return candidates[0][0]
 
 
 def _resolve_tag_yaw(tag: dict[str, Any], layout: dict[str, Any]) -> tuple[float, str]:
@@ -542,6 +732,7 @@ def validate_orthogonal_edges(layout: dict[str, Any], edges: list[dict[str, Any]
 def prepare_published_navigation(layout: dict[str, Any], canonical_revision: int | None = None) -> dict[str, Any]:
     """Return layout with semantic cardinal Tag poses and a generated graph."""
     doc = canonicalize_layout(layout)
+    _associate_shelf_service_tags(doc, canonical_revision)
     authored_errors = validate_orthogonal_edges(doc)
     if authored_errors:
         raise ValueError('; '.join(authored_errors))
@@ -549,6 +740,13 @@ def prepare_published_navigation(layout: dict[str, Any], canonical_revision: int
         metadata = dict(tag.get('metadata') or {})
         yaw, policy = _resolve_tag_yaw(tag, doc)
         metadata['orientation_policy'] = policy
+        if policy == 'SHELF_WIDTH_PARALLEL':
+            service_pose = dict(metadata.get('service_pose') or {})
+            service_pose.update({'frame_id': 'map', 'x': float(service_pose.get('x', tag['x'])),
+                                 'y': float(service_pose.get('y', tag['y'])), 'yaw': yaw})
+            if canonical_revision is not None:
+                service_pose['map_revision'] = str(int(canonical_revision))
+            metadata['service_pose'] = service_pose
         tag['metadata'] = metadata
         tag['yaw'] = yaw
     edges = generate_orthogonal_edges(doc)
@@ -583,6 +781,10 @@ def prepare_published_navigation(layout: dict[str, Any], canonical_revision: int
     revision_input = {
         'canonical_revision': int(canonical_revision) if canonical_revision is not None else doc.get('revision'),
         'tags': [{'tag_id': tag['tag_id'], 'x': tag['x'], 'y': tag['y'], 'yaw': tag['yaw'],
+                  'semantic_role': tag.get('semantic_role'),
+                  'rack_id': (tag.get('metadata') or {}).get('rack_id'),
+                  'service_face': (tag.get('metadata') or {}).get('service_face'),
+                  'service_pose': (tag.get('metadata') or {}).get('service_pose'),
                   'orientation_policy': (tag.get('metadata') or {}).get('orientation_policy')}
                  for tag in sorted(doc.get('navigation_tags') or [], key=lambda item: int(item['tag_id']))],
         'edges': [{key: edge.get(key) for key in ('from_tag_id', 'to_tag_id', 'aisle_id', 'axis', 'distance', 'direction', 'enabled')}

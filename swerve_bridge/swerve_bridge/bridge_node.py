@@ -28,7 +28,8 @@ from rclpy.time import Time
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as RosPath
 from gazebo_msgs.msg import ModelStates
-from .canonical_pose import GazeboCanonicalAlignment
+from .canonical_pose import (GazeboCanonicalAlignment,
+                             interpolate_canonical_pose_at)
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import LoadMap
 from rosgraph_msgs.msg import Clock
@@ -156,6 +157,8 @@ class SwerveBridge(Node):
         self.gazebo_world_file = Path(str(self.get_parameter('gazebo_world_file').value)).expanduser()
         self.canonical_alignment = None
         self.latest_canonical_pose = None
+        self.canonical_pose_samples = deque(maxlen=256)
+        self.canonical_pose_samples_lock = threading.Lock()
         self.last_canonical_pose_monotonic = None
         try:
             self.canonical_alignment = GazeboCanonicalAlignment(
@@ -300,6 +303,7 @@ class SwerveBridge(Node):
         self.goal_request_pending = False
         self.cancel_pending = False
         self.pending_cancel_state = None
+        self.pending_cancel_reason = None
         self.pending_replan = None
         self.incoming = ControlMailbox()
         self.ws = None
@@ -515,8 +519,45 @@ class SwerveBridge(Node):
         return None
 
     def model_states_cb(self, msg):
-        self.latest_canonical_pose = self.canonical_alignment.pose(msg, self.now())
+        source_timestamp_s = self.get_clock().now().nanoseconds * 1e-9
+        canonical_pose = self.canonical_alignment.pose(
+            msg, self.now(), source_timestamp_s=source_timestamp_s)
+        self.latest_canonical_pose = canonical_pose
+        if canonical_pose is None:
+            return
+        with self.canonical_pose_samples_lock:
+            if (self.canonical_pose_samples
+                    and source_timestamp_s < self.canonical_pose_samples[-1][0]):
+                # A simulation clock reset must never interpolate poses across
+                # two epochs, even if the Gazebo process itself remains alive.
+                self.canonical_pose_samples.clear()
+            sample = (source_timestamp_s, canonical_pose)
+            if (self.canonical_pose_samples
+                    and source_timestamp_s == self.canonical_pose_samples[-1][0]):
+                self.canonical_pose_samples[-1] = sample
+            else:
+                self.canonical_pose_samples.append(sample)
         self.last_canonical_pose_monotonic = time.monotonic()
+
+    def _canonical_pose_at_tf_stamp(self, source_timestamp_s):
+        """Pair Gazebo and TF poses at the same ROS acquisition time."""
+        if (self.last_canonical_pose_monotonic is None
+                or time.monotonic() - self.last_canonical_pose_monotonic > 3.0):
+            return None
+        try:
+            stamp = float(source_timestamp_s)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        with self.canonical_pose_samples_lock:
+            samples = tuple(self.canonical_pose_samples)
+        canonical_pose = interpolate_canonical_pose_at(
+            samples, stamp, max_gap_s=0.25)
+        if canonical_pose is not None:
+            # The source timestamp identifies the interpolated sample; this
+            # wall timestamp identifies when the fresh correspondence was
+            # assembled for backend freshness validation.
+            canonical_pose['timestamp'] = self.now()
+        return canonical_pose
 
     def odom_cb(self, msg):
         now = time.monotonic()
@@ -1220,9 +1261,8 @@ class SwerveBridge(Node):
                     'mapping_session_id': self.mapping_session_id,
                     'timestamp': self.now(), 'valid': True,
                 }
-            canonical_pose = self.latest_canonical_pose if (
-                self.last_canonical_pose_monotonic is not None
-                and time.monotonic() - self.last_canonical_pose_monotonic <= 3.0) else None
+            canonical_pose = self._canonical_pose_at_tf_stamp(
+                pose.get('source_timestamp_s'))
             self.tf_status = True
             self.tf_error = None
             self.send({'type': 'ROBOT_STATE', 'robot_id': self.robot_id,
@@ -1372,7 +1412,13 @@ class SwerveBridge(Node):
                 age = now_s - stamp_s
                 if stamp_s > 0.0 and age > max_age:
                     raise TransformException(f'TF {target}->{frame} stale ({age:.2f}s)')
-                return (pose_from_transform(transform), frame)
+                pose = pose_from_transform(transform)
+                # Keep the TF sample's ROS clock stamp distinct from the wall
+                # time at which this coalesced telemetry frame is sent. The
+                # backend uses it to compare this active-map pose with the
+                # independently sampled Gazebo canonical pose.
+                pose['source_timestamp_s'] = stamp_s
+                return (pose, frame)
             except TransformException as exc:
                 errors.append(f'{frame}: {exc}')
         raise TransformException(f'no fresh {target}->base transform ({"; ".join(errors)})')
@@ -3636,6 +3682,10 @@ class SwerveBridge(Node):
             'route_nodes': context.get('route_nodes'),
             'route_index': index, 'route_node_id': target.get('tag_id'),
         })
+        self.get_logger().info(
+            f'TAG_ROUTE_LEG_AUTH_REQUEST_SENT robot={self.robot_id} '
+            f'auth_request_id={auth_request_id} route_revision={context.get("route_revision")} '
+            f'index={index} node={target.get("tag_id")}')
 
     def accept_tag_route_leg_auth(self, data):
         waiting = self.tag_route_waiting_auth
@@ -3659,10 +3709,19 @@ class SwerveBridge(Node):
         if data.get('approved') is not True:
             self.tag_route_context = None
             self.nav_state = 'FAILED'
+            self.get_logger().warning(
+                f'TAG_ROUTE_LEG_AUTH_DENIED robot={self.robot_id} '
+                f'auth_request_id={waiting.get("auth_request_id")} '
+                f'route_revision={context.get("route_revision")} index={context.get("route_index")} '
+                f'code={data.get("reason_code") or "TAG_ROUTE_AUTH_DENIED"}')
             self.send_nav_status(context, 'FAILED',
                 f"{data.get('reason_code') or 'TAG_ROUTE_AUTH_DENIED'}: "
                 f"{data.get('reason') or 'backend did not authorize the next route leg'}")
             return
+        self.get_logger().info(
+            f'TAG_ROUTE_LEG_AUTH_APPROVED robot={self.robot_id} '
+            f'auth_request_id={waiting.get("auth_request_id")} '
+            f'route_revision={context.get("route_revision")} index={context.get("route_index")}')
         self._dispatch_tag_route_leg(context)
 
     def _expire_tag_route_leg_auth(self):
@@ -3682,6 +3741,7 @@ class SwerveBridge(Node):
         self.nav_state = 'FAILED'
         self.get_logger().warning(
             f'TAG_ROUTE_AUTH_TIMEOUT robot={self.robot_id} '
+            f'auth_request_id={waiting.get("auth_request_id")} '
             f'route_revision={context.get("route_revision")} index={context.get("route_index")}')
         self.send_nav_status(context, 'FAILED',
                              'TAG_ROUTE_AUTH_TIMEOUT: backend did not reauthorize the next route leg')
@@ -3804,6 +3864,8 @@ class SwerveBridge(Node):
             handle = future.result()
         except Exception as exc:
             cancel_state = self._pending_goal_cancel_state()
+            cancel_reason = self.pending_cancel_reason
+            self.pending_cancel_reason = None
             self.pending_cancel_state = None
             self.pending_replan = None
             self.cancel_pending = False
@@ -3812,12 +3874,15 @@ class SwerveBridge(Node):
                 self.tag_route_context = None
             if cancel_state:
                 self.send_nav_status(context, cancel_state,
+                                     cancel_reason or
                                      'Nav2 goal ended before acceptance after cancellation was requested')
                 return
             self.send_nav_status(context, 'FAILED', f'GoToTag goal request failed: {exc}')
             return
         if handle is None or not handle.accepted:
             cancel_state = self._pending_goal_cancel_state()
+            cancel_reason = self.pending_cancel_reason
+            self.pending_cancel_reason = None
             self.pending_cancel_state = None
             self.pending_replan = None
             self.cancel_pending = False
@@ -3826,6 +3891,7 @@ class SwerveBridge(Node):
                 self.tag_route_context = None
             if cancel_state:
                 self.send_nav_status(context, cancel_state,
+                                     cancel_reason or
                                      'Nav2 rejected the goal before the pending cancellation completed')
                 return
             self.send_nav_status(context, 'FAILED', 'GoToTag rejected the goal')
@@ -3850,6 +3916,8 @@ class SwerveBridge(Node):
             handle = future.result()
         except Exception as exc:
             cancel_state = self._pending_goal_cancel_state()
+            cancel_reason = self.pending_cancel_reason
+            self.pending_cancel_reason = None
             self.pending_cancel_state = None
             self.pending_replan = None
             self.cancel_pending = False
@@ -3858,12 +3926,15 @@ class SwerveBridge(Node):
                 self.tag_route_context = None
             if cancel_state:
                 self.send_nav_status(context, cancel_state,
+                                     cancel_reason or
                                      'Nav2 goal ended before acceptance after cancellation was requested')
                 return
             self.send_nav_status(context, 'FAILED', f'NavigateToPose request failed: {exc}')
             return
         if handle is None or not handle.accepted:
             cancel_state = self._pending_goal_cancel_state()
+            cancel_reason = self.pending_cancel_reason
+            self.pending_cancel_reason = None
             self.pending_cancel_state = None
             self.pending_replan = None
             self.cancel_pending = False
@@ -3872,6 +3943,7 @@ class SwerveBridge(Node):
                 self.tag_route_context = None
             if cancel_state:
                 self.send_nav_status(context, cancel_state,
+                                     cancel_reason or
                                      'Nav2 rejected the goal before the pending cancellation completed')
                 return
             self.send_nav_status(context, 'FAILED', 'NavigateToPose rejected the goal')
@@ -3939,12 +4011,15 @@ class SwerveBridge(Node):
         }.get(status_code, 'FAILED')
         reason = None
         pending_cancel_state = self.pending_cancel_state
+        pending_cancel_reason = self.pending_cancel_reason
+        self.pending_cancel_reason = None
         self.pending_cancel_state = None
         self.pending_replan = None
         if self.emergency_stop_active:
             status = 'EMERGENCY_STOPPED'
         elif status == 'CANCELED' and pending_cancel_state:
             status = pending_cancel_state
+            reason = pending_cancel_reason
         route = self.tag_route_context if context.get('route_revision') else None
         if status == 'SUCCEEDED' and route is not None:
             try:
@@ -4152,7 +4227,10 @@ class SwerveBridge(Node):
             GoalStatus.STATUS_ABORTED: 'FAILED',
             GoalStatus.STATUS_CANCELED: 'CANCELED',
         }.get(status_code, 'FAILED')
+        reason = None
         pending_cancel_state = self.pending_cancel_state
+        pending_cancel_reason = self.pending_cancel_reason
+        self.pending_cancel_reason = None
         pending_replan = self.pending_replan
         self.pending_cancel_state = None
         self.pending_replan = None
@@ -4160,12 +4238,14 @@ class SwerveBridge(Node):
             status = 'EMERGENCY_STOPPED'
         elif status == 'CANCELED' and pending_cancel_state:
             status = pending_cancel_state
+            reason = pending_cancel_reason
         self.nav_state = 'IDLE' if status == 'SUCCEEDED' else status
         if self.active_goal is handle:
             self.active_goal = None
             self.active_context = None
             self.cancel_pending = False
-        reason = None if status != 'FAILED' else f'GoToTag finished with status code {status_code}'
+        if status == 'FAILED':
+            reason = f'GoToTag finished with status code {status_code}'
         self.send_nav_status(context, status, reason)
         if pending_replan and status == 'PLANNING' and not self.emergency_stop_active:
             # A replan is a cancel-then-new-goal operation because the action
@@ -4186,6 +4266,11 @@ class SwerveBridge(Node):
             'stop_id': data.get('stop_id'),
             'target_tag_id': data.get('target_tag_id'),
         })
+        cancel_reason = str(data.get('reason') or '').strip()
+        if data.get('reason_code'):
+            cancel_reason = f'{str(data["reason_code"]).strip()}: {cancel_reason}' if cancel_reason else str(data['reason_code']).strip()
+        if not cancel_reason:
+            cancel_reason = 'navigation cancellation requested'
         if is_replan and not data.get('target_tag_id'):
             data = {**data, 'target_tag_id': context.get('target_tag_id')}
         if isinstance(getattr(self, 'tag_route_waiting_auth', None), dict):
@@ -4200,19 +4285,23 @@ class SwerveBridge(Node):
             self.cmd_pub.publish(Twist())
             self.nav_state = cancel_state
             self.send_nav_status(route_context, cancel_state,
+                                 cancel_reason if data.get('reason_code') else
                                  'Tag route stopped before the next leg was authorized')
             return
         if self.active_pose_goal is not None:
+            self.pending_cancel_reason = cancel_reason
             self.cancel_pose_navigation(context, cancel_state)
             return
         if self.active_goal is None:
             if self.goal_request_pending:
                 self.pending_cancel_state = cancel_state
+                self.pending_cancel_reason = cancel_reason
                 self.pending_replan = dict(data) if is_replan else None
                 self.cmd_pub.publish(Twist())
                 self.nav_state = cancel_state
                 self.send_nav_status(
                     context, cancel_state,
+                    cancel_reason if data.get('reason_code') else
                     'cancel requested before Nav2 goal acceptance; will cancel immediately if accepted',
                 )
                 return
@@ -4221,11 +4310,15 @@ class SwerveBridge(Node):
                 self.navigate(data)
             else:
                 self.nav_state = cancel_state
-                self.send_nav_status(context, cancel_state, 'no accepted Nav2 goal; state updated locally')
+                self.send_nav_status(
+                    context, cancel_state,
+                    cancel_reason if data.get('reason_code') else
+                    'no accepted Nav2 goal; state updated locally')
             return
         if self.cancel_pending:
             return
         self.pending_cancel_state = cancel_state
+        self.pending_cancel_reason = cancel_reason
         self.pending_replan = dict(data) if is_replan else None
         self.cancel_pending = True
         try:
@@ -4264,12 +4357,14 @@ class SwerveBridge(Node):
             self.cancel_pending = False
             self.pending_replan = None
             self.pending_cancel_state = None
+            self.pending_cancel_reason = None
             self.send_nav_status(context, 'FAILED', f'Nav2 cancellation request failed: {exc}')
             return
         if not accepted:
             self.cancel_pending = False
             self.pending_replan = None
             self.pending_cancel_state = None
+            self.pending_cancel_reason = None
             self.send_nav_status(context, 'FAILED', 'Nav2 rejected the cancellation request')
         # A successful request is not completion. goal_result() reports
         # CANCELED only after Nav2 returns STATUS_CANCELED.

@@ -1,0 +1,66 @@
+frame_id: map
+units: m
+canonical_revision: 23
+graph_revision: "442fbd8a2396e21b87563b821c818b91098dd1e98d2865e67e884cfecc95290f"
+markers:
+  - {tag_id: 1101, x: 10.5, y: 5.5, yaw: -1.57079632679, uuid: "tag-l01", floor_id: "1", z: 0}
+  - {tag_id: 1102, x: 10.5, y: 11, yaw: -1.57079632679, uuid: "tag-l02", floor_id: "1", z: 0}
+  - {tag_id: 1103, x: 10.5, y: 16.5, yaw: -1.57079632679, uuid: "tag-l03", floor_id: "1", z: 0}
+  - {tag_id: 1104, x: 10.5, y: 22, yaw: -1.57079632679, uuid: "tag-l04", floor_id: "1", z: 0}
+  - {tag_id: 1105, x: 10.5, y: 27.5, yaw: -1.57079632679, uuid: "tag-l05", floor_id: "1", z: 0}
+  - {tag_id: 1106, x: 10.5, y: 33, yaw: -1.57079632679, uuid: "tag-l06", floor_id: "1", z: 0}
+  - {tag_id: 1107, x: 10.5, y: 38.5, yaw: -1.57079632679, uuid: "tag-l07", floor_id: "1", z: 0}
+  - {tag_id: 1108, x: 10.5, y: 44, yaw: -1.57079632679, uuid: "tag-l08", floor_id: "1", z: 0}
+  - {tag_id: 1109, x: 10.5, y: 49.5, yaw: -1.57079632679, uuid: "tag-l09", floor_id: "1", z: 0}
+  - {tag_id: 1110, x: 10.5, y: 55, yaw: -1.57079632679, uuid: "tag-l10", floor_id: "1", z: 0}
+  - {tag_id: 1201, x: 15, y: 5.5, yaw: 1.57079632679, uuid: "tag-c01", floor_id: "1", z: 0}
+  - {tag_id: 1202, x: 15, y: 11, yaw: 1.57079632679, uuid: "tag-c02", floor_id: "1", z: 0}
+  - {tag_id: 1203, x: 15, y: 16.5, yaw: 1.57079632679, uuid: "tag-c03", floor_id: "1", z: 0}
+  - {tag_id: 1204, x: 15, y: 22, yaw: 1.57079632679, uuid: "tag-c04", floor_id: "1", z: 0}
+  - {tag_id: 1205, x: 15, y: 27.5, yaw: 1.57079632679, uuid: "tag-c05", floor_id: "1", z: 0}
+  - {tag_id: 1206, x: 15, y: 33, yaw: 1.57079632679, uuid: "tag-c06", floor_id: "1", z: 0}
+  - {tag_id: 1207, x: 15, y: 38.5, yaw: 1.57079632679, uuid: "tag-c07", floor_id: "1", z: 0}
+  - {tag_id: 1208, x: 15, y: 44, yaw: 1.57079632679, uuid: "tag-c08", floor_id: "1", z: 0}
+  - {tag_id: 1209, x: 15, y: 49.5, yaw: 1.57079632679, uuid: "tag-c09", floor_id: "1", z: 0}
+  - {tag_id: 1210, x: 15, y: 55, yaw: 1.57079632679, uuid: "tag-c10", floor_id: "1", z: 0}
+  - {tag_id: 1301, x: 19.5, y: 5.5, yaw: -1.57079632679, uuid: "tag-r01", floor_id: "1", z: 0}
+  - {tag_id: 1302, x: 19.5, y: 11, yaw: -1.57079632679, uuid: "tag-r02", floor_id: "1", z: 0}
+  - {tag_id: 1303, x: 19.5, y: 16.5, yaw: -1.57079632679, uuid: "tag-r03", floor_id: "1", z: 0}
+  - {tag_id: 1304, x: 19.5, y: 22, yaw: -1.57079632679, uuid: "tag-r04", floor_id: "1", z: 0}
+  - {tag_id: 1305, x: 19.5, y: 27.5, yaw: -1.57079632679, uuid: "tag-r05", floor_id: "1", z: 0}
+  - {tag_id: 1306, x: 19.5, y: 33, yaw: -1.57079632679, uuid: "tag-r06", floor_id: "1", z: 0}
+  - {tag_id: 1307, x: 19.5, y: 38.5, yaw: -1.57079632679, uuid: "tag-r07", floor_id: "1", z: 0}
+  - {tag_id: 1308, x: 19.5, y: 44, yaw: -1.57079632679, uuid: "tag-r08", floor_id: "1", z: 0}
+  - {tag_id: 1309, x: 19.5, y: 49.5, yaw: -1.57079632679, uuid: "tag-r09", floor_id: "1", z: 0}
+  - {tag_id: 1310, x: 19.5, y: 55, yaw: -1.57079632679, uuid: "tag-r10", floor_id: "1", z: 0}
+tags:
+  - {"floor_id":"1","id":1101,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L01","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":5.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l01","x":10.5,"y":5.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1102,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L02","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":11.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l02","x":10.5,"y":11.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1103,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L03","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":16.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l03","x":10.5,"y":16.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1104,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L04","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":22.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l04","x":10.5,"y":22.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1105,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L05","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":27.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l05","x":10.5,"y":27.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1106,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L06","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":33.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l06","x":10.5,"y":33.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1107,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L07","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":38.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l07","x":10.5,"y":38.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1108,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L08","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":44.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l08","x":10.5,"y":44.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1109,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L09","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":49.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l09","x":10.5,"y":49.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1110,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-L10","semantic_role":"shelf_service","service_aisle_id":"LANE_LEFT","service_face":"LONG_AXIS_POSITIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":10.5,"y":55.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-l10","x":10.5,"y":55.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1201,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c01","x":15.0,"y":5.5,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1202,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c02","x":15.0,"y":11.0,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1203,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c03","x":15.0,"y":16.5,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1204,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c04","x":15.0,"y":22.0,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1205,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c05","x":15.0,"y":27.5,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1206,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c06","x":15.0,"y":33.0,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1207,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c07","x":15.0,"y":38.5,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1208,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c08","x":15.0,"y":44.0,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1209,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c09","x":15.0,"y":49.5,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1210,"orientation_policy":"LANE_FORWARD","semantic_role":"intersection","uuid":"tag-c10","x":15.0,"y":55.0,"yaw":1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1301,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R01","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":5.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r01","x":19.5,"y":5.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1302,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R02","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":11.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r02","x":19.5,"y":11.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1303,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R03","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":16.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r03","x":19.5,"y":16.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1304,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R04","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":22.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r04","x":19.5,"y":22.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1305,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R05","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":27.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r05","x":19.5,"y":27.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1306,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R06","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":33.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r06","x":19.5,"y":33.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1307,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R07","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":38.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r07","x":19.5,"y":38.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1308,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R08","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":44.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r08","x":19.5,"y":44.0,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1309,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R09","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":49.5,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r09","x":19.5,"y":49.5,"yaw":-1.5707963267948966,"z":0.0}
+  - {"floor_id":"1","id":1310,"orientation_policy":"SHELF_WIDTH_PARALLEL","rack_id":"SHELF-R10","semantic_role":"shelf_service","service_aisle_id":"LANE_RIGHT","service_face":"LONG_AXIS_NEGATIVE_END","service_pose":{"frame_id":"map","map_revision":"23","x":19.5,"y":55.0,"yaw":-1.5707963267948966},"service_standoff_m":2.5,"uuid":"tag-r10","x":19.5,"y":55.0,"yaw":-1.5707963267948966,"z":0.0}

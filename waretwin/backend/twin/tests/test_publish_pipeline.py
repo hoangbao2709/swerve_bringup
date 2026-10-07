@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from django.test import RequestFactory, TestCase, override_settings
 
 from twin.models import WarehouseMapVersion
@@ -52,6 +53,30 @@ class PublishPipelineTests(TestCase):
         self.assertIn('"1001"', graph)
         self.assertIn('neighbors: [1002]', graph)
         self.assertIn('direction: "bidirectional"', graph)
+
+    def test_published_tag_artifacts_preserve_semantic_service_metadata_and_revisions(self):
+        layout = layout_fixture()
+        layout['revision'] = 23
+        layout['tag_graph_revision'] = 'graph-r23'
+        layout['navigation_tags'][0].update({'semantic_role': 'shelf_service',
+            'metadata': {'orientation_policy': 'SHELF_WIDTH_PARALLEL', 'rack_id': 'rack-A',
+                'service_face': 'LONG_AXIS_POSITIVE_END', 'service_standoff_m': 1.0,
+                'service_aisle_id': 'A1',
+                'service_pose': {'frame_id': 'map', 'map_revision': '23',
+                                 'x': 1.0, 'y': 5.0, 'yaw': -1.57079632679}}})
+        matrix = yaml.safe_load(render_datamatrix_yaml(layout))
+        graph = yaml.safe_load(render_tag_graph_yaml(layout))
+
+        self.assertEqual((matrix['canonical_revision'], matrix['graph_revision']),
+                         (23, 'graph-r23'))
+        matrix_tag = next(tag for tag in matrix['tags'] if tag['id'] == 1001)
+        graph_tag = graph['tags']['1001']
+        for tag in (matrix_tag, graph_tag):
+            self.assertEqual(tag['semantic_role'], 'shelf_service')
+            self.assertEqual(tag['orientation_policy'], 'SHELF_WIDTH_PARALLEL')
+            self.assertEqual(tag['rack_id'], 'rack-A')
+            self.assertEqual(tag['service_pose']['map_revision'], '23')
+            self.assertEqual(tag['service_pose']['yaw'], -1.57079632679)
 
     def test_publish_creates_immutable_revision_artifacts_and_increments(self):
         with tempfile.TemporaryDirectory() as tmp, override_settings(WARETWIN_ARTIFACT_ROOT=Path(tmp)):

@@ -44,7 +44,7 @@ def test_unified_nav2_registers_full_published_map_on_distinct_topic():
     assert config['planner_server']['ros__parameters']['GridBased']['allow_unknown'] is False
 
 
-def test_nav2_progress_checker_counts_terminal_yaw_without_weakening_stuck_limits():
+def test_nav2_swerve_controller_preserves_transit_heading_and_terminal_yaw_safety():
     config = yaml.safe_load((ROOT / 'swerve_navigation/config/nav2_params.yaml').read_text(encoding='utf-8'))
     params = config['controller_server']['ros__parameters']
     checker = params['progress_checker']
@@ -59,8 +59,15 @@ def test_nav2_progress_checker_counts_terminal_yaw_without_weakening_stuck_limit
     assert follow_path['critics'].count('Oscillation') == 1
     assert 'RotateToGoal' in follow_path['critics']
     assert 'BaseObstacle' in follow_path['critics']
-    assert follow_path['RotateToGoal.scale'] >= max(
-        follow_path['PathAlign.scale'], follow_path['GoalAlign.scale'])
+    # A holonomic swerve base should translate laterally on an orthogonal leg
+    # instead of rotating to the global-path tangent. Twirling penalizes that
+    # unnecessary transit spin; RotateToGoal still handles the final heading.
+    assert 'Twirling' in follow_path['critics']
+    assert 'PathAlign' not in follow_path['critics']
+    assert 'GoalAlign' not in follow_path['critics']
+    assert follow_path['Twirling.scale'] > 0
+    assert follow_path['RotateToGoal.scale'] >= follow_path['Twirling.scale']
+    assert 'BaseObstacle' in follow_path['critics']
     assert 0 < follow_path['RotateToGoal.lookahead_time'] < follow_path['sim_time']
     controller_frequency = params['controller_frequency']
     theta_acceleration = follow_path['acc_lim_theta']

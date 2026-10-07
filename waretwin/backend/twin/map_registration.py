@@ -10,6 +10,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Max
 
@@ -60,6 +61,28 @@ def transform_canonical_pose(pose: dict[str, Any], transform: dict[str, Any]) ->
     }
 
 
+def registration_pose_residual(canonical_pose: dict[str, Any],
+                               active_pose: dict[str, Any],
+                               transform: dict[str, Any]) -> dict[str, float]:
+    """Measure pinned-registration error at the paired robot pose.
+
+    SE(2) translation coefficients depend on the transform origin: a small
+    yaw difference can produce large ``tx``/``ty`` deltas far from that
+    origin even when the pinned transform still places the current robot
+    pose correctly. Compare the measured and predicted poses in the active
+    map instead of comparing origin-dependent coefficients.
+    """
+    predicted = transform_canonical_pose(canonical_pose, transform)
+    actual_x, actual_y, actual_yaw = (
+        float(active_pose[key]) for key in ('x', 'y', 'yaw'))
+    if not all(math.isfinite(value) for value in (actual_x, actual_y, actual_yaw)):
+        raise ValueError('active pose must contain finite x, y and yaw')
+    return {
+        'translation_m': math.hypot(actual_x - predicted['x'], actual_y - predicted['y']),
+        'yaw_rad': abs(normalize_yaw(actual_yaw - predicted['yaw'])),
+    }
+
+
 def inverse_transform_active_pose(pose: dict[str, Any], transform: dict[str, Any]) -> dict[str, float]:
     """Apply the exact inverse of T_active_from_canonical to an active pose."""
     x, y, yaw = (float(pose[key]) for key in ('x', 'y', 'yaw'))
@@ -84,9 +107,17 @@ def _valid_pose(pose: Any) -> bool:
         return False
 
 
-def _pose_pair_is_time_aligned(canonical_pose: dict[str, Any],
-                               active_pose: dict[str, Any]) -> bool:
-    """Require fresh wall timestamps so both coordinates describe one pose."""
+def _pose_pair_time_alignment_blocker(canonical_pose: dict[str, Any],
+                                      active_pose: dict[str, Any]) -> str | None:
+    """Require fresh packets and acquisition-time-aligned ROS poses.
+
+    ``timestamp`` values are packet/callback wall times and the canonical
+    ModelStates sample and TF sample travel through independent callback
+    paths. Their wall times can differ even when both source measurements
+    carry the same ROS clock stamp. Therefore validate each wall timestamp's
+    freshness independently, then compare the ROS acquisition stamps for the
+    actual pose-pair skew.
+    """
     try:
         stamps = []
         for pose in (canonical_pose, active_pose):
@@ -95,11 +126,85 @@ def _pose_pair_is_time_aligned(canonical_pose: dict[str, Any],
             if stamp.tzinfo is None:
                 stamp = stamp.replace(tzinfo=timezone.utc)
             stamps.append(stamp)
-        skew = abs((stamps[0] - stamps[1]).total_seconds())
-        age = abs((datetime.now(timezone.utc) - max(stamps)).total_seconds())
     except (TypeError, ValueError, OverflowError):
-        return False
-    return skew <= REGISTRATION_POSE_PAIR_MAX_SKEW_S and age <= REGISTRATION_POSE_PAIR_MAX_SKEW_S
+        return 'WALL_TIMESTAMP_INVALID'
+    now = datetime.now(timezone.utc)
+    max_pose_age_s = max(0.0, float(getattr(
+        settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0)))
+    if any(abs((now - stamp).total_seconds()) > max_pose_age_s for stamp in stamps):
+        return 'WALL_TIMESTAMP_STALE'
+    try:
+        source_stamps = [float(pose['source_timestamp_s'])
+                         for pose in (canonical_pose, active_pose)]
+        if not all(math.isfinite(stamp) for stamp in source_stamps):
+            return 'ROS_TIMESTAMP_INVALID'
+        source_skew = abs(source_stamps[0] - source_stamps[1])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return 'ROS_TIMESTAMP_MISSING'
+    if source_skew > REGISTRATION_POSE_PAIR_MAX_SKEW_S:
+        return 'ROS_TIMESTAMP_SKEW'
+    return None
+
+
+def gazebo_registration_candidate_blocker(*, robot_id: str, active_map: dict[str, Any],
+                                          canonical_pose: dict[str, Any],
+                                          active_pose: dict[str, Any]) -> str | None:
+    """Return a diagnostic reason when a Gazebo/TF pair cannot derive SE(2)."""
+    robot_id = str(robot_id or '').strip()
+    active_map_id = str(active_map.get('active_map_id') or '')
+    active_revision = str(active_map.get('active_map_revision') or '')
+    canonical_revision = str(active_map.get('canonical_map_revision') or '')
+    if not robot_id:
+        return 'ROBOT_ID_MISSING'
+    if (not active_map_id.startswith('SLAM-') or not active_revision
+            or active_map.get('map_source') != 'SLAM_TOOLBOX'
+            or active_map.get('map_sync_status') != 'LOCAL_ONLY'):
+        return 'SLAM_MAP_IDENTITY_NOT_READY'
+    if not _valid_pose(canonical_pose):
+        return 'GAZEBO_CANONICAL_POSE_INVALID'
+    if not _valid_pose(active_pose):
+        return 'ACTIVE_TF_POSE_INVALID'
+    blocker = _pose_pair_time_alignment_blocker(canonical_pose, active_pose)
+    if blocker:
+        return blocker
+    if (canonical_pose.get('map_id') != 'CANONICAL'
+            or canonical_pose.get('frame_id') != 'map'
+            or canonical_pose.get('pose_source') != 'GAZEBO_MODEL_STATES'
+            or canonical_pose.get('transform_source') != 'VALIDATED_CANONICAL_WORLD_BUNDLE'
+            or str(canonical_pose.get('map_revision') or '') != canonical_revision):
+        return 'GAZEBO_CANONICAL_IDENTITY_MISMATCH'
+    if (active_pose.get('map_id') != active_map_id
+            or str(active_pose.get('map_revision') or '') != active_revision
+            or active_pose.get('frame_id') != 'map'
+            or active_pose.get('pose_source') != 'TF'):
+        return 'ACTIVE_TF_IDENTITY_MISMATCH'
+    try:
+        int(canonical_revision)
+    except (TypeError, ValueError):
+        return 'CANONICAL_REVISION_INVALID'
+    return None
+
+
+def gazebo_registration_candidate(*, robot_id: str, active_map: dict[str, Any],
+                                  canonical_pose: dict[str, Any],
+                                  active_pose: dict[str, Any]) -> dict[str, float] | None:
+    """Return a fresh Gazebo/TF pose-pair transform without persisting it.
+
+    Navigation leases use this read-only check to detect when SLAM has moved
+    its ``map`` frame relative to the canonical warehouse while a goal is in
+    flight. Persisting a new transform during that action would move the
+    registered Nav2 raster underneath an already-approved goal, so callers
+    must cancel first and reconcile registration only after Nav2 is terminal.
+    """
+    blocker = gazebo_registration_candidate_blocker(
+        robot_id=robot_id, active_map=active_map,
+        canonical_pose=canonical_pose, active_pose=active_pose)
+    if blocker:
+        return None
+    try:
+        return derive_active_from_canonical(canonical_pose, active_pose)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def update_gazebo_registration(*, robot_id: str, active_map: dict[str, Any],
@@ -113,22 +218,10 @@ def update_gazebo_registration(*, robot_id: str, active_map: dict[str, Any],
     robot_id = str(robot_id or '').strip()
     active_map_id = str(active_map.get('active_map_id') or '')
     active_revision = str(active_map.get('active_map_revision') or '')
-    if (not robot_id or not active_map_id.startswith('SLAM-') or not active_revision
-            or active_map.get('map_source') != 'SLAM_TOOLBOX'
-            or active_map.get('map_sync_status') != 'LOCAL_ONLY'
-            or not _valid_pose(canonical_pose) or not _valid_pose(active_pose)
-            or not _pose_pair_is_time_aligned(canonical_pose, active_pose)):
-        return None
-    if (canonical_pose.get('map_id') != 'CANONICAL'
-            or canonical_pose.get('frame_id') != 'map'
-            or canonical_pose.get('pose_source') != 'GAZEBO_MODEL_STATES'
-            or canonical_pose.get('transform_source') != 'VALIDATED_CANONICAL_WORLD_BUNDLE'
-            or str(canonical_pose.get('map_revision') or '')
-            != str(active_map.get('canonical_map_revision') or '')
-            or active_pose.get('map_id') != active_map_id
-            or str(active_pose.get('map_revision') or '') != active_revision
-            or active_pose.get('frame_id') != 'map'
-            or active_pose.get('pose_source') != 'TF'):
+    candidate = gazebo_registration_candidate(
+        robot_id=robot_id, active_map=active_map,
+        canonical_pose=canonical_pose, active_pose=active_pose)
+    if candidate is None:
         return None
     try:
         canonical_revision = int(str(active_map.get('canonical_map_revision') or ''))
@@ -137,7 +230,6 @@ def update_gazebo_registration(*, robot_id: str, active_map: dict[str, Any],
     warehouse_map = WarehouseMap.objects.filter(is_active=True, revision=canonical_revision).order_by('id').first()
     if warehouse_map is None:
         return None
-    candidate = derive_active_from_canonical(canonical_pose, active_pose)
     key = (robot_id, active_map_id, active_revision, canonical_revision)
     with transaction.atomic():
         prior = RobotMapRegistration.objects.select_for_update().filter(

@@ -119,12 +119,47 @@ class OrthogonalTagRouteTests(TestCase):
 
     def test_short_but_real_l_shaped_entry_connector_remains_explicit(self):
         route = plan_orthogonal_tag_route(
-            self.layout(), {'x': 15.1, 'y': 5.1, 'yaw': 0.0}, 4)
+            self.layout(), {'x': 15.1, 'y': 5.1, 'yaw': 1.1}, 4)
         self.assertEqual(route['route_nodes'], [2, 3, 4])
         self.assertEqual([point['kind'] for point in route['route_points'][:4]],
                          ['START', 'LANE_CONNECTOR', 'LANE_CONNECTOR', 'TAG'])
         self.assertEqual([segment['axis'] for segment in route['route_segments'][:2]], ['Y', 'X'])
+        self.assertAlmostEqual(route['route_points'][1]['yaw'], math.pi / 2)
+        self.assertAlmostEqual(route['route_points'][2]['yaw'], math.pi / 2)
+        self.assertAlmostEqual(route['route_points'][3]['yaw'], math.pi / 2)
+        self.assertAlmostEqual(route['route_points'][-1]['yaw'], 0.0)
         self.assertTrue(validate_orthogonal_route(route['route_points']))
+
+    def test_transit_tags_keep_one_cardinal_body_heading_across_x_and_y_legs(self):
+        route = plan_orthogonal_tag_route(
+            self.layout(), {'x': 10.0, 'y': 5.0, 'yaw': math.pi / 2}, 4)
+        self.assertEqual([segment['axis'] for segment in route['route_segments']], ['X', 'Y', 'X'])
+        for point in route['route_points'][1:-1]:
+            self.assertAlmostEqual(point['yaw'], math.pi / 2)
+        # Transit heading is lane-oriented, while the destination's authored
+        # service pose remains authoritative.
+        self.assertAlmostEqual(route['route_points'][-1]['yaw'], 0.0)
+        self.assertTrue(validate_orthogonal_route(route['route_points']))
+
+    def test_shelf_service_chooses_equivalent_heading_matching_transit_without_breaking_width_alignment(self):
+        for rack_yaw, transit_yaw in ((0, math.pi / 2), (90, 0.0), (30, 0.0),
+                                      (180, -math.pi / 2), (-180, math.pi / 2)):
+            with self.subTest(rack_yaw=rack_yaw, transit_yaw=transit_yaw):
+                layout = self._rotated_shelf_layout(rack_yaw)
+                tag = prepare_published_navigation(layout)['navigation_tags'][0]
+                route = plan_orthogonal_tag_route(
+                    layout, {'x': tag['x'], 'y': tag['y'], 'yaw': transit_yaw}, 7)
+                final_yaw = route['destination_pose']['yaw']
+                rack_long_axis = math.radians(rack_yaw)
+                width_axis_yaw = final_yaw + math.pi / 2
+                alignment_error = abs(math.atan2(math.sin(width_axis_yaw - rack_long_axis),
+                                                 math.cos(width_axis_yaw - rack_long_axis)))
+                alignment_error = min(alignment_error, abs(math.pi - alignment_error))
+                self.assertEqual(route['orientation_policy'], 'SHELF_WIDTH_PARALLEL')
+                self.assertLess(alignment_error, 1e-8)
+                self.assertLess(abs(math.atan2(math.sin(final_yaw - transit_yaw),
+                                               math.cos(final_yaw - transit_yaw))), math.pi / 2 + 1e-8)
+                self.assertAlmostEqual(route['route_points'][-1]['yaw'], final_yaw)
 
     def test_route_graph_revision_uses_active_published_revision_not_stale_layout_revision(self):
         layout = self.layout()
@@ -145,24 +180,99 @@ class OrthogonalTagRouteTests(TestCase):
         self.assertFalse(validate_orthogonal_edges(graph))
         self.assertTrue(all(edge['axis'] in ('X', 'Y') for edge in graph['navigation_edges']))
 
-    def test_shelf_width_axis_uses_actual_rotated_rack_long_axis(self):
-        layout = {
-            'id': 'rotated-rack', 'size': {'width': 20, 'depth': 20, 'height': 4},
-            'floors': [{'id': 'F1', 'boundary': [[0, 0], [20, 0], [20, 20], [0, 20]]}],
-            'aisles': [], 'navigation_edges': [],
-            'racks': [{'id': 'rack-A', 'floor': 'F1', 'position': [5, 0, 5],
-                       'size': [4, 2, 2], 'rotation': 30}],
+    def test_published_warehouse_shelf_semantics_are_geometry_derived_and_revision_bound(self):
+        repository = Path(__file__).resolve().parents[4]
+        source = repository / 'generated/maps/WH-TEST-01/22/canonical_map.json'
+        published = json.loads(source.read_text())
+        graph = prepare_published_navigation(published, 23)
+        shelf_tags = [tag for tag in graph['navigation_tags']
+                      if tag.get('semantic_role') == 'shelf_service']
+        lane_tags = [tag for tag in graph['navigation_tags'] if tag not in shelf_tags]
+
+        # This bundle deliberately has rack-aligned outer service lanes plus a
+        # middle navigation lane.  The classification is checked by geometry
+        # and exact rack association, not Tag-number prefixes.
+        self.assertEqual(len(shelf_tags), 20)
+        self.assertEqual(len(lane_tags), 10)
+        self.assertEqual(len(graph['navigation_edges']), 47)
+        self.assertFalse(validate_orthogonal_edges(graph))
+        racks = {str(rack['id']): rack for rack in published['racks']}
+        for tag in shelf_tags:
+            metadata = tag['metadata']
+            self.assertEqual(metadata['orientation_policy'], 'SHELF_WIDTH_PARALLEL')
+            rack = racks[metadata['rack_id']]
+            rack_yaw = math.radians(float(rack.get('rotation') or 0.0))
+            if float(rack['size'][2]) > float(rack['size'][0]):
+                rack_yaw += math.pi / 2
+            width_yaw = tag['yaw'] + math.pi / 2
+            parallel_error = abs(math.atan2(math.sin(width_yaw - rack_yaw),
+                                            math.cos(width_yaw - rack_yaw)))
+            parallel_error = min(parallel_error, abs(math.pi - parallel_error))
+            self.assertLess(parallel_error, 1e-8)
+            self.assertEqual(metadata['service_pose']['frame_id'], 'map')
+            self.assertEqual(metadata['service_pose']['map_revision'], '23')
+            self.assertIn(metadata['service_face'],
+                          ('LONG_AXIS_POSITIVE_END', 'LONG_AXIS_NEGATIVE_END'))
+        self.assertTrue(all(tag['metadata']['orientation_policy'] == 'LANE_FORWARD'
+                            for tag in lane_tags))
+
+    @staticmethod
+    def _rotated_shelf_layout(rack_yaw):
+        cx, cy = 12.0, 11.0
+        long_axis_yaw = math.radians(rack_yaw)
+        tag_x = cx + 3.0 * math.cos(long_axis_yaw)
+        tag_y = cy + 3.0 * math.sin(long_axis_yaw)
+        lane_end = (tag_x + 6.0 * math.cos(long_axis_yaw),
+                    tag_y + 6.0 * math.sin(long_axis_yaw))
+        return {
+            'id': 'rotated-rack', 'size': {'width': 30, 'depth': 30, 'height': 4},
+            'floors': [{'id': 'F1', 'boundary': [[0, 0], [30, 0], [30, 30], [0, 30]]}],
+            'aisles': [{'id': 'service-lane', 'floor_id': 'F1',
+                        'centerline': [[tag_x, tag_y], list(lane_end)],
+                        'width': 1.8, 'direction': 'bidirectional'}],
+            'navigation_edges': [], 'stations': [], 'obstacles': [], 'columns': [],
+            'conveyors': [],
+            'racks': [{'id': 'rack-A', 'floor': 'F1', 'position': [10, 0, 10],
+                       'size': [4, 2, 2], 'rotation': rack_yaw}],
             'navigation_tags': [{'uuid': 'shelf-tag', 'tag_id': 7, 'floor_id': 'F1',
-                'x': 10, 'y': 10, 'yaw': 0, 'semantic_role': 'shelf_service',
-                'metadata': {'rack_id': 'rack-A'}}],
+                'x': tag_x, 'y': tag_y, 'yaw': 0, 'source_aisles': ['service-lane'],
+                'semantic_role': 'shelf_service', 'metadata': {'rack_id': 'rack-A'}}],
         }
-        tag = prepare_published_navigation(layout)['navigation_tags'][0]
-        rack_long_axis = math.radians(30)
-        robot_width_axis = tag['yaw'] + math.pi / 2
-        error = abs(math.atan2(math.sin(robot_width_axis - rack_long_axis),
-                               math.cos(robot_width_axis - rack_long_axis)))
-        self.assertEqual(tag['metadata']['orientation_policy'], 'SHELF_WIDTH_PARALLEL')
-        self.assertLess(error, 1e-9)
+
+    def test_shelf_width_axis_uses_actual_rotated_rack_long_axis(self):
+        for rack_yaw in (0, 90, 30, 180, -180):
+            with self.subTest(rack_yaw=rack_yaw):
+                tag = prepare_published_navigation(
+                    self._rotated_shelf_layout(rack_yaw))['navigation_tags'][0]
+                rack_long_axis = math.radians(rack_yaw)
+                robot_width_axis = tag['yaw'] + math.pi / 2
+                error = abs(math.atan2(math.sin(robot_width_axis - rack_long_axis),
+                                       math.cos(robot_width_axis - rack_long_axis)))
+                error = min(error, abs(math.pi - error))
+                self.assertEqual(tag['metadata']['orientation_policy'], 'SHELF_WIDTH_PARALLEL')
+                self.assertLess(error, 1e-9)
+
+    def test_authored_non_shelf_policy_is_not_promoted_by_nearby_rack_geometry(self):
+        layout = self._rotated_shelf_layout(30)
+        tag = layout['navigation_tags'][0]
+        tag['semantic_role'] = 'intersection'
+        tag['metadata'] = {'orientation_policy': 'AXIS_Y_PARALLEL'}
+        prepared = prepare_published_navigation(layout)['navigation_tags'][0]
+        self.assertEqual(prepared['semantic_role'], 'intersection')
+        self.assertNotIn('rack_id', prepared['metadata'])
+        self.assertEqual(prepared['metadata']['orientation_policy'], 'AXIS_Y_PARALLEL')
+        self.assertAlmostEqual(prepared['yaw'], math.pi / 2)
+
+    def test_ambiguous_shelf_service_requires_explicit_rack_and_bad_association_fails(self):
+        layout = self._rotated_shelf_layout(0)
+        layout['racks'].append({**layout['racks'][0], 'id': 'rack-B'})
+        layout['navigation_tags'][0]['metadata'] = {}
+        with self.assertRaisesRegex(ValueError, 'ambiguous shelf-service geometry'):
+            prepare_published_navigation(layout)
+
+        layout['navigation_tags'][0]['metadata'] = {'rack_id': 'missing-rack'}
+        with self.assertRaisesRegex(ValueError, 'references missing rack_id'):
+            prepare_published_navigation(layout)
 
     def test_non_shelf_axis_orientation_policy_is_cardinal(self):
         layout = self.layout()
@@ -213,6 +323,35 @@ class NavigationTargetResolutionTests(TestCase):
         self.assertEqual(payload['edges'], expected['navigation_edges'])
         self.assertFalse(validate_orthogonal_edges(
             {**self.layout, 'navigation_edges': payload['edges']}, payload['edges']))
+
+    def test_shelf_tag_resolution_preserves_both_valid_width_parallel_directions(self):
+        from twin.navigation_graph import prepare_published_navigation
+
+        layout = OrthogonalTagRouteTests._rotated_shelf_layout(0)
+        prepared = prepare_published_navigation(layout, canonical_revision=7)
+        result = sync_from_layout(prepared, prune=True)
+        WarehouseMap.objects.update(is_active=False)
+        warehouse_map = WarehouseMap.objects.create(
+            warehouse_id=result['warehouse_id'], layout=prepared, draft=prepared,
+            revision=7, published_version=1, is_active=True,
+        )
+        active_map = {'active_map_id': 'CANONICAL', 'active_map_revision': '7',
+                      'canonical_map_revision': 7, 'map_sync_status': 'CANONICAL'}
+        base = resolve_navigation_target(
+            robot_id='R01', source_type='TAG', active_map=active_map, tag_id=7)
+        preferred = resolve_navigation_target(
+            robot_id='R01', source_type='TAG', active_map=active_map, tag_id=7,
+            preferred_yaw=math.pi / 2)
+        repeated = resolve_navigation_target(
+            robot_id='R01', source_type='TAG', active_map=active_map, tag_id=7,
+            preferred_yaw=preferred['yaw'])
+        self.assertEqual(base['metadata']['orientation_policy'], 'SHELF_WIDTH_PARALLEL')
+        self.assertAlmostEqual(base['x'], preferred['x'])
+        self.assertAlmostEqual(base['y'], preferred['y'])
+        self.assertAlmostEqual(preferred['yaw'], math.pi / 2)
+        self.assertAlmostEqual(repeated['yaw'], preferred['yaw'])
+        self.assertEqual(base['metadata']['tag_revision'], preferred['metadata']['tag_revision'])
+        self.assertEqual(warehouse_map.revision, 7)
 
     def resolve(self, tag_id, active_map=None):
         return resolve_navigation_target(

@@ -4,9 +4,75 @@ import json
 import math
 import re
 from pathlib import Path
+from typing import Any, Iterable
 import xml.etree.ElementTree as ET
 
 from .coordinates import quaternion_yaw
+
+
+def interpolate_canonical_pose_at(samples: Iterable[tuple[float, dict[str, Any]]],
+                                  source_timestamp_s: float,
+                                  *, max_gap_s: float = 0.25) -> dict[str, Any] | None:
+    """Interpolate a canonical robot pose at a TF acquisition timestamp.
+
+    Gazebo ``ModelStates`` has no Header timestamp. The bridge stamps each
+    received sample with ROS time, while map->base TF can be behind that time
+    by one or more simulation updates. Pairing the latest values directly
+    manufactures registration drift whenever the robot translates or turns.
+    Only return a pose when the requested acquisition time is bracketed by
+    fresh samples; never relabel an unaligned sample as synchronized.
+    """
+    try:
+        stamp = float(source_timestamp_s)
+        max_gap = float(max_gap_s)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(stamp) or not math.isfinite(max_gap) or max_gap <= 0.0:
+        return None
+
+    before: tuple[float, dict[str, Any]] | None = None
+    after: tuple[float, dict[str, Any]] | None = None
+    for raw_sample in samples:
+        try:
+            sample_stamp = float(raw_sample[0])
+            sample_pose = raw_sample[1]
+        except (TypeError, ValueError, IndexError, OverflowError):
+            continue
+        if not math.isfinite(sample_stamp) or not isinstance(sample_pose, dict):
+            continue
+        if abs(sample_stamp - stamp) <= 1e-9:
+            return {**sample_pose, 'source_timestamp_s': stamp}
+        if sample_stamp < stamp and (before is None or sample_stamp > before[0]):
+            before = (sample_stamp, sample_pose)
+        elif sample_stamp > stamp and (after is None or sample_stamp < after[0]):
+            after = (sample_stamp, sample_pose)
+    if before is None or after is None:
+        return None
+    gap = after[0] - before[0]
+    if gap <= 0.0 or gap > max_gap:
+        return None
+    ratio = (stamp - before[0]) / gap
+    try:
+        x0, y0, yaw0 = (float(before[1][key]) for key in ('x', 'y', 'yaw'))
+        x1, y1, yaw1 = (float(after[1][key]) for key in ('x', 'y', 'yaw'))
+        z0 = float(before[1].get('z', 0.0))
+        z1 = float(after[1].get('z', 0.0))
+    except (TypeError, ValueError, KeyError, OverflowError):
+        return None
+    values = (x0, y0, yaw0, x1, y1, yaw1, z0, z1)
+    if not all(math.isfinite(value) for value in values):
+        return None
+    yaw_delta = math.atan2(math.sin(yaw1 - yaw0), math.cos(yaw1 - yaw0))
+    pose = dict(before[1])
+    pose.update(
+        x=x0 + ratio * (x1 - x0),
+        y=y0 + ratio * (y1 - y0),
+        z=z0 + ratio * (z1 - z0),
+        yaw=math.atan2(math.sin(yaw0 + ratio * yaw_delta),
+                        math.cos(yaw0 + ratio * yaw_delta)),
+        source_timestamp_s=stamp,
+    )
+    return pose
 
 
 class GazeboCanonicalAlignment:
@@ -71,7 +137,7 @@ class GazeboCanonicalAlignment:
                 if actual is None or any(abs(x-y) > 1e-6 for x, y in zip(actual, expected)):
                     raise ValueError('Gazebo boundary anchors do not establish canonical/world identity')
 
-    def pose(self, states, timestamp):
+    def pose(self, states, timestamp, source_timestamp_s=None):
         poses = dict(zip(states.name, states.pose))
         matched = []
         for name, expected in self.anchors.items():
@@ -91,8 +157,14 @@ class GazeboCanonicalAlignment:
         values = (robot.position.x, robot.position.y, robot.position.z, quaternion_yaw(robot.orientation))
         if not all(math.isfinite(v) for v in values):
             return None
-        return dict(x=values[0], y=values[1], z=values[2], yaw=values[3],
-                    frame_id=self.frame_id, map_id='CANONICAL', map_revision=self.revision,
-                    map_source='CANONICAL', pose_source='GAZEBO_MODEL_STATES',
-                    source_frame_id='world', transform_source='VALIDATED_CANONICAL_WORLD_BUNDLE',
-                    timestamp=timestamp, valid=True)
+        result = dict(x=values[0], y=values[1], z=values[2], yaw=values[3],
+                      frame_id=self.frame_id, map_id='CANONICAL', map_revision=self.revision,
+                      map_source='CANONICAL', pose_source='GAZEBO_MODEL_STATES',
+                      source_frame_id='world', transform_source='VALIDATED_CANONICAL_WORLD_BUNDLE',
+                      timestamp=timestamp, valid=True)
+        if source_timestamp_s is not None:
+            source_timestamp_s = float(source_timestamp_s)
+            if not math.isfinite(source_timestamp_s):
+                return None
+            result['source_timestamp_s'] = source_timestamp_s
+        return result

@@ -69,6 +69,11 @@ def _quoted(value: Any) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def _yaml_flow(value: Any) -> str:
+    """JSON flow values are valid YAML and keep published metadata deterministic."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def _tag_sort_key(tag: dict[str, Any]) -> tuple[int, str]:
     try:
         tag_id = int(tag.get("tag_id"))
@@ -80,7 +85,9 @@ def _tag_sort_key(tag: dict[str, Any]) -> tuple[int, str]:
 def render_datamatrix_yaml(layout: dict[str, Any]) -> str:
     """Render both the legacy ``markers`` list and the richer ``tags`` list."""
     tags = sorted(layout.get("navigation_tags") or [], key=_tag_sort_key)
-    lines = ["frame_id: map", "units: m", "markers:"]
+    lines = ["frame_id: map", "units: m",
+             f"canonical_revision: {int(layout.get('revision') or 0)}",
+             f"graph_revision: {_quoted(layout.get('tag_graph_revision') or '')}", "markers:"]
     for tag in tags:
         lines.append(
             "  - {tag_id: %s, x: %s, y: %s, yaw: %s, uuid: %s, floor_id: %s, z: %s}"
@@ -92,14 +99,24 @@ def render_datamatrix_yaml(layout: dict[str, Any]) -> str:
         )
     lines.append("tags:")
     for tag in tags:
-        lines.append(
-            "  - {id: %s, uuid: %s, floor_id: %s, x: %s, y: %s, z: %s, yaw: %s}"
-            % (
-                _num(tag.get("tag_id")), _quoted(tag.get("uuid", "")),
-                _quoted(tag.get("floor_id", 1)), _num(tag.get("x")),
-                _num(tag.get("y")), _num(tag.get("z")), _num(tag.get("yaw")),
-            )
-        )
+        metadata = tag.get("metadata") if isinstance(tag.get("metadata"), dict) else {}
+        record = {
+            "id": int(tag.get("tag_id")),
+            "uuid": str(tag.get("uuid", "")),
+            "floor_id": str(tag.get("floor_id", 1)),
+            "x": float(tag.get("x", 0)),
+            "y": float(tag.get("y", 0)),
+            "z": float(tag.get("z", 0)),
+            "yaw": float(tag.get("yaw", 0)),
+            "semantic_role": str(tag.get("semantic_role") or ""),
+            "orientation_policy": str(metadata.get("orientation_policy") or "EXPLICIT"),
+        }
+        for key in ("rack_id", "service_face", "service_standoff_m", "service_aisle_id"):
+            if key in metadata:
+                record[key] = metadata[key]
+        if isinstance(metadata.get("service_pose"), dict):
+            record["service_pose"] = metadata["service_pose"]
+        lines.append("  - " + _yaml_flow(record))
     return "\n".join(lines) + "\n"
 
 
@@ -171,6 +188,17 @@ def render_tag_graph_yaml(layout: dict[str, Any]) -> str:
         lines.append(f"    yaw: {_num(tag.get('yaw'))}")
         metadata = tag.get('metadata') if isinstance(tag.get('metadata'), dict) else {}
         lines.append(f"    orientation_policy: {_quoted(metadata.get('orientation_policy', 'EXPLICIT'))}")
+        lines.append(f"    semantic_role: {_quoted(tag.get('semantic_role') or '')}")
+        if metadata.get('rack_id') is not None:
+            lines.append(f"    rack_id: {_quoted(metadata['rack_id'])}")
+        if metadata.get('service_face') is not None:
+            lines.append(f"    service_face: {_quoted(metadata['service_face'])}")
+        if metadata.get('service_standoff_m') is not None:
+            lines.append(f"    service_standoff_m: {_num(metadata['service_standoff_m'])}")
+        if metadata.get('service_aisle_id') is not None:
+            lines.append(f"    service_aisle_id: {_quoted(metadata['service_aisle_id'])}")
+        if isinstance(metadata.get('service_pose'), dict):
+            lines.append(f"    service_pose: {_yaml_flow(metadata['service_pose'])}")
         lines.append(f"    neighbors: {neighbour_text}")
     lines.append("edges:")
     for edge in edges:

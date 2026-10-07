@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -8,6 +8,9 @@ from twin.map_registration import (
     GAZEBO_REGISTRATION_SOURCE,
     REGISTRATION_DRIFT_SAMPLES_REQUIRED,
     derive_active_from_canonical,
+    gazebo_registration_candidate,
+    gazebo_registration_candidate_blocker,
+    registration_pose_residual,
     transform_canonical_pose,
     update_gazebo_registration,
 )
@@ -40,19 +43,20 @@ class CanonicalActiveRegistrationTests(TestCase):
     @staticmethod
     def pose_pair(canonical=(10.0, 5.0, 0.0), active=(1.0, 2.0, math.pi / 2)):
         timestamp = datetime.now(timezone.utc).isoformat()
+        source_timestamp_s = 123.5
         canonical_pose = {
             'x': canonical[0], 'y': canonical[1], 'yaw': canonical[2],
             'frame_id': 'map', 'map_id': 'CANONICAL', 'map_revision': '7',
             'map_source': 'CANONICAL', 'pose_source': 'GAZEBO_MODEL_STATES',
             'source_frame_id': 'world',
             'transform_source': 'VALIDATED_CANONICAL_WORLD_BUNDLE',
-            'timestamp': timestamp, 'valid': True,
+            'timestamp': timestamp, 'source_timestamp_s': source_timestamp_s, 'valid': True,
         }
         active_pose = {
             'x': active[0], 'y': active[1], 'yaw': active[2],
             'frame_id': 'map', 'map_id': 'SLAM-session-42',
             'map_revision': 'session-session-42', 'pose_source': 'TF',
-            'timestamp': timestamp, 'valid': True,
+            'timestamp': timestamp, 'source_timestamp_s': source_timestamp_s, 'valid': True,
         }
         return canonical_pose, active_pose
 
@@ -89,6 +93,94 @@ class CanonicalActiveRegistrationTests(TestCase):
         self.assertFalse(second['changed'])
         self.assertEqual(second['registration'].pk, registration.pk)
         self.assertEqual(second['registration'].registration_revision, 1)
+
+    def test_pose_pair_can_be_checked_against_a_pinned_registration_without_persisting(self):
+        canonical, active = self.pose_pair()
+        candidate = gazebo_registration_candidate(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active)
+        self.assertIsNotNone(candidate)
+        self.assertAlmostEqual(candidate['tx'], 6.0)
+        self.assertAlmostEqual(candidate['ty'], -8.0)
+        self.assertAlmostEqual(candidate['yaw'], math.pi / 2)
+        self.assertEqual(RobotMapRegistration.objects.count(), 0)
+
+        active['map_revision'] = 'stale-session-revision'
+        self.assertIsNone(gazebo_registration_candidate(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active))
+
+    def test_registration_rejects_pose_pairs_with_stale_ros_clock_stamps(self):
+        canonical, active = self.pose_pair()
+        active['source_timestamp_s'] = canonical['source_timestamp_s'] + 0.5
+        self.assertEqual(gazebo_registration_candidate_blocker(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active), 'ROS_TIMESTAMP_SKEW')
+        self.assertIsNone(gazebo_registration_candidate(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active))
+
+    def test_registration_uses_ros_acquisition_stamps_not_callback_wall_skew(self):
+        canonical, active = self.pose_pair()
+        now = datetime.now(timezone.utc)
+        canonical['timestamp'] = (now - timedelta(milliseconds=350)).isoformat()
+        active['timestamp'] = now.isoformat()
+
+        self.assertIsNone(gazebo_registration_candidate_blocker(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active))
+        self.assertIsNotNone(gazebo_registration_candidate(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active))
+
+    def test_registration_rejects_pairs_older_than_the_runtime_heartbeat_window(self):
+        canonical, active = self.pose_pair()
+        stale_timestamp = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        canonical['timestamp'] = stale_timestamp
+        active['timestamp'] = datetime.now(timezone.utc).isoformat()
+        self.assertEqual(gazebo_registration_candidate_blocker(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active), 'WALL_TIMESTAMP_STALE')
+        self.assertIsNone(gazebo_registration_candidate(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active))
+
+        fresh_timestamp = datetime.now(timezone.utc).isoformat()
+        canonical['timestamp'] = fresh_timestamp
+        active['timestamp'] = fresh_timestamp
+        active['source_timestamp_s'] = canonical['source_timestamp_s']
+        del active['source_timestamp_s']
+        self.assertEqual(gazebo_registration_candidate_blocker(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active), 'ROS_TIMESTAMP_MISSING')
+        self.assertIsNone(gazebo_registration_candidate(
+            robot_id='R01', active_map=self.active_map,
+            canonical_pose=canonical, active_pose=active))
+
+    def test_pinned_registration_uses_pose_residual_not_origin_translation(self):
+        canonical = {
+            'x': 10.0, 'y': 15.0, 'yaw': 0.0,
+            'frame_id': 'map', 'map_id': 'CANONICAL', 'map_revision': '7',
+            'pose_source': 'GAZEBO_MODEL_STATES',
+            'transform_source': 'VALIDATED_CANONICAL_WORLD_BUNDLE',
+            'timestamp': datetime.now(timezone.utc).isoformat(), 'valid': True,
+        }
+        pinned = {'tx': -9.0, 'ty': -3.0, 'yaw': 0.0}
+        predicted = transform_canonical_pose(canonical, pinned)
+        active = {
+            **predicted, 'yaw': 0.01, 'frame_id': 'map',
+            'map_id': self.active_map['active_map_id'],
+            'map_revision': self.active_map['active_map_revision'],
+            'pose_source': 'TF', 'timestamp': canonical['timestamp'], 'valid': True,
+        }
+        candidate = derive_active_from_canonical(canonical, active)
+        coefficient_delta = math.hypot(candidate['tx'] - pinned['tx'],
+                                       candidate['ty'] - pinned['ty'])
+        residual = registration_pose_residual(canonical, active, pinned)
+
+        self.assertGreater(coefficient_delta, 0.15)
+        self.assertAlmostEqual(residual['translation_m'], 0.0, places=8)
+        self.assertAlmostEqual(residual['yaw_rad'], 0.01, places=8)
 
     def test_canonical_point_and_tag_use_the_same_current_registration(self):
         self.register()

@@ -26,7 +26,17 @@ from .conveyor_plc import PLCSimulator
 from .coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin, validated_canonical_pose
 from .control_timing import profile_async, profile_sync
 from .navigation_targets import plan_registered_tag_route
-from .map_registration import inverse_transform_active_pose
+from .map_registration import (
+    GAZEBO_REGISTRATION_SOURCE,
+    REGISTRATION_DRIFT_SAMPLES_REQUIRED,
+    REGISTRATION_TRANSLATION_TOLERANCE_M,
+    REGISTRATION_YAW_TOLERANCE_RAD,
+    gazebo_registration_candidate,
+    gazebo_registration_candidate_blocker,
+    inverse_transform_active_pose,
+    normalize_yaw,
+    registration_pose_residual,
+)
 
 log = logging.getLogger(__name__)
 TICK_S = SIM['TICK_S']
@@ -111,6 +121,7 @@ class TwinRuntime:
         self.connected_robot_ids: set[str] = set()
         self.robot_bridge_heartbeats: dict[str, float] = {}
         self.robot_pose_heartbeats: dict[str, float] = {}
+        self.stale_telemetry_log_at: dict[str, float] = {}
         self.bridge_status = 'DISCONNECTED' if self.is_external else 'LOCAL'
         self.last_telemetry_at: float | None = None
         self.last_telemetry_iso: str | None = None
@@ -913,6 +924,35 @@ class TwinRuntime:
         rid = str(data.get('robot_id') or '').strip()
         if not rid or rid not in self.connected_robot_ids:
             return
+        if self.runtime_mode == 'GAZEBO_ROS':
+            raw_timestamp = data.get('timestamp')
+            if not raw_timestamp and data.get('source_timestamp_s') is not None:
+                age_s = math.inf
+                stale_reason = 'source-stamped telemetry is missing its UTC send timestamp'
+            elif raw_timestamp:
+                try:
+                    sent_at = datetime.fromisoformat(str(raw_timestamp).replace('Z', '+00:00'))
+                    if sent_at.tzinfo is None:
+                        sent_at = sent_at.replace(tzinfo=timezone.utc)
+                    age_s = (datetime.now(timezone.utc) - sent_at).total_seconds()
+                    stale_reason = 'telemetry send timestamp is outside the accepted freshness window'
+                except (TypeError, ValueError, OverflowError):
+                    age_s = math.inf
+                    stale_reason = 'telemetry send timestamp is invalid'
+            else:
+                age_s = 0.0
+                stale_reason = ''
+            max_age_s = max(0.0, float(getattr(
+                settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0)))
+            if not math.isfinite(age_s) or age_s > max_age_s or age_s < -0.5:
+                now_monotonic = time.monotonic()
+                if now_monotonic - self.stale_telemetry_log_at.get(rid, 0.0) >= 1.0:
+                    log.warning(
+                        'ROS_TELEMETRY_STALE_DROPPED robot=%s age_s=%s max_age_s=%.3f reason=%s',
+                        rid, (f'{age_s:.3f}' if math.isfinite(age_s) else 'UNKNOWN'),
+                        max_age_s, stale_reason or 'future timestamp')
+                    self.stale_telemetry_log_at[rid] = now_monotonic
+                return
         frame_id = str(data.get('frame_id') or '')
         if frame_id != 'map':
             self.map_tf_status = False
@@ -994,6 +1034,7 @@ class TwinRuntime:
                        'map_revision': reported_active_revision, 'map_source': reported_map_source,
                        'map_content_revision': str(data.get('map_content_revision') or '') or None,
                        'pose_source': pose_source, 'mapping_session_id': data.get('mapping_session_id'),
+                       'source_timestamp_s': data.get('source_timestamp_s'),
                        'timestamp': now_iso, 'valid': True}
         canonical_pose = validated_canonical_pose(data.get('canonical_pose'),
                                                   self.published_map_revision, self.runtime_mode)
@@ -1037,6 +1078,118 @@ class TwinRuntime:
                             registration_lease.get('preview_request_id'),
                             registration_lease.get('route_revision'))
                         registration_lease['registration_update_deferred_logged'] = True
+                    if registration_lease.get('registration_source') == GAZEBO_REGISTRATION_SOURCE:
+                        baseline = registration_lease.get('registration_transform')
+                        candidate = gazebo_registration_candidate(
+                            robot_id=rid, active_map=active_identity,
+                            canonical_pose=canonical_pose, active_pose=active_pose)
+                        candidate_blocker = (None if candidate is not None else
+                            gazebo_registration_candidate_blocker(
+                                robot_id=rid, active_map=active_identity,
+                                canonical_pose=canonical_pose, active_pose=active_pose))
+                        try:
+                            baseline = {key: float(baseline[key]) for key in ('tx', 'ty', 'yaw')}
+                            baseline_valid = all(math.isfinite(value) for value in baseline.values())
+                        except (KeyError, TypeError, ValueError):
+                            baseline_valid = False
+                        if not baseline_valid:
+                            translation_drift = math.inf
+                            yaw_drift = math.inf
+                            drift_samples = REGISTRATION_DRIFT_SAMPLES_REQUIRED
+                        elif candidate is not None:
+                            # Raw tx/ty differences depend on the transform
+                            # origin and can grow from a small yaw estimate
+                            # change while the robot is far from that origin.
+                            # Gate on the actual paired-pose residual instead.
+                            residual = registration_pose_residual(
+                                canonical_pose, active_pose, baseline)
+                            translation_drift = residual['translation_m']
+                            yaw_drift = residual['yaw_rad']
+                            if (translation_drift > REGISTRATION_TRANSLATION_TOLERANCE_M
+                                    or yaw_drift > REGISTRATION_YAW_TOLERANCE_RAD):
+                                registration_lease['registration_drift_samples'] = (
+                                    int(registration_lease.get('registration_drift_samples') or 0) + 1)
+                            else:
+                                registration_lease['registration_drift_samples'] = 0
+                            drift_samples = registration_lease['registration_drift_samples']
+                            registration_lease['registration_pose_unavailable_samples'] = 0
+                        else:
+                            translation_drift = None
+                            yaw_drift = None
+                            registration_lease['registration_pose_unavailable_samples'] = (
+                                int(registration_lease.get('registration_pose_unavailable_samples') or 0) + 1)
+                            drift_samples = int(
+                                registration_lease.get('registration_drift_samples') or 0)
+                            if registration_lease['registration_pose_unavailable_samples'] == 1:
+                                log.warning(
+                                    'MAP_REGISTRATION_CANDIDATE_UNAVAILABLE robot=%s blocker=%s '
+                                    'active_map=%s@%s canonical_source_stamp=%s active_source_stamp=%s '
+                                    'canonical_wall_stamp=%s active_wall_stamp=%s',
+                                    rid, candidate_blocker or 'UNKNOWN', identity_key[1], identity_key[2],
+                                    (canonical_pose or {}).get('source_timestamp_s'),
+                                    active_pose.get('source_timestamp_s'),
+                                    (canonical_pose or {}).get('timestamp'), active_pose.get('timestamp'))
+                        pose_pair_unavailable = (
+                            candidate is None and
+                            int(registration_lease.get('registration_pose_unavailable_samples') or 0)
+                            >= REGISTRATION_DRIFT_SAMPLES_REQUIRED)
+                        materially_drifted = (
+                            not baseline_valid or (
+                                translation_drift is not None and
+                                drift_samples >= REGISTRATION_DRIFT_SAMPLES_REQUIRED)
+                            or pose_pair_unavailable)
+                        if materially_drifted and not registration_lease.get(
+                                'registration_drift_cancel_requested'):
+                            reason_code = ('LOCALIZATION_NOT_READY' if pose_pair_unavailable else
+                                           'MAP_REGISTRATION_DRIFT')
+                            if pose_pair_unavailable:
+                                reason = (
+                                    'LOCALIZATION_NOT_READY: Gazebo and active-map TF poses were not '
+                                    'freshly time-aligned for consecutive registration checks')
+                            else:
+                                reason = (
+                                    'MAP_REGISTRATION_DRIFT: canonical-to-SLAM alignment changed '
+                                    f'during the approved navigation action '
+                                    f'(translation={translation_drift:.3f}m, yaw={yaw_drift:.3f}rad)')
+                            registration_lease['registration_drift_cancel_requested'] = True
+                            registration_lease['registration_drift_reason'] = reason
+                            registration_lease['registration_drift_reason_code'] = reason_code
+                            source_skew_s = None
+                            if canonical_pose and active_pose:
+                                try:
+                                    source_skew_s = abs(
+                                        float(canonical_pose['source_timestamp_s'])
+                                        - float(active_pose['source_timestamp_s']))
+                                except (KeyError, TypeError, ValueError, OverflowError):
+                                    pass
+                            try:
+                                cancel_result = await self.gateway().send_command(
+                                    rid, 'CANCEL_NAVIGATION', {
+                                        'preview_request_id': registration_lease.get('preview_request_id'),
+                                        'route_revision': registration_lease.get('route_revision'),
+                                        'reason_code': reason_code,
+                                        'reason': reason,
+                                    })
+                                sent = bool(cancel_result.get('ok'))
+                            except Exception:
+                                sent = False
+                                log.exception(
+                                    'MAP_REGISTRATION_DRIFT_CANCEL_FAILED robot=%s preview_id=%s',
+                                    rid, registration_lease.get('preview_request_id'))
+                            log.error(
+                                'MAP_REGISTRATION_DRIFT_CANCELLING robot=%s active_map=%s@%s '
+                                'registration_revision=%s reason_code=%s translation=%s yaw=%s '
+                                'candidate_blocker=%s pose_pair_ros_skew_s=%s cancel_sent=%s '
+                                'preview_id=%s route_revision=%s',
+                                rid, identity_key[1], identity_key[2],
+                                registration_lease.get('registration_revision'),
+                                reason_code,
+                                (f'{translation_drift:.3f}m' if translation_drift is not None else 'UNKNOWN'),
+                                (f'{yaw_drift:.3f}rad' if yaw_drift is not None else 'UNKNOWN'),
+                                candidate_blocker or 'NONE',
+                                (f'{source_skew_s:.6f}' if source_skew_s is not None else 'UNKNOWN'), sent,
+                                registration_lease.get('preview_request_id'),
+                                registration_lease.get('route_revision'))
                 elif last_checked is None or now_monotonic - last_checked >= 1.0:
                     self.simulation_registration_last_check[identity_key] = now_monotonic
                     result = await sync_to_async(update_gazebo_registration, thread_sensitive=True)(
@@ -1162,6 +1315,7 @@ class TwinRuntime:
 
     async def handle_tag_route_leg_auth_request(self, data: dict[str, Any]) -> None:
         """Re-authorize every sequential TAG leg against current backend state."""
+        auth_started = time.monotonic()
         robot_id = str(data.get('robot_id') or '').strip()
         execution = self.tag_route_executions.get(robot_id)
         request_id = str(data.get('auth_request_id') or '')
@@ -1172,6 +1326,10 @@ class TwinRuntime:
             index = int(data.get('route_index'))
         except (TypeError, ValueError):
             index = -1
+        log.info(
+            'TAG_ROUTE_LEG_AUTH_RECEIVED robot=%s request_id=%s route_revision=%s '
+            'index=%s execution_present=%s',
+            robot_id, request_id, data.get('route_revision'), index, execution is not None)
         points = route_plan.get('active_route_points') or []
         if not execution:
             reason_code, reason = 'TAG_ROUTE_AUTH_UNKNOWN', 'no approved active TAG route matches this robot'
@@ -1253,6 +1411,12 @@ class TwinRuntime:
             'reason': reason,
         }
         result = await self.gateway().send_command(robot_id, 'TAG_ROUTE_LEG_AUTH', payload)
+        log.info(
+            'TAG_ROUTE_LEG_AUTH_RESULT robot=%s request_id=%s route_revision=%s index=%s '
+            'approved=%s reason_code=%s response_sent=%s elapsed_ms=%.1f',
+            robot_id, request_id, payload['route_revision'], index, approved,
+            reason_code or 'NONE', bool(result.get('ok')),
+            (time.monotonic() - auth_started) * 1000.0)
         if approved and not result.get('ok'):
             log.warning('TAG_ROUTE_LEG_AUTH_RESPONSE_LOST robot=%s request_id=%s route_revision=%s',
                         robot_id, request_id, payload['route_revision'])
@@ -1436,6 +1600,7 @@ class TwinRuntime:
                         current_target = await self.resolve_navigation_target(
                             robot_id=robot_id, source_type='TAG', active_map=active_now,
                             tag_id=request.get('tag_id'),
+                            preferred_yaw=(request.get('goal') or {}).get('yaw'),
                         )
                     else:
                         source_pose = request.get('source_goal') or {}
@@ -2268,8 +2433,19 @@ class TwinRuntime:
                         active_start_pose={axis: float(active_start_pose[axis]) for axis in ('x', 'y', 'yaw')},
                     )
                     route_goal = route_plan['active_route_points'][-1]
-                    if any(abs(float(route_goal[axis]) - target[axis]) > 1e-4 for axis in ('x', 'y', 'yaw')):
+                    yaw_error = abs(math.atan2(
+                        math.sin(float(route_goal['yaw']) - target['yaw']),
+                        math.cos(float(route_goal['yaw']) - target['yaw'])))
+                    if route_plan.get('orientation_policy') == 'SHELF_WIDTH_PARALLEL':
+                        yaw_error = min(yaw_error, abs(math.pi - yaw_error))
+                    if (any(abs(float(route_goal[axis]) - target[axis]) > 1e-4
+                            for axis in ('x', 'y')) or yaw_error > 1e-4):
                         raise ValueError('topological route destination does not match the registered Tag pose')
+                    # Shelf-width alignment is modulo pi. The graph planner
+                    # selects the direction that matches its stable transit
+                    # heading, avoiding an unnecessary terminal half-turn.
+                    target = {axis: float(route_goal[axis]) for axis in ('x', 'y', 'yaw')}
+                    target_metadata['resolved_service_pose'] = dict(target)
                     from .navigation_targets import navigation_tag_registry
                     current_tag_registry = await sync_to_async(
                         navigation_tag_registry, thread_sensitive=True)(active, robot_id=msg.robot_id)
@@ -2294,6 +2470,8 @@ class TwinRuntime:
                     'graph_revision': route_plan.get('graph_revision'),
                     'route_nodes': route_plan.get('route_nodes'),
                     'route_segments': route_plan.get('route_segments'),
+                    'active_route_points': route_plan.get('active_route_points'),
+                    'canonical_route_points': route_plan.get('canonical_route_points'),
                     'route_tag_revisions': route_plan.get('route_tag_revisions'),
                     'destination_tag_id': int(msg.tag_id),
                     'tag_revision': tag_revision,
@@ -2336,12 +2514,16 @@ class TwinRuntime:
                 'source_goal': source_goal or target_metadata.get('source_pose'),
                 'registration_revision': target_metadata.get('registration_revision'),
                 'registration_source': target_metadata.get('registration_source'),
+                'registration_transform': (
+                    target_metadata.get('registration_transform')
+                    or (route_plan or {}).get('registration_transform')),
                 'tag_id': msg.tag_id if source_type == 'TAG' else None,
                 'tag_revision': tag_revision,
                 'registry_revision': registry_revision,
                 'target_metadata': target_metadata,
                 'route_plan': route_plan,
                 'route_revision': route_revision,
+                'preferred_yaw': target.get('yaw') if source_type == 'TAG' else None,
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
                 'map_content_revision': active.get('map_content_revision'),
@@ -2573,7 +2755,7 @@ class TwinRuntime:
                         if source_type == 'TAG':
                             resolved_now = await self.resolve_navigation_target(
                                 robot_id=msg.robot_id, source_type='TAG', active_map=active,
-                                tag_id=preview.get('tag_id'),
+                                tag_id=preview.get('tag_id'), preferred_yaw=target.get('yaw'),
                             )
                         else:
                             source_pose = preview.get('source_goal') or {}
@@ -2609,6 +2791,26 @@ class TwinRuntime:
                             'message': 'Tag or registry data changed after path preview; request a new preview',
                         })
                         return
+                    target_metadata = preview.get('target_metadata') or {}
+                    route_plan = preview.get('route_plan') or {}
+                    registration_transform = (
+                        preview.get('registration_transform')
+                        or target_metadata.get('registration_transform')
+                        or route_plan.get('registration_transform'))
+                    if preview.get('registration_source') == GAZEBO_REGISTRATION_SOURCE:
+                        try:
+                            registration_transform = {
+                                key: float(registration_transform[key])
+                                for key in ('tx', 'ty', 'yaw')}
+                            if not all(math.isfinite(value)
+                                       for value in registration_transform.values()):
+                                raise ValueError('non-finite registration transform')
+                        except (KeyError, TypeError, ValueError):
+                            await consumer.send_json({
+                                'type': 'ERROR', 'code': 'PATH_PREVIEW_INVALID',
+                                'message': 'simulation registration transform is missing or invalid; request a new preview',
+                            })
+                            return
                 self.approved_path_previews.pop(key, None)
                 self.path_preview_results.pop(key, None)
                 if (source_type in ('TAG', 'CANONICAL_MAP_POINT')
@@ -2621,6 +2823,8 @@ class TwinRuntime:
                         'active_map_id': preview.get('active_map_id'),
                         'active_map_revision': preview.get('active_map_revision'),
                         'canonical_map_revision': preview.get('canonical_map_revision'),
+                        'registration_source': preview.get('registration_source'),
+                        'registration_transform': registration_transform,
                     }
                 if source_type == 'TAG':
                     self.tag_route_executions[msg.robot_id] = {

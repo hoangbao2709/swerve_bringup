@@ -62,12 +62,14 @@ controller_server:
       trans_stopped_velocity: 0.025
       short_circuit_trajectory_evaluation: true
       stateful: true
-      critics: [RotateToGoal, Oscillation, BaseObstacle, GoalAlign, PathAlign, PathDist, GoalDist]
+      # This is a holonomic swerve base: path alignment critics rotate the
+      # chassis toward the lane tangent even when lateral motion is the
+      # approved route. Keep path/goal distance tracking and collision checks,
+      # discourage transit spin, then let RotateToGoal perform the requested
+      # final service heading correction near the waypoint.
+      critics: [RotateToGoal, Oscillation, BaseObstacle, Twirling, PathDist, GoalDist]
       BaseObstacle.scale: 0.03
-      PathAlign.scale: 24.0
-      PathAlign.forward_point_distance: 0.20
-      GoalAlign.scale: 18.0
-      GoalAlign.forward_point_distance: 0.20
+      Twirling.scale: 20.0
       PathDist.scale: 24.0
       GoalDist.scale: 30.0
       # Give terminal orientation a weight comparable to path-alignment

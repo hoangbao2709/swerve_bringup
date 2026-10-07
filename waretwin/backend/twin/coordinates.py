@@ -42,4 +42,5 @@ def validated_canonical_pose(value: Any, revision: Any, runtime_mode: str) -> di
     except (KeyError, ValueError, TypeError):
         return None
     return {key: value[key] for key in ('x', 'y', 'yaw', 'frame_id', 'map_id', 'map_revision',
-            'map_source', 'pose_source', 'source_frame_id', 'transform_source', 'timestamp', 'valid') if key in value}
+            'map_source', 'pose_source', 'source_frame_id', 'transform_source', 'timestamp',
+            'source_timestamp_s', 'valid') if key in value}

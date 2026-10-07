@@ -1,4 +1,6 @@
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+import math
 import threading
 import time
 from types import SimpleNamespace
@@ -9,6 +11,7 @@ from pydantic import TypeAdapter
 
 from twin.coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin
 from twin.gateways.ros_bridge import RosBridgeGateway
+from twin.map_registration import gazebo_registration_candidate
 from twin.ros_bridge_consumer import RosBridgeConsumer, RosBridgeRegistry, registry
 from twin.runtime import runtime
 from twin.schema import ClientMessage
@@ -513,6 +516,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             'navigation_map_revision': 'nav-r22-registration-7',
             'registration_revision': 7,
             'registration_source': 'GAZEBO_CANONICAL_ALIGNMENT',
+            'registration_transform': {'tx': -9.0, 'ty': -3.0, 'yaw': 0.0},
             'path': [[1.0, 2.0], [3.0, 4.0]],
         }
         resolved = {
@@ -572,6 +576,8 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                     'active_map_id': active_map['active_map_id'],
                     'active_map_revision': active_map['active_map_revision'],
                     'canonical_map_revision': '22',
+                    'registration_source': 'GAZEBO_CANONICAL_ALIGNMENT',
+                    'registration_transform': {'tx': -9.0, 'ty': -3.0, 'yaw': 0.0},
                 })
 
                 with patch('twin.schedule_services.apply_external_nav_status', return_value=False):
@@ -766,16 +772,23 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             'frame_id': 'map', 'map_id': 'CANONICAL', 'map_revision': '22',
             'pose_source': 'GAZEBO_MODEL_STATES',
             'transform_source': 'VALIDATED_CANONICAL_WORLD_BUNDLE',
+            'source_timestamp_s': 200.0,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
         }
+        telemetry_timestamp = datetime.now(timezone.utc).isoformat()
+        canonical_pose['timestamp'] = (
+            datetime.now(timezone.utc) - timedelta(milliseconds=350)).isoformat()
         telemetry = {
             'robot_id': 'R01', 'frame_id': 'map', 'map_revision': 22,
             'active_map_id': active_map['active_map_id'],
             'active_map_revision': active_map['active_map_revision'],
             'mapping_session_id': 'session-1', 'map_source': 'SLAM_TOOLBOX',
             'pose_source': 'TF', 'x': 1.0, 'y': 2.0, 'z': 0.0, 'yaw': 0.0,
-            'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'timestamp': '2026-10-06T00:00:00+00:00',
+            'vx': 0.0, 'vy': 0.0, 'wz': 0.0, 'timestamp': telemetry_timestamp,
+            'source_timestamp_s': 200.0,
             'canonical_pose': canonical_pose,
         }
+        pinned_transform = {'tx': -9.0, 'ty': -3.0, 'yaw': 0.0}
         old_state = {
             'runtime_mode': runtime.runtime_mode,
             'operation_mode': runtime.operation_mode,
@@ -807,6 +820,8 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.tag_route_executions = {'R01': route}
             runtime.navigation_registration_leases = {'R01': {
                 **route, 'source_type': 'TAG', 'preview_request_id': 'preview-tag-route',
+                'registration_source': 'GAZEBO_CANONICAL_ALIGNMENT',
+                'registration_transform': pinned_transform,
             }}
             runtime.simulation_registration_last_check = {}
             runtime.simulation_registration_drift = {}
@@ -819,12 +834,79 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             runtime.last_telemetry_iso = None
             runtime.published_map_revision = 22
             runtime.client_count = 0
+            candidate_results = []
+            def observe_candidate(**kwargs):
+                result = gazebo_registration_candidate(**kwargs)
+                candidate_results.append((kwargs, result))
+                return result
             with patch.object(runtime, 'active_map_state', return_value=active_map), \
-                    patch('twin.runtime.validated_canonical_pose', return_value=canonical_pose), \
+                    patch('twin.runtime.validated_canonical_pose', side_effect=lambda pose, *_args: pose), \
+                    patch('twin.runtime.gazebo_registration_candidate', side_effect=observe_candidate), \
                     patch('twin.map_registration.update_gazebo_registration', return_value=None) as update_registration:
                 await runtime.update_external_robot_state(telemetry)
                 update_registration.assert_not_called()
                 self.assertTrue(runtime.navigation_registration_leases['R01']['registration_update_deferred_logged'])
+                self.assertIsNotNone(candidate_results[-1][1])
+                self.assertEqual(
+                    runtime.navigation_registration_leases['R01']['registration_pose_unavailable_samples'],
+                    0)
+
+                # The route lease pins map publication, but it must not hide
+                # a material SLAM-frame drift. Cancel the approved Nav2 action
+                # before any more route legs can use the stale transform.
+                gateway = SimpleNamespace(send_command=AsyncMock(return_value={'ok': True}))
+                with patch.object(runtime, 'gateway', return_value=gateway):
+                    # A small yaw residual far from the map origin can create
+                    # a larger raw tx/ty coefficient delta while the pinned
+                    # transform still places the robot within tolerance.
+                    rotated_canonical_pose = {
+                        **canonical_pose, 'x': 10.0, 'y': 15.0, 'yaw': 0.0,
+                        'source_timestamp_s': 201.0}
+                    rotated_pose = {**telemetry, 'x': 1.0, 'y': 12.0, 'yaw': 0.01}
+                    for _sample in range(3):
+                        rotated_timestamp = datetime.now(timezone.utc).isoformat()
+                        await runtime.update_external_robot_state({
+                            **rotated_pose, 'timestamp': rotated_timestamp,
+                            'source_timestamp_s': 201.0,
+                            'canonical_pose': {
+                                **rotated_canonical_pose, 'timestamp': rotated_timestamp,
+                            },
+                        })
+                    rotated_candidate = candidate_results[-1][1]
+                    self.assertIsNotNone(rotated_candidate)
+                    self.assertGreater(
+                        math.hypot(rotated_candidate['tx'] - pinned_transform['tx'],
+                                   rotated_candidate['ty'] - pinned_transform['ty']),
+                        0.15)
+                    gateway.send_command.assert_not_awaited()
+                    self.assertEqual(runtime.navigation_registration_leases['R01'][
+                        'registration_drift_samples'], 0)
+
+                    for sample in range(3):
+                        drift_timestamp = datetime.now(timezone.utc).isoformat()
+                        source_timestamp_s = 202.0 + sample * 0.1
+                        drifted_canonical_pose = {
+                            **rotated_canonical_pose, 'timestamp': drift_timestamp,
+                            'source_timestamp_s': source_timestamp_s}
+                        drifted_telemetry = {
+                            **rotated_pose, 'x': 2.0, 'timestamp': drift_timestamp,
+                            'source_timestamp_s': source_timestamp_s,
+                            'canonical_pose': drifted_canonical_pose,
+                        }
+                        await runtime.update_external_robot_state(drifted_telemetry)
+                        if sample < 2:
+                            gateway.send_command.assert_not_awaited()
+                self.assertGreaterEqual(len(candidate_results), 4, candidate_results)
+                self.assertTrue(all(result is not None for _kwargs, result in candidate_results),
+                                candidate_results)
+                gateway.send_command.assert_awaited_once()
+                self.assertEqual(gateway.send_command.await_args.args[:2],
+                                 ('R01', 'CANCEL_NAVIGATION'))
+                self.assertEqual(gateway.send_command.await_args.args[2]['reason_code'],
+                                 'MAP_REGISTRATION_DRIFT')
+                self.assertTrue(runtime.navigation_registration_leases['R01'][
+                    'registration_drift_cancel_requested'])
+                update_registration.assert_not_called()
 
                 # Once the route receives a terminal status and its execution
                 # lease is removed, telemetry resumes normal registration
@@ -860,6 +942,8 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
         old_robots = deepcopy(runtime.engine.state['robots'])
         old_connected = set(runtime.connected_robot_ids)
         old_heartbeats = dict(runtime.robot_bridge_heartbeats)
+        old_pose_heartbeats = dict(runtime.robot_pose_heartbeats)
+        old_stale_telemetry_logs = dict(runtime.stale_telemetry_log_at)
         old_bridge_connected = runtime.ros_bridge_connected
         old_bridge_status = runtime.bridge_status
         old_ros_diagnostics = deepcopy(runtime.ros_diagnostics)
@@ -890,8 +974,17 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
                 'map_source': 'CANONICAL', 'pose_source': 'TF',
                 'vx': 0.5, 'vy': 0.2, 'wz': -0.1,
                 'navigation_state': 'NAVIGATING', 'control_mode': 'MANUAL',
-                'timestamp': '2026-09-22T00:00:00+00:00',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
             }
+            old_pose_timestamp = runtime.last_telemetry_iso
+            runtime.robot_pose_heartbeats['R01'] = 123.0
+            await runtime.update_external_robot_state({
+                **telemetry,
+                'timestamp': (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat(),
+                'source_timestamp_s': 99.0,
+            })
+            self.assertEqual(runtime.last_telemetry_iso, old_pose_timestamp)
+            self.assertEqual(runtime.robot_pose_heartbeats['R01'], 123.0)
             await runtime.update_external_robot_state(telemetry)
             runtime.engine.state['robots']['R01'].update({
                 'battery': 70, 'health': 'OK', 'load': {'units': 1},
@@ -929,13 +1022,15 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             else:
                 runtime._prev['_robots'].pop('R01', None)
             self.assertTrue(runtime.ros_bridge_connected)
-            self.assertEqual(runtime.last_telemetry_iso, '2026-09-22T00:00:00+00:00')
+            self.assertEqual(runtime.last_telemetry_iso, telemetry['timestamp'])
         finally:
             runtime.runtime_mode = old_mode
             runtime.operation_mode = old_operation_mode
             runtime.engine.state['robots'] = old_robots
             runtime.connected_robot_ids = old_connected
             runtime.robot_bridge_heartbeats = old_heartbeats
+            runtime.robot_pose_heartbeats = old_pose_heartbeats
+            runtime.stale_telemetry_log_at = old_stale_telemetry_logs
             runtime.ros_bridge_connected = old_bridge_connected
             runtime.bridge_status = old_bridge_status
             runtime.ros_diagnostics = old_ros_diagnostics

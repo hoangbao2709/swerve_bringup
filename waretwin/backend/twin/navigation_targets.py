@@ -303,7 +303,8 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
                               tag_id: int | str | None = None, x: float | None = None,
                               y: float | None = None, yaw: float | None = None,
                               source_map_id: str | None = None,
-                              source_map_revision: str | int | None = None) -> dict[str, Any]:
+                              source_map_revision: str | int | None = None,
+                              preferred_yaw: float | None = None) -> dict[str, Any]:
     """Resolve either target source to the shared frame/map-bound contract."""
     rid = str(robot_id or '').strip()
     map_id = str(active_map.get('active_map_id') or '')
@@ -406,7 +407,25 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
             'canonical Tag navigation is disabled on this local map until a versioned map registration is configured')
     if not record['navigable']:
         raise NavigationTargetError('TAG_NOT_NAVIGABLE', str(record['reason'] or 'Tag is not navigable'))
-    target_pose = record['navigation_pose']
+    target_pose = dict(record['navigation_pose'])
+    tag_metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+    orientation_policy = str(tag_metadata.get('orientation_policy') or '').upper()
+    if orientation_policy == 'SHELF_WIDTH_PARALLEL' and preferred_yaw is not None:
+        try:
+            preference = float(preferred_yaw)
+        except (TypeError, ValueError, OverflowError):
+            raise NavigationTargetError('TAG_ORIENTATION_INVALID',
+                                        'preferred shelf service heading must be finite') from None
+        if not math.isfinite(preference):
+            raise NavigationTargetError('TAG_ORIENTATION_INVALID',
+                                        'preferred shelf service heading must be finite')
+        base_yaw = float(target_pose['yaw'])
+        alternate_yaw = math.atan2(math.sin(base_yaw + math.pi),
+                                   math.cos(base_yaw + math.pi))
+        def heading_error(candidate: float) -> float:
+            return abs(math.atan2(math.sin(candidate - preference),
+                                  math.cos(candidate - preference)))
+        target_pose['yaw'] = min((base_yaw, alternate_yaw), key=heading_error)
     target = NavigationTarget(
         robot_id=rid,
         source_type='TAG',
@@ -424,6 +443,8 @@ def resolve_navigation_target(*, robot_id: str, source_type: str, active_map: di
             'floor_id': record['floor_id'],
             'lane_id': record['lane_id'],
             'zone_id': record['zone_id'],
+            'orientation_policy': orientation_policy or None,
+            'rack_id': tag_metadata.get('rack_id'),
             'tag_revision': record['tag_revision'],
             'registry_revision': registry['registry_revision'],
             'pose_source': record['navigation_pose_source'],
@@ -507,12 +528,14 @@ def plan_registered_tag_route(*, robot_id: str, active_map: dict[str, Any],
     if final_tag is None:
         raise NavigationTargetError('TAG_UNKNOWN', f'Tag {target_id} is not enabled')
     record = _tag_record(final_tag, 'CANONICAL', str(canonical_revision))
-    canonical_goal = record.get('navigation_pose')
+    canonical_goal = route.get('destination_pose')
     if canonical_goal is None:
         raise NavigationTargetError('TAG_NOT_NAVIGABLE', f'Tag {target_id} has no valid navigation pose')
     expected_goal = transform_canonical_pose(canonical_goal, transform)
-    if math.hypot(active_points[-1]['x'] - expected_goal['x'],
-                  active_points[-1]['y'] - expected_goal['y']) > 1e-4:
+    if (math.hypot(active_points[-1]['x'] - expected_goal['x'],
+                   active_points[-1]['y'] - expected_goal['y']) > 1e-4
+            or abs(math.atan2(math.sin(active_points[-1]['yaw'] - expected_goal['yaw']),
+                              math.cos(active_points[-1]['yaw'] - expected_goal['yaw']))) > 1e-4):
         raise NavigationTargetError('TAG_ROUTE_TARGET_MISMATCH',
             'topological route destination does not match the registered Tag service pose')
     active_points[-1] = {**active_points[-1], **expected_goal}

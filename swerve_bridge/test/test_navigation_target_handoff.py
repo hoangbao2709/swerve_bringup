@@ -55,6 +55,7 @@ def _nav_safety_bridge():
     bridge.paused_pose_context = None
     bridge.cancel_pending = False
     bridge.pending_cancel_state = None
+    bridge.pending_cancel_reason = None
     bridge.pending_replan = None
     bridge.tag_route_context = None
     bridge.tag_route_waiting_auth = None
@@ -62,6 +63,7 @@ def _nav_safety_bridge():
     bridge.nav_state = 'NAVIGATING'
     bridge.cmd_pub = SimpleNamespace(publish=Mock())
     bridge.estop_pub = SimpleNamespace(publish=Mock())
+    bridge._logger = SimpleNamespace(info=Mock(), warning=Mock(), error=Mock())
     bridge.send = Mock()
     bridge.send_nav_status = Mock()
     bridge.now = lambda: '2026-10-03T00:00:00Z'
@@ -127,7 +129,7 @@ def test_tag_route_leg_auth_timeout_stops_route_and_rejects_late_approval(monkey
     bridge._lookup_robot_pose = Mock(return_value=({'x': 0.0, 'y': 0.0, 'yaw': 0.0}, 'map'))
     bridge.path_preview_client = SimpleNamespace(send_goal_async=preview_action.send_goal_async)
     bridge.get_parameter = lambda _name: SimpleNamespace(value=0.5)
-    bridge.get_logger = lambda: SimpleNamespace(warning=Mock())
+    bridge.get_logger = lambda: SimpleNamespace(info=Mock(), warning=Mock())
     bridge.tag_route_context = dict(context)
 
     bridge._request_tag_route_leg(context)
@@ -450,6 +452,60 @@ def test_estop_on_active_nav2_goal_does_not_clear_before_cancel_result():
     assert applied['code'] == 'CLEAR_ESTOP_APPLIED'
     assert not bridge.emergency_stop_active
     assert handle.cancel_goal_async.call_count == 1
+
+
+def test_tag_route_yaw_only_motion_cannot_complete_a_translating_waypoint():
+    bridge = _nav_safety_bridge()
+    route = _tag_route_context()
+    bridge.tag_route_context = dict(route)
+    handle, _cancel_future, _result_future = _accepted_pose_handle()
+    bridge.active_pose_goal = handle
+    context = {**route, 'route_index': 1, 'route_node_id': 11}
+    # Simulate a controller that achieved the requested heading but never
+    # translated toward a waypoint two metres away.
+    bridge._lookup_robot_pose = Mock(return_value=({'x': 0.0, 'y': 0.0, 'yaw': 0.0}, 'map'))
+    bridge.get_parameter = lambda name: SimpleNamespace(
+        value=0.20 if name == 'tag_route_xy_tolerance_m' else math.radians(10.0))
+    bridge.get_logger = lambda: SimpleNamespace(warning=Mock(), info=Mock())
+
+    bridge.pose_goal_result(
+        SimpleNamespace(result=lambda: SimpleNamespace(
+            status=bridge_node.GoalStatus.STATUS_SUCCEEDED)), handle, context)
+
+    status_call = bridge.send_nav_status.call_args
+    assert status_call.args[1] == 'FAILED'
+    assert 'TAG_ROUTE_NODE_NOT_REACHED' in status_call.args[2]
+    assert 'xy_error=2.000m' in status_call.args[2]
+    assert bridge.tag_route_context is None
+    assert not any(call.args[1] == 'TAG_ROUTE_NODE_REACHED'
+                   for call in bridge.send_nav_status.call_args_list)
+
+
+def test_registration_drift_cancel_reason_survives_nav2_terminal_result():
+    bridge = _nav_safety_bridge()
+    handle, _cancel_future, _result_future = _accepted_pose_handle()
+    context = {'robot_id': 'R01', 'frame_id': 'map', 'preview_request_id': 'preview-1'}
+    bridge.active_pose_goal = handle
+    bridge.active_pose_context = context
+
+    bridge.cancel_navigation({
+        'type': 'CANCEL_NAVIGATION',
+        'reason_code': 'MAP_REGISTRATION_DRIFT',
+        'reason': 'alignment changed during the approved action',
+    })
+    assert bridge.pending_cancel_state == 'CANCELLED'
+    assert bridge.pending_cancel_reason.startswith('MAP_REGISTRATION_DRIFT:')
+    handle.cancel_goal_async.assert_called_once_with()
+
+    bridge.pose_goal_result(
+        SimpleNamespace(result=lambda: SimpleNamespace(
+            status=bridge_node.GoalStatus.STATUS_CANCELED)), handle, context)
+
+    status_call = bridge.send_nav_status.call_args
+    assert status_call.args[0] == context
+    assert status_call.args[1] == 'CANCELLED'
+    assert 'MAP_REGISTRATION_DRIFT:' in status_call.args[2]
+    assert bridge.pending_cancel_reason is None
 
 
 def test_clear_estop_local_control_returns_correlated_applied_or_pending_result():

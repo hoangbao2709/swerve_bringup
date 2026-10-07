@@ -551,9 +551,25 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const selectedPoint = goalPreview ?? goal;
   const nav2BlockerReason = runtimeCapabilities?.goal_blocker_reason
     ?? diagnostics?.nav2_lifecycle_blocker_reason ?? "";
-  const localSection = activeSection === "SYSTEM" ? "DIAGNOSTICS"
+  const localSection = activeSection === "DIAGNOSIS" ? "DIAGNOSTICS"
     : activeSection === "VDA5050" ? "VDA5050"
-      : activeSection === "MAPPING" ? "MAPPING" : "LOCALIZATION";
+      : activeSection === "MAPS" ? "MAPS"
+        : activeSection === "MAPPING" ? "MAPPING" : "LOCALIZATION";
+  const dashboardStateRows: Array<[string, string]> = [
+    ["CURRENT STATE", runtimeState], ["CONTROL MODE", controlMode],
+    ["MAPPING", diagnostics?.mapping?.slam_state ?? "UNKNOWN"],
+    ["LOCALIZATION", activeLocalMapId ? runtimeCapabilities?.localization_ready ? "LOCALIZED" : "INITIAL POSE REQUIRED" : safeText(localization, "UNKNOWN")],
+    ["NAVIGATION", navigationLabel], ["E-STOP", estopActive ? "ACTIVE" : "CLEAR"],
+  ];
+  const systemInputRows: Array<[string, string]> = [
+    ["ACTIVE MAP", activeMapId ?? "WAITING"],
+    ["MAP SOURCE", activeMap2dSnapshot?.map_source?.replace(/_/g, " ") ?? "WAITING"],
+    ["LIDAR", diagnostics?.mapping?.scan_live ? "LIVE" : diagnostics?.lidar ? "READY" : "UNAVAILABLE"],
+    ["ODOMETRY", diagnostics?.mapping?.odom_live ? "RECEIVING" : "WAITING"],
+    ["ROS BRIDGE", controlOnline ? "ONLINE" : "OFFLINE"],
+    ["SLAM", slamLive ? "LIVE" : diagnostics?.slam ? "READY" : "INACTIVE"],
+    ["NAV2", nav2Ready ? "READY" : nav2BlockerReason ? "BLOCKED" : diagnostics?.nav2 ? "STARTING" : "INACTIVE"],
+  ];
 
   return (
     <div className="robot-detail-shell industrial-hmi">
@@ -582,15 +598,14 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
       {(safetyNotice || error) && <div className={`hmi-global-feedback ${error ? "is-error" : "is-success"}`} role={error ? "alert" : "status"}>{error || safetyNotice}</div>}
 
       {activeSection !== "CONTROL" ? <main className={`robot-detail-section-main hmi-section-main hmi-section-${activeSection.toLowerCase()}`}>
-        <header className="hmi-section-heading"><div><span>ROBOT {robotId}</span><h2>{activeSection === "VDA5050" ? "VDA5050 CONFIGURATION" : activeSection}</h2></div>
-          {activeSection === "SYSTEM" && <button type="button" className="hmi-secondary-action" onClick={() => onSectionChange("VDA5050")}>VDA5050 ADVANCED SETTINGS</button>}
-          {activeSection === "VDA5050" && <button type="button" className="hmi-secondary-action" onClick={() => onSectionChange("SYSTEM")}>BACK TO SYSTEM</button>}
+        <header className="hmi-section-heading"><div><span>ROBOT {robotId}</span><h2>{activeSection === "VDA5050" ? "VDA5050 CONFIGURATION" : activeSection === "DIAGNOSIS" ? "DIAGNOSIS / SYSTEM" : activeSection}</h2></div>
+          {activeSection === "VDA5050" && <button type="button" className="hmi-secondary-action" onClick={() => onSectionChange("DIAGNOSIS")}>BACK TO DIAGNOSIS</button>}
         </header>
         <LocalRobotSection section={localSection} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={localizationMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} hostStatus={host} ensureManualMode={() => setMode("MANUAL")} />
       </main> : <main className="robot-detail-main hmi-control-main">
         <section className="robot-detail-map-panel">
           <div className="robot-map-source-bar">
-            <span className="robot-map-view-label">2D SLAM OCCUPANCY MAP</span>
+            <span className="robot-map-view-label">{activeMap2dSnapshot?.map_source === "LOCAL_MAP" ? "2D NAVIGATION MAP" : activeMap2dSnapshot?.map_source === "NAV2_MAP" ? "ACTIVE NAVIGATION MAP" : "2D SLAM OCCUPANCY MAP"}</span>
             <span className={`hmi-state-pill ${viewFresh ? "is-ready" : "is-warning"}`} data-view-state={viewFresh ? "FRESH" : viewStatus?.state ?? "REQUESTED"}>{viewFresh ? "LIVE" : "WAITING FOR MAP"}</span>
             <span className={`hmi-state-pill ${activeMapReady ? "is-ready" : "is-warning"}`}>{activeMapReady ? "ACTIVE MAP · FRAME map" : activeMapStatus}</span>
           </div>
@@ -602,6 +617,10 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
                 layers={mapLayers} onLayerToggle={(layer) => setMapLayers((current) => ({ ...current, [layer]: !current[layer] }))}
                 canPick={Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} />
             </div>
+          </div>
+          <div className="hmi-dashboard-panels" aria-label="Map system status">
+            <DashboardStatusPanel title="SYSTEM INPUTS" rows={systemInputRows} />
+            <DashboardStatusPanel title="STATE" rows={dashboardStateRows} />
           </div>
         </section>
 
@@ -683,6 +702,19 @@ function ManualBarContent({ controlMode, controlOnline, activeManualCommand, mov
         <span>ROTATE</span>{button("ROTATE_LEFT")}{button("ROTATE_RIGHT")}
       </div>
     </div>
+  </section>;
+}
+
+function DashboardStatusPanel({ title, rows }: { title: string; rows: Array<[string, string]> }) {
+  return <section className="hmi-dashboard-status-panel" aria-label={title}>
+    <header>{title}</header>
+    <dl>{rows.map(([label, value]) => {
+      const state = value.toUpperCase();
+      const tone = ["READY", "LIVE", "ONLINE", "RECEIVING", "LOCALIZED", "CLEAR", "ACTIVE", "RUNNING"].includes(state)
+        ? "is-good" : ["BLOCKED", "INITIAL POSE REQUIRED", "WAITING", "STARTING", "UNKNOWN"].includes(state)
+          ? "is-warning" : ["OFFLINE", "UNAVAILABLE", "INACTIVE", "ERROR", "FAILED"].includes(state) ? "is-fault" : "is-neutral";
+      return <div key={label}><dt>{label}</dt><dd className={tone}>{value}</dd></div>;
+    })}</dl>
   </section>;
 }
 

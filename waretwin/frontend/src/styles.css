@@ -1951,30 +1951,30 @@ table.dt.full td { white-space: normal; }
 @media (max-width: 1000px) { .local-robot-section { grid-template-columns: 1fr; }.local-vda-panel { grid-column: auto; }.local-form-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); } }
 @media (max-width: 900px) { .robot-local-tabs { overflow-x: auto; }.robot-detail-section-main { overflow: visible; }.robot-map-source-bar { flex-wrap: wrap; }.local-status-grid { grid-template-columns: 1fr; }.local-vda-footer { align-items: flex-start; flex-direction: column; }.local-form-grid { grid-template-columns: 1fr 1fr; } }
 
-/* Industrial HMI skin for the point-only robot operator workspace. */
-.industrial-hmi-workspace { padding-left: 0; background: #e8eaed; color: #202020; transition: none; }
-.industrial-hmi-workspace > .industrial-tool-rail { position: relative; inset: auto; z-index: 1; flex: 0 0 78px; width: 78px; min-height: 100vh; gap: 12px; padding: 12px 6px; border-right: 1px solid #b8bdc2; background: #f3f4f5; box-shadow: none; transition: none; }
+/* XLOC-inspired industrial HMI skin: compact chrome, map-first pages and dense status tables. */
+.industrial-hmi-workspace { padding-left: 0; background: #e5e7ea; color: #202020; transition: none; }
+.industrial-hmi-workspace > .industrial-tool-rail { position: relative; inset: auto; z-index: 1; flex: 0 0 94px; width: 94px; min-height: 100vh; gap: 8px; padding: 8px 6px; border-right: 1px solid #b8bdc2; background: #f3f4f5; box-shadow: none; transition: none; }
 .industrial-tool-rail .wt-sidebar-head { justify-content: center; min-height: 42px; }
 .industrial-tool-rail .wt-sidebar-brand { justify-content: center; }
 .industrial-tool-rail .wt-sidebar-mark { width: 38px; height: 38px; border: 1px solid #8d969e; border-radius: 3px; color: #fff; background: #1976c9; font: 800 18px/1 var(--font); }
 .industrial-tool-rail .wt-sidebar-nav { gap: 5px; overflow: visible; }
-.industrial-tool-rail .wt-sidebar-item { min-height: 64px; display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 6px 2px; border: 1px solid transparent; border-radius: 2px; color: #3b444c; background: transparent; text-align: center; }
+.industrial-tool-rail .wt-sidebar-item { min-height: 58px; display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 5px 2px; border: 1px solid transparent; border-radius: 2px; color: #3b444c; background: transparent; text-align: center; }
 .industrial-tool-rail .wt-sidebar-item:hover { border-color: #b7c9d8; color: #164f7f; background: #e8f1f8; }
 .industrial-tool-rail .wt-sidebar-item.active { border-color: #8ab9df; color: #135a91; background: #dcecf8; }
-.industrial-tool-rail .wt-sidebar-icon { width: auto; flex: 0 0 auto; color: #4f6577; font: 22px/1 var(--font); }
+.industrial-tool-rail .wt-sidebar-icon { width: auto; flex: 0 0 auto; color: #4f6577; font: 19px/1 var(--font); }
 .industrial-tool-rail .wt-sidebar-item.active .wt-sidebar-icon { color: #1976c9; }
 .industrial-tool-rail .wt-sidebar-item-copy { text-align: center; }
-.industrial-tool-rail .wt-sidebar-item-copy b { font: 700 10px/1.15 var(--font); white-space: normal; }
+.industrial-tool-rail .wt-sidebar-item-copy b { font: 700 9px/1.15 var(--font); white-space: normal; }
 .industrial-tool-rail .wt-sidebar-active-mark { display: none; }
 .industrial-hmi-workspace > .robot-detail-shell { min-width: 0; height: 100vh; }
-.industrial-hmi { --hmi-page: #e8eaed; --hmi-panel: #fff; --hmi-line: #b8bdc2; --hmi-text: #202428; --hmi-muted: #58616a; --hmi-blue: #1976c9; --hmi-green: #24823b; --hmi-amber: #a86200; --hmi-red: #c62828; min-height: 0; background: var(--hmi-page); color: var(--hmi-text); font-family: Inter, Arial, system-ui, sans-serif; }
-.industrial-hmi .robot-detail-header { min-height: 64px; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--hmi-line); background: #f8f9fa; }
+.industrial-hmi { --xui-bg: #e5e7ea; --xui-panel: #fff; --xui-border: #b8bdc2; --xui-navy: #253b78; --xui-blue: #1976c9; --xui-text: #202428; --xui-muted: #58616a; --xui-green: #24823b; --xui-orange: #b66b00; --xui-red: #c62828; --hmi-page: var(--xui-bg); --hmi-panel: var(--xui-panel); --hmi-line: var(--xui-border); --hmi-text: var(--xui-text); --hmi-muted: var(--xui-muted); --hmi-blue: var(--xui-blue); --hmi-green: var(--xui-green); --hmi-amber: var(--xui-orange); --hmi-red: var(--xui-red); min-height: 0; background: var(--hmi-page); color: var(--hmi-text); font-family: Inter, Arial, system-ui, sans-serif; }
+.industrial-hmi .robot-detail-header { min-height: 52px; gap: 8px; padding: 5px 9px; border-bottom: 1px solid #1e3066; background: var(--xui-navy); }
 .industrial-hmi .robot-detail-identity { flex: 1 1 auto; gap: 7px; overflow: visible; }
-.industrial-hmi .robot-detail-robot-select { gap: 5px; color: var(--hmi-muted); font: 700 11px var(--font); letter-spacing: 0; }
-.industrial-hmi .robot-detail-robot-select select { min-height: 36px; padding: 0 10px; border: 1px solid #929ba3; border-radius: 2px; color: #202428; background: #fff; font: 700 15px var(--font); }
-.industrial-hmi .robot-detail-mode { padding: 7px 9px; border: 1px solid #c6cbd0; border-left-width: 1px; color: #313941; background: #fff; font: 700 12px var(--font); }
-.industrial-hmi .hmi-state-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 8px; border: 1px solid #c2c7cc; border-radius: 2px; background: #fff; color: #333a40; font: 700 11px/1.2 var(--font); white-space: nowrap; }
-.industrial-hmi .hmi-state-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #737b82; }
+.industrial-hmi .robot-detail-robot-select { gap: 5px; color: #dbe3f7; font: 700 9px var(--font); letter-spacing: .05em; }
+.industrial-hmi .robot-detail-robot-select select { min-height: 31px; padding: 0 8px; border: 1px solid #9da9c7; border-radius: 2px; color: #202428; background: #fff; font: 700 13px var(--font); }
+.industrial-hmi .robot-detail-mode { padding: 6px 8px; border: 1px solid #506392; border-left-width: 1px; color: #f2f4fa; background: #314b87; font: 700 10px var(--font); }
+.industrial-hmi .hmi-state-pill { display: inline-flex; align-items: center; gap: 5px; min-height: 25px; padding: 3px 6px; border: 1px solid #c2c7cc; border-radius: 2px; background: #fff; color: #333a40; font: 700 9px/1.2 var(--font); white-space: nowrap; }
+.industrial-hmi .hmi-state-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #737b82; }
 .industrial-hmi .hmi-state-pill.is-ready { border-color: #86b790; background: #edf7ef; color: #216a30; }
 .industrial-hmi .hmi-state-pill.is-ready::before { background: #24823b; }
 .industrial-hmi .hmi-state-pill.is-running { border-color: #80a9cb; background: #edf5fb; color: #165f98; }
@@ -1984,7 +1984,7 @@ table.dt.full td { white-space: normal; }
 .industrial-hmi .hmi-state-pill.is-fault { border-color: #d99a9a; background: #fff0f0; color: #a82020; }
 .industrial-hmi .hmi-state-pill.is-fault::before { background: #c62828; }
 .industrial-hmi .hmi-state-pill.is-neutral { background: #f0f1f2; color: #555c62; }
-.industrial-hmi .robot-detail-header-actions { gap: 5px; }
+.industrial-hmi .robot-detail-header-actions { gap: 4px; }
 .industrial-hmi .robot-detail-header button,
 .industrial-hmi .robot-detail-goal-toolbar button,
 .industrial-hmi .robot-detail-nav-bar button,
@@ -1996,7 +1996,7 @@ table.dt.full td { white-space: normal; }
 .industrial-hmi .hmi-nav-management button,
 .industrial-hmi .hmi-yaw-actions button,
 .industrial-hmi .hmi-secondary-action {
-  min-height: 38px; padding: 0 12px; border: 1px solid #9da5ab; border-radius: 2px; color: #263039; background: #f3f4f5; font: 700 13px/1.1 var(--font); letter-spacing: 0;
+  min-height: 32px; padding: 0 9px; border: 1px solid #9da5ab; border-radius: 2px; color: #263039; background: #f3f4f5; font: 700 11px/1.1 var(--font); letter-spacing: 0;
 }
 .industrial-hmi .robot-detail-header button:hover,
 .industrial-hmi .hmi-navigation-actions button:hover,
@@ -2010,28 +2010,29 @@ table.dt.full td { white-space: normal; }
 .industrial-hmi .local-action-row button:disabled { color: #83898e; background: #e6e7e8; opacity: .72; }
 .industrial-hmi .robot-detail-header button.is-active { border-color: #1976c9; color: #fff; background: #1976c9; }
 .industrial-hmi .robot-detail-header button.is-active:hover { color: #fff; background: #1169b4; }
-.industrial-hmi .robot-detail-header button.hmi-estop { min-height: 42px; padding: 0 15px; border: 1px solid #a71c1c !important; color: #fff !important; background: #c62828 !important; font-size: 14px; font-weight: 800; }
+.industrial-hmi .robot-detail-header button.hmi-estop { min-height: 38px; padding: 0 12px; border: 1px solid #a71c1c !important; color: #fff !important; background: #c62828 !important; font-size: 12px; font-weight: 800; }
 .industrial-hmi .robot-detail-header button.hmi-estop:hover { background: #a91f1f !important; }
 .industrial-hmi .robot-detail-header button.hmi-clear-stop { border-color: #4f7f5b; color: #215e2d; background: #edf7ef; }
 .industrial-hmi .robot-detail-header button.hmi-clear-stop:hover { background: #dcefe0; }
 .industrial-hmi .hmi-global-feedback { position: absolute; z-index: 8; top: 68px; right: 12px; max-width: min(520px, 45vw); padding: 9px 12px; border: 1px solid #8ebc98; border-radius: 2px; color: #216a30; background: #edf7ef; box-shadow: 0 1px 3px #0002; font: 700 12px/1.4 var(--font); }
 .industrial-hmi .hmi-global-feedback.is-error { border-color: #d99a9a; color: #9f2020; background: #fff0f0; }
-.industrial-hmi .robot-detail-main { flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(0, 2.6fr) minmax(318px, 1fr); gap: 10px; padding: 10px; overflow: hidden; }
+.industrial-hmi .robot-detail-main { flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(0, 1fr) minmax(320px, 340px); gap: 7px; padding: 7px; overflow: hidden; }
 .industrial-hmi .robot-detail-map-panel,
 .industrial-hmi .hmi-operation-panel,
 .industrial-hmi .local-section-panel { min-width: 0; min-height: 0; border: 1px solid var(--hmi-line); border-radius: 2px; background: var(--hmi-panel); box-shadow: none; }
-.industrial-hmi .robot-detail-map-panel { overflow: hidden; }
+.industrial-hmi .robot-detail-map-panel { position: relative; overflow: hidden; }
 .industrial-hmi .robot-map-source-bar { min-height: 42px; flex-wrap: nowrap; padding: 0 12px; border-bottom: 1px solid var(--hmi-line); background: #f5f6f7; }
-.industrial-hmi .robot-map-view-label { color: #29333a; font: 700 14px var(--font); letter-spacing: .01em; }
+.industrial-hmi .robot-map-view-label { color: #29333a; font: 700 12px var(--font); letter-spacing: .025em; }
 .industrial-hmi .robot-map-source-bar .hmi-state-pill { margin-left: auto; }
 .industrial-hmi .robot-map-source-bar .hmi-state-pill + .hmi-state-pill { margin-left: 0; }
 .industrial-hmi .robot-detail-view-stack { min-height: 0; background: #919191; }
 .industrial-hmi .robot-detail-view-layer > .robot-slam-map-2d { min-height: 0; }
-.industrial-hmi .robot-slam-map-2d .robot-detail-view-readout { min-height: 34px; align-items: center; gap: 14px; padding: 6px 12px; border-bottom: 1px solid #c6c9cc; background: #fafafa; color: #4b5359; font: 12px var(--font); letter-spacing: 0; }
+.industrial-hmi .robot-slam-map-2d .robot-detail-view-readout { min-height: 34px; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 14px; padding: 6px 12px; border-bottom: 1px solid #c6c9cc; background: #fafafa; color: #4b5359; font: 11px var(--font); letter-spacing: 0; }
+.industrial-hmi .robot-slam-map-2d .robot-detail-view-readout > span + span { padding-left: 11px; border-left: 1px solid #c6c9cc; }
 .industrial-hmi .local-pose-map { min-width: 0; min-height: 0; border: 1px solid #aeb4b9; border-radius: 1px; background: #919191; }
 .industrial-hmi .robot-slam-map-2d .local-pose-map { border: 0; }
 .industrial-hmi .robot-slam-map-2d .local-pose-map canvas { cursor: crosshair; }
-.industrial-hmi .hmi-map-toolbar { position: absolute; z-index: 2; top: 10px; left: 10px; display: flex; gap: 4px; padding: 4px; border: 1px solid #9ba2a8; border-radius: 2px; background: rgba(255,255,255,.96); }
+.industrial-hmi .hmi-map-toolbar { position: absolute; z-index: 2; bottom: 10px; left: 10px; display: flex; gap: 3px; padding: 3px; border: 1px solid #9ba2a8; border-radius: 2px; background: rgba(255,255,255,.96); }
 .industrial-hmi .hmi-map-toolbar button { min-width: 38px; min-height: 34px; padding: 0 8px; border: 1px solid #aeb5bb; border-radius: 2px; color: #27313a; background: #f4f5f6; font: 700 12px var(--font); }
 .industrial-hmi .hmi-map-toolbar button:hover { border-color: #1976c9; color: #155b91; background: #e7f1f9; }
 .industrial-hmi .hmi-map-toolbar button:disabled { color: #9ca1a5; background: #e9eaeb; }
@@ -2287,4 +2288,164 @@ table.dt.full td { white-space: normal; }
   .industrial-hmi .hmi-operation-panel .hmi-jog-layout { flex-direction: row; flex-wrap: wrap; }
   .industrial-hmi .hmi-operation-panel .hmi-rotate-pad { width: auto; }
   .industrial-hmi .hmi-error-log-footer { flex-basis: 158px; min-height: 158px; }
+}
+
+/* Dashboard overlays mirror the manual's compact System Inputs / State tables. */
+.industrial-hmi .hmi-dashboard-panels { position: absolute; z-index: 4; top: 70px; left: 8px; display: grid; gap: 6px; width: 228px; max-height: calc(100% - 78px); overflow: auto; pointer-events: none; scrollbar-width: thin; }
+.industrial-hmi .hmi-dashboard-status-panel { min-width: 0; overflow: hidden; border: 1px solid #aeb5bb; background: rgba(255,255,255,.97); pointer-events: auto; }
+.industrial-hmi .hmi-dashboard-status-panel > header { min-height: 25px; display: flex; align-items: center; padding: 0 8px; border-bottom: 1px solid #c8cdd1; color: #26375f; background: #f1f3f7; font: 700 10px var(--font); letter-spacing: .04em; }
+.industrial-hmi .hmi-dashboard-status-panel dl { margin: 0; padding: 3px 8px 4px; }
+.industrial-hmi .hmi-dashboard-status-panel dl > div { min-height: 20px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); align-items: center; gap: 6px; border-bottom: 1px solid #eceef0; }
+.industrial-hmi .hmi-dashboard-status-panel dl > div:last-child { border-bottom: 0; }
+.industrial-hmi .hmi-dashboard-status-panel dt { min-width: 0; color: #626b72; font: 700 9px var(--font); }
+.industrial-hmi .hmi-dashboard-status-panel dd { min-width: 0; margin: 0; overflow: hidden; color: #27323a; font: 700 9px var(--font); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.industrial-hmi .hmi-dashboard-status-panel dd.is-good { color: #26804a; }
+.industrial-hmi .hmi-dashboard-status-panel dd.is-warning { color: #a76700; }
+.industrial-hmi .hmi-dashboard-status-panel dd.is-fault { color: #b42323; }
+.industrial-hmi .hmi-dashboard-status-panel dd.is-neutral { color: #455463; }
+
+/* Compact top/right operator controls retain the existing command pipeline. */
+.industrial-hmi .robot-detail-identity { gap: 5px; }
+.industrial-hmi .robot-detail-header-actions { flex-wrap: nowrap; }
+.industrial-hmi .robot-detail-header button { min-height: 30px; padding: 0 8px; font-size: 10px; }
+.industrial-hmi .robot-detail-header button.hmi-estop { min-height: 36px; font-size: 11px; }
+.industrial-hmi .robot-detail-header button.hmi-clear-stop { color: #e8f2ea; border-color: #70917a; background: #365b42; }
+.industrial-hmi .robot-detail-header button.hmi-clear-stop:hover { color: #fff; background: #42704f; }
+.industrial-hmi .robot-detail-main { gap: 6px; padding: 6px; }
+.industrial-hmi .robot-map-source-bar { min-height: 36px; }
+.industrial-hmi .hmi-operation-panel > header { min-height: 42px; padding: 4px 9px; }
+.industrial-hmi .hmi-operation-panel > header h2 { font-size: 16px; }
+.industrial-hmi .hmi-operation-status { padding: 3px 9px 4px; gap: 0 6px; }
+.industrial-hmi .hmi-operation-status > div { min-height: 34px; gap: 2px; }
+.industrial-hmi .hmi-operation-status span { font-size: 9px; }
+.industrial-hmi .hmi-operation-status b { font-size: 12px; }
+.industrial-hmi .hmi-operation-status .hmi-state-pill { min-height: 21px; font-size: 9px; }
+.industrial-hmi .hmi-destination { padding: 6px 9px; }
+.industrial-hmi .hmi-destination h3 { margin-bottom: 5px; font-size: 11px; }
+.industrial-hmi .hmi-destination p { margin: 4px 0 6px; font-size: 11px; line-height: 1.3; }
+.industrial-hmi .hmi-coordinate-grid { grid-template-columns: 38px minmax(0,1fr); gap: 2px 6px; margin: 5px 0 6px; }
+.industrial-hmi .hmi-coordinate-grid span { font-size: 10px; }
+.industrial-hmi .hmi-coordinate-grid b { font-size: 12px; }
+.industrial-hmi .hmi-yaw-actions button { min-height: 28px; }
+.industrial-hmi .hmi-navigation-actions { gap: 4px; padding: 6px 9px; }
+.industrial-hmi .hmi-navigation-actions button { min-height: 34px; font-size: 11px; }
+.industrial-hmi .hmi-nav-management { gap: 4px; padding: 0 9px 6px; }
+.industrial-hmi .hmi-nav-management button { min-height: 28px; font-size: 9px; }
+.industrial-hmi .hmi-operation-panel .hmi-manual-jog-panel { margin-top: 5px; }
+.industrial-hmi .hmi-operation-panel .robot-detail-manual-head { min-height: 32px; padding: 4px 7px; }
+.industrial-hmi .hmi-operation-panel .robot-detail-manual-head b { font-size: 11px; }
+.industrial-hmi .hmi-operation-panel .robot-detail-manual-head small { font-size: 9px; }
+.industrial-hmi .hmi-operation-panel .hmi-jog-layout { gap: 5px; padding: 5px 6px; }
+.industrial-hmi .hmi-operation-panel .hmi-jog-pad { grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 35px); gap: 2px; }
+.industrial-hmi .hmi-operation-panel .hmi-jog-pad .manual-key { font-size: 17px; }
+.industrial-hmi .hmi-operation-panel .hmi-jog-pad .manual-key small { font-size: 8px; }
+.industrial-hmi .hmi-operation-panel .hmi-rotate-pad { width: 88px; gap: 3px; }
+.industrial-hmi .hmi-operation-panel .hmi-rotate-pad > span { font-size: 9px; }
+.industrial-hmi .hmi-operation-panel .hmi-rotate-pad .manual-key { min-height: 39px; font-size: 17px; }
+.industrial-hmi .hmi-error-log-footer { flex-basis: 140px; min-height: 140px; padding: 0 7px 7px; }
+
+/* The saved-map manager uses actual registry metadata and only previews a confirmed active ROS snapshot. */
+.industrial-hmi .hmi-maps-layout { grid-template-columns: minmax(220px, .78fr) minmax(0, 1.75fr) minmax(260px, .9fr); grid-template-rows: minmax(0, 1fr); grid-template-areas: "list preview details"; gap: 7px; overflow: hidden; }
+.industrial-hmi .hmi-maps-list { grid-area: list; }
+.industrial-hmi .hmi-maps-preview { grid-area: preview; }
+.industrial-hmi .hmi-maps-details { grid-area: details; }
+.industrial-hmi .hmi-maps-layout .local-section-panel { min-height: 0; }
+.industrial-hmi .hmi-maps-layout .local-section-panel .robot-detail-panel-body { min-height: 0; }
+.industrial-hmi .hmi-stored-map-list { max-height: 100%; overflow: auto; scrollbar-width: thin; }
+.industrial-hmi .hmi-maps-preview .robot-detail-panel-body { display: flex; min-height: 0; }
+.industrial-hmi .hmi-maps-preview .local-pose-map { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; margin: 0; }
+.industrial-hmi .hmi-maps-preview .local-pose-map canvas { height: 100%; }
+.industrial-hmi .hmi-map-preview-empty { display: grid; flex: 1; place-items: center; padding: 30px; background: #eef0f3; text-align: center; }
+.industrial-hmi .hmi-map-detail-state { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0 8px; border-bottom: 1px solid #e1e4e6; color: #26313a; font-size: 12px; }
+.industrial-hmi .hmi-map-details-grid { grid-template-columns: minmax(0,1fr); }
+.industrial-hmi .hmi-map-details-grid .robot-detail-metric { min-height: 25px; padding: 3px 0; }
+.industrial-hmi .hmi-map-load-actions { margin-top: 7px; }
+.industrial-hmi .hmi-map-load-actions button { width: 100%; min-height: 36px; }
+.industrial-hmi .hmi-maps-details .local-help { margin-top: 6px; }
+
+/* Mapping remains map-first; Localization gives the confirmed active map the largest surface. */
+.industrial-hmi .hmi-mapping-layout { grid-template-columns: minmax(0, 1fr) minmax(300px, 340px); grid-template-rows: auto auto minmax(165px, 1fr); grid-template-areas: "map status" "map save" "map list"; gap: 7px; }
+.industrial-hmi .hmi-mapping-map .robot-detail-panel-body { position: relative; }
+.industrial-hmi .hmi-mapping-layout .local-section-panel > header,
+.industrial-hmi .hmi-localization-layout .local-section-panel > header,
+.industrial-hmi .hmi-maps-layout .local-section-panel > header,
+.industrial-hmi .hmi-diagnosis-layout .local-section-panel > header { min-height: 31px; padding: 8px 9px; font-size: 10px; }
+.industrial-hmi .hmi-mapping-layout .local-section-panel .robot-detail-panel-body,
+.industrial-hmi .hmi-localization-layout .local-section-panel .robot-detail-panel-body,
+.industrial-hmi .hmi-maps-layout .local-section-panel .robot-detail-panel-body,
+.industrial-hmi .hmi-diagnosis-layout .local-section-panel .robot-detail-panel-body { padding: 7px 9px; }
+.industrial-hmi .hmi-mapping-primary-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.industrial-hmi .hmi-mapping-actions button { min-height: 32px; padding: 0 6px; font-size: 10px; }
+.industrial-hmi .hmi-mapping-list .local-action-row { flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.industrial-hmi .hmi-mapping-list .local-action-row button { min-height: 29px; padding: 0 7px; font-size: 9px; }
+.industrial-hmi .hmi-mapping-list .local-help { margin: 4px 0 0; }
+.industrial-hmi .hmi-localization-layout { grid-template-columns: minmax(0, 1fr) minmax(290px, 330px); grid-template-rows: minmax(135px, .38fr) minmax(0, 1fr); grid-template-areas: "map status" "map editor"; gap: 7px; overflow: hidden; }
+.industrial-hmi .hmi-localization-map { grid-area: map; }
+.industrial-hmi .hmi-localization-status { grid-area: status; }
+.industrial-hmi .hmi-localization-editor { grid-area: editor; }
+.industrial-hmi .hmi-localization-map .robot-detail-panel-body { display: flex; min-height: 0; }
+.industrial-hmi .hmi-localization-map .local-pose-map { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; margin: 0; }
+.industrial-hmi .hmi-localization-map .local-pose-map canvas { height: 100%; }
+.industrial-hmi .hmi-localization-status .local-status-grid { grid-template-columns: minmax(0,1fr); }
+.industrial-hmi .hmi-localization-status .robot-detail-metric { min-height: 23px; padding: 3px 0; }
+.industrial-hmi .hmi-localization-status .local-feedback { margin-top: 5px; padding: 5px 6px; font-size: 10px; }
+.industrial-hmi .hmi-localization-editor .local-pose-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
+.industrial-hmi .hmi-localization-editor .local-field { min-width: 0; gap: 3px; font-size: 9px; }
+.industrial-hmi .hmi-localization-editor .local-field input:not([type=checkbox]) { min-height: 31px; font-size: 12px; }
+.industrial-hmi .hmi-localization-editor .local-pose-yaw { grid-column: 1 / -1; gap: 5px; }
+.industrial-hmi .hmi-localization-editor .local-pose-yaw button,
+.industrial-hmi .hmi-localization-editor .local-pose-fields > button { min-height: 32px; padding: 0 7px; font-size: 10px; }
+.industrial-hmi .hmi-localization-editor .local-pose-fields > button:disabled { border-color: #c5c9cc !important; color: #858b90 !important; background: #e6e7e8 !important; opacity: 1; cursor: not-allowed; }
+.industrial-hmi .hmi-localization-editor .local-help { margin-top: 8px; }
+.industrial-hmi .hmi-diagnosis-layout { grid-template-columns: minmax(0,1.1fr) minmax(0,.9fr); grid-template-rows: max-content max-content; grid-template-areas: "system ros" "errors errors"; align-content: start; align-items: start; gap: 7px; overflow: auto; }
+.industrial-hmi .hmi-diagnosis-layout .hmi-system-status-panel { grid-area: system; }
+.industrial-hmi .hmi-diagnosis-ros { grid-area: ros; }
+.industrial-hmi .hmi-diagnosis-errors { grid-area: errors; }
+.industrial-hmi .hmi-diagnosis-detail-table { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 14px; }
+.industrial-hmi .hmi-diagnosis-detail-table > div { min-width: 0; min-height: 27px; display: flex; align-items: center; justify-content: space-between; gap: 6px; border-bottom: 1px solid #e2e5e7; }
+.industrial-hmi .hmi-diagnosis-detail-table > div > span:first-child { color: #3a4349; font-size: 10px; }
+.industrial-hmi .hmi-diagnosis-detail-table .robot-detail-status { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.industrial-hmi .hmi-diagnosis-layout .hmi-subsystem-table { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 12px; }
+.industrial-hmi .hmi-diagnosis-layout .hmi-subsystem-table > div { min-height: 27px; padding: 3px 0; }
+.industrial-hmi .hmi-diagnosis-layout .hmi-subsystem-table > div > span:first-child { font-size: 11px; }
+.industrial-hmi .hmi-diagnosis-layout .hmi-performance-grid { margin-top: 6px; padding-top: 3px; }
+.industrial-hmi .hmi-diagnosis-errors .robot-detail-error-row { display: grid; grid-template-columns: minmax(0,1fr) 145px; gap: 8px; padding: 5px 0; }
+.industrial-hmi .hmi-diagnosis-errors { max-height: 220px; }
+.industrial-hmi .hmi-diagnosis-errors .robot-detail-panel-body { max-height: 180px; overflow: auto; }
+.industrial-hmi .local-form-grid { grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; }
+.industrial-hmi .local-vda-group { grid-column: 1 / -1; margin-top: 3px; padding: 4px 0; font-size: 10px; }
+.industrial-hmi .local-vda-panel .local-field { min-width: 0; font-size: 10px; }
+.industrial-hmi .local-vda-panel .local-field input:not([type=checkbox]),
+.industrial-hmi .local-vda-panel .local-field select { min-height: 31px; padding: 4px 7px; font-size: 12px; }
+.industrial-hmi .local-vda-capability { gap: 5px 10px; padding: 7px 9px; }
+.industrial-hmi .local-vda-capability > span:first-child { font-size: 11px; }
+.industrial-hmi .local-vda-capability > small { font-size: 11px; line-height: 1.35; }
+
+@media (max-width: 1450px) {
+  .industrial-hmi-workspace > .industrial-tool-rail { flex-basis: 78px; width: 78px; }
+  .industrial-hmi .hmi-dashboard-panels { width: 208px; }
+  .industrial-hmi .hmi-operation-panel .hmi-jog-pad { grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(3, 33px); }
+  .industrial-hmi .hmi-operation-panel .hmi-jog-layout { gap: 4px; }
+  .industrial-hmi .hmi-operation-panel .hmi-rotate-pad { width: 82px; }
+  .industrial-hmi .hmi-operation-panel .hmi-rotate-pad .manual-key { min-height: 36px; }
+  .industrial-hmi .hmi-error-log-footer { flex-basis: 126px; min-height: 126px; }
+  .industrial-hmi .hmi-mapping-layout { grid-template-columns: minmax(0,1fr) minmax(280px, 310px); }
+  .industrial-hmi .hmi-maps-layout { grid-template-columns: minmax(190px,.72fr) minmax(0,1.5fr) minmax(235px,.9fr); }
+  .industrial-hmi .hmi-localization-layout { grid-template-columns: minmax(0,1fr) minmax(270px,300px); }
+}
+@media (max-width: 1100px) {
+  .industrial-hmi .robot-detail-header { min-height: 60px; }
+  .industrial-hmi .robot-detail-header-actions { flex-wrap: wrap; }
+  .industrial-hmi .hmi-dashboard-panels { width: 190px; }
+  .industrial-hmi .hmi-maps-layout { grid-template-columns: minmax(170px,.7fr) minmax(0,1.3fr); grid-template-rows: minmax(250px,1fr) minmax(250px,1fr); grid-template-areas: "list preview" "details preview"; }
+  .industrial-hmi .hmi-localization-layout { grid-template-columns: minmax(0,1fr) minmax(250px,280px); }
+  .industrial-hmi .hmi-diagnosis-detail-table { grid-template-columns: minmax(0,1fr); }
+  .industrial-hmi .local-form-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
+}
+@media (max-width: 900px) {
+  .industrial-hmi .hmi-dashboard-panels { top: 63px; width: 180px; max-height: calc(100% - 70px); }
+  .industrial-hmi .hmi-maps-layout { grid-template-columns: 1fr; grid-template-rows: minmax(380px,55vh) auto auto; grid-template-areas: "preview" "list" "details"; overflow: auto; }
+  .industrial-hmi .hmi-localization-layout { grid-template-columns: 1fr; grid-template-rows: minmax(380px,55vh) auto auto; grid-template-areas: "map" "status" "editor"; overflow: auto; }
+  .industrial-hmi .hmi-diagnosis-layout { grid-template-columns: 1fr; grid-template-rows: max-content max-content max-content; grid-template-areas: "system" "ros" "errors"; overflow: auto; }
+  .industrial-hmi .local-form-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }

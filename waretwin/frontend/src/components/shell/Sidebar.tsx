@@ -1,4 +1,4 @@
-export type ControlSection = "CONTROL" | "MAPPING" | "LOCALIZATION" | "SYSTEM" | "VDA5050";
+export type ControlSection = "CONTROL" | "MAPPING" | "LOCALIZATION" | "MAPS" | "VDA5050" | "DIAGNOSIS";
 
 type SidebarProps = {
   activeSection?: ControlSection;
@@ -12,8 +12,9 @@ const sections: Array<{ id: ControlSection; label: string; icon: string }> = [
   { id: "CONTROL", label: "CONTROL", icon: "⌖" },
   { id: "MAPPING", label: "MAPPING", icon: "▦" },
   { id: "LOCALIZATION", label: "LOCALIZATION", icon: "◎" },
-  { id: "SYSTEM", label: "SYSTEM", icon: "⚙" },
+  { id: "MAPS", label: "MAPS", icon: "▧" },
   { id: "VDA5050", label: "VDA5050", icon: "⇄" },
+  { id: "DIAGNOSIS", label: "DIAGNOSIS", icon: "⚙" },
 ];
 
 export function Sidebar({ activeSection = "CONTROL", onSectionChange = () => undefined }: SidebarProps) {

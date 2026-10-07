@@ -21,7 +21,7 @@ import { displayedFramePose, useStableDisplayedFramePose, type MapPoseIdentity }
 import { mapPointTarget, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
 import { useStore } from "../../state/store";
 
-type SectionName = "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
+type SectionName = "MAPPING" | "MAPS" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type Pose = { x: number; y: number; yaw: number };
 type Props = {
   section: SectionName;
@@ -113,13 +113,13 @@ function Metric({ label, value, mono = false }: { label: string; value: unknown;
 }
 
 export function LocalRobotSection(props: Props) {
-  if (props.section === "MAPPING") return <MappingPanel {...props} />;
+  if (props.section === "MAPPING" || props.section === "MAPS") return <MappingPanel {...props} />;
   if (props.section === "LOCALIZATION") return <LocalizationPanel {...props} />;
   if (props.section === "VDA5050") return <Vda5050Panel robotId={props.robotId} />;
   return <DiagnosticsPanel {...props} />;
 }
 
-function MappingPanel({ robotId, robot: rawRobot, slam2dMap, runtimeMapSnapshot, scan, diagnostics, controlOnline, controlMode, runtimeState, runtimeCapabilities, mappingSessionId, activeLocalMapRevision: selectedLocalMapRevision, ensureManualMode }: Props) {
+function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMapSnapshot, scan, diagnostics, controlOnline, controlMode, runtimeState, runtimeCapabilities, mappingSessionId, activeLocalMapRevision: selectedLocalMapRevision, ensureManualMode }: Props) {
   const setRobotDetail = useStore((state) => state.setRobotDetail);
   const [maps, setMaps] = useState<LocalRobotMap[]>([]);
   const [selected, setSelected] = useState("");
@@ -144,6 +144,7 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, runtimeMapSnapshot,
   const slamPose = slamMap && rawRobot ? displayedFramePose(rawRobot, slamMap) : undefined;
   const expectedLocalMapRevision = selectedLocalMapRevision
     ?? maps.find((map) => map.id === activeLocalMapId)?.revision ?? null;
+  const selectedMap = maps.find((map) => map.id === selected) ?? null;
   const loadedLocalMap = activeLocalMapId && runtimeMapSnapshot?.map_source === "LOCAL_MAP"
     && runtimeMapSnapshot.active_map_id === activeLocalMapId
     && String(runtimeMapSnapshot.active_map_revision ?? "") === String(expectedLocalMapRevision ?? "")
@@ -309,6 +310,53 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, runtimeMapSnapshot,
     trajectoryRef.current = { ...current, points, lastAt: now };
     setTrajectory(points);
   }, [isMapping, mapping?.tf_valid, paused, slamPose?.x, slamPose?.y, slamPose?.timestamp, slamMap]);
+  if (section === "MAPS") {
+    const selectedMapIsActive = Boolean(selectedMap && selectedMap.id === activeLocalMapId);
+    const selectedMapPreview = selectedMapIsActive ? loadedLocalMap : null;
+    const extent = selectedMap?.width && selectedMap?.height
+      ? `${valueNumber(selectedMap.width * selectedMap.resolution, 2)} × ${valueNumber(selectedMap.height * selectedMap.resolution, 2)} m`
+      : "N/A";
+    return <SectionFrame className="hmi-maps-layout">
+      <SectionPanel title={`STORED MAPS (${maps.length})`} className="hmi-maps-list">
+        {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list hmi-stored-map-list">
+          {maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
+            <span><b>{map.name}</b>{activeLocalMapId === map.id && <strong className="local-map-active-badge">ACTIVE</strong>}<small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
+            <small>r{map.revision}</small>
+          </button>)}
+        </div>}
+      </SectionPanel>
+      <SectionPanel title="MAP PREVIEW" className="hmi-maps-preview">
+        {selectedMapPreview ? <PosePickerMap map={selectedMapPreview} robot={rawRobot} pose={{ x: 0, y: 0, yaw: 0 }} active={false} onPick={() => undefined} ariaLabel={`Active saved map preview ${selectedMapPreview.active_map_id}`} />
+          : <div className="local-empty hmi-map-preview-empty">{selectedMap ? "This saved map is not active. Load it to receive its confirmed navigation-map preview." : "Select a stored map to inspect its details."}</div>}
+      </SectionPanel>
+      <SectionPanel title="MAP DETAILS" className="hmi-maps-details">
+        {selectedMap ? <>
+          <div className="hmi-map-detail-state"><b>{selectedMap.name}</b>{selectedMapIsActive && <strong className="local-map-active-badge">ACTIVE MAP</strong>}</div>
+          <div className="local-status-grid hmi-map-details-grid">
+            <Metric label="STATUS" value={selectedMapIsActive ? "ACTIVE · LOCAL MAP" : "STORED · NOT ACTIVE"} />
+            <Metric label="RESOLUTION" value={valueNumber(selectedMap.resolution, 3, " m/cell")} mono />
+            <Metric label="WIDTH × HEIGHT" value={selectedMap.width && selectedMap.height ? `${selectedMap.width} × ${selectedMap.height}` : "N/A"} mono />
+            <Metric label="EXTENT" value={extent} mono />
+            <Metric label="ORIGIN" value={selectedMap.origin?.slice(0, 3).map((part) => valueNumber(part, 3)).join(", ") ?? "N/A"} mono />
+            <Metric label="CREATED" value={selectedMap.created_at} />
+            <Metric label="REVISION" value={selectedMap.revision} mono />
+            <Metric label="KNOWN CELLS" value={selectedMap.known_cells ?? "N/A"} mono />
+            <Metric label="FREE CELLS" value={selectedMap.free_cells ?? "N/A"} mono />
+            <Metric label="OCCUPIED CELLS" value={selectedMap.occupied_cells ?? "N/A"} mono />
+            <Metric label="EXPLORED AREA" value={valueNumber(selectedMap.explored_area_m2, 2, " m²")} mono />
+            <Metric label="SLAM SESSION" value={selectedMap.slam_session_state?.status ?? "NOT AVAILABLE"} />
+          </div>
+          <div className="local-action-row hmi-map-load-actions">
+            <button type="button" className="robot-console-primary" aria-describedby="saved-map-load-state" disabled={Boolean(loadBlockReason) || busy} onClick={load}>{busy ? operationState : selectedMapIsActive ? "RELOAD ACTIVE MAP" : "LOAD SAVED MAP"}</button>
+          </div>
+          <p id="saved-map-load-state" className={loadBlockReason ? "local-help warning" : "local-help"} role="status">
+            {busy ? operationState : error || notice || loadBlockReason || (selectedMapIsActive ? "SELECTED MAP IS ACTIVE" : "READY · MANUAL MODE AND STOP REQUIRED")}
+          </p>
+        </> : <div className="local-empty">Select a stored map to view its registered metadata and available actions.</div>}
+      </SectionPanel>
+    </SectionFrame>;
+  }
+
   return <SectionFrame className="hmi-mapping-layout">
     <SectionPanel title={loadedLocalMap ? "ACTIVE SAVED LOCAL MAP · /map" : "ACCUMULATED SLAM MAP · /map + CURRENT /scan"} className="hmi-mapping-map">
       <div className="local-map-toggles" role="group" aria-label="Mapping map layers">
@@ -371,7 +419,7 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, runtimeMapSnapshot,
       {error && <div className="local-feedback error" role="alert">{error}</div>}
       {notice && <div className="local-feedback ok" role="status">{notice}</div>}
     </SectionPanel>
-    <SectionPanel title="AVAILABLE MAPS · THIS ROBOT" className="hmi-mapping-list">
+    <SectionPanel title="SAVED MAPS · THIS ROBOT" className="hmi-mapping-list">
       {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list">
         {maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
           <span><b>{map.name}</b>{activeLocalMapId === map.id && <strong className="local-map-active-badge">ACTIVE</strong>}<small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
@@ -524,8 +572,8 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
     finally { setBusy(false); }
   };
 
-  return <SectionFrame>
-    <SectionPanel title="LOCALIZATION STATE">
+  return <SectionFrame className="hmi-localization-layout">
+    <SectionPanel title="LOCALIZATION STATE" className="hmi-localization-status">
       <div className="local-status-grid">
         <Metric label="X · MAP" value={current ? mapCoordinateText(current.x, " m") : "UNKNOWN"} mono />
         <Metric label="Y · MAP" value={current ? mapCoordinateText(current.y, " m") : "UNKNOWN"} mono />
@@ -541,7 +589,11 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
         {runtimeCapabilities?.localization_ready ? "LOCALIZED · confirmed TF matches the active saved map." : "INITIAL POSE REQUIRED · point navigation remains unavailable until the requested map-frame pose is confirmed."}
       </p>}
     </SectionPanel>
-    <SectionPanel title="INITIALIZE ROBOT POSE" className="local-pose-editor">
+    <SectionPanel title={localizationMap?.map_source === "LOCAL_MAP" ? "ACTIVE SAVED MAP · LOCALIZATION" : "ACTIVE ROS MAP · LOCALIZATION"} className="hmi-localization-map">
+      {localizationMap ? <PosePickerMap map={localizationMap} robot={robot} pose={pose} showPose={poseReady} active={pickMode} onPick={(point) => { setPose((old) => ({ ...old, ...point })); setPoseEdited(true); }} ariaLabel="Localization map and initial pose picker" />
+        : <div className="local-empty" data-testid="localization-map-waiting">{activeLocalMapId ? "WAITING FOR ACTIVE SAVED MAP SNAPSHOT..." : "Waiting for the robot scoped ROS map snapshot."}</div>}
+    </SectionPanel>
+    <SectionPanel title="INITIALIZE ROBOT POSE" className="local-pose-editor hmi-localization-editor">
       <div className="local-pose-fields">
         <label className="local-field"><span>X · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.x) ? formatMapCoordinate(pose.x) : ""} onChange={(event) => update("x", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
         <label className="local-field"><span>Y · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.y) ? formatMapCoordinate(pose.y) : ""} onChange={(event) => update("y", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
@@ -550,7 +602,6 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
         <button type="button" className={pickMode ? "is-active" : ""} onClick={() => setPickMode((value) => !value)} disabled={!localizationMap}>PICK ON MAP</button>
         <button type="button" className="robot-console-primary" disabled={!controlOnline || busy || !poseReady} onClick={() => void apply()}>SET INITIAL POSE</button>
       </div>
-      {localizationMap ? <PosePickerMap map={localizationMap} robot={robot} pose={pose} showPose={poseReady} active={pickMode} onPick={(point) => { setPose((old) => ({ ...old, ...point })); setPoseEdited(true); }} /> : <div className="local-empty" data-testid="localization-map-waiting">{activeLocalMapId ? "WAITING FOR ACTIVE SAVED MAP SNAPSHOT..." : "Waiting for the robot scoped ROS map snapshot."}</div>}
       <p className="local-help">The pose is applied through the current authoritative robot_localization EKF service. It changes localization and does not teleport the robot.</p>
     </SectionPanel>
     {error && <div className="local-feedback error" role="alert">{error}</div>}
@@ -869,7 +920,19 @@ function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtime
     ["SLAM", slamState], ["Nav2", nav2State],
     ["LiDAR", diagnostics?.lidar ? "ACTIVE" : "UNAVAILABLE"],
   ];
-  return <SectionFrame>
+  const detailRows: Array<[string, unknown]> = [
+    ["LOCALIZATION", localization ?? "UNKNOWN"],
+    ["ACTIVE LOCAL MAP", activeLocalMapId ?? "NONE REPORTED"],
+    ["MAP SYNC", localMapSyncStatus ?? diagnostics?.map_state?.map_sync_status ?? "UNKNOWN"],
+    ["CONTROL MODE", command?.active_control_mode ?? "UNKNOWN"],
+    ["COMMAND SOURCE", command?.active_command_source ?? "NONE"],
+    ["LIDAR STREAM", stream?.source_fps == null ? (diagnostics?.lidar ? "ACTIVE" : "UNAVAILABLE") : valueNumber(stream.source_fps, 1, " Hz")],
+    ["ODOMETRY", diagnostics?.mapping?.odom_live ? "RECEIVING" : "WAITING"],
+    ["TF", diagnostics?.tf ? "AVAILABLE" : "UNAVAILABLE"],
+    ["VDA5050 MQTT", vdaStatus],
+    ["E-STOP", command?.estop_active ? "ACTIVE" : "CLEAR"],
+  ];
+  return <SectionFrame className="hmi-diagnosis-layout">
     <SectionPanel title="SUBSYSTEM STATUS" className="hmi-system-status-panel">
       <div className="hmi-subsystem-table">
         {systemRows.map(([name, value]) => <div key={name}><span>{name}</span><Status value={value} /></div>)}
@@ -906,7 +969,10 @@ function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtime
         </div>
       </details>
     </SectionPanel>
-    <SectionPanel title="ROS GRAPH">
+    <SectionPanel title="RUNTIME / SENSOR STATUS" className="hmi-diagnosis-ros">
+      <div className="hmi-diagnosis-detail-table">
+        {detailRows.map(([name, value]) => <div key={name}><span>{name}</span><Status value={value} /></div>)}
+      </div>
       <details className="hmi-advanced-details">
         <summary>ADVANCED ROS GRAPH</summary>
         <div className="local-status-grid">
@@ -917,7 +983,7 @@ function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtime
         <div className="local-topic-list"><code>/map · /scan · /lidar/points · /lidar/points_filtered</code><code>/tf · /tf_static · /odom · /odometry/filtered</code><code>/navigate_to_pose · /compute_path_to_pose · /cmd_vel_selected</code></div>
       </details>
     </SectionPanel>
-    <SectionPanel title="LAST REPORTED ERRORS">
+    <SectionPanel title="LIVE ERROR LOG" className="hmi-diagnosis-errors">
       {errors.length === 0 ? <div className="local-empty">No runtime errors reported.</div> : errors.map((item, index) => <div className={`robot-detail-error-row ${classForStatus(item.severity)}`} key={`${item.code ?? item.message}-${index}`}><div><b>{item.severity}</b><span>{item.message}</span></div><small>{item.timestamp ?? "N/A"}</small></div>)}
     </SectionPanel>
   </SectionFrame>;

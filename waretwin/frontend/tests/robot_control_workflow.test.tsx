@@ -219,6 +219,10 @@ describe("robot detail route stability", () => {
     expect(errorLog?.textContent).toContain("ERROR LOG");
     expect(errorLog?.textContent).toContain("No active errors.");
     expect(errorLog?.querySelector("button")).toBeNull();
+    expect(container.querySelectorAll(".hmi-dashboard-status-panel")).toHaveLength(2);
+    expect(container.textContent).toContain("SYSTEM INPUTS");
+    expect(container.textContent).toContain("ACTIVE MAP");
+    expect(container.textContent).toContain("STATE");
   });
 
   it("shows newest real runtime errors first and uses a dash when no source is provided", () => {
@@ -428,11 +432,11 @@ describe("robot detail route stability", () => {
     expect(container.querySelector('[data-testid="slam-map-2d-empty"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="robot-map-layers"]')).toBeNull();
     expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(true);
-    act(() => buttonNamed("SYSTEM")?.click());
+    act(() => buttonNamed("DIAGNOSIS")?.click());
     expect(container.textContent).toContain("SUBSYSTEM STATUS");
     expect(container.textContent).toContain("ROS Bridge");
     expect(container.textContent).toContain("LIDAR");
-    expect(container.textContent).toContain("LAST REPORTED ERRORS");
+    expect(container.textContent).toContain("LIVE ERROR LOG");
     expect(container.textContent).toContain("No runtime errors reported");
   });
 
@@ -480,17 +484,19 @@ describe("robot detail route stability", () => {
     expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(true);
   });
 
-  it("keeps local mapping and VDA5050 sections inside the selected robot detail page", async () => {
+  it("keeps mapping, maps, diagnosis and VDA5050 as direct robot sections", async () => {
     renderNode(<ControlDetailHarness robotId="R01" />);
     expect(container.querySelector('[role="tablist"][aria-label="Control views"]')).toBeTruthy();
     const mappingTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.getAttribute("aria-label") === "MAPPING");
     await act(async () => { (mappingTab as HTMLElement).click(); });
     expect(container.textContent).toContain("ACCUMULATED SLAM MAP");
     expect(container.textContent).toContain("SAVE MAP");
-    expect(container.querySelectorAll("[role=tab]")).toHaveLength(5);
-    await act(async () => { buttonNamed("SYSTEM")?.click(); });
+    expect(container.querySelectorAll("[role=tab]")).toHaveLength(6);
+    await act(async () => { buttonNamed("MAPS")?.click(); await settleUi(); });
+    expect(container.textContent).toContain("STORED MAPS");
+    await act(async () => { buttonNamed("DIAGNOSIS")?.click(); });
     expect(container.textContent).toContain("SUBSYSTEM STATUS");
-    expect(container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="SYSTEM"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="DIAGNOSIS"]')?.getAttribute("aria-selected")).toBe("true");
     expect(container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="VDA5050"]')?.getAttribute("aria-selected")).toBe("false");
     expect(container.textContent).not.toContain("MQTT HOST");
     await act(async () => { buttonNamed("VDA5050")?.click(); await settleUi(); });
@@ -507,6 +513,39 @@ describe("robot detail route stability", () => {
     }
     expect(buttonNamed("TEST CONNECTION")).toBeTruthy();
     expect(buttonNamed("SAVE & APPLY")).toBeTruthy();
+  });
+
+  it("shows an active saved map preview only when the selected registry entry matches the confirmed ROS snapshot", async () => {
+    setOnlineRobot("NAVIGATION");
+    const savedMap: LocalRobotMap = {
+      id: "saved-floor-map", name: "floor map", robot_id: "R01", created_at: "2026-10-02T09:00:00Z",
+      resolution: 0.05, origin: [-1, -2, 0], revision: "rev-5", frame_id: "map", width: 80, height: 100,
+      known_cells: 3200, free_cells: 2700, occupied_cells: 500, explored_area_m2: 8,
+      map_kind: "SAVED_LOCAL_MAP", canonical_map_promoted: false,
+      slam_session_state: { status: "AVAILABLE" },
+    };
+    const localSnapshot = {
+      robot_id: "R01", frame_id: "map", map_source: "LOCAL_MAP" as const,
+      active_map_id: savedMap.id, active_map_revision: savedMap.revision,
+      width: 80, height: 100, resolution: savedMap.resolution,
+      origin: { x: -1, y: -2, yaw: 0 }, data: Array(8000).fill(0),
+    };
+    vi.mocked(api.getLocalRobotMaps).mockResolvedValue({
+      robot_id: "R01", maps: [savedMap], runtime_mode: "GAZEBO_ROS", mapping_state: "PAUSED",
+      mapping_duration_s: 20, active_local_map_id: savedMap.id, local_active_map_id: savedMap.id,
+      local_active_map_revision: savedMap.revision, active_map_id: savedMap.id, active_map_revision: savedMap.revision,
+      canonical_map_revision: 21, map_sync_status: "LOCAL_ONLY", robot_control_mode: "MANUAL", robot_stopped: true,
+    });
+    useStore.getState().setRobotDetail("R01", {
+      activeLocalMapId: savedMap.id, activeLocalMapRevision: savedMap.revision,
+      runtimeMapSnapshot: localSnapshot,
+    });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { buttonNamed("MAPS")?.click(); await settleUi(); await settleUi(); });
+    expect(container.querySelector('[data-testid="active-navigation-map-2d"]')).toBeNull();
+    expect(container.querySelector(".hmi-maps-preview .local-pose-map")).toBeTruthy();
+    expect(container.querySelector(".hmi-map-detail-state")?.textContent).toContain("ACTIVE MAP");
+    expect(container.querySelector(".hmi-map-load-actions button")?.textContent).toContain("RELOAD ACTIVE MAP");
   });
 
   it("shows only the active 2D occupancy map and point controls", async () => {
@@ -1266,8 +1305,7 @@ describe("robot detail route stability", () => {
     });
     vi.mocked(api.applyVda5050Configuration).mockRejectedValueOnce(new Error("broker apply failed"));
     renderNode(<ControlDetailHarness robotId="R01" />);
-    await act(async () => { buttonNamed("SYSTEM")?.click(); });
-    await act(async () => { buttonNamed("VDA5050 ADVANCED SETTINGS")?.click(); });
+    await act(async () => { buttonNamed("VDA5050")?.click(); });
     await act(async () => { await Promise.resolve(); });
     expect(container.querySelector('input[type="password"]')?.getAttribute("type")).toBe("password");
     expect(container.textContent).toContain("INSTANT ACTION EXECUTION");

@@ -332,7 +332,8 @@ class TwinRuntime:
             self.is_external and self.robot_bridge_online(rid)
             and diagnostics_fresh and mode in NAVIGATION_CAPABLE_MODES and diagnostics.get('nav2')
         )
-        nav2_ready = bool(nav2_available and diagnostics.get('nav2_ready') is True)
+        nav2_ready = bool(nav2_available and diagnostics.get('nav2_ready') is True
+                          and diagnostics.get('nav2_lifecycle_ready') is True)
         active_map = self.active_map_state(rid)
         map_ready = bool(
             active_map.get('active_map_id') and active_map.get('active_map_revision')
@@ -403,6 +404,22 @@ class TwinRuntime:
                               and diagnostics.get('nav2')
                               and diagnostics.get('nav2_ready') is True)
         if not nav2_ready:
+            diagnostics = self.ros_diagnostics
+            diagnostics_at = self.ros_diagnostics_received_monotonic
+            diagnostics_fresh = (diagnostics_at is not None
+                                 and time.monotonic() - diagnostics_at <= timeout)
+            lifecycle_code = diagnostics.get('nav2_lifecycle_blocker_code')
+            lifecycle_reason = diagnostics.get('nav2_lifecycle_blocker_reason')
+            if (diagnostics_fresh and diagnostics.get('nav2')
+                    and diagnostics.get('nav2_lifecycle_ready') is not True):
+                states = diagnostics.get('nav2_lifecycle_states')
+                inactive = ([f'/{name}={state}' for name, state in states.items()
+                             if str(state).lower() != 'active']
+                            if isinstance(states, dict) else [])
+                reason = (str(lifecycle_reason) if lifecycle_reason else
+                          'Required Nav2 lifecycle state could not be confirmed ACTIVE'
+                          + (': ' + ', '.join(inactive) if inactive else '.'))
+                return str(lifecycle_code or 'NAV2_LIFECYCLE_NOT_ACTIVE'), reason
             return 'NAV2_NOT_READY', 'Nav2 lifecycle or required ComputePathToPose/NavigateToPose actions are not ready'
         if rid in self.local_map_transitions:
             return 'ACTIVE_MAP_TRANSITION', 'navigation is blocked while the active map is changing'
@@ -1872,6 +1889,17 @@ class TwinRuntime:
         for key in ('ros', 'gazebo', 'controller_manager', 'slam', 'nav2', 'nav2_ready', 'tf', 'lidar'):
             if key in values:
                 self.ros_diagnostics[key] = bool(values[key])
+        for key in ('nav2_actions_ready', 'nav2_lifecycle_ready'):
+            self.ros_diagnostics[key] = values.get(key) is True
+        lifecycle_states = values.get('nav2_lifecycle_states')
+        self.ros_diagnostics['nav2_lifecycle_states'] = ({
+                str(name): str(state).lower()
+                for name, state in lifecycle_states.items()
+                if isinstance(name, str) and isinstance(state, str)
+            } if isinstance(lifecycle_states, dict) else {})
+        for key in ('nav2_lifecycle_blocker_code', 'nav2_lifecycle_blocker_reason'):
+            value = values.get(key)
+            self.ros_diagnostics[key] = str(value) if value is not None else None
         for key in ('nodes', 'topics', 'controllers'):
             if isinstance(values.get(key), list):
                 self.ros_diagnostics[key] = values[key][:200]

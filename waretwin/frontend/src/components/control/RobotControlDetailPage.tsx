@@ -3,17 +3,15 @@ import { apiFetch, clearEmergencyStop, emergencyStop } from "../../services/api"
 import { WS_URL, wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
 import { MANUAL_COMMAND_REFRESH_MS, nextManualCommand, type ActiveManualCommand } from "../../services/manualCommand";
 import { useStore } from "../../state/store";
-import type { RobotDetailError, RobotDetailGoal, RobotDetailPathPreview, RobotState, RobotSystemDiagnostics } from "../../schema/twin_state";
-import { ActiveNavigationMap2DView, LocalRobotSection } from "./LocalRobotSections";
+import type { RobotDetailError, RobotDetailPathPreview, RobotSystemDiagnostics } from "../../schema/twin_state";
+import { ActiveNavigationMap2DView, LocalRobotSection, type ActiveMapLayers } from "./LocalRobotSections";
+import type { ControlSection } from "../shell/Sidebar";
 import { occupancyRasters } from "./occupancyRaster";
 import { detailPerformance } from "./detailPerformance";
 import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, mapPointPreviewPayload, type MapPointNavigationTarget } from "./navigationMapIdentity";
 import { evaluatePreviewApproval } from "./navigationPreviewApproval";
 
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
-type LocalTab = "CONTROL" | "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
-const LOCAL_TABS: LocalTab[] = ["CONTROL", "MAPPING", "LOCALIZATION", "VDA5050", "DIAGNOSTICS"];
-
 const MANUAL_ACTIONS: Array<{ action: ManualAction; label: string; title: string }> = [
   { action: "FORWARD", label: "▲", title: "Forward (W / ↑)" },
   { action: "LEFT", label: "◀", title: "Strafe left (A / ←)" },
@@ -48,10 +46,6 @@ function statusClass(value: unknown) {
   return "neutral";
 }
 
-function StatusValue({ value }: { value: unknown }) {
-  return <span className={`robot-detail-status ${statusClass(value)}`}>{safeText(value)}</span>;
-}
-
 class RobotDetailErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
   static getDerivedStateFromError(error: Error) { return { error }; }
@@ -69,11 +63,19 @@ class RobotDetailErrorBoundary extends Component<{ children: ReactNode }, { erro
   }
 }
 
-export function RobotControlDetailPage({ robotId }: { robotId: string }) {
-  return <RobotDetailErrorBoundary><RobotControlDetailContent robotId={robotId} /></RobotDetailErrorBoundary>;
+export function RobotControlDetailPage({ robotId, activeSection = "CONTROL", onSectionChange = () => undefined }: {
+  robotId: string;
+  activeSection?: ControlSection;
+  onSectionChange?: (section: ControlSection) => void;
+}) {
+  return <RobotDetailErrorBoundary><RobotControlDetailContent robotId={robotId} activeSection={activeSection} onSectionChange={onSectionChange} /></RobotDetailErrorBoundary>;
 }
 
-function RobotControlDetailContent({ robotId }: { robotId: string }) {
+function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: {
+  robotId: string;
+  activeSection: ControlSection;
+  onSectionChange: (section: ControlSection) => void;
+}) {
 
   const robot = useStore((state) => state.twin?.robots?.[robotId]);
   const robotIdsKey = useStore((state) => Object.keys(state.twin?.robots ?? {}).join("\u0000"));
@@ -94,9 +96,9 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const websocketState = useStore((state) => state.websocketState);
   const slam2dMap = useStore((state) => state.robotDetail[robotId]?.slam2dMap ?? null);
   const runtimeMapSnapshot = useStore((state) => state.robotDetail[robotId]?.runtimeMapSnapshot ?? null);
-  const controller = useStore((state) => state.robotDetail[robotId]?.controller ?? null);
   const detailDiagnostics = useStore((state) => state.robotDetail[robotId]?.diagnostics ?? null);
   const detailErrors = useStore((state) => state.robotDetail[robotId]?.errors ?? EMPTY_ERRORS);
+  const controlErrors = detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS;
   const remainingDistanceM = useStore((state) => state.robotDetail[robotId]?.remainingDistanceM ?? null);
   const goal = useStore((state) => state.robotDetail[robotId]?.goal ?? null);
   const mappingScan = useStore((state) => state.robotDetail[robotId]?.scan ?? null);
@@ -117,8 +119,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
   const mapSync = useStore((state) => state.mapSync);
   const [controlMode, setControlMode] = useState<"MANUAL" | "AUTONOMOUS">(robot?.control_mode ?? "AUTONOMOUS");
   const [activeManualCommand, setActiveManualCommand] = useState<ActiveManualCommand | null>(null);
-  const [activeTab, setActiveTab] = useState<LocalTab>("CONTROL");
   const [goalPreview, setGoalPreview] = useState<MapPointNavigationTarget | null>(null);
+  const [mapLayers, setMapLayers] = useState<ActiveMapLayers>({ robot: true, scan: true, path: true, trajectory: false, grid: false });
   const [pathRequestState, setPathRequestState] = useState<"IDLE" | "PLANNING">("IDLE");
   const latestPathRequest = useRef("");
   const [error, setError] = useState("");
@@ -161,8 +163,8 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     && activeMap2dSnapshot.frame_id === "map"
     && ["SLAM_TOOLBOX", "LOCAL_MAP", "NAV2_MAP"].includes(activeMap2dSnapshot.map_source ?? ""));
   const navigationUiAvailable = Boolean(runtimeCapabilities?.goal_available
+    && runtimeCapabilities?.nav2_ready === true && diagnostics?.nav2_ready === true
     && controlMode === "AUTONOMOUS" && controlOnline);
-  const statePose = robot?.active_map_pose ?? null;
   const previewApproval = evaluatePreviewApproval({
     pathPreview, requestId: latestPathRequest.current, target: goalPreview,
     activeMapId, activeMapRevision, now: clockNow,
@@ -524,218 +526,178 @@ function RobotControlDetailContent({ robotId }: { robotId: string }) {
     onClick: () => toggleManual(action),
   }), [toggleManual]);
 
+  const slamLive = diagnostics?.mapping?.slam_state === "ACTIVE" && diagnostics.mapping.map_live;
+  const nav2Ready = runtimeCapabilities?.nav2_ready === true && diagnostics?.nav2_ready === true;
+  const rawNavigationState = String(navigationStatus ?? robot?.navigation_state ?? "").toUpperCase();
+  const navigationLabel = ["", "IDLE"].includes(rawNavigationState)
+    ? nav2Ready ? "READY" : "UNAVAILABLE"
+    : ["ACTIVE", "NAVIGATING"].includes(rawNavigationState) ? "RUNNING" : rawNavigationState;
+  const selectedPoint = goalPreview ?? goal;
+  const nav2BlockerReason = runtimeCapabilities?.goal_blocker_reason
+    ?? diagnostics?.nav2_lifecycle_blocker_reason ?? "";
+  const localSection = activeSection === "SYSTEM" ? "DIAGNOSTICS"
+    : activeSection === "VDA5050" ? "VDA5050"
+      : activeSection === "MAPPING" ? "MAPPING" : "LOCALIZATION";
+
   return (
-    <div className="robot-detail-shell">
+    <div className="robot-detail-shell industrial-hmi">
       <header className="robot-detail-header">
         <div className="robot-detail-identity">
-          <div><span className="robot-console-kicker">ROBOT CONTROL CONSOLE</span><h1>{robotId}</h1></div>
-          <StatusValue value={robotOnline ? "ONLINE" : "OFFLINE"} />
-          <span className="robot-detail-mode">{controlMode}{modeTransitionState === "REQUESTED" ? ` → ${requestedMode} REQUESTED` : modeTransitionState === "FAILED" ? " TRANSITION FAILED" : " APPLIED"}</span>
-          <span className="robot-detail-runtime">{runtimeState} / {safeText(robot?.navigation_state, "N/A")}</span>
-          {runtimeState === "UNIFIED" && <>
-            <span className="robot-detail-runtime" data-testid="slam-runtime-state">SLAM {diagnostics?.mapping?.slam_state === "ACTIVE" && diagnostics?.mapping?.map_live ? "LIVE" : safeText(diagnostics?.mapping?.slam_state, "STARTING")}</span>
-            <span className="robot-detail-runtime" data-testid="nav2-runtime-state">NAV2 {runtimeCapabilities?.nav2_ready ? "READY" : diagnostics?.nav2 ? "STARTING" : "UNAVAILABLE"}</span>
-          </>}
-          <span className="robot-detail-mission">{currentMission ? `${currentMission.id} · ${currentMission.status}` : "mission N/A"}</span>
-          <span className="robot-detail-latency">connection latency {safeNumber(diagnostics?.websocket_latency_ms, 0, " ms")}</span>
+          <label className="robot-detail-robot-select"><span>ROBOT</span><select aria-label="Select robot" value={robotId} onChange={(event) => changeRobot(event.target.value)}><option value="">Select robot</option>{robotIds.map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
+          <span className={`hmi-state-pill ${robotOnline ? "is-ready" : "is-fault"}`} data-testid="robot-connection-state">{robotOnline ? "ONLINE" : "OFFLINE"}</span>
+          <span className="robot-detail-mode">{modeTransitionState === "REQUESTED" ? `${controlMode} → ${requestedMode} REQUESTED` : modeTransitionState === "FAILED" ? `${controlMode} TRANSITION FAILED` : controlMode}</span>
+          <span className={`hmi-state-pill ${slamLive ? "is-ready" : "is-warning"}`} data-testid="slam-runtime-state">SLAM {slamLive ? "LIVE" : safeText(diagnostics?.mapping?.slam_state, "STARTING")}</span>
+          <span className={`hmi-state-pill ${nav2Ready ? "is-ready" : diagnostics?.nav2 ? "is-warning" : "is-fault"}`} data-testid="nav2-runtime-state">NAV2 {nav2Ready ? "READY" : nav2BlockerReason ? "BLOCKED" : diagnostics?.nav2 ? "STARTING" : "UNAVAILABLE"}</span>
+          <span className={`hmi-state-pill ${estopActive ? "is-fault" : "is-ready"}`} data-testid="estop-state">E-STOP {estopActive ? "ACTIVE" : "CLEAR"}</span>
         </div>
         <div className="robot-detail-header-actions">
-          <label className="robot-detail-robot-select"><span>ROBOT</span><select aria-label="Select robot" value={robotId} onChange={(event) => changeRobot(event.target.value)}><option value="">Select robot</option>{robotIds.map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
           <button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline || busy} onClick={() => setMode("MANUAL")}>MANUAL</button>
           <button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline || busy} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button>
-          <button type="button" className="robot-console-danger" disabled={busy || !robotId} onClick={() => { stopManual(); void runAction(() => emergencyStop(robotId)); }}>EMERGENCY STOP</button>
-        </div>
-      </header>
-
-      <nav className="robot-local-tabs" role="tablist" aria-label="Local robot control sections">
-        {LOCAL_TABS.map((tab) => <button key={tab} type="button" role="tab" aria-selected={activeTab === tab} className={activeTab === tab ? "is-active" : ""} onClick={() => setActiveTab(tab)}>{tab}</button>)}
-      </nav>
-
-      {activeTab !== "CONTROL" ? <main className="robot-detail-section-main">
-        <LocalRobotSection section={activeTab} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} />
-      </main> : <main className="robot-detail-main">
-        <aside className="robot-detail-column robot-detail-left">
-          <SystemInputsPanel robotId={robotId} robot={robot} controlMode={controlMode} runtimeMode={runtimeMode} goal={goalPreview ?? goal} />
-          <StatePanel pose={statePose} robot={robot} localization={localization} diagnostics={detailDiagnostics ?? diagnostics} controller={controller} navigationStatus={navigationStatus} />
-        </aside>
-
-        <section className="robot-detail-map-panel">
-          <div className="robot-map-source-bar">
-            <span className="robot-map-view-label">MAP VIEW 2D · ACTIVE MAP / SLAM · FRAME map</span>
-            <span className="map-sync-warning" data-view-state={viewFresh ? "FRESH" : viewStatus?.state ?? "REQUESTED"}>{viewFresh ? "LIVE" : "WAITING FOR FRESH FRAME"}</span>
-            <span className={`map-sync-warning ${activeMapReady ? "map-sync-warning-ready" : ""}`}>{activeMapId ? `${activeMapId} · r${activeMapRevision ?? "—"} · ${activeMapStatus}` : `MAP ${activeMapStatus}`}</span>
-          </div>
-          <div className="robot-detail-target-toolbar">
-            <span>POINT NAVIGATION · SELECT A FREE POINT ON THE ACTIVE MAP</span>
-            <span>{goalPreview ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)}` : "NO POINT SELECTED"}</span>
-          </div>
-          <div className="robot-detail-view-stack" key={robotId}>
-            <div className="robot-detail-view-layer is-active" data-view="LIDAR_2D">
-              <ActiveNavigationMap2DView map={activeMap2dSnapshot} robot={robot} scan={mappingScan}
-                target={isMapPointTarget(goalPreview) ? goalPreview : null}
-                navigationPath={approvedPreview?.active_path ?? approvedPreview?.path ?? []}
-                canPick={Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} />
-            </div>
-          </div>
-          <div className="robot-detail-goal-toolbar">
-            <span>{goalPreview
-              ? `TARGET ${safeNumber(goalPreview.x, 2)} / ${safeNumber(goalPreview.y, 2)} / ${safeNumber(goalPreview.yaw, 2)} rad · ${pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status ?? "NO PREVIEW"}${approvedPreview?.status === "VALID" ? ` · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ? ` · ${approvedPreview.reason}` : ""}`
-              : !navigationUiAvailable
-                ? `${runtimeCapabilities?.goal_blocker_code ?? "NAVIGATION_UNAVAILABLE"} · ${runtimeCapabilities?.goal_blocker_reason ?? "runtime has not confirmed Nav2 readiness"}`
-                : "Select a point, adjust yaw if needed, then preview the Nav2 path"}</span>
-            <button type="button" disabled={!isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
-            <button type="button" disabled={!isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
-            <button type="button" disabled={!navigationUiAvailable || !goalPreview || pathRequestState === "PLANNING"}
-              data-preview-status={pathPreview?.status ?? "NONE"}
-              data-preview-request-id={pathPreview?.request_id ?? ""}
-              data-preview-approved={previewApproval.approved ? "true" : "false"}
-              data-preview-reject-reason={previewApproval.rejectReason ?? undefined}
-              data-preview-gates={JSON.stringify(previewApproval.gates)}
-              onClick={() => goalPreview && requestPathPreview(goalPreview)}>PREVIEW PATH</button>
-            <button type="button" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady} className="robot-console-primary" onClick={sendGoal}>SEND GOAL</button>
-            <button type="button" disabled={!goalPreview} onClick={cancelPathPreview}>CANCEL</button>
-          </div>
-        </section>
-
-        <aside className="robot-detail-column robot-detail-right">
-          <SystemPanel diagnostics={detailDiagnostics ?? diagnostics} rosConnected={rosConnected} websocketState={websocketState} host={host} runtimeState={runtimeState} />
-          <LidarPanel robotId={robotId} diagnostics={detailDiagnostics ?? diagnostics} />
-          <ErrorMessagesPanel errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} />
-        </aside>
-      </main>
-      }
-
-      <footer className="robot-detail-bottom">
-        <ManualBar controlMode={controlMode} controlOnline={controlOnline} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} setMode={setMode} />
-        <div className="robot-detail-nav-bar">
-          <div><span>NAV STATUS</span><b>{safeText(navigationStatus ?? robot?.navigation_state, "N/A")}</b></div>
-          <div><span>GOAL</span><b>{goal ? `${safeNumber(goal.x, 2)} / ${safeNumber(goal.y, 2)}` : "N/A"}</b></div>
-          <div><span>REMAINING</span><b>{safeNumber(remainingDistanceM, 2, " m")}</b></div>
-          <button type="button" disabled={!controlOnline || controlMode !== "AUTONOMOUS"} onClick={() => navCommand("NAV_PAUSE")}>PAUSE</button>
-          <button type="button" disabled={!controlOnline || controlMode !== "AUTONOMOUS"} onClick={() => navCommand("NAV_RESUME")}>RESUME</button>
-          <button type="button" className="robot-console-danger-outline" disabled={!controlOnline} onClick={() => navCommand("NAV_CANCEL")}>CANCEL NAV</button>
-          <button type="button" disabled={busy || !robotId} onClick={() => void runAction(async () => {
+          <button type="button" className="robot-console-danger hmi-estop" disabled={busy || !robotId} onClick={() => { stopManual(); void runAction(() => emergencyStop(robotId)); }}>EMERGENCY STOP</button>
+          <button type="button" className="hmi-clear-stop" disabled={busy || !robotId} onClick={() => void runAction(async () => {
             const result = await clearEmergencyStop(robotId);
             if (result.code !== "CLEAR_ESTOP_APPLIED" || result.emergency_stop_active
                 || !result.pre_stop_navigation_terminal) throw new Error("CLEAR_ESTOP_UNCONFIRMED: runtime did not confirm the stop latch is clear");
             setSafetyNotice("CLEAR_ESTOP_APPLIED · bridge confirmed latch clear and prior navigation terminal");
           })}>CLEAR STOP</button>
         </div>
-        {safetyNotice && <div className="robot-detail-command-notice" role="status">{safetyNotice}</div>}
-        {error && <div className="robot-detail-command-error" role="alert">{error}</div>}
-      </footer>
+      </header>
+
+      {(safetyNotice || error) && <div className={`hmi-global-feedback ${error ? "is-error" : "is-success"}`} role={error ? "alert" : "status"}>{error || safetyNotice}</div>}
+
+      {activeSection !== "CONTROL" ? <main className={`robot-detail-section-main hmi-section-main hmi-section-${activeSection.toLowerCase()}`}>
+        <header className="hmi-section-heading"><div><span>ROBOT {robotId}</span><h2>{activeSection === "VDA5050" ? "VDA5050 CONFIGURATION" : activeSection}</h2></div>
+          {activeSection === "SYSTEM" && <button type="button" className="hmi-secondary-action" onClick={() => onSectionChange("VDA5050")}>VDA5050 ADVANCED SETTINGS</button>}
+          {activeSection === "VDA5050" && <button type="button" className="hmi-secondary-action" onClick={() => onSectionChange("SYSTEM")}>BACK TO SYSTEM</button>}
+        </header>
+        <LocalRobotSection section={localSection} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} hostStatus={host} />
+      </main> : <main className="robot-detail-main hmi-control-main">
+        <ManualBar controlMode={controlMode} controlOnline={controlOnline} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} />
+        <section className="robot-detail-map-panel">
+          <div className="robot-map-source-bar">
+            <span className="robot-map-view-label">2D SLAM OCCUPANCY MAP</span>
+            <span className={`hmi-state-pill ${viewFresh ? "is-ready" : "is-warning"}`} data-view-state={viewFresh ? "FRESH" : viewStatus?.state ?? "REQUESTED"}>{viewFresh ? "LIVE" : "WAITING FOR MAP"}</span>
+            <span className={`hmi-state-pill ${activeMapReady ? "is-ready" : "is-warning"}`}>{activeMapReady ? "ACTIVE MAP · FRAME map" : activeMapStatus}</span>
+          </div>
+          <div className="robot-detail-view-stack" key={robotId}>
+            <div className="robot-detail-view-layer is-active" data-view="LIDAR_2D">
+              <ActiveNavigationMap2DView map={activeMap2dSnapshot} robot={robot} scan={mappingScan}
+                target={isMapPointTarget(goalPreview) ? goalPreview : null}
+                navigationPath={approvedPreview?.active_path ?? approvedPreview?.path ?? []}
+                layers={mapLayers} onLayerToggle={(layer) => setMapLayers((current) => ({ ...current, [layer]: !current[layer] }))}
+                canPick={Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} />
+            </div>
+          </div>
+        </section>
+
+        <aside className="hmi-operation-panel" aria-label="Robot operation panel">
+          <header><div><span>ROBOT / MISSION</span><h2>{robotId}</h2></div><span className={`hmi-state-pill ${robotOnline ? "is-ready" : "is-fault"}`}>{robotOnline ? "ONLINE" : "OFFLINE"}</span></header>
+          <div className="hmi-operation-status">
+            <div><span>MODE</span><b className={`hmi-mode-value ${controlMode === "MANUAL" ? "is-manual" : "is-auto"}`}>{controlMode}</b></div>
+            <div><span>NAVIGATION</span><b className={`hmi-state-pill ${navigationLabel === "READY" || navigationLabel === "SUCCEEDED" ? "is-ready" : navigationLabel === "RUNNING" ? "is-running" : statusClass(navigationLabel) === "error" ? "is-fault" : "is-warning"}`}>{navigationLabel}</b></div>
+            <div><span>REMAINING</span><b>{safeNumber(remainingDistanceM, 2, " m")}</b></div>
+            {currentMission && <div><span>MISSION</span><b>{`${currentMission.id} · ${currentMission.status}`}</b></div>}
+          </div>
+          <section className="hmi-destination">
+            <h3>DESTINATION</h3>
+            {selectedPoint ? <><p className="hmi-point-selected" data-testid="selected-point-status">POINT SELECTED</p><div className="hmi-coordinate-grid">
+              <span>X</span><b>{safeNumber(selectedPoint.x, 3)} m</b>
+              <span>Y</span><b>{safeNumber(selectedPoint.y, 3)} m</b>
+              <span>YAW</span><b>{safeNumber(selectedPoint.yaw, 2)} rad</b>
+            </div></> : <p>Click a free point on the map to select a destination.</p>}
+            <div className="hmi-yaw-actions">
+              <button type="button" disabled={!isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
+              <button type="button" disabled={!isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
+            </div>
+          </section>
+          <div className="hmi-navigation-actions">
+            <button type="button" className="hmi-preview-action" disabled={!navigationUiAvailable || !goalPreview || pathRequestState === "PLANNING"}
+              data-preview-status={pathPreview?.status ?? "NONE"}
+              data-preview-request-id={pathPreview?.request_id ?? ""}
+              data-preview-approved={previewApproval.approved ? "true" : "false"}
+              data-preview-reject-reason={previewApproval.rejectReason ?? undefined}
+              data-preview-gates={JSON.stringify(previewApproval.gates)}
+              onClick={() => goalPreview && requestPathPreview(goalPreview)}>{pathRequestState === "PLANNING" ? "PLANNING…" : "PREVIEW PATH"}</button>
+            <button type="button" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady} className="robot-console-primary hmi-send-goal" onClick={sendGoal}>SEND GOAL</button>
+            <button type="button" className="hmi-cancel-point" disabled={!goalPreview} onClick={cancelPathPreview}>CANCEL</button>
+          </div>
+          {!nav2Ready && nav2BlockerReason && <div className="hmi-nav-blocker" role="status"><b>GOALS UNAVAILABLE</b>
+            {(runtimeCapabilities?.goal_blocker_code ?? diagnostics?.nav2_lifecycle_blocker_code) && <code>{runtimeCapabilities?.goal_blocker_code ?? diagnostics?.nav2_lifecycle_blocker_code}</code>}
+            <span>{nav2BlockerReason}</span></div>}
+          <div className="hmi-nav-management" aria-label="Navigation actions">
+            <button type="button" disabled={!controlOnline || controlMode !== "AUTONOMOUS"} onClick={() => navCommand("NAV_PAUSE")}>PAUSE</button>
+            <button type="button" disabled={!controlOnline || controlMode !== "AUTONOMOUS"} onClick={() => navCommand("NAV_RESUME")}>RESUME</button>
+            <button type="button" disabled={!controlOnline} onClick={() => navCommand("NAV_CANCEL")}>CANCEL NAV</button>
+          </div>
+          {goalPreview && <div className="hmi-preview-state" role="status">{pathRequestState === "PLANNING" ? "Planning approved route…" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ?? "Preview the path before sending the goal."}</div>}
+        </aside>
+      </main>
+      }
+
+      {activeSection === "CONTROL" && <footer className="robot-detail-bottom hmi-error-log-footer">
+        <ErrorLog errors={controlErrors} />
+      </footer>}
     </div>
   );
 }
 
-function SystemInputsPanel({ robotId, robot, controlMode, runtimeMode, goal }: { robotId: string; robot?: RobotState; controlMode: string; runtimeMode: string; goal: RobotDetailGoal | MapPointNavigationTarget | null }) {
-  return <Panel title="SYSTEM INPUTS">
-    <Metric label="Robot" value={robotId} mono />
-    <Metric label="Control mode" value={controlMode} status />
-    <Metric label="Runtime mode" value={runtimeMode} />
-    <Metric label="Navigation mode" value={safeText(robot?.navigation_state)} />
-    <Metric label="Target goal" value={goal ? `${safeNumber(goal.x, 2)} / ${safeNumber(goal.y, 2)} / ${safeNumber(goal.yaw, 2)}` : "N/A"} mono />
-    <Metric label="Current command" value="N/A" />
-    <div className="robot-detail-subtitle">COMMAND VELOCITY · measured</div>
-    <Metric label="linear x" value={safeNumber(robot?.vx, 3, " m/s")} mono />
-    <Metric label="linear y" value={safeNumber(robot?.vy, 3, " m/s")} mono />
-    <Metric label="angular z" value={safeNumber(robot?.wz, 3, " rad/s")} mono />
-    <div className="robot-detail-subtitle">GOAL</div>
-    <Metric label="x" value={goal ? safeNumber(goal.x, 3, " m") : "N/A"} mono />
-    <Metric label="y" value={goal ? safeNumber(goal.y, 3, " m") : "N/A"} mono />
-    <Metric label="yaw" value={goal ? safeNumber(goal.yaw, 3, " rad") : "N/A"} mono />
-  </Panel>;
-}
-
-function StatePanel({ pose, robot, localization, diagnostics, controller, navigationStatus }: { pose: { x: number; y: number; yaw: number; frame_id: string; map_id: string } | null; robot?: RobotState; localization: unknown; diagnostics: RobotSystemDiagnostics | null; controller: { controllers: Array<{ name: string; state: string }> } | null; navigationStatus: string | null }) {
-  const controllerValue = controller?.controllers.length ? (controller.controllers.every((item) => item.state === "active") ? "ACTIVE" : "ERROR") : diagnostics?.controller_manager ? "ACTIVE" : "N/A";
-  return <Panel title="STATE">
-    <div className="robot-detail-subtitle">ACTIVE MAP POSE · {pose ? `${pose.frame_id} / ${pose.map_id}` : "WAITING"}</div>
-    <Metric label="x" value={safeNumber(pose?.x, 3, " m")} mono />
-    <Metric label="y" value={safeNumber(pose?.y, 3, " m")} mono />
-    <div className="robot-detail-subtitle">ORIENTATION · active map</div>
-    <Metric label="yaw" value={safeNumber(pose?.yaw, 3, " rad")} mono />
-    <div className="robot-detail-subtitle">VELOCITY</div>
-    <Metric label="vx" value={safeNumber(robot?.vx, 3, " m/s")} mono />
-    <Metric label="vy" value={safeNumber(robot?.vy, 3, " m/s")} mono />
-    <Metric label="wz" value={safeNumber(robot?.wz, 3, " rad/s")} mono />
-    <div className="robot-detail-subtitle">LOCALIZATION / TF</div>
-    <Metric label="Localization" value={safeText(localization)} status />
-    <Metric label="map → odom" value={diagnostics?.tf ? "AVAILABLE" : "N/A"} status />
-    <Metric label="odom → base_link" value={diagnostics?.tf ? "AVAILABLE" : "N/A"} status />
-    <Metric label="Controller" value={controllerValue} status />
-    <Metric label="Navigation" value={safeText(navigationStatus)} status />
-  </Panel>;
-}
-
-const SystemPanel = memo(SystemPanelContent);
-
-function SystemPanelContent({ diagnostics, rosConnected, websocketState, host, runtimeState }: { diagnostics: RobotSystemDiagnostics | null; rosConnected: boolean; websocketState: string; host: HostStatus | null; runtimeState: string }) {
-  const metrics = diagnostics?.metrics ?? {};
-  const cpu = host?.system?.cpu_load_1m;
-  const ram = host?.system?.memory?.used_percent;
-  return <Panel title="SYSTEM">
-    <Metric label="ROS" value={diagnostics ? (diagnostics.ros ? "OK" : "OFFLINE") : "N/A"} status />
-    <Metric label="Gazebo" value={diagnostics ? (diagnostics.gazebo ? "OK" : "OFFLINE") : "N/A"} status />
-    <Metric label="ROS bridge" value={rosConnected ? "CONNECTED" : "DISCONNECTED"} status />
-    <Metric label="WebSocket" value={websocketState} status />
-    <Metric label="controller_manager" value={diagnostics ? (diagnostics.controller_manager ? "ACTIVE" : "N/A") : "N/A"} status />
-    <Metric label="SLAM / Nav2" value={diagnostics ? `${diagnostics.slam ? "SLAM" : "N/A"} / ${diagnostics.nav2 ? "Nav2" : "N/A"}` : "N/A"} />
-    <Metric label="CPU" value={cpu == null ? "N/A" : safeNumber(cpu, 2)} mono />
-    <Metric label="RAM" value={ram == null ? "N/A" : safeNumber(ram, 1, "%")} mono />
-    <Metric label="Simulation time" value={diagnostics?.simulation_time == null ? "N/A" : safeNumber(diagnostics.simulation_time, 3, " s")} mono />
-    <Metric label="Gazebo RTF" value={diagnostics?.gazebo_rtf == null && metrics.gazebo_rtf == null ? "N/A" : safeNumber(diagnostics?.gazebo_rtf ?? metrics.gazebo_rtf, 3)} mono />
-    <Metric label="WS latency" value={diagnostics?.websocket_latency_ms == null ? "N/A" : safeNumber(diagnostics.websocket_latency_ms, 0, " ms")} mono />
-    <Metric label="Runtime" value={runtimeState} />
-  </Panel>;
-}
-
-const LidarPanel = memo(LidarPanelContent);
-
-function LidarPanelContent({ robotId, diagnostics }: { robotId: string; diagnostics: RobotSystemDiagnostics | null }) {
-  const scan = useStore((state) => state.robotDetail[robotId]?.scan ?? null);
-  const age = scan?.timestamp ? (Date.now() - Date.parse(scan.timestamp)) / 1000 : null;
-  const lidarStatus = !scan
-    ? diagnostics ? (diagnostics.lidar ? "WAITING" : "ERROR") : "N/A"
-    : diagnostics?.lidar === false ? "ERROR" : age !== null && age > 3 ? "STALE" : "OK";
-  return <Panel title="LIDAR OUTPUTS">
-    <Metric label="topic" value={scan?.topic ?? "/scan"} mono />
-    <Metric label="frame" value={scan?.source_frame_id ?? scan?.frame_id ?? "N/A"} mono />
-    <Metric label="scan Hz sim" value={scan?.scan_hz_sim == null ? "N/A" : safeNumber(scan.scan_hz_sim, 2, " Hz")} mono />
-    <Metric label="scan Hz wall" value={scan?.scan_hz_wall == null ? "N/A" : safeNumber(scan.scan_hz_wall, 2, " Hz")} mono />
-    <Metric label="point count" value={scan?.point_count ?? "N/A"} mono />
-    <Metric label="minimum range" value={scan?.minimum_range == null ? "N/A" : safeNumber(scan.minimum_range, 2, " m")} mono />
-    <Metric label="maximum range" value={scan?.maximum_range == null ? "N/A" : safeNumber(scan.maximum_range, 2, " m")} mono />
-    <Metric label="last update" value={scan?.timestamp ?? "N/A"} mono />
-    <Metric label="age" value={age == null || !Number.isFinite(age) ? "N/A" : safeNumber(Math.max(0, age), 2, " s")} mono />
-    <Metric label="status" value={lidarStatus} status />
-  </Panel>;
-}
-
-const ErrorMessagesPanel = memo(ErrorMessagesPanelContent);
-
-function ErrorMessagesPanelContent({ errors }: { errors: RobotDetailError[] }) {
-  return <Panel title="ERROR MESSAGES" className="robot-detail-errors">
-    {errors.length === 0 && <div className="robot-detail-no-errors">No errors reported</div>}
-    {errors.map((item, index) => <div className={`robot-detail-error-row ${statusClass(item.severity)}`} key={`${item.code ?? item.message}-${index}`}><div><b>{item.severity}</b><span>{item.message}</span></div><small>{item.timestamp ?? "N/A"}</small></div>)}
-  </Panel>;
-}
-
 const ManualBar = memo(ManualBarContent);
 
-function ManualBarContent({ controlMode, controlOnline, activeManualCommand, moveButtonEvents, setMode }: { controlMode: string; controlOnline: boolean; activeManualCommand: ActiveManualCommand | null; moveButtonEvents: (action: ManualAction) => { onClick: () => void }; setMode: (mode: "MANUAL" | "AUTONOMOUS") => void }) {
-  return <section className="robot-detail-manual">
-    <div className="robot-detail-manual-head"><div><span className="robot-console-kicker">MANUAL CONTROL</span><b>{activeManualCommand ? `${activeManualCommand} LATCHED` : "STOPPED"}</b><small>Click or key press toggles; release does not stop · Space / STOP to stop</small></div><div className="robot-detail-manual-mode"><button type="button" className={controlMode === "MANUAL" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("MANUAL")}>MANUAL</button><button type="button" className={controlMode === "AUTONOMOUS" ? "is-active" : ""} disabled={!controlOnline} onClick={() => setMode("AUTONOMOUS")}>AUTONOMOUS</button></div></div>
-    <div className="robot-detail-manual-pad">{MANUAL_ACTIONS.map((item) => <button type="button" key={item.action} className={`manual-key manual-key-${item.action.toLowerCase()}${activeManualCommand === item.action ? " is-active" : ""}`} title={item.title} aria-label={item.title} aria-pressed={item.action !== "STOP" && activeManualCommand === item.action} disabled={!controlOnline || (item.action !== "STOP" && controlMode !== "MANUAL")} {...moveButtonEvents(item.action)}>{item.label}<small>{item.action === "FORWARD" ? "W / ↑" : item.action === "BACKWARD" ? "S / ↓" : item.action === "LEFT" ? "A / ←" : item.action === "RIGHT" ? "D / →" : item.action === "ROTATE_LEFT" ? "Q" : item.action === "ROTATE_RIGHT" ? "E" : "STOP"}</small></button>)}</div>
+function ManualBarContent({ controlMode, controlOnline, activeManualCommand, moveButtonEvents }: { controlMode: string; controlOnline: boolean; activeManualCommand: ActiveManualCommand | null; moveButtonEvents: (action: ManualAction) => { onClick: () => void } }) {
+  const button = (action: ManualAction) => {
+    const item = MANUAL_ACTIONS.find((candidate) => candidate.action === action)!;
+    const key = action === "FORWARD" ? "W / ↑" : action === "BACKWARD" ? "S / ↓"
+      : action === "LEFT" ? "A / ←" : action === "RIGHT" ? "D / →"
+        : action === "ROTATE_LEFT" ? "Q" : action === "ROTATE_RIGHT" ? "E" : "SPACE";
+    return <button type="button" key={item.action}
+      className={`manual-key manual-key-${item.action.toLowerCase()}${activeManualCommand === item.action ? " is-active" : ""}`}
+      title={item.title} aria-label={item.title} aria-pressed={item.action !== "STOP" && activeManualCommand === item.action}
+      disabled={!controlOnline || (item.action !== "STOP" && controlMode !== "MANUAL")}
+      {...moveButtonEvents(item.action)}>{item.label}<small>{key}</small></button>;
+  };
+  return <section className="robot-detail-manual hmi-manual-jog-panel" data-testid="manual-jog-left-panel">
+    <div className="robot-detail-manual-head"><div><span className="hmi-manual-kicker">MANUAL JOG</span><b>{activeManualCommand ? `${activeManualCommand.replace(/_/g, " ")} LATCHED` : "STOPPED"}</b><small>{controlMode === "MANUAL" ? "Jog controls enabled · click again or STOP to halt" : "Select MANUAL mode to enable movement"}</small></div><span className={`hmi-state-pill ${controlMode === "MANUAL" ? "is-running" : "is-neutral"}`}>{controlMode}</span></div>
+    <div className="hmi-jog-layout">
+      <div className="hmi-jog-pad" role="group" aria-label="Manual movement controls">
+        <span />{button("FORWARD")}<span />
+        {button("LEFT")}{button("STOP")}{button("RIGHT")}
+        <span />{button("BACKWARD")}<span />
+      </div>
+      <div className="hmi-rotate-pad" role="group" aria-label="Manual rotation controls">
+        <span>ROTATE</span>{button("ROTATE_LEFT")}{button("ROTATE_RIGHT")}
+      </div>
+    </div>
   </section>;
 }
 
-function Panel({ title, children, className = "" }: { title: string; children: ReactNode; className?: string }) {
-  return <section className={`robot-detail-panel ${className}`}><header>{title}</header><div className="robot-detail-panel-body">{children}</div></section>;
-}
+function ErrorLog({ errors }: { errors: RobotDetailError[] }) {
+  const newestFirst = [...errors].sort((left, right) => {
+    const leftTime = left.timestamp ? Date.parse(left.timestamp) : Number.NaN;
+    const rightTime = right.timestamp ? Date.parse(right.timestamp) : Number.NaN;
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return rightTime - leftTime;
+    if (Number.isFinite(leftTime)) return -1;
+    if (Number.isFinite(rightTime)) return 1;
+    return 0;
+  }).slice(0, 40);
 
-const Metric = memo(MetricContent);
-
-function MetricContent({ label, value, mono = false, status = false }: { label: string; value: unknown; mono?: boolean; status?: boolean }) {
-  return <div className="robot-detail-metric"><span>{label}</span>{status ? <StatusValue value={value} /> : <b className={mono ? "mono" : ""}>{safeText(value)}</b>}</div>;
+  return <section className="hmi-error-log" aria-label="Error log" data-testid="control-error-log">
+    <header><h2>ERROR LOG</h2><span>{newestFirst.length} {newestFirst.length === 1 ? "ENTRY" : "ENTRIES"}</span></header>
+    {newestFirst.length === 0 ? <p className="hmi-error-log-empty">No active errors.</p> : <div className="hmi-error-log-table-wrap">
+      <table className="hmi-error-log-table">
+        <thead><tr><th scope="col">TIME</th><th scope="col">LEVEL</th><th scope="col">SOURCE</th><th scope="col">MESSAGE</th></tr></thead>
+        <tbody>{newestFirst.map((item, index) => {
+          const level = String(item.severity ?? "ERROR").toUpperCase();
+          const source = (item as RobotDetailError & { source?: string | null }).source;
+          const parsedTime = item.timestamp ? Date.parse(item.timestamp) : Number.NaN;
+          const displayTime = Number.isFinite(parsedTime) ? new Date(parsedTime).toLocaleTimeString() : "—";
+          return <tr key={`${item.timestamp ?? "untimed"}-${item.code ?? item.message}-${index}`}>
+            <td>{displayTime}</td>
+            <td><span className={`hmi-error-level is-${level.toLowerCase()}`}>{level}</span></td>
+            <td>{source || "—"}</td>
+            <td>{item.message}</td>
+          </tr>;
+        })}</tbody>
+      </table>
+    </div>}
+  </section>;
 }

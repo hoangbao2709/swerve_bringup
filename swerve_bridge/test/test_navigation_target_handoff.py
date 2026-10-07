@@ -41,6 +41,12 @@ def _navigate_to_pose_goal():
     )
 
 
+def _lifecycle_nodes(runtime_state='NAVIGATION'):
+    map_node = 'canonical_map_server' if runtime_state == 'UNIFIED' else 'map_server'
+    return (map_node, 'controller_server', 'planner_server', 'behavior_server',
+            'bt_navigator', 'waypoint_follower')
+
+
 def _nav_safety_bridge():
     bridge = object.__new__(SwerveBridge)
     bridge.robot_id = 'R01'
@@ -186,6 +192,9 @@ def _accepted_pose_handle():
 
 def test_nav2_readiness_requires_both_path_and_navigation_action_servers():
     bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.nav2_lifecycle_nodes = _lifecycle_nodes()
+    bridge.nav2_lifecycle_states = {name: 'active' for name in bridge.nav2_lifecycle_nodes}
     bridge.path_preview_client = SimpleNamespace(server_is_ready=lambda: True)
     bridge.nav_pose_client = SimpleNamespace(server_is_ready=lambda: True)
     assert bridge.nav2_action_servers_ready()
@@ -196,6 +205,50 @@ def test_nav2_readiness_requires_both_path_and_navigation_action_servers():
     bridge.path_preview_client = SimpleNamespace(server_is_ready=lambda: True)
     bridge.nav_pose_client = SimpleNamespace(server_is_ready=lambda: False)
     assert not bridge.nav2_action_servers_ready()
+
+
+def test_nav2_readiness_fails_closed_when_bt_navigator_is_inactive():
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.nav2_lifecycle_nodes = _lifecycle_nodes()
+    bridge.nav2_lifecycle_states = {name: 'active' for name in bridge.nav2_lifecycle_nodes}
+    bridge.nav2_lifecycle_states['bt_navigator'] = 'inactive'
+    bridge.path_preview_client = SimpleNamespace(server_is_ready=lambda: True)
+    bridge.nav_pose_client = SimpleNamespace(server_is_ready=lambda: True)
+
+    status = bridge.nav2_lifecycle_status()
+    assert status['ready'] is False
+    assert status['blocker_code'] == 'NAV2_LIFECYCLE_NOT_ACTIVE'
+    assert '/bt_navigator=inactive' in status['blocker_reason']
+    assert bridge.nav2_action_servers_ready() is False
+
+
+def test_point_goal_is_not_dispatched_while_bt_navigator_is_inactive():
+    bridge = object.__new__(SwerveBridge)
+    bridge.robot_id = 'R01'
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.control_mode = 'AUTONOMOUS'
+    bridge.emergency_stop_active = False
+    bridge.loaded_local_map_id = None
+    bridge.loaded_local_map_revision = None
+    bridge.local_map_load_pending = False
+    bridge.active_goal = None
+    bridge.active_pose_goal = None
+    bridge.goal_request_pending = False
+    bridge.nav2_lifecycle_nodes = _lifecycle_nodes()
+    bridge.nav2_lifecycle_states = {name: 'active' for name in bridge.nav2_lifecycle_nodes}
+    bridge.nav2_lifecycle_states['bt_navigator'] = 'inactive'
+    action = Mock()
+    bridge.nav_pose_client = SimpleNamespace(
+        server_is_ready=lambda: True, send_goal_async=action.send_goal_async)
+    bridge.send_nav_status = Mock()
+
+    bridge.navigate_pose({'x': 2.0, 'y': 1.0, 'yaw': 0.0, 'frame_id': 'map'})
+
+    action.send_goal_async.assert_not_called()
+    assert bridge.send_nav_status.call_args.args[1] == 'FAILED'
+    assert 'NAV2_LIFECYCLE_NOT_ACTIVE' in bridge.send_nav_status.call_args.args[2]
+    assert '/bt_navigator=inactive' in bridge.send_nav_status.call_args.args[2]
 
 
 def test_active_map_point_uses_shared_compute_path_and_navigate_to_pose_actions(monkeypatch):
@@ -216,6 +269,8 @@ def test_active_map_point_uses_shared_compute_path_and_navigate_to_pose_actions(
     bridge = object.__new__(SwerveBridge)
     bridge.robot_id = 'R01'
     bridge.runtime_state = 'NAVIGATION'
+    bridge.nav2_lifecycle_nodes = _lifecycle_nodes()
+    bridge.nav2_lifecycle_states = {name: 'active' for name in bridge.nav2_lifecycle_nodes}
     bridge.control_mode = 'AUTONOMOUS'
     bridge.emergency_stop_active = False
     bridge.active_map_identity = lambda: map_identity.copy()
@@ -302,6 +357,8 @@ def test_unified_preview_requires_registered_full_map_and_binds_its_revision(mon
     bridge = object.__new__(SwerveBridge)
     bridge.robot_id = 'R01'
     bridge.runtime_state = 'UNIFIED'
+    bridge.nav2_lifecycle_nodes = _lifecycle_nodes('UNIFIED')
+    bridge.nav2_lifecycle_states = {name: 'active' for name in bridge.nav2_lifecycle_nodes}
     bridge.control_mode = 'AUTONOMOUS'
     bridge.emergency_stop_active = False
     bridge.active_map_identity = lambda: active.copy()

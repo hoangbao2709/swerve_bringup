@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { RobotState } from "../src/schema/twin_state";
 import { useStore } from "../src/state/store";
@@ -39,6 +39,7 @@ vi.mock("../src/services/ws", () => ({
 }));
 import { RobotQuickDetailModal } from "../src/components/robot/RobotQuickDetailModal";
 import { RobotControlDetailPage } from "../src/components/control/RobotControlDetailPage";
+import { Sidebar, type ControlSection } from "../src/components/shell/Sidebar";
 import { occupancyRasters } from "../src/components/control/occupancyRaster";
 import * as api from "../src/services/api";
 import { wsSend, wsManualCommand, wsSetRobotMode } from "../src/services/ws";
@@ -47,6 +48,14 @@ import type { LocalRobotMap } from "../src/services/api";
 const initialState = useStore.getState();
 let root: Root;
 let container: HTMLDivElement;
+
+function ControlDetailHarness({ robotId }: { robotId: string }) {
+  const [activeSection, setActiveSection] = useState<ControlSection>("CONTROL");
+  return <div className="robot-control-workspace industrial-hmi-workspace">
+    <Sidebar activeSection={activeSection} onSectionChange={setActiveSection} />
+    <RobotControlDetailPage robotId={robotId} activeSection={activeSection} onSectionChange={setActiveSection} />
+  </div>;
+}
 
 function r01(): RobotState {
   return {
@@ -98,12 +107,20 @@ function setNavReadyCapabilities() {
     manual_available: false, goal_available: true, goal_blocker_code: null,
     goal_blocker_reason: null, map_ready: true, tag_navigation_available: false,
     registration_revision: null, registration_source: null,
-  } } });
+  } }, rosDiagnostics: {
+    ros: true, gazebo: true, controller_manager: true, slam: false, nav2: true,
+    nav2_ready: true, nav2_actions_ready: true, nav2_lifecycle_ready: true,
+    nav2_lifecycle_states: { map_server: "active", controller_server: "active", planner_server: "active",
+      behavior_server: "active", bt_navigator: "active", waypoint_follower: "active" },
+    tf: true, lidar: true, nodes: [], topics: [], controllers: [],
+    simulation_time: null, last_update_at: new Date().toISOString(),
+  } });
 }
 
 
 function buttonNamed(name: string): HTMLButtonElement | undefined {
-  return Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === name);
+  return Array.from(container.querySelectorAll("button")).find((button) =>
+    button.getAttribute("aria-label") === name || button.textContent?.trim() === name);
 }
 
 function setInputValue(input: HTMLInputElement, value: string) {
@@ -164,19 +181,67 @@ describe("robot quick detail workflow", () => {
 
 describe("robot detail route stability", () => {
 
+  it("places the existing jog controls left of the map and uses the lower strip for an empty real error log", () => {
+    setOnlineRobot();
+    renderNode(<ControlDetailHarness robotId="R01" />);
+
+    const main = container.querySelector<HTMLElement>(".hmi-control-main");
+    expect(main?.children[0]?.getAttribute("data-testid")).toBe("manual-jog-left-panel");
+    expect(main?.children[1]?.classList.contains("robot-detail-map-panel")).toBe(true);
+    expect(main?.children[2]?.getAttribute("aria-label")).toBe("Robot operation panel");
+    const errorLog = container.querySelector<HTMLElement>('[data-testid="control-error-log"]');
+    expect(errorLog?.textContent).toContain("ERROR LOG");
+    expect(errorLog?.textContent).toContain("No active errors.");
+    expect(errorLog?.querySelector("button")).toBeNull();
+    expect(container.querySelectorAll(".hmi-control-main .manual-key")).toHaveLength(7);
+  });
+
+  it("shows newest real runtime errors first and uses a dash when no source is provided", () => {
+    setOnlineRobot();
+    useStore.getState().setRobotDetail("R01", { errors: [
+      { severity: "WARNING", message: "Older diagnostic", timestamp: "2026-10-07T10:00:00Z" },
+      { severity: "ERROR", message: "Latest runtime error", timestamp: "2026-10-07T10:02:00Z" },
+    ] });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+
+    const rows = Array.from(container.querySelectorAll<HTMLTableRowElement>(".hmi-error-log-table tbody tr"));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain("Latest runtime error");
+    expect(rows[0]?.textContent).toContain("ERROR");
+    expect(rows[0]?.textContent).toContain("—");
+    expect(rows[1]?.textContent).toContain("Older diagnostic");
+    expect(rows[1]?.querySelector(".hmi-error-level")?.classList.contains("is-warning")).toBe(true);
+  });
+
+  it("keeps all seven manual movement buttons on the left station and sends their existing commands", () => {
+    setOnlineRobot("MAPPING");
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    const actions = [
+      ["forward", "FORWARD"], ["backward", "BACKWARD"], ["left", "LEFT"], ["right", "RIGHT"],
+      ["rotate_left", "ROTATE_LEFT"], ["rotate_right", "ROTATE_RIGHT"], ["stop", "STOP"],
+    ] as const;
+    for (const [buttonClass, action] of actions) {
+      const button = container.querySelector<HTMLButtonElement>(`.hmi-manual-jog-panel .manual-key-${buttonClass}`);
+      expect(button).toBeTruthy();
+      expect(button?.disabled).toBe(false);
+      act(() => button?.click());
+      expect(wsManualCommand).toHaveBeenLastCalledWith("R01", action);
+    }
+  });
+
   it("keeps applied mode while a requested transition is pending", () => {
     useStore.setState({ runtimeMode: "GAZEBO_ROS", rosConnected: true, websocketState: "CONNECTED", connectedRobotIds: ["R01"] });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     act(() => buttonNamed("AUTONOMOUS")?.click());
     expect(wsSetRobotMode).toHaveBeenCalledWith("R01", "AUTONOMOUS");
     expect(container.querySelector(".robot-detail-mode")?.textContent).toContain("MANUAL → AUTONOMOUS REQUESTED");
     act(() => useStore.getState().setRobotDetail("R01", { appliedMode: "AUTONOMOUS", modeTransitionState: "APPLIED" }));
-    expect(container.querySelector(".robot-detail-mode")?.textContent).toContain("AUTONOMOUS APPLIED");
+    expect(container.querySelector(".robot-detail-mode")?.textContent).toBe("AUTONOMOUS");
   });
 
   it("shows CLEAR STOP as applied only after the correlated runtime result", async () => {
     setOnlineRobot();
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     vi.mocked(api.clearEmergencyStop).mockResolvedValueOnce({ ok: true, code: "CLEAR_ESTOP_APPLIED",
       robot_id: "R01", emergency_stop_active: false, pre_stop_navigation_terminal: true });
     await act(async () => { buttonNamed("CLEAR STOP")?.click(); await settleUi(); });
@@ -191,7 +256,7 @@ describe("robot detail route stability", () => {
 
   it("latches Mapping teleop on click and ignores pointer release until a second click", () => {
     setOnlineRobot("MAPPING");
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
     expect(forward.disabled).toBe(false);
     act(() => forward.click());
@@ -221,7 +286,7 @@ describe("robot detail route stability", () => {
     vi.stubGlobal("Worker", FakeWorker);
     setOnlineRobot();
     vi.mocked(wsManualCommand).mockClear();
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { await settleUi(); });
     expect(constructWorker).toHaveBeenCalledWith(expect.any(URL), { type: "module" });
     expect(postMessage).toHaveBeenCalledWith({ type: "CONNECT", url: "ws://127.0.0.1:8001/ws" });
@@ -257,7 +322,7 @@ describe("robot detail route stability", () => {
     }
     vi.stubGlobal("Worker", FakeWorker);
     setOnlineRobot("MAPPING");
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
     act(() => forward.click());
     act(() => useStore.getState().setRobotDetail("R01", {
@@ -275,7 +340,7 @@ describe("robot detail route stability", () => {
   });
   it("toggles keyboard commands on discrete keydown edges and Space always stops", () => {
     setOnlineRobot("MAPPING");
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     const down = (key: string, repeat = false) => window.dispatchEvent(new KeyboardEvent("keydown", { key, repeat, bubbles: true, cancelable: true }));
     act(() => down("w"));
     expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "FORWARD");
@@ -291,7 +356,7 @@ describe("robot detail route stability", () => {
   });
   it("stops the latched command before mode change, page exit, disconnect, and E-STOP", async () => {
     setOnlineRobot("MAPPING");
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
     act(() => forward.click());
     act(() => buttonNamed("AUTONOMOUS")?.click());
@@ -316,7 +381,7 @@ describe("robot detail route stability", () => {
   });
   it("clears the latch on authoritative E-STOP and does not resume when the latch clears", () => {
     setOnlineRobot("MAPPING");
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     const forward = container.querySelector<HTMLButtonElement>(".manual-key-forward")!;
     act(() => forward.click());
     expect(forward.getAttribute("aria-pressed")).toBe("true");
@@ -334,24 +399,25 @@ describe("robot detail route stability", () => {
   });
   it("renders the direct URL with null map/scan and disables manual motion while disconnected", () => {
     useStore.setState({ twin: null as never, rosDiagnostics: null, rosConnected: false, websocketState: "DISCONNECTED", robotDetail: {} });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
-    expect(container.textContent).toContain("SYSTEM INPUTS");
-    expect(container.textContent).toContain("STATE");
-    expect(container.textContent).toContain("SYSTEM");
-    expect(container.textContent).toContain("LIDAR OUTPUTS");
-    expect(container.textContent).toContain("ERROR MESSAGES");
-    expect(container.textContent).toContain("No errors reported");
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    expect(container.querySelector('[data-testid="slam-map-2d-empty"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="robot-map-layers"]')).toBeNull();
     expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(true);
+    act(() => buttonNamed("SYSTEM")?.click());
+    expect(container.textContent).toContain("SUBSYSTEM STATUS");
+    expect(container.textContent).toContain("ROS Bridge");
+    expect(container.textContent).toContain("LIDAR");
+    expect(container.textContent).toContain("LAST REPORTED ERRORS");
+    expect(container.textContent).toContain("No runtime errors reported");
   });
 
-  it("renders live telemetry values without requiring a map snapshot", () => {
-    renderNode(<RobotControlDetailPage robotId="R01" />);
-    expect(container.textContent).toContain("ACTIVE MAP POSE · map / CANONICAL");
+  it("shows the current robot pose on the localization screen without a map snapshot", () => {
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    act(() => buttonNamed("LOCALIZATION")?.click());
+    expect(container.textContent).toContain("LOCALIZATION STATE");
     expect(container.textContent).toContain("15.000 m");
     expect(container.textContent).toContain("5.500 m");
     expect(container.textContent).not.toContain("40.000 m");
-    expect(container.textContent).toContain("LIDAR OUTPUTS");
-    expect(container.textContent).toContain("N/A");
   });
 
   it("labels the Robot Control pose with the active SLAM map", () => {
@@ -360,8 +426,9 @@ describe("robot detail route stability", () => {
     useStore.setState({ twin: { ...initialState.twin, robots: { R01: {
       ...r01(), position: [90, 0, 90], active_map_pose: slamPose, slam_pose: slamPose,
     } } } });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
-    expect(container.textContent).toContain("ACTIVE MAP POSE · map / SLAM-session-1");
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    act(() => buttonNamed("LOCALIZATION")?.click());
+    expect(container.textContent).toContain("LOCALIZATION STATE");
     expect(container.textContent).toContain("4.500 m");
     expect(container.querySelector('[data-testid="global-warehouse-map"]')).toBeNull();
   });
@@ -373,7 +440,7 @@ describe("robot detail route stability", () => {
       websocketState: "CONNECTED",
       connectedRobotIds: ["R01"],
     });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(false);
     act(() => root.unmount());
 
@@ -389,19 +456,23 @@ describe("robot detail route stability", () => {
   });
 
   it("keeps local mapping and VDA5050 sections inside the selected robot detail page", async () => {
-    renderNode(<RobotControlDetailPage robotId="R01" />);
-    expect(container.querySelector('[role="tablist"][aria-label="Local robot control sections"]')).toBeTruthy();
-    const mappingTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.textContent === "MAPPING");
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    expect(container.querySelector('[role="tablist"][aria-label="Control views"]')).toBeTruthy();
+    const mappingTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.getAttribute("aria-label") === "MAPPING");
     await act(async () => { (mappingTab as HTMLElement).click(); });
-    expect(container.textContent).toContain("MAPPING SESSION");
-    expect(container.textContent).toContain("SAVE NAVIGATION MAP + SLAM SESSION");
-    const vdaTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.textContent === "VDA5050");
-    await act(async () => { (vdaTab as HTMLElement).click(); });
+    expect(container.textContent).toContain("ACCUMULATED SLAM MAP");
+    expect(container.textContent).toContain("SAVE MAP");
+    expect(container.querySelectorAll("[role=tab]")).toHaveLength(4);
+    await act(async () => { buttonNamed("SYSTEM")?.click(); });
+    expect(container.textContent).toContain("SUBSYSTEM STATUS");
+    expect(container.textContent).not.toContain("MQTT HOST");
+    await act(async () => { buttonNamed("VDA5050 ADVANCED SETTINGS")?.click(); });
+    await act(async () => { await Promise.resolve(); });
     expect(container.textContent).toContain("VDA5050 CONFIGURATION");
     expect(container.textContent).toContain("MQTT HOST");
     expect(container.textContent).toContain("ALLOW TASK");
     expect(container.querySelector('input[type="password"]')?.getAttribute("type")).toBe("password");
-    expect(container.querySelector("h1")?.textContent).toBe("R01");
+    expect(container.querySelector("h2")?.textContent).toBe("VDA5050 CONFIGURATION");
   });
 
   it("shows only the active 2D occupancy map and point controls", async () => {
@@ -411,22 +482,45 @@ describe("robot detail route stability", () => {
       mapping_session_id: "session-1", active_map_id: "SLAM-session-1",
       active_map_revision: "session-session-1", map_content_revision: "cells-a",
       width: 2, height: 2, resolution: .05, origin: { x: 0, y: 0, yaw: 0 }, data: [-1, 0, 100, -1] };
-    useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1", slam2dMap: slamMap });
+    useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1", slam2dMap: slamMap, scan: {
+      robot_id: "R01", topic: "/scan", source_frame_id: "lidar_link", mapping_session_id: "session-1",
+      frame_id: "map", angle_min: -Math.PI, angle_max: Math.PI, angle_increment: 0.1,
+      range_min: 0.1, range_max: 10, point_count: 2, points: [[1, 0], [2, 0]],
+      trajectory: [[0, 0], [0.5, 0.5]], timestamp: new Date().toISOString(),
+    } });
     useStore.setState({ twin: { ...useStore.getState().twin!, robots: {
       ...useStore.getState().twin!.robots, R01: { ...r01(), control_mode: "AUTONOMOUS" },
     } } });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { await settleUi(); });
 
-    expect(container.textContent).toContain("MAP VIEW 2D · ACTIVE MAP / SLAM");
+    expect(container.textContent).toContain("2D SLAM OCCUPANCY MAP");
     expect(container.textContent).not.toContain("GLOBAL MAP");
     expect(container.textContent).not.toContain("MAP VIEW 3D");
     expect(container.textContent).not.toContain("Destination Tag");
     expect(container.textContent).not.toContain("Target Tag");
     expect(container.querySelector('[aria-label="Navigation target method"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="robot-map-layers"] button')).toHaveLength(5);
+    expect(container.textContent).not.toContain("VDA5050");
     expect(container.querySelector('[data-testid="active-navigation-map-2d"]')).toBeTruthy();
     expect(container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')?.dataset.mapId)
       .toBe("SLAM-session-1");
+    const mapCanvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
+    const layerButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="robot-map-layers"] button'));
+    expect(layerButtons.map((button) => button.textContent?.trim())).toEqual([
+      "✓ ROBOT", "✓ SCAN", "✓ PATH", "□ TRAJECTORY", "□ GRID",
+    ]);
+    expect(mapCanvas.dataset.scanLayer).toBe("low-opacity-current-scan-overlay");
+    expect(mapCanvas.dataset.trajectoryLayer).toBe("disabled");
+    await act(async () => { layerButtons[0].click(); layerButtons[1].click(); layerButtons[3].click(); layerButtons[4].click(); });
+    expect(mapCanvas.dataset.robotLayer).toBe("disabled");
+    expect(mapCanvas.dataset.scanLayer).toBe("disabled");
+    expect(mapCanvas.dataset.gridLayer).toBe("visible");
+    expect(mapCanvas.dataset.trajectoryLayer).toBe("visible");
+    expect(layerButtons[0].getAttribute("aria-pressed")).toBe("false");
+    expect(layerButtons[1].getAttribute("aria-pressed")).toBe("false");
+    expect(layerButtons[3].getAttribute("aria-pressed")).toBe("true");
+    expect(layerButtons[4].getAttribute("aria-pressed")).toBe("true");
   });
 
 
@@ -444,8 +538,8 @@ describe("robot detail route stability", () => {
       points: [[1, 1] as [number, number]], timestamp: new Date().toISOString() };
     useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1",
       slam2dMap: slamMap, scan });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
-    await act(async () => { buttonNamed("MAP VIEW 2D")?.click(); await settleUi(); });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); });
 
     const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="slam-map-2d-canvas"]');
     const baseMap = useStore.getState().robotDetail.R01.slam2dMap;
@@ -488,29 +582,57 @@ describe("robot detail route stability", () => {
     } } });
     useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1", mappingState: "MAPPING",
       slam2dMap: slamMap, slam3dAccumulatedCloud: cloud });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
 
     expect(container.querySelector('[data-testid="slam-runtime-state"]')?.textContent).toBe("SLAM LIVE");
     expect(container.querySelector('[data-testid="nav2-runtime-state"]')?.textContent).toBe("NAV2 READY");
-    expect(container.textContent).toContain("SLAM-session-1 · rsession-session-1 · SLAM · LIVE · LOCAL_ONLY");
+    expect(container.textContent).toContain("ACTIVE MAP · FRAME map");
+    expect(container.textContent).not.toContain("session-session-1");
     expect(container.textContent).not.toContain("GOALS DISABLED");
 
     await act(async () => { await settleUi(); });
     const liveMapCanvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas');
     expect(liveMapCanvas?.dataset.mapId).toBe("SLAM-session-1");
     await act(async () => { liveMapCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
-    expect(container.textContent).toContain("TARGET ");
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("POINT SELECTED");
     expect(buttonNamed("PREVIEW PATH")?.disabled).toBe(false);
     await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
     expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_REQUEST");
     expect(container.querySelector('[data-testid="slam-map-3d"]')).toBeNull();
 
     await act(async () => { buttonNamed("MAPPING")?.click(); await settleUi(); });
-    expect(container.textContent).toContain("UNIFIED MAPPING + NAVIGATION");
+    expect(container.textContent).toContain("MAPPING STATUS");
     expect(container.textContent).not.toContain("SWITCH TO NAVIGATION");
+    const mappingAdvanced = container.querySelector<HTMLDetailsElement>(".hmi-advanced-details")!;
+    expect(mappingAdvanced.open).toBe(false);
+    await act(async () => { mappingAdvanced.open = true; mappingAdvanced.dispatchEvent(new Event("toggle", { bubbles: true })); });
     expect(container.textContent).toContain("SLAM and Nav2 stay available together in Unified");
+    expect(container.textContent).toContain("In-place saved-map localization");
 
     expect(container.querySelector<HTMLCanvasElement>('[data-testid="slam-map-2d-canvas"]')?.dataset.mapSource).toBe("SLAM_TOOLBOX");
+  });
+
+  it("fails closed when lifecycle diagnostics say bt_navigator is inactive", () => {
+    setOnlineRobot("UNIFIED");
+    setNavReadyCapabilities();
+    useStore.setState({ rosDiagnostics: {
+      ros: true, gazebo: true, controller_manager: true, slam: true, nav2: true,
+      nav2_ready: false, nav2_actions_ready: true, nav2_lifecycle_ready: false,
+      nav2_lifecycle_states: {
+        canonical_map_server: "active", controller_server: "active", planner_server: "active",
+        behavior_server: "active", bt_navigator: "inactive", waypoint_follower: "active",
+      }, nav2_lifecycle_blocker_code: "NAV2_LIFECYCLE_NOT_ACTIVE",
+      nav2_lifecycle_blocker_reason: "Required Nav2 lifecycle node(s) must be ACTIVE: /bt_navigator=inactive.",
+      tf: true, lidar: true, nodes: ["bt_navigator"], topics: [], controllers: [],
+      simulation_time: 10, last_update_at: new Date().toISOString(),
+    } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+
+    expect(container.querySelector('[data-testid="nav2-runtime-state"]')?.textContent).toBe("NAV2 BLOCKED");
+    expect(container.textContent).not.toContain("NAV2 READY");
+    expect(container.textContent).toContain("NAV2_LIFECYCLE_NOT_ACTIVE");
+    expect(container.textContent).toContain("/bt_navigator=inactive");
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
   });
 
 
@@ -518,14 +640,14 @@ describe("robot detail route stability", () => {
     setOnlineRobot();
     setNavReadyCapabilities();
     useStore.setState({ twin: { ...initialState.twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { await settleUi(); });
 
     const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas');
     expect(canvas).toBeTruthy();
     expect(container.querySelector('[data-testid="global-warehouse-map"]')).toBeNull();
     await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
-    expect(container.textContent).toContain("TARGET ");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeTruthy();
     expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
 
@@ -596,13 +718,13 @@ describe("robot detail route stability", () => {
     useStore.setState({ twin: { ...useStore.getState().twin!, robots: {
       ...useStore.getState().twin!.robots, R01: { ...r01(), control_mode: "AUTONOMOUS", active_map_pose: localPose },
     } } });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { await settleUi(); });
     const localCanvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas');
     expect(localCanvas?.dataset.mapId).toBe("saved-R01-1");
     expect(container.querySelector('[data-testid="global-warehouse-map"]')).toBeNull();
     await act(async () => { localCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
-    expect(container.textContent).toContain("TARGET ");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeTruthy();
     await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
     const request = vi.mocked(wsSend).mock.calls.map(([message]) => message)
       .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
@@ -624,7 +746,7 @@ describe("robot detail route stability", () => {
     await act(async () => { useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: replacementMap,
       activeLocalMapId: "saved-R01-2", activeLocalMapRevision: "artifact-2" }); await settleUi(); });
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
-    expect(container.textContent).not.toContain("TARGET ");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
     expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type).filter((type) => type === "PATH_PREVIEW_INVALIDATE").length).toBeGreaterThan(0);
   });
 
@@ -667,10 +789,10 @@ describe("robot detail route stability", () => {
     vi.mocked(api.resumeLocalRobotSlamSession).mockClear();
     vi.mocked(api.requestLocalRuntimeMode).mockClear();
     vi.mocked(wsSetRobotMode).mockClear();
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { buttonNamed("MAPPING")?.click(); await settleUi(); });
-    expect(container.textContent).toContain("UNIFIED MAPPING + NAVIGATION");
-    await act(async () => { buttonNamed("STOP MAPPING")?.click(); await settleUi(); });
+    expect(container.textContent).toContain("ACCUMULATED SLAM MAP");
+    await act(async () => { buttonNamed("PAUSE MAPPING")?.click(); await settleUi(); });
     expect(api.setMappingState).toHaveBeenCalledWith("R01", "stop");
     expect(container.textContent).toContain("MAPPING PAUSED");
     const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="warehouse_floor_1"]');
@@ -685,7 +807,9 @@ describe("robot detail route stability", () => {
     expect(api.setMappingState).toHaveBeenCalledWith("R01", "start");
     expect(buttonNamed("LOAD SAVED MAP")?.disabled).toBe(true);
     expect(buttonNamed("RESUME SAVED SLAM SESSION")?.disabled).toBe(true);
-    expect(container.textContent).toContain("In-place saved-map localization and SLAM pose-graph restore are unavailable");
+    const advancedDetails = container.querySelector<HTMLDetailsElement>(".hmi-advanced-details")!;
+    await act(async () => { advancedDetails.open = true; advancedDetails.dispatchEvent(new Event("toggle", { bubbles: true })); });
+    expect(container.textContent).toContain("SLAM and Nav2 stay available together in Unified");
     expect(container.textContent).not.toContain("SWITCH TO NAVIGATION");
     expect(api.loadLocalRobotMap).not.toHaveBeenCalled();
     expect(api.resumeLocalRobotSlamSession).not.toHaveBeenCalled();
@@ -699,7 +823,7 @@ describe("robot detail route stability", () => {
       robot_id: "R01", frame_id: "map", map_source: "NAV2_MAP",
       width: 1, height: 1, resolution: 0.05, origin: { x: 0, y: 0, yaw: 0 }, data: [100],
     } });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { buttonNamed("MAPPING")?.click(); await Promise.resolve(); });
 
     expect(container.textContent).toContain("Waiting for a fresh accumulated SLAM Toolbox /map");
@@ -731,7 +855,7 @@ describe("robot detail route stability", () => {
         map_width_cells: 2, map_height_cells: 2, map_version: 1,
       } },
     });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { buttonNamed("MAPPING")?.click(); await settleUi(); });
 
     expect(container.textContent).toContain("ACCUMULATED SLAM MAP · /map + CURRENT /scan");
@@ -755,7 +879,7 @@ describe("robot detail route stability", () => {
         width: 1, height: 1, resolution: 0.05, origin: { x: 0, y: 0, yaw: 0 }, data: [100],
       },
     });
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { buttonNamed("MAPPING")?.click(); await settleUi(); });
 
     expect(container.textContent).toContain("Waiting for a fresh accumulated SLAM Toolbox /map");
@@ -768,7 +892,7 @@ describe("robot detail route stability", () => {
     vi.mocked(api.initializeLocalRobotPose).mockResolvedValueOnce({
       ok: true, pose: { x: 0, y: 0, yaw: 0.2, frame_id: "map" }, localization_owner: "ekf_v30e",
     }).mockRejectedValueOnce(new Error("localization service unavailable"));
-    renderNode(<RobotControlDetailPage robotId="R01" />);
+    renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { buttonNamed("LOCALIZATION")?.click(); await Promise.resolve(); });
     await act(async () => { buttonNamed("PICK ON MAP")?.click(); });
     const picker = container.querySelector<HTMLCanvasElement>('[aria-label="Select map frame initial robot position"]');
@@ -802,8 +926,10 @@ describe("robot detail route stability", () => {
       ok: false, latency_ms: 9, broker: "broker.local:1883", error_code: "REFUSED", message: "connection refused",
     });
     vi.mocked(api.applyVda5050Configuration).mockRejectedValueOnce(new Error("broker apply failed"));
-    renderNode(<RobotControlDetailPage robotId="R01" />);
-    await act(async () => { buttonNamed("VDA5050")?.click(); await Promise.resolve(); });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { buttonNamed("SYSTEM")?.click(); });
+    await act(async () => { buttonNamed("VDA5050 ADVANCED SETTINGS")?.click(); });
+    await act(async () => { await Promise.resolve(); });
     expect(container.querySelector('input[type="password"]')?.getAttribute("type")).toBe("password");
     expect(container.textContent).toContain("INSTANT ACTION EXECUTION");
     expect(container.textContent).toContain("NOT IMPLEMENTED");

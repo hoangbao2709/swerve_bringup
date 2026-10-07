@@ -119,6 +119,42 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             else:
                 runtime.ros_diagnostics['mapping'] = previous
 
+    async def test_nav2_lifecycle_diagnostics_are_retained_and_missing_data_fails_closed(self):
+        keys = ('nav2', 'nav2_ready', 'nav2_actions_ready', 'nav2_lifecycle_ready',
+                'nav2_lifecycle_states', 'nav2_lifecycle_blocker_code',
+                'nav2_lifecycle_blocker_reason')
+        previous = {key: (key in runtime.ros_diagnostics, runtime.ros_diagnostics.get(key))
+                    for key in keys}
+        states = {
+            'canonical_map_server': 'active', 'controller_server': 'active',
+            'planner_server': 'active', 'behavior_server': 'active',
+            'bt_navigator': 'inactive', 'waypoint_follower': 'active',
+        }
+        diagnostics = {
+            'nav2': True, 'nav2_ready': False, 'nav2_actions_ready': True,
+            'nav2_lifecycle_ready': False, 'nav2_lifecycle_states': states,
+            'nav2_lifecycle_blocker_code': 'NAV2_LIFECYCLE_NOT_ACTIVE',
+            'nav2_lifecycle_blocker_reason': '/bt_navigator=inactive',
+        }
+        try:
+            with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
+                await runtime.handle_ros_diagnostics({'diagnostics': diagnostics})
+            self.assertEqual(runtime.ros_diagnostics['nav2_lifecycle_states'], states)
+            self.assertEqual(runtime.ros_diagnostics['nav2_lifecycle_blocker_code'],
+                             'NAV2_LIFECYCLE_NOT_ACTIVE')
+
+            with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
+                await runtime.handle_ros_diagnostics({'diagnostics': {'nav2': True, 'nav2_ready': True}})
+            self.assertFalse(runtime.ros_diagnostics['nav2_lifecycle_ready'])
+            self.assertEqual(runtime.ros_diagnostics['nav2_lifecycle_states'], {})
+            self.assertIsNone(runtime.ros_diagnostics['nav2_lifecycle_blocker_code'])
+        finally:
+            for key, (present, value) in previous.items():
+                if present:
+                    runtime.ros_diagnostics[key] = value
+                else:
+                    runtime.ros_diagnostics.pop(key, None)
+
     async def test_runtime_status_exposes_robot_mapping_session_identity(self):
         old_connected = set(runtime.connected_robot_ids)
         old_sessions = dict(runtime.robot_mapping_sessions)

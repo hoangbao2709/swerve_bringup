@@ -30,13 +30,15 @@ afterEach(() => {
 });
 
 describe("single-page Robot Control route", () => {
-  it("shows only Robot Control in the sidebar with point-navigation caption", () => {
+  it("shows the industrial tool rail without an Overview entry", () => {
     act(() => root.render(<RobotControlPage />));
     const navigation = container.querySelector(".wt-sidebar-nav");
-    expect(navigation?.textContent).toContain("Robot Control");
-    expect(navigation?.textContent).toContain("Manual + point navigation");
+    expect(navigation?.textContent).toContain("CONTROL");
+    expect(navigation?.textContent).toContain("MAPPING");
+    expect(navigation?.textContent).toContain("LOCALIZATION");
+    expect(navigation?.textContent).toContain("SYSTEM");
     expect(navigation?.textContent).not.toContain("Overview");
-    expect(navigation?.querySelectorAll(".wt-sidebar-item")).toHaveLength(1);
+    expect(navigation?.querySelectorAll(".wt-sidebar-item")).toHaveLength(4);
     expect(container.textContent).toContain("WAITING FOR ROBOT TELEMETRY");
   });
 
@@ -48,6 +50,6 @@ describe("single-page Robot Control route", () => {
     act(() => root.render(<RobotControlPage />));
     expect(container.querySelector('[data-testid="active-robot-control"]')?.textContent)
       .toBe("Robot Control · R01");
-    expect(container.querySelectorAll(".wt-sidebar-item")).toHaveLength(1);
+    expect(container.querySelectorAll(".wt-sidebar-item")).toHaveLength(4);
   });
 });

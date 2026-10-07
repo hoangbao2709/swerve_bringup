@@ -49,6 +49,7 @@ class UnifiedRuntimeCapabilityTests(TestCase):
             patch.object(runtime, 'robot_mapping_state', {'R01': 'MAPPING'}),
             patch.object(runtime, 'ros_diagnostics', {
                 'slam': True, 'nav2': True, 'nav2_ready': nav2_ready,
+                'nav2_lifecycle_ready': nav2_ready,
                 'mapping': {'slam_state': 'ACTIVE', 'map_live': True},
             }),
             patch.object(runtime, 'ros_diagnostics_received_monotonic', time.monotonic()),
@@ -97,6 +98,34 @@ class UnifiedRuntimeCapabilityTests(TestCase):
                     stack.enter_context(item)
                 reason = runtime.unified_navigation_blocker('R01')
                 self.assertTrue(reason.startswith(expected_code + ':'), reason)
+
+    def test_inactive_nav2_lifecycle_node_is_exposed_as_explicit_goal_blocker(self):
+        with ExitStack() as stack:
+            for item in self.configured_runtime(nav2_ready=True):
+                stack.enter_context(item)
+            runtime.ros_diagnostics.update({
+                # Simulate a stale/contradictory action-only READY signal.
+                'nav2_ready': True,
+                'nav2_lifecycle_ready': False,
+                'nav2_lifecycle_states': {
+                    'canonical_map_server': 'active', 'controller_server': 'active',
+                    'planner_server': 'active', 'behavior_server': 'active',
+                    'bt_navigator': 'inactive', 'waypoint_follower': 'active',
+                },
+                'nav2_lifecycle_blocker_code': 'NAV2_LIFECYCLE_NOT_ACTIVE',
+                'nav2_lifecycle_blocker_reason': (
+                    'Required Nav2 lifecycle node(s) must be ACTIVE: /bt_navigator=inactive.'),
+            })
+            blocker = runtime.navigation_goal_blocker('R01')
+            capabilities = runtime.robot_capabilities('R01')
+
+        self.assertEqual(blocker, (
+            'NAV2_LIFECYCLE_NOT_ACTIVE',
+            'Required Nav2 lifecycle node(s) must be ACTIVE: /bt_navigator=inactive.'))
+        self.assertFalse(capabilities['nav2_ready'])
+        self.assertFalse(capabilities['goal_available'])
+        self.assertEqual(capabilities['goal_blocker_code'], 'NAV2_LIFECYCLE_NOT_ACTIVE')
+        self.assertIn('/bt_navigator=inactive', capabilities['goal_blocker_reason'])
 
     def test_unified_navigation_gate_requires_current_registered_full_map(self):
         with ExitStack() as stack:
@@ -152,7 +181,7 @@ class UnifiedPreviewTests(IsolatedAsyncioTestCase):
             patch.object(runtime, 'robot_mapping_state', {'R01': 'MAPPING'}),
             patch.object(runtime, 'robot_slam_map_snapshots', {'R01': map_payload}),
             patch.object(runtime, 'ros_diagnostics', {
-                'slam': True, 'nav2': True, 'nav2_ready': True,
+                'slam': True, 'nav2': True, 'nav2_ready': True, 'nav2_lifecycle_ready': True,
                 'mapping': {'slam_state': 'ACTIVE', 'map_live': True},
             }),
             patch.object(runtime, 'ros_diagnostics_received_monotonic', now),
@@ -297,7 +326,7 @@ class UnifiedPreviewTests(IsolatedAsyncioTestCase):
                     'map_content_revision': active_map['map_content_revision'],
                 }}}),
             patch.object(runtime, 'ros_diagnostics', {
-                    'slam': True, 'nav2': True, 'nav2_ready': True,
+                    'slam': True, 'nav2': True, 'nav2_ready': True, 'nav2_lifecycle_ready': True,
                     'mapping': {'slam_state': 'ACTIVE', 'map_live': True},
                 }),
             patch.object(runtime, 'ros_diagnostics_received_monotonic', now),

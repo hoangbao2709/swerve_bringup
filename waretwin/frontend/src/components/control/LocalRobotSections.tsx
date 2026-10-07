@@ -42,6 +42,7 @@ type Props = {
   localMapSyncStatus: string | null;
   mappingSessionId?: string | null;
   lidarStreamDiagnostics: RobotLidarStreamDiagnostics | null;
+  hostStatus?: { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } } | null;
 };
 
 function valueText(value: unknown, fallback = "N/A") {
@@ -65,8 +66,8 @@ function Status({ value }: { value: unknown }) {
   return <span className={`robot-detail-status ${classForStatus(value)}`}>{valueText(value)}</span>;
 }
 
-function SectionFrame({ children }: { children: ReactNode }) {
-  return <div className="local-robot-section">{children}</div>;
+function SectionFrame({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={`local-robot-section ${className}`}>{children}</div>;
 }
 
 function SectionPanel({ title, children, className = "" }: { title: string; children: ReactNode; className?: string }) {
@@ -187,64 +188,8 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     trajectoryRef.current = { ...current, points, lastAt: now };
     setTrajectory(points);
   }, [isMapping, mapping?.tf_valid, paused, slamPose?.x, slamPose?.y, slamPose?.timestamp, slamMap]);
-  return <SectionFrame>
-    <SectionPanel title={isUnified ? "UNIFIED MAPPING + NAVIGATION" : "MAPPING SESSION"} className="local-mapping-state">
-      <div className="local-status-grid">
-        <Metric label="ROBOT" value={robotId} mono />
-        <Metric label="RUNTIME MODE" value={runtimeState} />
-        <Metric label="MAPPING STATE" value={isMapping ? mappingState : isUnified ? "WAITING FOR SLAM" : "INACTIVE · UNIFIED RUNTIME REQUIRED"} />
-        <Metric label="SLAM TOOLBOX" value={mapping?.slam_state ?? "UNKNOWN"} />
-        <Metric label="NAV2" value={runtimeCapabilities?.nav2_ready || diagnostics?.nav2_ready ? "READY" : diagnostics?.nav2 ? "STARTING" : runtimeState === "UNIFIED" ? "UNAVAILABLE" : "INACTIVE"} />
-        <Metric label="CONTROL MODE" value={controlMode} />
-        <Metric label="LIVE LIDAR · /scan" value={mapping?.scan_live ? `LIVE · ${valueNumber(mapping.scan_hz, 2, " Hz")} · ${mapping.scan_frame ?? "frame unknown"}` : "WAITING"} />
-        <Metric label="ODOMETRY" value={mapping?.odom_live ? `LIVE · ${valueNumber(mapping.odom_hz, 2, " Hz")} · ${mapping.odom_frame ?? "?"} → ${mapping.base_frame ?? "?"}` : "WAITING"} />
-        <Metric label="TF · map ← lidar" value={mapping?.tf_lidar_to_map_valid ? "OK" : mapping?.tf_error ?? "WAITING / INVALID"} />
-        <Metric label="ACCUMULATED /map" value={mapping?.map_live && slamMap ? "LIVE · SLAM TOOLBOX" : "WAITING FOR SLAM MAP"} />
-        <Metric label="MAP UPDATE RATE" value={mapping?.map_live ? `${valueNumber(mapping.map_hz, 2, " Hz")} · v${slamMap?.map_version ?? mapping.map_version ?? "—"}` : "WAITING"} />
-        <Metric label="MAP → ODOM OWNER" value={mapping?.map_odom_owner ?? "UNVERIFIED"} />
-        <Metric label="WORKFLOW STATE" value={operationState} mono />
-        <Metric label="SESSION DURATION" value={`${valueNumber(mappingDuration, 1, " s")}${isMapping && !paused ? " · LIVE" : ""}`} mono />
-        <Metric label="MAP SIZE" value={slamMap ? `${slamMap.width} × ${slamMap.height} cells` : "WAITING FOR SLAM MAP"} mono />
-        <Metric label="RESOLUTION" value={valueNumber(slamMap?.resolution, 3, " m/cell")} mono />
-        <Metric label="MAP ORIGIN" value={slamMap ? `${valueNumber(slamMap.origin.x, 2)}, ${valueNumber(slamMap.origin.y, 2)} m` : "—"} mono />
-        <Metric label="KNOWN / EXPLORED CELLS" value={slamMap?.known_cells ?? "—"} mono />
-        <Metric label="UNKNOWN CELLS" value={slamMap?.unknown_cells ?? "—"} mono />
-        <Metric label="OCCUPIED CELLS" value={slamMap?.occupied_cells ?? "—"} mono />
-        <Metric label="FREE CELLS" value={slamMap?.free_cells ?? "—"} mono />
-        <Metric label="EXPLORED AREA" value={valueNumber(slamMap?.explored_area_m2, 2, " m²")} mono />
-        <Metric label="ROBOT POSE · TF map → base" value={robotPoseMatchesSlamMap && slamPose ? `${valueNumber(slamPose.x, 2)}, ${valueNumber(slamPose.y, 2)} m · ${valueNumber(slamPose.yaw, 2)} rad` : "WAITING FOR MATCHING SLAM POSE"} mono />
-        <Metric label="ACTIVE MAP" value={activeLocalMapId ? `${activeLocalMapId} · r${slamMap?.active_map_revision ?? "—"}` : isMapping ? `${slamMap?.active_map_id ?? "SLAM SESSION WAITING"} · LOCAL ONLY` : "CANONICAL"} mono />
-        <Metric label="TRAJECTORY SAMPLES" value={trajectory.length} mono />
-        <Metric label="AVAILABLE MAPS" value={maps.length} mono />
-      </div>
-      <div className="local-action-row">
-        <button type="button" className="robot-console-primary" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !isMapping || (isMapping && mappingState === "MAPPING")} onClick={() => void startMapping()}>{isMapping && mappingState === "MAPPING" ? "MAPPING ACTIVE" : paused ? "RESUME MAPPING" : isMapping ? "START MAPPING" : isUnified ? "SLAM UNAVAILABLE" : "UNIFIED RUNTIME REQUIRED"}</button>
-        <button type="button" disabled={!controlOnline || !isMapping || busy || paused} onClick={() => changeMapping("stop")}>STOP MAPPING</button>
-        <span className="local-help">SLAM and Nav2 stay available together in Unified. Use MANUAL/AUTONOMOUS for control ownership; this panel never restarts the stack.</span>
-      </div>
-    </SectionPanel>
-    <SectionPanel title="SAVE NAVIGATION MAP + SLAM SESSION">
-      <div className="local-form-row">
-        <label className="local-field local-field-grow"><span>MAP NAME</span><input value={name} maxLength={64} onChange={(event) => setName(event.target.value)} placeholder="warehouse_floor_1" /></label>
-        <button type="button" className="robot-console-primary" disabled={!controlOnline || !isMapping || !paused || !slamMap || busy || !name.trim()} onClick={save}>SAVE MAP</button>
-      </div>
-      <p className="local-help">Pause SLAM first. Save creates Nav2 YAML + PGM and SLAM Toolbox pose-graph + sensor-data files as separate products while Gazebo, Nav2, and the Web stack remain running. The registry exposes opaque IDs, not disk paths. This remains local and never overwrites the canonical Fleet map.</p>
-    </SectionPanel>
-    <SectionPanel title="AVAILABLE MAPS · THIS ROBOT">
-      {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list">
-        {maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
-          <span><b>{map.name}</b><small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
-          <small>r{map.revision}</small>
-        </button>)}
-      </div>}
-      <div className="local-action-row">
-        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || runtimeState !== "NAVIGATION" || busy || !selected} onClick={load}>LOAD SAVED MAP</button>
-        <button type="button" disabled title="In-process SLAM pose-graph restore is not implemented yet">RESUME SAVED SLAM SESSION</button>
-        {activeLocalMapId && <Status value="LOCAL_ONLY · LOCAL NAVIGATION ENABLED" />}
-      </div>
-      {isUnified && <p className="local-help" role="status">In-place saved-map localization and SLAM pose-graph restore are unavailable in this Unified build. These actions stay disabled instead of restarting Gazebo or the ROS stack.</p>}
-    </SectionPanel>
-    <SectionPanel title="ACCUMULATED SLAM MAP · /map + CURRENT /scan">
+  return <SectionFrame className="hmi-mapping-layout">
+    <SectionPanel title="ACCUMULATED SLAM MAP · /map + CURRENT /scan" className="hmi-mapping-map">
       <div className="local-map-toggles" role="group" aria-label="Mapping map layers">
         {(["robot", "scan", "trajectory", "grid"] as const).map((layer) => <button
           key={layer} type="button" aria-pressed={layers[layer]} className={layers[layer] ? "is-active" : ""}
@@ -256,12 +201,69 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
         scan={scan?.robot_id === robotId && scan.mapping_session_id === slamMap.mapping_session_id ? scan : null}
         showRobot={layers.robot} showScan={layers.scan} showGrid={layers.grid} showPose={false}
         trajectory={layers.trajectory && robotPoseMatchesSlamMap ? trajectory : []} pose={{
-        x: slamPose?.x ?? 0, y: slamPose?.y ?? 0,
-        yaw: slamPose?.yaw ?? 0,
+        x: slamPose?.x ?? 0, y: slamPose?.y ?? 0, yaw: slamPose?.yaw ?? 0,
       }} active={false} onPick={() => undefined} /> : <div className="local-empty">Waiting for a fresh accumulated SLAM Toolbox /map. Live LiDAR frames are sensor views and are not the warehouse map.</div>}
     </SectionPanel>
-    {error && <div className="local-feedback error" role="alert">{error}</div>}
-    {notice && <div className="local-feedback ok" role="status">{notice}</div>}
+    <SectionPanel title="MAPPING STATUS" className="hmi-mapping-status">
+      <div className="local-status-grid hmi-mapping-primary-metrics">
+        <Metric label="STATE" value={isMapping ? mappingState : isUnified ? "WAITING FOR SLAM" : "INACTIVE"} />
+        <Metric label="MAP SIZE" value={slamMap ? `${slamMap.width} × ${slamMap.height} cells` : "WAITING FOR SLAM MAP"} mono />
+        <Metric label="RESOLUTION" value={valueNumber(slamMap?.resolution, 3, " m/cell")} mono />
+        <Metric label="KNOWN CELLS" value={slamMap?.known_cells ?? "—"} mono />
+        <Metric label="EXPLORED AREA" value={valueNumber(slamMap?.explored_area_m2, 2, " m²")} mono />
+        <Metric label="SESSION TIME" value={`${valueNumber(mappingDuration, 1, " s")}${isMapping && !paused ? " · LIVE" : ""}`} mono />
+      </div>
+      <div className="local-action-row hmi-mapping-actions">
+        <button type="button" className="robot-console-primary" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !isMapping || (isMapping && mappingState === "MAPPING")} onClick={() => void startMapping()}>{isMapping && mappingState === "MAPPING" ? "MAPPING ACTIVE" : paused ? "RESUME MAPPING" : isMapping ? "START MAPPING" : isUnified ? "SLAM UNAVAILABLE" : "UNIFIED RUNTIME REQUIRED"}</button>
+        <button type="button" disabled={!controlOnline || !isMapping || busy || paused} onClick={() => changeMapping("stop")}>PAUSE MAPPING</button>
+      </div>
+      <details className="hmi-advanced-details"><summary>ADVANCED MAPPING DETAILS</summary>
+        <div className="local-status-grid">
+          <Metric label="ROBOT" value={robotId} mono /><Metric label="RUNTIME MODE" value={runtimeState} />
+          <Metric label="SLAM TOOLBOX" value={mapping?.slam_state ?? "UNKNOWN"} />
+          <Metric label="NAV2" value={runtimeCapabilities?.nav2_ready === true && diagnostics?.nav2_ready === true ? "READY" : diagnostics?.nav2 ? "STARTING" : runtimeState === "UNIFIED" ? "UNAVAILABLE" : "INACTIVE"} />
+          <Metric label="CONTROL MODE" value={controlMode} />
+          <Metric label="LIVE LIDAR · /scan" value={mapping?.scan_live ? `LIVE · ${valueNumber(mapping.scan_hz, 2, " Hz")} · ${mapping.scan_frame ?? "frame unknown"}` : "WAITING"} />
+          <Metric label="ODOMETRY" value={mapping?.odom_live ? `LIVE · ${valueNumber(mapping.odom_hz, 2, " Hz")} · ${mapping.odom_frame ?? "?"} → ${mapping.base_frame ?? "?"}` : "WAITING"} />
+          <Metric label="TF · map ← lidar" value={mapping?.tf_lidar_to_map_valid ? "OK" : mapping?.tf_error ?? "WAITING / INVALID"} />
+          <Metric label="ACCUMULATED /map" value={mapping?.map_live && slamMap ? "LIVE · SLAM TOOLBOX" : "WAITING FOR SLAM MAP"} />
+          <Metric label="MAP UPDATE RATE" value={mapping?.map_live ? `${valueNumber(mapping.map_hz, 2, " Hz")} · v${slamMap?.map_version ?? mapping.map_version ?? "—"}` : "WAITING"} />
+          <Metric label="MAP → ODOM OWNER" value={mapping?.map_odom_owner ?? "UNVERIFIED"} />
+          <Metric label="WORKFLOW STATE" value={operationState} mono />
+          <Metric label="MAP ORIGIN" value={slamMap ? `${valueNumber(slamMap.origin.x, 2)}, ${valueNumber(slamMap.origin.y, 2)} m` : "—"} mono />
+          <Metric label="UNKNOWN CELLS" value={slamMap?.unknown_cells ?? "—"} mono />
+          <Metric label="OCCUPIED CELLS" value={slamMap?.occupied_cells ?? "—"} mono />
+          <Metric label="FREE CELLS" value={slamMap?.free_cells ?? "—"} mono />
+          <Metric label="ROBOT POSE · TF map → base" value={robotPoseMatchesSlamMap && slamPose ? `${valueNumber(slamPose.x, 2)}, ${valueNumber(slamPose.y, 2)} m · ${valueNumber(slamPose.yaw, 2)} rad` : "WAITING FOR MATCHING SLAM POSE"} mono />
+          <Metric label="ACTIVE MAP" value={activeLocalMapId ? `${activeLocalMapId} · r${slamMap?.active_map_revision ?? "—"}` : isMapping ? `${slamMap?.active_map_id ?? "SLAM SESSION WAITING"} · LOCAL ONLY` : "CANONICAL"} mono />
+          <Metric label="TRAJECTORY SAMPLES" value={trajectory.length} mono /><Metric label="AVAILABLE MAPS" value={maps.length} mono />
+        </div>
+        <p className="local-help">SLAM and Nav2 stay available together in Unified. This panel does not restart the stack.</p>
+        {isUnified && <p className="local-help" role="status">In-place saved-map localization and SLAM pose-graph restore are unavailable in this Unified build. These actions stay disabled instead of restarting Gazebo or the ROS stack.</p>}
+      </details>
+    </SectionPanel>
+    <SectionPanel title="SAVE MAP" className="hmi-mapping-save">
+      <div className="local-form-row">
+        <label className="local-field local-field-grow"><span>MAP NAME</span><input value={name} maxLength={64} onChange={(event) => setName(event.target.value)} placeholder="warehouse_floor_1" /></label>
+        <button type="button" className="robot-console-primary" disabled={!controlOnline || !isMapping || !paused || !slamMap || busy || !name.trim()} onClick={save}>SAVE MAP</button>
+      </div>
+      <p className="local-help">Pause mapping before saving the accumulated map and SLAM session. Canonical maps are not overwritten.</p>
+      {error && <div className="local-feedback error" role="alert">{error}</div>}
+      {notice && <div className="local-feedback ok" role="status">{notice}</div>}
+    </SectionPanel>
+    <SectionPanel title="AVAILABLE MAPS · THIS ROBOT" className="hmi-mapping-list">
+      {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list">
+        {maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
+          <span><b>{map.name}</b><small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
+          <small>r{map.revision}</small>
+        </button>)}
+      </div>}
+      <div className="local-action-row">
+        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || runtimeState !== "NAVIGATION" || busy || !selected} onClick={load}>LOAD SAVED MAP</button>
+        <button type="button" disabled title="In-process SLAM pose-graph restore is not implemented yet">RESUME SAVED SLAM SESSION</button>
+        {activeLocalMapId && <Status value="LOCAL_ONLY · LOCAL NAVIGATION ENABLED" />}
+      </div>
+    </SectionPanel>
   </SectionFrame>;
 }
 
@@ -284,7 +286,7 @@ export function AccumulatedSlamMap2DView({ map, robot, scan }: {
       data-explored-area-m2={map.explored_area_m2}
       data-scan-frame={currentScan?.frame_id} data-scan-points={currentScan?.point_count ?? 0}
       data-trajectory-points={currentScan?.trajectory?.length ?? 0} />
-    <div className="robot-detail-view-readout"><span>ACCUMULATED /map</span><span>{map.width} × {map.height} · {map.resolution} m/cell</span><span>{map.explored_area_m2?.toFixed(2) ?? "—"} m² explored</span></div>
+    <div className="robot-detail-view-readout"><span>ACCUMULATED /map</span><span>{map.width} × {map.height} · {valueNumber(map.resolution, 3)} m/cell</span><span>{map.explored_area_m2?.toFixed(2) ?? "—"} m² explored</span></div>
     <PosePickerMap map={map} robot={robot}
       scan={currentScan}
       trajectory={currentScan?.trajectory ?? []}
@@ -294,7 +296,10 @@ export function AccumulatedSlamMap2DView({ map, robot, scan }: {
   </div>;
 }
 
-export function ActiveNavigationMap2DView({ map, robot, scan, target, navigationPath = [], canPick, onPick }: {
+export type ActiveMapLayers = { robot: boolean; scan: boolean; path: boolean; trajectory: boolean; grid: boolean };
+
+export function ActiveNavigationMap2DView({ map, robot, scan, target, navigationPath = [], canPick, onPick,
+  layers, onLayerToggle }: {
   map: RobotDetailMapSnapshot | null;
   robot?: RobotState;
   scan: RobotDetailScan | null;
@@ -302,6 +307,8 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
   navigationPath?: RobotWorldPoint[];
   canPick: boolean;
   onPick: (target: MapPointNavigationTarget) => void;
+  layers?: ActiveMapLayers;
+  onLayerToggle?: (layer: keyof ActiveMapLayers) => void;
 }) {
   if (!map || map.frame_id !== "map" || !map.active_map_id
       || (!map.active_map_revision && map.map_source !== "SLAM_TOOLBOX")
@@ -327,7 +334,7 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
   };
   const selectedTarget = target?.frame_id === mapIdentity.frame_id
     && target.map_id === mapIdentity.map_id && target.map_revision === mapIdentity.map_revision ? target : null;
-  const path = selectedTarget || navigationPath.length ? navigationPath : [];
+  const path = layers?.path !== false && (selectedTarget || navigationPath.length) ? navigationPath : [];
   const title = slamMap ? "ACCUMULATED SLAM /map" : "ACTIVE NAVIGATION MAP";
   return <div className="robot-slam-map-2d" data-testid="active-navigation-map-2d"
     data-map-id={map.active_map_id} data-map-revision={map.active_map_revision}>
@@ -339,13 +346,14 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
       data-scan-frame={currentScan?.frame_id} data-scan-points={currentScan?.point_count ?? 0}
       data-trajectory-points={currentScan?.trajectory?.length ?? 0} />
     <div className="robot-detail-view-readout"><span>{title}</span>
-      <span>{map.width} × {map.height} · {map.resolution} m/cell</span>
+      <span>{map.width} × {map.height} · {valueNumber(map.resolution, 3)} m/cell</span>
       {slamMap && <span>{map.explored_area_m2?.toFixed(2) ?? "—"} m² explored</span>}
-      {!slamMap && <span>{map.active_map_id} · r{map.active_map_revision}</span>}
+      {!slamMap && <span>ACTIVE MAP</span>}
     </div>
     <PosePickerMap map={map} poseMapIdentity={poseIdentity} robot={robot?.id === map.robot_id ? robot : undefined}
-      scan={currentScan} trajectory={currentScan?.trajectory ?? []}
-      showRobot showScan={slamMap} showGrid={false} showPose={Boolean(selectedTarget)}
+      scan={currentScan} trajectory={layers?.trajectory ? currentScan?.trajectory ?? [] : []}
+      showRobot={layers?.robot ?? true} showScan={slamMap && (layers?.scan ?? true)} showGrid={layers?.grid ?? false} showPose={Boolean(selectedTarget)}
+      layerState={layers} onLayerToggle={onLayerToggle}
       pose={selectedTarget ?? { x: displayedPose?.x ?? 0, y: displayedPose?.y ?? 0, yaw: displayedPose?.yaw ?? 0 }}
       navigationPath={path} pickInstruction={canPick ? "CLICK TO SELECT MAP POINT · YAW CONTROLS BELOW" : undefined}
       active={canPick} onPick={(point) => onPick(mapPointTarget(mapIdentity,
@@ -402,9 +410,9 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
     </SectionPanel>
     <SectionPanel title="INITIALIZE ROBOT POSE" className="local-pose-editor">
       <div className="local-pose-fields">
-        <label className="local-field"><span>X · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.x) ? pose.x : ""} onChange={(event) => update("x", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
-        <label className="local-field"><span>Y · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.y) ? pose.y : ""} onChange={(event) => update("y", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
-        <label className="local-field"><span>YAW (rad)</span><input type="number" step="0.01" value={Number.isFinite(pose.yaw) ? pose.yaw : ""} onChange={(event) => update("yaw", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
+        <label className="local-field"><span>X · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.x) ? pose.x.toFixed(3) : ""} onChange={(event) => update("x", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
+        <label className="local-field"><span>Y · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.y) ? pose.y.toFixed(3) : ""} onChange={(event) => update("y", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
+        <label className="local-field"><span>YAW (rad)</span><input type="number" step="0.01" value={Number.isFinite(pose.yaw) ? pose.yaw.toFixed(3) : ""} onChange={(event) => update("yaw", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
         <div className="local-pose-yaw"><button type="button" disabled={!Number.isFinite(pose.yaw)} onClick={() => update("yaw", pose.yaw - Math.PI / 12)}>YAW −</button><button type="button" disabled={!Number.isFinite(pose.yaw)} onClick={() => update("yaw", pose.yaw + Math.PI / 12)}>YAW +</button></div>
         <button type="button" className={pickMode ? "is-active" : ""} onClick={() => setPickMode((value) => !value)} disabled={!localizationMap}>PICK ON MAP</button>
         <button type="button" className="robot-console-primary" disabled={!controlOnline || busy || !poseReady} onClick={() => void apply()}>SET INITIAL POSE</button>
@@ -417,11 +425,13 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
   </SectionFrame>;
 }
 
-type MapProps = { map: RobotDetailMapSnapshot; poseMapIdentity?: MapPoseIdentity; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; navigationPath?: RobotWorldPoint[]; pickInstruction?: string; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; pose: Pose; active: boolean; onPick: (point: Pick<Pose, "x" | "y">) => void; ariaLabel?: string };
-function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, trajectory = [], navigationPath = [], pickInstruction, showRobot = true, showScan = true, showGrid = false, showPose = true, pose, active, onPick, ariaLabel = "Select map frame initial robot position" }: MapProps) {
+type MapProps = { map: RobotDetailMapSnapshot; poseMapIdentity?: MapPoseIdentity; robot?: RobotState; scan?: RobotDetailScan | null; trajectory?: RobotWorldPoint[]; navigationPath?: RobotWorldPoint[]; pickInstruction?: string; showRobot?: boolean; showScan?: boolean; showGrid?: boolean; showPose?: boolean; layerState?: ActiveMapLayers; onLayerToggle?: (layer: keyof ActiveMapLayers) => void; pose: Pose; active: boolean; onPick: (point: Pick<Pose, "x" | "y">) => void; ariaLabel?: string };
+function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, trajectory = [], navigationPath = [], pickInstruction, showRobot = true, showScan = true, showGrid = false, showPose = true, layerState, onLayerToggle, pose, active, onPick, ariaLabel = "Select map frame initial robot position" }: MapProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [center, setCenter] = useState<{ x: number; y: number } | null>(null);
   const displayedPose = useStableDisplayedFramePose(robot?.id === map.robot_id ? robot : undefined, poseMapIdentity);
   const [rasterState, setRasterState] = useState<{ map: RobotDetailMapSnapshot; raster: HTMLCanvasElement } | null>(() => {
     const raster = occupancyRasters.peek(map);
@@ -465,7 +475,11 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     }));
     return { minX: Math.min(...corners.map((p) => p.x)), maxX: Math.max(...corners.map((p) => p.x)), minY: Math.min(...corners.map((p) => p.y)), maxY: Math.max(...corners.map((p) => p.y)) };
   }, [map]);
-  const transform = useMemo(() => createWorldTransform(size, bounds, 1, null, 20), [bounds, size]);
+  const transform = useMemo(() => createWorldTransform(size, bounds, zoom, center, 20), [bounds, center, size, zoom]);
+  useEffect(() => {
+    setZoom(1);
+    setCenter(null);
+  }, [map.robot_id, map.active_map_id, map.active_map_revision]);
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -484,13 +498,13 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     const context = canvas.getContext("2d"); if (!context) return;
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.fillStyle = "#919191"; context.fillRect(0, 0, size.width, size.height);
-    if (showGrid) drawMappingGrid(context, size.width, size.height, transform, bounds);
     if (raster) {
       const origin = worldToScreen({ x: rasterMap.origin.x, y: rasterMap.origin.y }, transform);
       context.save(); context.translate(origin.x, origin.y); context.rotate(-rasterMap.origin.yaw);
       context.scale(transform.scale * rasterMap.resolution, -transform.scale * rasterMap.resolution);
       context.imageSmoothingEnabled = false; context.drawImage(raster, 0, 0); context.restore();
     }
+    if (showGrid) drawMappingGrid(context, size.width, size.height, transform, bounds);
     if (trajectory.length > 1) {
       context.beginPath();
       trajectory.forEach(([x, y], index) => {
@@ -526,12 +540,32 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     const rect = event.currentTarget.getBoundingClientRect();
     onPick(screenToWorld({ x: event.clientX - rect.left, y: event.clientY - rect.top }, transform));
   };
-  return <div ref={hostRef} className={`local-pose-map ${active ? "is-picking" : ""}`}><canvas ref={canvasRef}
+  return <div ref={hostRef} className={`local-pose-map ${active ? "is-picking" : ""}`}>
+    <div className="hmi-map-toolbar" role="group" aria-label="Map controls" data-testid="robot-map-toolbar">
+      <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => setZoom((value) => Math.min(8, value * 1.25))}>+</button>
+      <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => setZoom((value) => Math.max(0.5, value / 1.25))}>−</button>
+      <button type="button" onClick={() => { setZoom(1); setCenter(null); }}>FIT</button>
+      <button type="button" disabled={!displayedPose} onClick={() => {
+        if (!displayedPose) return;
+        setCenter({ x: displayedPose.x, y: displayedPose.y });
+        setZoom((value) => Math.max(value, 2));
+      }}>CENTER ROBOT</button>
+    </div>
+    {layerState && onLayerToggle && <div className="hmi-map-layer-toolbar" role="group" aria-label="Map layers" data-testid="robot-map-layers">
+      {(["robot", "scan", "path", "trajectory", "grid"] as const).map((layer) => <button
+        key={layer} type="button" aria-pressed={layerState[layer]} className={layerState[layer] ? "is-active" : ""}
+        onClick={() => onLayerToggle(layer)}>{layerState[layer] ? "✓ " : "□ "}{layer.toUpperCase()}</button>)}
+    </div>}
+    <canvas ref={canvasRef}
     data-testid={map.map_source === "SLAM_TOOLBOX" ? "slam-map-2d-canvas" : undefined}
     data-occupancy-layer="accumulated-map-snapshot"
     data-scan-layer={showScan && scan ? "low-opacity-current-scan-overlay" : "disabled"}
     data-scan-render-mode="points-only"
     data-navigation-path-point-count={navigationPath.length}
+    data-robot-layer={showRobot && displayedPose ? "visible" : "disabled"}
+    data-grid-layer={showGrid ? "visible" : "disabled"}
+    data-path-layer={navigationPath.length > 1 ? "visible" : "disabled"}
+    data-trajectory-layer={trajectory.length > 1 ? "visible" : "disabled"}
     data-map-source={map.map_source} data-map-id={map.active_map_id}
     data-pose-source={displayedPose?.pose_source}
     data-render-x={displayedPose?.x} data-render-y={displayedPose?.y} data-render-yaw={displayedPose?.yaw}
@@ -664,7 +698,7 @@ function Vda5050Panel({ robotId }: { robotId: string }) {
   </SectionFrame>;
 }
 
-function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtimeState, localization, websocketState, mapRevision, lidarStreamDiagnostics, activeLocalMapId, activeLocalMapRevision, localMapSyncStatus }: Props) {
+function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtimeState, localization, websocketState, mapRevision, lidarStreamDiagnostics, activeLocalMapId, activeLocalMapRevision, localMapSyncStatus, hostStatus }: Props) {
   const [vdaStatus, setVdaStatus] = useState("UNKNOWN");
   const [vdaError, setVdaError] = useState("");
   const [vdaRuntime, setVdaRuntime] = useState<{ enabled: boolean; host: string; port: number; allowTask: boolean; instantActionsSupported: boolean } | null>(null);
@@ -683,53 +717,67 @@ function DiagnosticsPanel({ robotId, diagnostics, errors, controlOnline, runtime
   const metrics = diagnostics?.metrics ?? {};
   const command = diagnostics?.command_ownership;
   const stream = lidarStreamDiagnostics;
+  const slamState = diagnostics?.mapping?.slam_state === "ACTIVE" && diagnostics.mapping.map_live
+    ? "LIVE" : diagnostics?.mapping?.slam_state ?? (diagnostics?.slam ? "STARTING" : "INACTIVE");
+  const nav2State = diagnostics?.nav2_ready ? "READY" : diagnostics?.nav2 ? "STARTING" : "INACTIVE";
+  const cpuLoad = hostStatus?.system?.cpu_load_1m;
+  const ramUsed = hostStatus?.system?.memory?.used_percent;
+  const systemRows: Array<[string, unknown]> = [
+    ["ROS", diagnostics?.ros ? "READY" : "OFFLINE"],
+    ["Gazebo", diagnostics?.gazebo ? "READY" : "OFFLINE"],
+    ["ROS Bridge", controlOnline ? "CONNECTED" : "DISCONNECTED"],
+    ["WebSocket", websocketState],
+    ["Controllers", diagnostics?.controller_manager ? "ACTIVE" : "UNKNOWN"],
+    ["SLAM", slamState], ["Nav2", nav2State],
+    ["LiDAR", diagnostics?.lidar ? "ACTIVE" : "UNAVAILABLE"],
+  ];
   return <SectionFrame>
-    <SectionPanel title="ROBOT RUNTIME DIAGNOSTICS" className="local-diagnostics-grid">
-      <div className="local-status-grid">
-        <Metric label="ROS" value={diagnostics?.ros ? "ONLINE" : "OFFLINE"} />
-        <Metric label="GAZEBO" value={diagnostics?.gazebo ? "ONLINE" : "OFFLINE"} />
-        <Metric label="ROS BRIDGE" value={controlOnline ? "CONNECTED · R01" : "DISCONNECTED"} />
-        <Metric label="WEBSOCKET" value={websocketState} />
-        <Metric label="CONTROLLER MANAGER" value={diagnostics?.controller_manager ? "ACTIVE" : "UNKNOWN"} />
-        <Metric label="NAV2" value={diagnostics?.nav2_ready ? "READY" : diagnostics?.nav2 ? "STARTING" : "INACTIVE"} />
-        <Metric label="SLAM TOOLBOX" value={diagnostics?.mapping?.slam_state === "ACTIVE" && diagnostics.mapping.map_live ? "LIVE" : diagnostics?.mapping?.slam_state ?? (diagnostics?.slam ? "STARTING" : "INACTIVE")} />
-        <Metric label="LOCALIZATION" value={localization} />
-        <Metric label="TF MAP → BASE" value={diagnostics?.tf ? "AVAILABLE" : "UNAVAILABLE"} />
-        <Metric label="LIDAR" value={diagnostics?.lidar ? "ACTIVE" : "UNAVAILABLE"} />
-        <Metric label="MQTT / VDA5050" value={vdaStatus} />
-        <Metric label="VDA5050 ENABLED" value={vdaRuntime?.enabled ? "YES" : "NO"} />
-        <Metric label="MQTT BROKER" value={vdaRuntime ? `${vdaRuntime.host}:${vdaRuntime.port}` : "N/A"} mono />
-        <Metric label="ALLOW TASK" value={vdaRuntime?.allowTask ? "ENABLED" : "BLOCKED"} />
-        <Metric label="INSTANT ACTIONS" value={vdaRuntime?.instantActionsSupported ? "SUPPORTED" : "NOT IMPLEMENTED"} />
-        <Metric label="MAP REVISION" value={mapRevision ?? "N/A"} mono />
-        <Metric label="LOCAL ACTIVE MAP" value={activeLocalMapId ?? "CANONICAL"} mono />
-        <Metric label="LOCAL MAP REVISION" value={activeLocalMapRevision ?? "N/A"} mono />
-        <Metric label="CANONICAL REVISION" value={mapRevision ?? "N/A"} mono />
-        <Metric label="MAP SYNC STATUS" value={localMapSyncStatus ?? diagnostics?.map_state?.map_sync_status ?? "UNKNOWN"} />
-        <Metric label="CONTROL MODE" value={command?.active_control_mode ?? "UNKNOWN"} />
-        <Metric label="ACTIVE COMMAND SOURCE" value={command?.active_command_source ?? "UNKNOWN"} mono />
-        <Metric label="LAST COMMAND AGE" value={command?.last_command_age == null ? "N/A" : valueNumber(command.last_command_age, 2, " s")} mono />
-        <Metric label="MANUAL SOURCE" value={command?.manual_source_active ? "ACTIVE" : "IDLE"} />
-        <Metric label="NAV SOURCE" value={command?.nav_source_active ? "ACTIVE" : "IDLE"} />
-        <Metric label="E-STOP" value={command?.estop_active ? "ACTIVE" : "CLEAR"} />
-        <Metric label="LIDAR SOURCE FPS" value={stream?.source_fps == null ? "N/A" : valueNumber(stream.source_fps, 2, " Hz")} mono />
-        <Metric label="LIDAR WEB OUTPUT FPS" value={stream?.web_output_fps == null ? "N/A" : valueNumber(stream.web_output_fps, 2, " Hz")} mono />
-        <Metric label="LIDAR POINT COUNT" value={stream?.point_count ?? "N/A"} mono />
-        <Metric label="LIDAR DROPPED FRAMES" value={stream?.dropped_frames ?? "N/A"} mono />
-        <Metric label="SIMULATION TIME" value={valueNumber(diagnostics?.simulation_time, 3, " s")} mono />
+    <SectionPanel title="SUBSYSTEM STATUS" className="hmi-system-status-panel">
+      <div className="hmi-subsystem-table">
+        {systemRows.map(([name, value]) => <div key={name}><span>{name}</span><Status value={value} /></div>)}
+      </div>
+      <div className="hmi-performance-grid">
+        <Metric label="CPU LOAD" value={cpuLoad == null ? "N/A" : valueNumber(cpuLoad, 2)} mono />
+        <Metric label="RAM USED" value={ramUsed == null ? "N/A" : valueNumber(ramUsed, 1, "%")} mono />
         <Metric label="GAZEBO RTF" value={valueNumber(diagnostics?.gazebo_rtf ?? metrics.gazebo_rtf, 3)} mono />
-        <Metric label="WEBSOCKET LATENCY" value={valueNumber(diagnostics?.websocket_latency_ms, 0, " ms")} mono />
-        <Metric label="MQTT LAST ERROR" value={vdaError || "NONE"} />
       </div>
-      <div className="local-diagnostic-runtime"><Metric label="SELECTED ROBOT" value={robotId} mono /><Metric label="RUNTIME MODE" value={runtimeState} /></div>
+      <details className="hmi-advanced-details"><summary>ADVANCED RUNTIME DETAILS</summary>
+        <div className="local-status-grid">
+          <Metric label="ROBOT" value={robotId} mono /><Metric label="RUNTIME MODE" value={runtimeState} />
+          <Metric label="LOCALIZATION" value={localization} /><Metric label="TF MAP → BASE" value={diagnostics?.tf ? "AVAILABLE" : "UNAVAILABLE"} />
+          <Metric label="VDA5050 MQTT" value={vdaStatus} /><Metric label="VDA5050 ENABLED" value={vdaRuntime?.enabled ? "YES" : "NO"} />
+          <Metric label="MQTT BROKER" value={vdaRuntime ? `${vdaRuntime.host}:${vdaRuntime.port}` : "N/A"} mono />
+          <Metric label="ALLOW TASK" value={vdaRuntime?.allowTask ? "ENABLED" : "BLOCKED"} />
+          <Metric label="INSTANT ACTIONS" value={vdaRuntime?.instantActionsSupported ? "SUPPORTED" : "NOT IMPLEMENTED"} />
+          <Metric label="MAP REVISION" value={mapRevision ?? "N/A"} mono /><Metric label="LOCAL ACTIVE MAP" value={activeLocalMapId ?? "CANONICAL"} mono />
+          <Metric label="LOCAL MAP REVISION" value={activeLocalMapRevision ?? "N/A"} mono /><Metric label="CANONICAL REVISION" value={mapRevision ?? "N/A"} mono />
+          <Metric label="MAP SYNC STATUS" value={localMapSyncStatus ?? diagnostics?.map_state?.map_sync_status ?? "UNKNOWN"} />
+          <Metric label="CONTROL MODE" value={command?.active_control_mode ?? "UNKNOWN"} />
+          <Metric label="ACTIVE COMMAND SOURCE" value={command?.active_command_source ?? "UNKNOWN"} mono />
+          <Metric label="LAST COMMAND AGE" value={command?.last_command_age == null ? "N/A" : valueNumber(command.last_command_age, 2, " s")} mono />
+          <Metric label="MANUAL SOURCE" value={command?.manual_source_active ? "ACTIVE" : "IDLE"} />
+          <Metric label="NAV SOURCE" value={command?.nav_source_active ? "ACTIVE" : "IDLE"} />
+          <Metric label="E-STOP" value={command?.estop_active ? "ACTIVE" : "CLEAR"} />
+          <Metric label="LIDAR SOURCE FPS" value={stream?.source_fps == null ? "N/A" : valueNumber(stream.source_fps, 2, " Hz")} mono />
+          <Metric label="LIDAR WEB OUTPUT FPS" value={stream?.web_output_fps == null ? "N/A" : valueNumber(stream.web_output_fps, 2, " Hz")} mono />
+          <Metric label="LIDAR POINT COUNT" value={stream?.point_count ?? "N/A"} mono />
+          <Metric label="LIDAR DROPPED FRAMES" value={stream?.dropped_frames ?? "N/A"} mono />
+          <Metric label="SIMULATION TIME" value={valueNumber(diagnostics?.simulation_time, 3, " s")} mono />
+          <Metric label="WEBSOCKET LATENCY" value={valueNumber(diagnostics?.websocket_latency_ms, 0, " ms")} mono />
+          <Metric label="MQTT LAST ERROR" value={vdaError || "NONE"} />
+        </div>
+      </details>
     </SectionPanel>
-    <SectionPanel title="LIVE ROS GRAPH SNAPSHOT">
-      <div className="local-status-grid">
-        <Metric label="ACTIVE NODES" value={diagnostics?.nodes?.length ?? 0} mono />
-        <Metric label="TOPICS" value={diagnostics?.topics?.length ?? 0} mono />
-        <Metric label="CONTROLLERS" value={(diagnostics?.controllers ?? []).map((row) => `${row.name}:${row.state}`).join(" · ") || "N/A"} />
-      </div>
-      <div className="local-topic-list"><code>/map · /scan · /lidar/points · /lidar/points_filtered</code><code>/tf · /tf_static · /odom · /odometry/filtered</code><code>/navigate_to_pose · /compute_path_to_pose · /cmd_vel_selected</code></div>
+    <SectionPanel title="ROS GRAPH">
+      <details className="hmi-advanced-details">
+        <summary>ADVANCED ROS GRAPH</summary>
+        <div className="local-status-grid">
+          <Metric label="ACTIVE NODES" value={diagnostics?.nodes?.length ?? 0} mono />
+          <Metric label="TOPICS" value={diagnostics?.topics?.length ?? 0} mono />
+          <Metric label="CONTROLLERS" value={(diagnostics?.controllers ?? []).map((row) => `${row.name}:${row.state}`).join(" · ") || "N/A"} />
+        </div>
+        <div className="local-topic-list"><code>/map · /scan · /lidar/points · /lidar/points_filtered</code><code>/tf · /tf_static · /odom · /odometry/filtered</code><code>/navigate_to_pose · /compute_path_to_pose · /cmd_vel_selected</code></div>
+      </details>
     </SectionPanel>
     <SectionPanel title="LAST REPORTED ERRORS">
       {errors.length === 0 ? <div className="local-empty">No runtime errors reported.</div> : errors.map((item, index) => <div className={`robot-detail-error-row ${classForStatus(item.severity)}`} key={`${item.code ?? item.message}-${index}`}><div><b>{item.severity}</b><span>{item.message}</span></div><small>{item.timestamp ?? "N/A"}</small></div>)}

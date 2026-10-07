@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import rclpy
 from action_msgs.msg import GoalStatus
 from controller_manager_msgs.srv import ListControllers
+from lifecycle_msgs.srv import GetState
 from rclpy.action import ActionClient
 from rclpy.clock import Clock as RclpyClock, ClockType
 from rclpy.duration import Duration
@@ -55,6 +56,14 @@ from .web_map_renderer import (
     occupancy_grid_statistics,
 )
 from .navigation_map import transform_occupancy_grid, validate_target_coverage
+
+
+NAV2_LIVE_LIFECYCLE_NODES = (
+    'controller_server', 'planner_server', 'behavior_server',
+    'bt_navigator', 'waypoint_follower',
+)
+NAV2_LIFECYCLE_STATE_MAX_AGE_S = 2.5
+NAV2_LIFECYCLE_POLL_INTERVAL_S = 0.75
 
 
 def yaw_from_quaternion(q) -> float:
@@ -381,6 +390,17 @@ class SwerveBridge(Node):
         self.nav_pose_client = ActionClient(self, NavigateToPose, navigate_pose_action)
         self.path_preview_client = ActionClient(
             self, ComputePathToPose, self._scoped_topic('/compute_path_to_pose'))
+        map_lifecycle_node = ({'UNIFIED': 'canonical_map_server',
+                              'NAVIGATION': 'map_server'}.get(self.runtime_state))
+        self.nav2_lifecycle_nodes = ((map_lifecycle_node, *NAV2_LIVE_LIFECYCLE_NODES)
+                                     if map_lifecycle_node else ())
+        self.nav2_lifecycle_clients = {
+            name: self.create_client(GetState, self._scoped_topic(f'/{name}/get_state'))
+            for name in self.nav2_lifecycle_nodes
+        }
+        self.nav2_lifecycle_futures = {}
+        self.nav2_lifecycle_states = {}
+        self.nav2_lifecycle_next_poll_monotonic = 0.0
         self.map_load_client = self.create_client(
             LoadMap, self._scoped_topic('/map_server/load_map'))
         self.initial_pose_client = self.create_client(
@@ -1879,6 +1899,9 @@ class SwerveBridge(Node):
             self.get_logger().warning(f'ROS graph diagnostics failed: {exc}')
             node_names, topic_names, service_names = [], [], set()
 
+        self._refresh_nav2_lifecycle_states()
+        nav2_lifecycle = self.nav2_lifecycle_status()
+
         controller_manager = (
             any('controller_manager' in name for name in node_names)
             or self._scoped_topic('/controller_manager/list_controllers') in service_names
@@ -1921,7 +1944,8 @@ class SwerveBridge(Node):
                       'behavior_server', 'bt_navigator', 'waypoint_follower',
                       'lifecycle_manager_navigation')
         nav2 = any(any(marker in name for marker in nav2_nodes) for name in node_names)
-        nav2_ready = bool(nav2 and self.nav2_action_servers_ready())
+        nav2_actions_ready = self.nav2_action_endpoints_ready()
+        nav2_ready = bool(nav2 and nav2_lifecycle['ready'] and nav2_actions_ready)
         self.nav2_revision = self._loaded_nav2_revision(nav2)
         tag_nodes_ready = all(any(name.rstrip('/').endswith('/' + suffix)
                                   or name.rstrip('/') == suffix
@@ -1988,6 +2012,11 @@ class SwerveBridge(Node):
             'slam': slam,
             'nav2': nav2,
             'nav2_ready': nav2_ready,
+            'nav2_actions_ready': nav2_actions_ready,
+            'nav2_lifecycle_ready': nav2_lifecycle['ready'],
+            'nav2_lifecycle_states': nav2_lifecycle['states'],
+            'nav2_lifecycle_blocker_code': nav2_lifecycle['blocker_code'],
+            'nav2_lifecycle_blocker_reason': nav2_lifecycle['blocker_reason'],
             'tf': tf,
             'lidar': lidar,
             'nodes': node_names[:200],
@@ -2026,13 +2055,117 @@ class SwerveBridge(Node):
             },
         }
 
-    def nav2_action_servers_ready(self):
-        """Nav2 readiness requires both path preview and NavigateToPose actions."""
+    def _refresh_nav2_lifecycle_states(self):
+        """Poll required lifecycle state services without blocking control callbacks."""
+        clients = getattr(self, 'nav2_lifecycle_clients', {})
+        futures = getattr(self, 'nav2_lifecycle_futures', {})
+        states = getattr(self, 'nav2_lifecycle_states', {})
+        now = time.monotonic()
+
+        for name, future in list(futures.items()):
+            if future is None or not future.done():
+                continue
+            try:
+                current = future.result().current_state
+                label = str(current.label or '').strip().lower()
+                if not label:
+                    label = 'active' if int(current.id) == 3 else 'unknown'
+                states[name] = {
+                    'label': label,
+                    'id': int(current.id),
+                    'updated_monotonic': now,
+                    'error': None,
+                }
+            except Exception as exc:
+                states[name] = {
+                    'label': 'unknown', 'id': None,
+                    'updated_monotonic': now,
+                    'error': f'{type(exc).__name__}: {exc}',
+                }
+                self.get_logger().warning(
+                    f'Nav2 lifecycle get_state failed for /{name}: {type(exc).__name__}: {exc}')
+            futures.pop(name, None)
+
+        if now < getattr(self, 'nav2_lifecycle_next_poll_monotonic', 0.0):
+            return
+        self.nav2_lifecycle_next_poll_monotonic = now + NAV2_LIFECYCLE_POLL_INTERVAL_S
+        for name, client in clients.items():
+            if futures.get(name) is not None:
+                continue
+            try:
+                if not client.service_is_ready():
+                    states[name] = {
+                        'label': 'unknown', 'id': None,
+                        'updated_monotonic': now,
+                        'error': 'get_state_service_unavailable',
+                    }
+                    continue
+                futures[name] = client.call_async(GetState.Request())
+            except Exception as exc:
+                states[name] = {
+                    'label': 'unknown', 'id': None,
+                    'updated_monotonic': now,
+                    'error': f'{type(exc).__name__}: {exc}',
+                }
+
+    def nav2_lifecycle_status(self):
+        """Return a fail-closed snapshot for this mode's required lifecycle nodes."""
+        required = tuple(getattr(self, 'nav2_lifecycle_nodes', ()))
+        cache = getattr(self, 'nav2_lifecycle_states', {})
+        now = time.monotonic()
+        labels = {}
+        not_active = []
+        for name in required:
+            sample = cache.get(name)
+            if isinstance(sample, str):
+                label = sample.strip().lower()
+            elif isinstance(sample, dict):
+                label = str(sample.get('label') or 'unknown').strip().lower()
+                updated = sample.get('updated_monotonic')
+                if (updated is None or now - float(updated) > NAV2_LIFECYCLE_STATE_MAX_AGE_S
+                        or now < float(updated)):
+                    label = 'unknown'
+            else:
+                label = 'unknown'
+            if label not in ('active', 'inactive', 'unconfigured', 'finalized',
+                             'configuring', 'activating', 'deactivating', 'errorprocessing',
+                             'cleaningup', 'shuttingdown'):
+                label = 'unknown'
+            labels[name] = label
+            if label != 'active':
+                not_active.append(name)
+
+        ready = bool(required) and not not_active
+        if ready:
+            code = None
+            reason = None
+        elif not required:
+            code = 'NAV2_LIFECYCLE_NOT_ACTIVE'
+            reason = (f'Nav2 lifecycle nodes are not configured for runtime mode '
+                      f'{getattr(self, "runtime_state", "UNKNOWN")}.')
+        else:
+            code = 'NAV2_LIFECYCLE_NOT_ACTIVE'
+            details = ', '.join(f'/{name}={labels[name]}' for name in not_active)
+            reason = f'Required Nav2 lifecycle node(s) must be ACTIVE: {details}.'
+        return {
+            'ready': ready,
+            'states': labels,
+            'blocker_code': code,
+            'blocker_reason': reason,
+        }
+
+    def nav2_action_endpoints_ready(self):
+        """Check discovery separately from lifecycle activation."""
         try:
             return bool(self.path_preview_client.server_is_ready()
                         and self.nav_pose_client.server_is_ready())
         except Exception:
             return False
+
+    def nav2_action_servers_ready(self):
+        """A discoverable action server is ready only while required nodes are ACTIVE."""
+        return bool(self.nav2_lifecycle_status()['ready']
+                    and self.nav2_action_endpoints_ready())
 
     def send_map_revision_status(self):
         self._refresh_map_sync_status()
@@ -2711,6 +2844,12 @@ class SwerveBridge(Node):
                 result('NO_PATH', f'{reason_code}: {json.dumps(coverage_error, sort_keys=True)}',
                        reason_code=reason_code)
                 return
+        lifecycle = self.nav2_lifecycle_status()
+        if not lifecycle['ready']:
+            result('NO_PATH',
+                   f"{lifecycle['blocker_code']}: {lifecycle['blocker_reason']}",
+                   reason_code=lifecycle['blocker_code'])
+            return
         if not self.path_preview_client.server_is_ready():
             result('NO_PATH', 'Nav2 ComputePathToPose action server is unavailable')
             return
@@ -3539,6 +3678,13 @@ class SwerveBridge(Node):
             return
         if self.active_goal is not None or self.active_pose_goal is not None or self.goal_request_pending:
             self.send_nav_status(context, 'FAILED', 'another navigation goal is already active')
+            return
+        lifecycle = self.nav2_lifecycle_status()
+        if not lifecycle['ready']:
+            self.nav_state = 'FAILED'
+            self.send_nav_status(
+                context, 'FAILED',
+                f"{lifecycle['blocker_code']}: {lifecycle['blocker_reason']}")
             return
         if not self.nav_pose_client.server_is_ready():
             self.nav_state = 'FAILED'

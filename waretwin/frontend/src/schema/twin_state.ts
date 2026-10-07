@@ -573,6 +573,11 @@ export type RobotRuntimeCapabilities = {
 export type RosDiagnostics = {
   ros: boolean; gazebo: boolean; controller_manager: boolean; slam: boolean;
   nav2: boolean; nav2_ready?: boolean; tf: boolean; lidar: boolean;
+  nav2_actions_ready?: boolean;
+  nav2_lifecycle_ready?: boolean;
+  nav2_lifecycle_states?: Record<string, string>;
+  nav2_lifecycle_blocker_code?: string | null;
+  nav2_lifecycle_blocker_reason?: string | null;
   nodes: string[]; topics: string[]; controllers: Array<{ name: string; state: string }>;
   simulation_time: number | null; last_update_at: string | null;
   metrics?: Record<string, number | string | null>;

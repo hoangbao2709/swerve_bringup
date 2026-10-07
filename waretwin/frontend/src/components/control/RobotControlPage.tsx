@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Sidebar } from "../shell/Sidebar";
+import type { ControlSection } from "../shell/Sidebar";
 import { useStore } from "../../state/store";
 import { RobotControlDetailPage } from "./RobotControlDetailPage";
 
@@ -12,16 +13,16 @@ export function RobotControlPage() {
   const robotIds = useMemo(() => robotIdsKey ? robotIdsKey.split("\u0000") : [], [robotIdsKey]);
   const robotId = selectedRobot && robotIds.includes(selectedRobot)
     ? selectedRobot : robotIds[0] ?? selectedRobot ?? "";
-  const [collapsed, setCollapsed] = useState(false);
+  const [activeSection, setActiveSection] = useState<ControlSection>("CONTROL");
 
   useEffect(() => {
     if (robotId && selectedRobot !== robotId) select(robotId);
   }, [robotId, selectedRobot, select]);
 
-  return <div className={`robot-control-workspace wt-has-sidebar${collapsed ? " wt-sidebar-collapsed" : ""}`}>
-    <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((value) => !value)} />
+  return <div className="robot-control-workspace wt-has-sidebar industrial-hmi-workspace">
+    <Sidebar activeSection={activeSection} onSectionChange={setActiveSection} />
     {robotId
-      ? <RobotControlDetailPage key={robotId} robotId={robotId} />
+      ? <RobotControlDetailPage key={robotId} robotId={robotId} activeSection={activeSection} onSectionChange={setActiveSection} />
       : <div className="robot-control-waiting" role="status">WAITING FOR ROBOT TELEMETRY</div>}
   </div>;
 }

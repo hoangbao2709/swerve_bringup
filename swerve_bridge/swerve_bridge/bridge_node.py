@@ -3554,21 +3554,51 @@ class SwerveBridge(Node):
             return
         linear = float(self.get_parameter('manual_linear_velocity').value)
         angular = float(self.get_parameter('manual_angular_velocity').value)
+
+        # Normalize diagonal velocity so diagonal motion is not sqrt(2) faster.
+        diagonal = linear / math.sqrt(2.0)
+
         command = Twist()
+
         if action == 'FORWARD':
             command.linear.x = linear
-        elif action == 'BACKWARD':
-            command.linear.x = -linear
+
+        elif action == 'FORWARD_LEFT':
+            command.linear.x = diagonal
+            command.linear.y = diagonal
+
+        elif action == 'FORWARD_RIGHT':
+            command.linear.x = diagonal
+            command.linear.y = -diagonal
+
         elif action == 'LEFT':
             command.linear.y = linear
+
         elif action == 'RIGHT':
             command.linear.y = -linear
+
+        elif action == 'BACKWARD':
+            command.linear.x = -linear
+
+        elif action == 'BACKWARD_LEFT':
+            command.linear.x = -diagonal
+            command.linear.y = diagonal
+
+        elif action == 'BACKWARD_RIGHT':
+            command.linear.x = -diagonal
+            command.linear.y = -diagonal
+
         elif action == 'ROTATE_LEFT':
             command.angular.z = angular
+
         elif action == 'ROTATE_RIGHT':
             command.angular.z = -angular
+
         elif action != 'STOP':
-            self.send_control_status(False, f'unsupported manual action: {action}')
+            self.send_control_status(
+                False,
+                f'unsupported manual action: {action}',
+            )
             return
         self.manual_twist = command
         self.manual_generation = data['_generation']

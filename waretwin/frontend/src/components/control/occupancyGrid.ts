@@ -1,7 +1,17 @@
 import type { RobotDetailMapSnapshot } from "../../schema/twin_state";
 
+const decodedGridPromises = new WeakMap<RobotDetailMapSnapshot, Promise<Int8Array | null>>();
+
 /** Decode the bridge's compact OccupancyGrid transport for browser rendering. */
-export async function decodeOccupancyGrid(snapshot: RobotDetailMapSnapshot): Promise<Int8Array | null> {
+export function decodeOccupancyGrid(snapshot: RobotDetailMapSnapshot): Promise<Int8Array | null> {
+  const cached = decodedGridPromises.get(snapshot);
+  if (cached) return cached;
+  const promise = decodeOccupancyGridSnapshot(snapshot);
+  decodedGridPromises.set(snapshot, promise);
+  return promise;
+}
+
+async function decodeOccupancyGridSnapshot(snapshot: RobotDetailMapSnapshot): Promise<Int8Array | null> {
   const cellCount = snapshot.width * snapshot.height;
   if (!Number.isSafeInteger(cellCount) || cellCount <= 0 || cellCount > 4_000_000) return null;
   if (Array.isArray(snapshot.data)) {
@@ -31,4 +41,22 @@ export async function decodeOccupancyGrid(snapshot: RobotDetailMapSnapshot): Pro
   } catch {
     return null;
   }
+}
+
+/** True only for a known-free OccupancyGrid cell at a world-frame position. */
+export function isFreeOccupancyPoint(
+  snapshot: Pick<RobotDetailMapSnapshot, "width" | "height" | "resolution" | "origin">,
+  cells: Int8Array,
+  point: { x: number; y: number },
+): boolean {
+  const { width, height, resolution, origin } = snapshot;
+  if (!Number.isFinite(resolution) || resolution <= 0 || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
+  const dx = point.x - origin.x;
+  const dy = point.y - origin.y;
+  const cos = Math.cos(origin.yaw), sin = Math.sin(origin.yaw);
+  const column = Math.floor((dx * cos + dy * sin) / resolution);
+  const row = Math.floor((-dx * sin + dy * cos) / resolution);
+  if (column < 0 || row < 0 || column >= width || row >= height || cells.length !== width * height) return false;
+  const occupancy = cells[row * width + column];
+  return occupancy >= 0 && occupancy <= 65;
 }

@@ -152,7 +152,18 @@ export function wsSend(msg: ClientMessage): boolean {
   return false;
 }
 
-export type ManualAction = "FORWARD" | "BACKWARD" | "LEFT" | "RIGHT" | "ROTATE_LEFT" | "ROTATE_RIGHT" | "STOP";
+export type ManualAction =
+  | "FORWARD"
+  | "FORWARD_LEFT"
+  | "FORWARD_RIGHT"
+  | "LEFT"
+  | "RIGHT"
+  | "BACKWARD"
+  | "BACKWARD_LEFT"
+  | "BACKWARD_RIGHT"
+  | "ROTATE_LEFT"
+  | "ROTATE_RIGHT"
+  | "STOP";
 
 /** Change the authoritative ROS control mode for one robot. */
 export function wsSetRobotMode(robot_id: string, mode: "MANUAL" | "AUTONOMOUS"): boolean {

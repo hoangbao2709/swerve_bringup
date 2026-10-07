@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createWorldTransform, worldToScreen } from "../src/layout/coordinates";
+import { createWorldTransform, screenToWorld, worldToScreen } from "../src/layout/coordinates";
 import {
   centerMapViewportCamera,
   fitMapViewportCamera,
@@ -7,6 +7,10 @@ import {
   occupancyMapWorldBounds,
   resolveMapViewport,
   zoomMapViewportCamera,
+  panMapViewportCamera,
+  zoomMapViewportCameraAt,
+  MIN_MAP_SCALE_PX_PER_METER,
+  MAX_MAP_SCALE_PX_PER_METER,
 } from "../src/layout/mapViewport";
 import { occupancyRasterKey } from "../src/components/control/occupancyRaster";
 import type { RobotDetailMapSnapshot } from "../src/schema/twin_state";
@@ -97,5 +101,40 @@ describe("stable SLAM map viewport", () => {
     const reset = resolveMapViewport(state, newSession, size)!;
     expect(reset.sessionKey).not.toBe(state.sessionKey);
     expect(reset.camera).toEqual(fitMapViewportCamera(size, occupancyMapWorldBounds(newSession)));
+  });
+});
+
+describe("map camera gestures", () => {
+  const camera = { centerX: 3, centerY: -2, scalePxPerMeter: 40, fitScalePxPerMeter: 20 };
+
+  it("moves fixed world geometry by the exact drag delta with correct world-Y sign", () => {
+    const before = worldToScreen(fixedWorldPoint, fixedWorldTransform(size, camera));
+    const panned = panMapViewportCamera(camera, { x: 100, y: 50 });
+    expect(panned.centerX).toBe(0.5);
+    expect(panned.centerY).toBe(-0.75);
+    const after = worldToScreen(fixedWorldPoint, fixedWorldTransform(size, panned));
+    expect(after.x - before.x).toBe(100);
+    expect(after.y - before.y).toBe(50);
+    expect(panned.scalePxPerMeter).toBe(camera.scalePxPerMeter);
+  });
+
+  it("keeps the cursor's world point fixed to subpixel accuracy when zooming in and out", () => {
+    const cursor = { x: 735, y: 194 };
+    const world = screenToWorld(cursor, fixedWorldTransform(size, camera));
+    for (const factor of [1.12, 1 / 1.12, 100000, 0.0000001]) {
+      const zoomed = zoomMapViewportCameraAt(camera, factor, size, cursor);
+      const after = worldToScreen(world, fixedWorldTransform(size, zoomed));
+      expect(Math.hypot(after.x - cursor.x, after.y - cursor.y)).toBeLessThan(1);
+    }
+  });
+
+  it("bounds scale, rejects invalid factors and retains gesture camera across same-session growth", () => {
+    expect(zoomMapViewportCamera(camera, 1e20).scalePxPerMeter).toBe(MAX_MAP_SCALE_PX_PER_METER);
+    expect(zoomMapViewportCamera(camera, 1e-20).scalePxPerMeter).toBe(MIN_MAP_SCALE_PX_PER_METER);
+    for (const factor of [NaN, Infinity, 0, -1]) expect(zoomMapViewportCamera(camera, factor)).toBe(camera);
+    const initial = resolveMapViewport(null, frame(), size)!;
+    const moved = { ...initial, camera: zoomMapViewportCameraAt(panMapViewportCamera(initial.camera, { x: 100, y: 50 }), 1.12, size, { x: 300, y: 200 }) };
+    const grown = resolveMapViewport(moved, frame({ width: 800, height: 900, origin: { x: -12, y: -20, yaw: 0 }, map_content_revision: "new-cells" }), size)!;
+    expect(grown.camera).toEqual(moved.camera);
   });
 });

@@ -1,5 +1,9 @@
 import type { RobotDetailMapSnapshot } from "../schema/twin_state";
-import { createWorldTransform, type ScreenPoint, type WorldBounds, type WorldTransform } from "./coordinates";
+import { createWorldTransform, screenToWorld, type ScreenPoint, type WorldBounds, type WorldTransform } from "./coordinates";
+
+export const MIN_MAP_SCALE_PX_PER_METER = 0.01;
+export const MAX_MAP_SCALE_PX_PER_METER = 4096;
+export const MAP_PAN_THRESHOLD_PX = 5;
 
 export type MapViewportCamera = {
   centerX: number;
@@ -79,12 +83,32 @@ export function fixedWorldTransform(size: MapViewportSize, camera: MapViewportCa
 
 export function zoomMapViewportCamera(camera: MapViewportCamera, factor: number): MapViewportCamera {
   if (!Number.isFinite(factor) || factor <= 0) return camera;
-  const minimumScale = camera.fitScalePxPerMeter * 0.5;
-  const maximumScale = camera.fitScalePxPerMeter * 8;
+  // Keep exceptionally large/small maps' fitted view reachable as well.
+  const minimumScale = Math.min(MIN_MAP_SCALE_PX_PER_METER, camera.fitScalePxPerMeter);
+  const maximumScale = Math.max(MAX_MAP_SCALE_PX_PER_METER, camera.fitScalePxPerMeter);
   return {
     ...camera,
     scalePxPerMeter: Math.max(minimumScale, Math.min(maximumScale, camera.scalePxPerMeter * factor)),
   };
+}
+
+/** Pixel movement follows the hand; screen +Y is opposite to world +Y. */
+export function panMapViewportCamera(camera: MapViewportCamera, delta: ScreenPoint): MapViewportCamera {
+  if (![delta.x, delta.y, camera.scalePxPerMeter].every(Number.isFinite) || camera.scalePxPerMeter <= 0) return camera;
+  return { ...camera, centerX: camera.centerX - delta.x / camera.scalePxPerMeter,
+    centerY: camera.centerY + delta.y / camera.scalePxPerMeter };
+}
+
+/** Preserve the world point under the cursor while changing scale. */
+export function zoomMapViewportCameraAt(camera: MapViewportCamera, factor: number,
+  size: MapViewportSize, cursor: ScreenPoint): MapViewportCamera {
+  if (![cursor.x, cursor.y].every(Number.isFinite)) return camera;
+  const zoomed = zoomMapViewportCamera(camera, factor);
+  if (zoomed.scalePxPerMeter === camera.scalePxPerMeter) return camera;
+  const anchor = screenToWorld(cursor, fixedWorldTransform(size, camera));
+  return { ...zoomed,
+    centerX: anchor.x - (cursor.x - size.width / 2) / zoomed.scalePxPerMeter,
+    centerY: anchor.y + (cursor.y - size.height / 2) / zoomed.scalePxPerMeter };
 }
 
 export function centerMapViewportCamera(camera: MapViewportCamera, point: ScreenPoint): MapViewportCamera {

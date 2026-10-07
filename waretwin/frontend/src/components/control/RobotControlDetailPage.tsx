@@ -1,4 +1,4 @@
-import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { apiFetch, clearEmergencyStop, emergencyStop } from "../../services/api";
 import { WS_URL, wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
 import { MANUAL_COMMAND_REFRESH_MS, nextManualCommand, type ActiveManualCommand } from "../../services/manualCommand";
@@ -12,16 +12,26 @@ import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, ma
 import { evaluatePreviewApproval } from "./navigationPreviewApproval";
 
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
-const MANUAL_ACTIONS: Array<{ action: ManualAction; label: string; title: string }> = [
+const MANUAL_ACTIONS: Array<{
+  action: ManualAction;
+  label: string;
+  title: string;
+}> = [
+  { action: "FORWARD_LEFT", label: "↖", title: "Forward left" },
   { action: "FORWARD", label: "▲", title: "Forward (W / ↑)" },
+  { action: "FORWARD_RIGHT", label: "↗", title: "Forward right" },
+
   { action: "LEFT", label: "◀", title: "Strafe left (A / ←)" },
   { action: "STOP", label: "■", title: "Stop" },
   { action: "RIGHT", label: "▶", title: "Strafe right (D / →)" },
+
+  { action: "BACKWARD_LEFT", label: "↙", title: "Backward left" },
   { action: "BACKWARD", label: "▼", title: "Backward (S / ↓)" },
+  { action: "BACKWARD_RIGHT", label: "↘", title: "Backward right" },
+
   { action: "ROTATE_LEFT", label: "↺", title: "Rotate left (Q)" },
   { action: "ROTATE_RIGHT", label: "↻", title: "Rotate right (E)" },
 ];
-
 const EMPTY_ERRORS: RobotDetailError[] = [];
 
 function isMapPointTarget(target: MapPointNavigationTarget | null): target is MapPointNavigationTarget {
@@ -99,12 +109,13 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const detailDiagnostics = useStore((state) => state.robotDetail[robotId]?.diagnostics ?? null);
   const detailErrors = useStore((state) => state.robotDetail[robotId]?.errors ?? EMPTY_ERRORS);
   const controlErrors = detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS;
+  const errorLogTone = controlErrors.some((item) => item.severity === "CRITICAL" || item.severity === "ERROR") ? "error"
+    : controlErrors.some((item) => item.severity === "WARNING") ? "warning"
+      : controlErrors.length ? "info" : "neutral";
   const remainingDistanceM = useStore((state) => state.robotDetail[robotId]?.remainingDistanceM ?? null);
-  const goal = useStore((state) => state.robotDetail[robotId]?.goal ?? null);
   const mappingScan = useStore((state) => state.robotDetail[robotId]?.scan ?? null);
   const mappingSessionId = useStore((state) => state.robotDetail[robotId]?.mappingSessionId ?? null);
   const navigationStatus = useStore((state) => state.robotDetail[robotId]?.navigationStatus ?? null);
-  const viewStatus = useStore((state) => state.robotDetail[robotId]?.viewStatus ?? null);
   const lidarStreamDiagnostics = useStore((state) => state.robotDetail[robotId]?.lidarStreamDiagnostics ?? null);
   const pathPreview = useStore((state) => state.robotDetail[robotId]?.pathPreview ?? null);
   const activeLocalMapId = useStore((state) => state.robotDetail[robotId]?.activeLocalMapId ?? null);
@@ -120,7 +131,15 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const [controlMode, setControlMode] = useState<"MANUAL" | "AUTONOMOUS">(robot?.control_mode ?? "AUTONOMOUS");
   const [activeManualCommand, setActiveManualCommand] = useState<ActiveManualCommand | null>(null);
   const [goalPreview, setGoalPreview] = useState<MapPointNavigationTarget | null>(null);
+  const [pointYawPending, setPointYawPending] = useState(false);
   const [mapLayers, setMapLayers] = useState<ActiveMapLayers>({ robot: true, scan: true, path: true, trajectory: false, grid: false });
+  const [systemInputsExpanded, setSystemInputsExpanded] = useState(true);
+  const [statePanelExpanded, setStatePanelExpanded] = useState(true);
+  const [operationPanelExpanded, setOperationPanelExpanded] = useState(true);
+  const [manualPanelExpanded, setManualPanelExpanded] = useState(true);
+  const [errorLogOpen, setErrorLogOpen] = useState(false);
+  const closeErrorLog = useCallback(() => setErrorLogOpen(false), []);
+  const panelId = useId();
   const [pathRequestState, setPathRequestState] = useState<"IDLE" | "PLANNING">("IDLE");
   const latestPathRequest = useRef("");
   const [error, setError] = useState("");
@@ -193,6 +212,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   useEffect(() => {
     select(robotId);
     setGoalPreview(null);
+    setPointYawPending(false);
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
@@ -205,16 +225,25 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
     setGoalPreview(null);
+    setPointYawPending(false);
     setRobotDetail(robotId, { pathPreview: null });
   }, [activeNavigationMapKey, robotId, setRobotDetail]);
 
   useEffect(() => {
-    if (runtimeState === "MAPPING") setGoalPreview(null);
+    if (runtimeState === "MAPPING") {
+      setGoalPreview(null);
+      setPointYawPending(false);
+    }
   }, [runtimeState]);
 
   useEffect(() => {
     setControlMode(appliedMode ?? robot?.control_mode ?? "AUTONOMOUS");
   }, [appliedMode, robot?.control_mode, robotId]);
+
+  useEffect(() => {
+    if (controlMode === "MANUAL") setManualPanelExpanded(true);
+    else setOperationPanelExpanded(true);
+  }, [controlMode]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
@@ -228,8 +257,6 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   });
   const displayedMapPointPickIdentity = activeMapReady
     && navigationUiAvailable && controlMode === "AUTONOMOUS" ? displayedNavigationMapIdentity : null;
-  const viewFresh = Boolean(activeMap2dSnapshot)
-    || (viewStatus?.requested_view === detailView && viewStatus.state === "FRESH");
   useEffect(() => {
     if (!robotBridgeOnline || websocketState !== "CONNECTED") return;
     const request_id = `${robotId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -437,6 +464,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
       return;
     }
     setGoalPreview(null);
+    setPointYawPending(false);
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
@@ -453,6 +481,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     }
     wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
     setGoalPreview(target);
+    setPointYawPending(true);
     latestPathRequest.current = "";
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
@@ -512,6 +541,12 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     setGoalPreview(target);
   }, [activeMap2dSnapshot?.map_content_revision, activeMapId, activeMapReady, activeMapRevision, activeMapStatus, controlMode, controlOnline, navigationUiAvailable, robotId, setRobotDetail]);
 
+  const confirmMapPoint = useCallback((target: MapPointNavigationTarget) => {
+    selectMapPoint(target);
+    setPointYawPending(false);
+    requestPathPreview(target);
+  }, [requestPathPreview, selectMapPoint]);
+
   useEffect(() => {
     if (pathPreview?.request_id && pathPreview.request_id === latestPathRequest.current) setPathRequestState("IDLE");
   }, [pathPreview]);
@@ -520,6 +555,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     wsSend({ type: "PATH_PREVIEW_INVALIDATE", robot_id: robotId });
     latestPathRequest.current = "";
     setGoalPreview(null);
+    setPointYawPending(false);
     setPathRequestState("IDLE");
     setRobotDetail(robotId, { pathPreview: null });
   };
@@ -527,11 +563,6 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const navCommand = (type: "NAV_CANCEL" | "NAV_PAUSE" | "NAV_RESUME") => {
     if (!controlOnline) { setError("Navigation control requires an online ROS bridge"); return; }
     if (!wsSend({ type, robot_id: robotId })) setError("Navigation command was not sent");
-  };
-
-  const adjustSelectedMapPointYaw = (delta: number) => {
-    if (!isMapPointTarget(goalPreview)) return;
-    selectMapPoint({ ...goalPreview, yaw: goalPreview.yaw + delta });
   };
 
   const changeRobot = (next: string) => {
@@ -548,7 +579,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const navigationLabel = ["", "IDLE"].includes(rawNavigationState)
     ? nav2Ready ? "READY" : "UNAVAILABLE"
     : ["ACTIVE", "NAVIGATING"].includes(rawNavigationState) ? "RUNNING" : rawNavigationState;
-  const selectedPoint = goalPreview ?? goal;
+  const selectedPoint = goalPreview;
   const nav2BlockerReason = runtimeCapabilities?.goal_blocker_reason
     ?? diagnostics?.nav2_lifecycle_blocker_reason ?? "";
   const localSection = activeSection === "DIAGNOSIS" ? "DIAGNOSTICS"
@@ -572,9 +603,10 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   ];
 
   return (
-    <div className="robot-detail-shell industrial-hmi">
+    <div className={`robot-detail-shell industrial-hmi${activeSection === "CONTROL" ? " is-control-view" : ""}`}>
       <header className="robot-detail-header">
         <div className="robot-detail-identity">
+          {activeSection === "CONTROL" && <span className="hmi-app-identity">WARETWIN</span>}
           <label className="robot-detail-robot-select"><span>ROBOT</span><select aria-label="Select robot" value={robotId} onChange={(event) => changeRobot(event.target.value)}><option value="">Select robot</option>{robotIds.map((id) => <option key={id} value={id}>{id}</option>)}</select></label>
           <span className={`hmi-state-pill ${robotOnline ? "is-ready" : "is-fault"}`} data-testid="robot-connection-state">{robotOnline ? "ONLINE" : "OFFLINE"}</span>
           <span className="robot-detail-mode">{modeTransitionState === "REQUESTED" ? `${controlMode} → ${requestedMode} REQUESTED` : modeTransitionState === "FAILED" ? `${controlMode} TRANSITION FAILED` : controlMode}</span>
@@ -604,121 +636,207 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
         <LocalRobotSection section={localSection} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={localizationMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} hostStatus={host} ensureManualMode={() => setMode("MANUAL")} />
       </main> : <main className="robot-detail-main hmi-control-main">
         <section className="robot-detail-map-panel">
-          <div className="robot-map-source-bar">
-            <span className="robot-map-view-label">{activeMap2dSnapshot?.map_source === "LOCAL_MAP" ? "2D NAVIGATION MAP" : activeMap2dSnapshot?.map_source === "NAV2_MAP" ? "ACTIVE NAVIGATION MAP" : "2D SLAM OCCUPANCY MAP"}</span>
-            <span className={`hmi-state-pill ${viewFresh ? "is-ready" : "is-warning"}`} data-view-state={viewFresh ? "FRESH" : viewStatus?.state ?? "REQUESTED"}>{viewFresh ? "LIVE" : "WAITING FOR MAP"}</span>
-            <span className={`hmi-state-pill ${activeMapReady ? "is-ready" : "is-warning"}`}>{activeMapReady ? "ACTIVE MAP · FRAME map" : activeMapStatus}</span>
-          </div>
           <div className="robot-detail-view-stack" key={robotId}>
             <div className="robot-detail-view-layer is-active" data-view="LIDAR_2D">
               <ActiveNavigationMap2DView map={activeMap2dSnapshot} robot={robot} scan={mappingScan}
+                compactWorkspace
                 target={isMapPointTarget(goalPreview) ? goalPreview : null}
                 navigationPath={approvedPreview?.active_path ?? approvedPreview?.path ?? []}
                 layers={mapLayers} onLayerToggle={(layer) => setMapLayers((current) => ({ ...current, [layer]: !current[layer] }))}
-                canPick={Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} />
+                errorLogCount={controlErrors.length} errorLogTone={errorLogTone} onOpenErrorLog={() => setErrorLogOpen(true)}
+                canPick={Boolean(displayedMapPointPickIdentity)} onPick={selectMapPoint} onConfirmPoint={confirmMapPoint} />
             </div>
           </div>
           <div className="hmi-dashboard-panels" aria-label="Map system status">
-            <DashboardStatusPanel title="SYSTEM INPUTS" rows={systemInputRows} />
-            <DashboardStatusPanel title="STATE" rows={dashboardStateRows} />
+            <DashboardStatusPanel title="SYSTEM INPUTS" rows={systemInputRows} expanded={systemInputsExpanded} controls={`${panelId}-inputs`} onToggle={() => setSystemInputsExpanded((value) => !value)} />
+            <DashboardStatusPanel title="STATE" rows={dashboardStateRows} expanded={statePanelExpanded} controls={`${panelId}-state`} onToggle={() => setStatePanelExpanded((value) => !value)} />
           </div>
-        </section>
 
-        <aside className="hmi-operation-panel" aria-label="Robot operation panel">
-          <header><div><span>ROBOT / MISSION</span><h2>{robotId}</h2></div><span className={`hmi-state-pill ${robotOnline ? "is-ready" : "is-fault"}`}>{robotOnline ? "ONLINE" : "OFFLINE"}</span></header>
+        <div className="hmi-right-floating-group" aria-label="Robot control cards" data-testid="control-operation-panels" data-control-mode={controlMode}>
+        {controlMode === "AUTONOMOUS" && <>
+        <aside className="hmi-operation-panel hmi-floating-panel" aria-label="Robot operation panel" data-expanded={operationPanelExpanded}>
+          <header><div><span>ROBOT / MISSION</span><h2>{robotId}</h2></div><span className={`hmi-state-pill ${robotOnline ? "is-ready" : "is-fault"}`}>{robotOnline ? "ONLINE" : "OFFLINE"}</span><PanelToggle title="Robot / Mission" expanded={operationPanelExpanded} controls={`${panelId}-operation`} onToggle={() => setOperationPanelExpanded((value) => !value)} /></header>
+          <div className="hmi-floating-content" id={`${panelId}-operation`} hidden={!operationPanelExpanded}>
           <div className="hmi-operation-status">
-            <div><span>MODE</span><b className={`hmi-mode-value ${controlMode === "MANUAL" ? "is-manual" : "is-auto"}`}>{controlMode}</b></div>
-            <div><span>NAVIGATION</span><b className={`hmi-state-pill ${navigationLabel === "READY" || navigationLabel === "SUCCEEDED" ? "is-ready" : navigationLabel === "RUNNING" ? "is-running" : statusClass(navigationLabel) === "error" ? "is-fault" : "is-warning"}`}>{navigationLabel}</b></div>
+            <div><span>NAV</span><b className={`hmi-state-pill ${navigationLabel === "READY" || navigationLabel === "SUCCEEDED" ? "is-ready" : navigationLabel === "RUNNING" ? "is-running" : statusClass(navigationLabel) === "error" ? "is-fault" : "is-warning"}`}>{navigationLabel}</b></div>
+            <div></div>
             <div><span>REMAINING</span><b>{safeNumber(remainingDistanceM, 2, " m")}</b></div>
             {currentMission && <div><span>MISSION</span><b>{`${currentMission.id} · ${currentMission.status}`}</b></div>}
           </div>
           <section className="hmi-destination">
             <h3>DESTINATION</h3>
-            {selectedPoint ? <><p className="hmi-point-selected" data-testid="selected-point-status">POINT SELECTED</p><div className="hmi-coordinate-grid">
+            {selectedPoint ? <><p className="hmi-point-selected" data-testid="selected-point-status">{pointYawPending ? "SELECT YAW" : "POINT SELECTED"}</p><div className="hmi-coordinate-grid">
               <span>X</span><b>{safeNumber(selectedPoint.x, 3)} m</b>
               <span>Y</span><b>{safeNumber(selectedPoint.y, 3)} m</b>
               <span>YAW</span><b>{safeNumber(selectedPoint.yaw, 2)} rad</b>
-            </div></> : <p>Click a free point on the map to select a destination.</p>}
-            <div className="hmi-yaw-actions">
-              <button type="button" disabled={!isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(-Math.PI / 12)}>YAW −</button>
-              <button type="button" disabled={!isMapPointTarget(goalPreview) || pathRequestState === "PLANNING"} onClick={() => adjustSelectedMapPointYaw(Math.PI / 12)}>YAW +</button>
-            </div>
+            </div></> : <p>NO TARGET</p>}
           </section>
           <div className="hmi-navigation-actions">
-            <button type="button" className="hmi-preview-action" disabled={!navigationUiAvailable || !goalPreview || pathRequestState === "PLANNING"}
-              data-preview-status={pathPreview?.status ?? "NONE"}
-              data-preview-request-id={pathPreview?.request_id ?? ""}
-              data-preview-approved={previewApproval.approved ? "true" : "false"}
-              data-preview-reject-reason={previewApproval.rejectReason ?? undefined}
-              data-preview-gates={JSON.stringify(previewApproval.gates)}
-              onClick={() => goalPreview && requestPathPreview(goalPreview)}>{pathRequestState === "PLANNING" ? "PLANNING…" : "PREVIEW PATH"}</button>
-            <button type="button" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || controlMode !== "AUTONOMOUS" || !activeMapReady} className="robot-console-primary hmi-send-goal" onClick={sendGoal}>SEND GOAL</button>
+            <button type="button" aria-label="SEND GOAL" disabled={!navigationUiAvailable || !goalPreview || !approvedPreview || !controlOnline || !activeMapReady} className="robot-console-primary hmi-send-goal" onClick={sendGoal}>SEND</button>
             <button type="button" className="hmi-cancel-point" disabled={!goalPreview} onClick={cancelPathPreview}>CANCEL</button>
           </div>
           {!nav2Ready && nav2BlockerReason && <div className="hmi-nav-blocker" role="status"><b>GOALS UNAVAILABLE</b>
             {(runtimeCapabilities?.goal_blocker_code ?? diagnostics?.nav2_lifecycle_blocker_code) && <code>{runtimeCapabilities?.goal_blocker_code ?? diagnostics?.nav2_lifecycle_blocker_code}</code>}
             <span>{nav2BlockerReason}</span></div>}
           <div className="hmi-nav-management" aria-label="Navigation actions">
-            <button type="button" disabled={!controlOnline || controlMode !== "AUTONOMOUS"} onClick={() => navCommand("NAV_PAUSE")}>PAUSE</button>
-            <button type="button" disabled={!controlOnline || controlMode !== "AUTONOMOUS"} onClick={() => navCommand("NAV_RESUME")}>RESUME</button>
+            <button type="button" disabled={!controlOnline} onClick={() => navCommand("NAV_PAUSE")}>PAUSE</button>
+            <button type="button" disabled={!controlOnline} onClick={() => navCommand("NAV_RESUME")}>RESUME</button>
             <button type="button" disabled={!controlOnline} onClick={() => navCommand("NAV_CANCEL")}>CANCEL NAV</button>
           </div>
-          {goalPreview && <div className="hmi-preview-state" role="status">{pathRequestState === "PLANNING" ? "Planning approved route…" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ?? "Preview the path before sending the goal."}</div>}
-          <ManualBar controlMode={controlMode} controlOnline={controlOnline} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} />
+          <div className="hmi-preview-state" role="status" data-testid="point-navigation-state">
+            {!goalPreview ? "WAITING FOR DESTINATION" : pointYawPending ? "SELECT YAW" : pathRequestState === "PLANNING" ? "PLANNING" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ?? "POINT SELECTED"}
+          </div>
+          </div>
         </aside>
+        </>}
+        {controlMode === "MANUAL" && <ManualBar controlMode={controlMode} controlOnline={controlOnline} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} expanded={manualPanelExpanded} controls={`${panelId}-manual`} onToggle={() => setManualPanelExpanded((value) => !value)} />}
+        </div>
+          {errorLogOpen && <ErrorLog errors={controlErrors} onClose={closeErrorLog} />}
+        </section>
       </main>
       }
-
-      {activeSection === "CONTROL" && <footer className="robot-detail-bottom hmi-error-log-footer">
-        <ErrorLog errors={controlErrors} />
-      </footer>}
     </div>
   );
 }
 
 const ManualBar = memo(ManualBarContent);
 
-function ManualBarContent({ controlMode, controlOnline, activeManualCommand, moveButtonEvents }: { controlMode: string; controlOnline: boolean; activeManualCommand: ActiveManualCommand | null; moveButtonEvents: (action: ManualAction) => { onClick: () => void } }) {
-  const button = (action: ManualAction) => {
-    const item = MANUAL_ACTIONS.find((candidate) => candidate.action === action)!;
-    const key = action === "FORWARD" ? "W / ↑" : action === "BACKWARD" ? "S / ↓"
-      : action === "LEFT" ? "A / ←" : action === "RIGHT" ? "D / →"
-        : action === "ROTATE_LEFT" ? "Q" : action === "ROTATE_RIGHT" ? "E" : "SPACE";
-    return <button type="button" key={item.action}
-      className={`manual-key manual-key-${item.action.toLowerCase()}${activeManualCommand === item.action ? " is-active" : ""}`}
-      title={item.title} aria-label={item.title} aria-pressed={item.action !== "STOP" && activeManualCommand === item.action}
-      disabled={!controlOnline || (item.action !== "STOP" && controlMode !== "MANUAL")}
-      {...moveButtonEvents(item.action)}>{item.label}<small>{key}</small></button>;
-  };
-  return <section className="robot-detail-manual hmi-manual-jog-panel" aria-label="Manual jog panel" data-testid="manual-jog-panel">
-    <div className="robot-detail-manual-head"><div><span className="hmi-manual-kicker">MANUAL JOG</span><b>{activeManualCommand ? `${activeManualCommand.replace(/_/g, " ")} LATCHED` : "STOPPED"}</b><small>{controlMode === "MANUAL" ? "Jog controls enabled · click again or STOP to halt" : "Select MANUAL mode to enable movement"}</small></div><span className={`hmi-state-pill ${controlMode === "MANUAL" ? "is-running" : "is-neutral"}`}>{controlMode}</span></div>
-    <div className="hmi-jog-layout">
-      <div className="hmi-jog-pad" role="group" aria-label="Manual movement controls">
-        <span />{button("FORWARD")}<span />
-        {button("LEFT")}{button("STOP")}{button("RIGHT")}
-        <span />{button("BACKWARD")}<span />
-      </div>
-      <div className="hmi-rotate-pad" role="group" aria-label="Manual rotation controls">
-        <span>ROTATE</span>{button("ROTATE_LEFT")}{button("ROTATE_RIGHT")}
-      </div>
-    </div>
-  </section>;
+function PanelToggle({ title, expanded, controls, onToggle }: { title: string; expanded: boolean; controls: string; onToggle: () => void }) {
+  return <button type="button" className="hmi-panel-toggle" aria-label={`${expanded ? "Collapse" : "Expand"} ${title}`} aria-expanded={expanded} aria-controls={controls} onClick={onToggle}><span aria-hidden="true">{expanded ? "▴" : "▾"}</span></button>;
 }
 
-function DashboardStatusPanel({ title, rows }: { title: string; rows: Array<[string, string]> }) {
-  return <section className="hmi-dashboard-status-panel" aria-label={title}>
-    <header>{title}</header>
-    <dl>{rows.map(([label, value]) => {
+function ManualBarContent({
+  controlMode,
+  controlOnline,
+  activeManualCommand,
+  moveButtonEvents,
+  expanded,
+  controls,
+  onToggle,
+}: {
+  controlMode: string;
+  controlOnline: boolean;
+  activeManualCommand: ActiveManualCommand | null;
+  moveButtonEvents: (action: ManualAction) => { onClick: () => void };
+  expanded: boolean;
+  controls: string;
+  onToggle: () => void;
+}) {
+  const button = (action: ManualAction, key = "") => {
+    const item = MANUAL_ACTIONS.find(
+      (candidate) => candidate.action === action,
+    )!;
+
+    return (
+      <button
+        type="button"
+        key={item.action}
+        className={`manual-key manual-key-${item.action.toLowerCase()}${
+          activeManualCommand === item.action ? " is-active" : ""
+        }`}
+        title={item.title}
+        aria-label={item.title}
+        aria-pressed={
+          item.action !== "STOP" &&
+          activeManualCommand === item.action
+        }
+        disabled={
+          !controlOnline ||
+          (item.action !== "STOP" && controlMode !== "MANUAL")
+        }
+        {...moveButtonEvents(item.action)}
+      >
+        {item.label}
+        {key && <small>{key}</small>}
+      </button>
+    );
+  };
+
+  return (
+    <section
+      className="robot-detail-manual hmi-manual-jog-panel hmi-floating-panel"
+      aria-label="Manual jog panel"
+      data-testid="manual-jog-panel"
+      data-expanded={expanded}
+    >
+      <header className="robot-detail-manual-head hmi-floating-header">
+        <div>
+          <span className="hmi-manual-kicker">MANUAL JOG</span>
+          <b>
+            {activeManualCommand
+              ? `${activeManualCommand.replace(/_/g, " ")} LATCHED`
+              : "STOPPED"}
+          </b>
+        </div>
+
+        <span
+          className={`hmi-state-pill ${
+            controlMode === "MANUAL"
+              ? "is-running"
+              : "is-neutral"
+          }`}
+        >
+          {controlMode === "AUTONOMOUS" ? "AUTO" : "MANUAL"}
+        </span>
+        <PanelToggle title="Manual jog" expanded={expanded} controls={controls} onToggle={onToggle} />
+      </header>
+
+      <div className="hmi-floating-content" id={controls} hidden={!expanded}>
+      <div className="hmi-jog-layout">
+        <div
+          className="hmi-jog-pad hmi-jog-pad-8way"
+          role="group"
+          aria-label="Manual movement controls"
+        >
+          {button("FORWARD_LEFT")}
+          {button("FORWARD", "W")}
+          {button("FORWARD_RIGHT")}
+
+          {button("LEFT", "A")}
+          {button("STOP", "SPACE")}
+          {button("RIGHT", "D")}
+
+          {button("BACKWARD_LEFT")}
+          {button("BACKWARD", "S")}
+          {button("BACKWARD_RIGHT")}
+        </div>
+
+        <div
+          className="hmi-rotate-pad"
+          role="group"
+          aria-label="Manual rotation controls"
+        >
+          {button("ROTATE_LEFT", "Q")}
+          {button("ROTATE_RIGHT", "E")}
+        </div>
+      </div>
+      </div>
+    </section>
+  );
+}
+
+function DashboardStatusPanel({ title, rows, expanded, controls, onToggle }: { title: string; rows: Array<[string, string]>; expanded: boolean; controls: string; onToggle: () => void }) {
+  return <section className="hmi-dashboard-status-panel hmi-floating-panel" aria-label={title} data-expanded={expanded}>
+    <header className="hmi-floating-header"><b>{title}</b><PanelToggle title={title} expanded={expanded} controls={controls} onToggle={onToggle} /></header>
+    <div className="hmi-floating-content" id={controls} hidden={!expanded}><dl>{rows.map(([label, value]) => {
       const state = value.toUpperCase();
       const tone = ["READY", "LIVE", "ONLINE", "RECEIVING", "LOCALIZED", "CLEAR", "ACTIVE", "RUNNING"].includes(state)
         ? "is-good" : ["BLOCKED", "INITIAL POSE REQUIRED", "WAITING", "STARTING", "UNKNOWN"].includes(state)
           ? "is-warning" : ["OFFLINE", "UNAVAILABLE", "INACTIVE", "ERROR", "FAILED"].includes(state) ? "is-fault" : "is-neutral";
       return <div key={label}><dt>{label}</dt><dd className={tone}>{value}</dd></div>;
-    })}</dl>
+    })}</dl></div>
   </section>;
 }
 
-function ErrorLog({ errors }: { errors: RobotDetailError[] }) {
+function ErrorLog({ errors, onClose }: { errors: RobotDetailError[]; onClose: () => void }) {
+  const titleId = useId();
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   const newestFirst = [...errors].sort((left, right) => {
     const leftTime = left.timestamp ? Date.parse(left.timestamp) : Number.NaN;
     const rightTime = right.timestamp ? Date.parse(right.timestamp) : Number.NaN;
@@ -728,8 +846,13 @@ function ErrorLog({ errors }: { errors: RobotDetailError[] }) {
     return 0;
   }).slice(0, 40);
 
-  return <section className="hmi-error-log" aria-label="Error log" data-testid="control-error-log">
-    <header><h2>ERROR LOG</h2><span>{newestFirst.length} {newestFirst.length === 1 ? "ENTRY" : "ENTRIES"}</span></header>
+  return <div className="hmi-error-modal-backdrop" data-testid="control-error-log-backdrop"
+    onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="hmi-error-modal" role="dialog" aria-modal="true" aria-labelledby={titleId}
+      aria-label="Error log" data-testid="control-error-log" data-error-count={errors.length}>
+    <header><h2 id={titleId}>ERROR LOG</h2><span>{errors.length} {errors.length === 1 ? "ENTRY" : "ENTRIES"}</span>
+      <button type="button" className="hmi-error-modal-close" aria-label="Close error log" onClick={onClose}>×</button></header>
+    <div className="hmi-error-modal-body">
     {newestFirst.length === 0 ? <p className="hmi-error-log-empty">No active errors.</p> : <div className="hmi-error-log-table-wrap">
       <table className="hmi-error-log-table">
         <thead><tr><th scope="col">TIME</th><th scope="col">LEVEL</th><th scope="col">SOURCE</th><th scope="col">MESSAGE</th></tr></thead>
@@ -747,5 +870,7 @@ function ErrorLog({ errors }: { errors: RobotDetailError[] }) {
         })}</tbody>
       </table>
     </div>}
-  </section>;
+    </div>
+    </section>
+  </div>;
 }

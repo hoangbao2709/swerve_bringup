@@ -142,6 +142,21 @@ function canvasWorldPixel(canvas: HTMLCanvasElement, world: { x: number; y: numb
   return { x: width / 2 + (world.x - centerX) * scale, y: height / 2 - (world.y - centerY) * scale };
 }
 
+function canvasScreenWorld(canvas: HTMLCanvasElement, screen: { x: number; y: number }) {
+  const width = Number(canvas.dataset.viewportWidth);
+  const height = Number(canvas.dataset.viewportHeight);
+  const centerX = Number(canvas.dataset.viewportCenterX);
+  const centerY = Number(canvas.dataset.viewportCenterY);
+  const scale = Number(canvas.dataset.viewportScalePxPerMeter);
+  return { x: centerX + (screen.x - width / 2) / scale, y: centerY - (screen.y - height / 2) / scale };
+}
+
+function mapPointer(canvas: HTMLCanvasElement, type: string, x: number, y: number) {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+  Object.defineProperty(event, "pointerId", { value: 1 });
+  canvas.dispatchEvent(event);
+}
+
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   vi.stubGlobal("Worker", undefined);
@@ -203,37 +218,221 @@ describe("robot quick detail workflow", () => {
 
 describe("robot detail route stability", () => {
 
-  it("keeps the map first and places the single existing jog panel below navigation in the right column", () => {
+  it("uses PAN and POINT modes for drag, click, yaw preview, and Ctrl-wheel zoom", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...useStore.getState().twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>(".local-pose-map canvas")!;
+    const capture = vi.fn();
+    Object.assign(canvas, { setPointerCapture: capture, hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
+    expect(buttonNamed("POINT")?.getAttribute("aria-pressed")).toBe("true");
+    expect(buttonNamed("PAN")?.getAttribute("aria-pressed")).toBe("false");
+    act(() => {
+      mapPointer(canvas, "pointerdown", 400, 200);
+      mapPointer(canvas, "pointermove", 402, 201);
+      mapPointer(canvas, "pointerup", 402, 201);
+      canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 402, clientY: 201 }));
+    });
+    expect(capture).toHaveBeenCalledWith(1);
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeTruthy();
+    const pointCoordinates = Array.from(container.querySelectorAll(".hmi-coordinate-grid b")).map((node) => node.textContent);
+    const clickedPoint = canvasScreenWorld(canvas, { x: 402, y: 201 });
+    expect(Number.parseFloat(pointCoordinates[0]!)).toBeCloseTo(clickedPoint.x, 2);
+    expect(Number.parseFloat(pointCoordinates[1]!)).toBeCloseTo(clickedPoint.y, 2);
+    expect(pointCoordinates[2]).toContain("0.00");
+    act(() => buttonNamed("CANCEL")?.click());
+    act(() => buttonNamed("PAN")?.click());
+    expect(buttonNamed("PAN")?.getAttribute("aria-pressed")).toBe("true");
+    expect(buttonNamed("POINT")?.getAttribute("aria-pressed")).toBe("false");
+    const before = { x: Number(canvas.dataset.viewportCenterX), y: Number(canvas.dataset.viewportCenterY), scale: Number(canvas.dataset.viewportScalePxPerMeter) };
+    act(() => {
+      mapPointer(canvas, "pointerdown", 400, 200);
+      mapPointer(canvas, "pointermove", 500, 250);
+      mapPointer(canvas, "pointerup", 500, 250);
+      canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 500, clientY: 250 }));
+    });
+    expect(Number(canvas.dataset.viewportCenterX)).toBeCloseTo(before.x - 100 / before.scale);
+    expect(Number(canvas.dataset.viewportCenterY)).toBeCloseTo(before.y + 50 / before.scale);
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
+    const normalWheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -120, clientX: 450, clientY: 220 });
+    act(() => canvas.dispatchEvent(normalWheel));
+    expect(normalWheel.defaultPrevented).toBe(false);
+    expect(Number(canvas.dataset.viewportScalePxPerMeter)).toBe(before.scale);
+    const anchoredWorld = { x: Number(canvas.dataset.viewportCenterX) + (450 - 320) / before.scale,
+      y: Number(canvas.dataset.viewportCenterY) - (220 - 180) / before.scale };
+    const ctrlWheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -120, clientX: 450, clientY: 220 });
+    act(() => canvas.dispatchEvent(ctrlWheel));
+    expect(ctrlWheel.defaultPrevented).toBe(true);
+    expect(Number(canvas.dataset.viewportScalePxPerMeter)).toBeCloseTo(before.scale * 1.12);
+    const pixel = canvasWorldPixel(canvas, anchoredWorld);
+    expect(Math.hypot(pixel.x - 450, pixel.y - 220)).toBeLessThan(1);
+
+    act(() => { buttonNamed("FIT")?.click(); buttonNamed("POINT")?.click(); });
+    expect(buttonNamed("POINT")?.getAttribute("aria-pressed")).toBe("true");
+    act(() => canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })));
+    expect(canvas.dataset.pointSelectionState).toBe("SELECT_YAW");
+    act(() => mapPointer(canvas, "pointermove", 350, 200));
+    expect(canvas.dataset.directionPreview).toBe("visible");
+    const startWorld = canvasScreenWorld(canvas, { x: 320, y: 180 });
+    const endWorld = canvasScreenWorld(canvas, { x: 350, y: 200 });
+    const selectedYaw = Math.atan2(endWorld.y - startWorld.y, endWorld.x - startWorld.x);
+    expect(Number(canvas.dataset.directionPreviewYaw)).toBeCloseTo(selectedYaw, 6);
+    act(() => canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 350, clientY: 200 })));
+    expect(canvas.dataset.directionPreview).toBe("hidden");
+    const yawText = Array.from(container.querySelectorAll(".hmi-coordinate-grid b"))[2]?.textContent ?? "";
+    expect(Number.parseFloat(yawText)).toBeCloseTo(selectedYaw, 2);
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_REQUEST");
+    const pointModeScale = Number(canvas.dataset.viewportScalePxPerMeter);
+    const noCtrlInPointMode = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 120, clientX: 450, clientY: 220 });
+    act(() => canvas.dispatchEvent(noCtrlInPointMode));
+    expect(noCtrlInPointMode.defaultPrevented).toBe(false);
+    expect(Number(canvas.dataset.viewportScalePxPerMeter)).toBe(pointModeScale);
+    const ctrlInPointMode = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -120, clientX: 450, clientY: 220 });
+    act(() => canvas.dispatchEvent(ctrlInPointMode));
+    expect(ctrlInPointMode.defaultPrevented).toBe(true);
+    expect(Number(canvas.dataset.viewportScalePxPerMeter)).toBeCloseTo(pointModeScale * 1.12);
+  });
+
+  it("accepts POINT selections only from known-free occupancy cells", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...useStore.getState().twin, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
+    const snapshot = useStore.getState().robotDetail.R01.runtimeMapSnapshot!;
+    useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: { ...snapshot, data: Array(100).fill(100) } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>(".local-pose-map canvas")!;
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+    expect(buttonNamed("PREVIEW PATH")).toBeUndefined();
+
+    const occupiedSnapshot = useStore.getState().robotDetail.R01.runtimeMapSnapshot!;
+    await act(async () => {
+      useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: { ...occupiedSnapshot, data: Array(100).fill(0) } });
+      await settleUi();
+    });
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeTruthy();
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
+    await act(async () => { canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_REQUEST");
+  });
+
+  it("uses one map workspace and shows the manual panel only in authoritative MANUAL mode", async () => {
     setOnlineRobot();
     renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); });
 
     const main = container.querySelector<HTMLElement>(".hmi-control-main");
     expect(main?.children[0]?.classList.contains("robot-detail-map-panel")).toBe(true);
-    expect(main?.children[1]?.getAttribute("aria-label")).toBe("Robot operation panel");
+    expect(main?.children).toHaveLength(1);
+    const operation = main?.querySelector<HTMLElement>('[aria-label="Robot operation panel"]');
+    expect(operation).toBeNull();
     const manualPanel = main?.querySelector<HTMLElement>('[data-testid="manual-jog-panel"]');
-    expect(manualPanel?.parentElement).toBe(main?.children[1]);
-    expect(manualPanel?.previousElementSibling?.classList.contains("hmi-nav-management")).toBe(true);
+    expect(manualPanel?.parentElement).toBe(main?.querySelector('[data-testid="control-operation-panels"]'));
+    expect(manualPanel?.dataset.expanded).toBe("true");
+    expect(container.querySelector(".robot-map-source-bar")).toBeNull();
     expect(container.querySelectorAll('[data-testid="manual-jog-panel"]')).toHaveLength(1);
-    expect(main?.querySelectorAll(".manual-key")).toHaveLength(7);
-    const errorLog = container.querySelector<HTMLElement>('[data-testid="control-error-log"]');
-    expect(errorLog?.textContent).toContain("ERROR LOG");
-    expect(errorLog?.textContent).toContain("No active errors.");
-    expect(errorLog?.querySelector("button")).toBeNull();
+    expect(main?.querySelectorAll(".manual-key")).toHaveLength(11);
+    expect(buttonNamed("YAW +")).toBeUndefined();
+    expect(buttonNamed("YAW −")).toBeUndefined();
+    expect(buttonNamed("PAN")?.getAttribute("aria-pressed")).toBe("false");
+    expect(buttonNamed("POINT")?.getAttribute("aria-pressed")).toBe("true");
+    const errorLogButton = container.querySelector<HTMLButtonElement>('[data-testid="control-error-log-trigger"]');
+    const mapToolbar = container.querySelector<HTMLElement>('[data-testid="robot-map-toolbar"]');
+    const centerRobotButton = buttonNamed("CENTER ROBOT");
+    expect(errorLogButton?.textContent?.trim()).toBe("ERROR LOG");
+    expect(centerRobotButton?.parentElement).toBe(mapToolbar);
+    expect(centerRobotButton?.nextElementSibling).toBe(errorLogButton);
+    expect(errorLogButton?.classList.contains("is-neutral")).toBe(true);
+    expect(container.querySelector('[data-testid="control-error-log"]')).toBeNull();
+    expect(container.querySelector(".hmi-error-log-footer")).toBeNull();
+    expect(container.querySelectorAll('[data-testid="control-error-log-trigger"]')).toHaveLength(1);
     expect(container.querySelectorAll(".hmi-dashboard-status-panel")).toHaveLength(2);
     expect(container.textContent).toContain("SYSTEM INPUTS");
     expect(container.textContent).toContain("ACTIVE MAP");
     expect(container.textContent).toContain("STATE");
   });
 
-  it("shows newest real runtime errors first and uses a dash when no source is provided", () => {
+  it("folds and reopens each overlay without remounting the map or resetting a held manual command", () => {
+    setOnlineRobot();
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    const canvas = container.querySelector("canvas");
+    act(() => buttonNamed("Forward (W / ↑)")?.click());
+    const manualPanel = container.querySelector('[data-testid="manual-jog-panel"]');
+    expect(manualPanel?.textContent).toContain("FORWARD LATCHED");
+    vi.mocked(wsManualCommand).mockClear();
+    expect(container.querySelector('[aria-label="Robot operation panel"]')).toBeNull();
+    for (const [title, initiallyExpanded] of [["SYSTEM INPUTS", true], ["STATE", true], ["Manual jog", true]] as const) {
+      const toggle = buttonNamed(`${initiallyExpanded ? "Collapse" : "Expand"} ${title}`)!;
+      const content = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+      expect(content.hidden).toBe(!initiallyExpanded);
+      act(() => toggle.click());
+      expect(toggle.getAttribute("aria-expanded")).toBe(String(!initiallyExpanded));
+      expect(content.hidden).toBe(initiallyExpanded);
+      act(() => toggle.click());
+      expect(content.hidden).toBe(!initiallyExpanded);
+      expect(container.querySelector("canvas")).toBe(canvas);
+    }
+    expect(container.querySelector('[data-testid="manual-jog-panel"]')).toBe(manualPanel);
+    expect(manualPanel?.textContent).toContain("FORWARD LATCHED");
+    expect(wsManualCommand).not.toHaveBeenCalled();
+    act(() => buttonNamed("Stop")?.click());
+    expect(wsManualCommand).toHaveBeenLastCalledWith("R01", "STOP");
+  });
+
+  it("switches floating operation panels only after authoritative mode confirmation and expands the newly active panel", async () => {
+    setOnlineRobot();
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    const manual = container.querySelector<HTMLElement>('[data-testid="manual-jog-panel"]');
+    expect(manual).toBeTruthy();
+    expect(container.querySelector('[aria-label="Robot operation panel"]')).toBeNull();
+
+    act(() => buttonNamed("Collapse Manual jog")?.click());
+    expect(manual?.dataset.expanded).toBe("false");
+    act(() => buttonNamed("AUTONOMOUS")?.click());
+    expect(wsSetRobotMode).toHaveBeenLastCalledWith("R01", "AUTONOMOUS");
+    expect(container.querySelector('[data-testid="manual-jog-panel"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="Robot operation panel"]')).toBeNull();
+
+    await act(async () => {
+      useStore.getState().setRobotDetail("R01", { appliedMode: "AUTONOMOUS", modeTransitionState: "APPLIED" });
+      await settleUi();
+    });
+    const operation = container.querySelector<HTMLElement>('[aria-label="Robot operation panel"]');
+    expect(operation?.dataset.expanded).toBe("true");
+    expect(container.querySelector('[data-testid="manual-jog-panel"]')).toBeNull();
+
+    act(() => buttonNamed("Collapse Robot / Mission")?.click());
+    expect(operation?.dataset.expanded).toBe("false");
+    act(() => buttonNamed("MANUAL")?.click());
+    expect(container.querySelector('[aria-label="Robot operation panel"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="manual-jog-panel"]')).toBeNull();
+    await act(async () => {
+      useStore.getState().setRobotDetail("R01", { appliedMode: "MANUAL", modeTransitionState: "APPLIED" });
+      await settleUi();
+    });
+    expect(container.querySelector('[aria-label="Robot operation panel"]')).toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-testid="manual-jog-panel"]')?.dataset.expanded).toBe("true");
+  });
+
+  it("opens the error modal with newest real runtime errors first and uses a dash when no source is provided", () => {
     setOnlineRobot();
     useStore.getState().setRobotDetail("R01", { errors: [
       { severity: "WARNING", message: "Older diagnostic", timestamp: "2026-10-07T10:00:00Z" },
       { severity: "ERROR", message: "Latest runtime error", timestamp: "2026-10-07T10:02:00Z" },
     ] });
     renderNode(<ControlDetailHarness robotId="R01" />);
+    const errorLogButton = container.querySelector<HTMLButtonElement>('[data-testid="control-error-log-trigger"]');
+    expect(errorLogButton?.textContent?.trim()).toBe("ERROR LOG (2)");
+    expect(errorLogButton?.classList.contains("is-error")).toBe(true);
+    act(() => errorLogButton?.click());
 
     const rows = Array.from(container.querySelectorAll<HTMLTableRowElement>(".hmi-error-log-table tbody tr"));
+    expect(container.querySelector('[role="dialog"][aria-label="Error log"]')).toBeTruthy();
     expect(rows).toHaveLength(2);
     expect(rows[0]?.textContent).toContain("Latest runtime error");
     expect(rows[0]?.textContent).toContain("ERROR");
@@ -242,7 +441,29 @@ describe("robot detail route stability", () => {
     expect(rows[1]?.querySelector(".hmi-error-level")?.classList.contains("is-warning")).toBe(true);
   });
 
-  it("keeps all seven manual movement buttons on the left station and sends their existing commands", () => {
+  it("closes the Error Log modal by its close button, Escape, and backdrop without closing on inside clicks", () => {
+    setOnlineRobot();
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    const open = () => act(() => container.querySelector<HTMLButtonElement>('[data-testid="control-error-log-trigger"]')?.click());
+    open();
+    expect(container.querySelector('[role="dialog"][aria-label="Error log"]')).toBeTruthy();
+    act(() => container.querySelector<HTMLElement>('[role="dialog"]')?.click());
+    expect(container.querySelector('[role="dialog"][aria-label="Error log"]')).toBeTruthy();
+    act(() => buttonNamed("Close error log")?.click());
+    expect(container.querySelector('[role="dialog"][aria-label="Error log"]')).toBeNull();
+
+    open();
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container.querySelector('[role="dialog"][aria-label="Error log"]')).toBeNull();
+
+    open();
+    act(() => container.querySelector<HTMLElement>('[data-testid="control-error-log-backdrop"]')?.click());
+    expect(container.querySelector('[role="dialog"][aria-label="Error log"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="control-error-log-trigger"]')).toHaveLength(1);
+    expect(container.querySelector(".hmi-error-log-footer")).toBeNull();
+  });
+
+  it("keeps all seven manual movement buttons in the right floating group and sends their existing commands", () => {
     setOnlineRobot("MAPPING");
     renderNode(<ControlDetailHarness robotId="R01" />);
     const actions = [
@@ -426,12 +647,13 @@ describe("robot detail route stability", () => {
     expect(vi.mocked(wsManualCommand).mock.calls).toHaveLength(countAfterStop);
     expect(container.querySelector<HTMLButtonElement>(".manual-key-forward")?.getAttribute("aria-pressed")).toBe("false");
   });
-  it("renders the direct URL with null map/scan and disables manual motion while disconnected", () => {
+  it("renders the direct URL with null map/scan and keeps MANUAL JOG hidden in autonomous mode", () => {
     useStore.setState({ twin: null as never, rosDiagnostics: null, rosConnected: false, websocketState: "DISCONNECTED", robotDetail: {} });
     renderNode(<ControlDetailHarness robotId="R01" />);
     expect(container.querySelector('[data-testid="slam-map-2d-empty"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="robot-map-layers"]')).toBeNull();
-    expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(true);
+    expect(container.querySelector('[data-testid="manual-jog-panel"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Robot operation panel"]')).toBeTruthy();
     act(() => buttonNamed("DIAGNOSIS")?.click());
     expect(container.textContent).toContain("SUBSYSTEM STATUS");
     expect(container.textContent).toContain("ROS Bridge");
@@ -567,19 +789,24 @@ describe("robot detail route stability", () => {
     renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { await settleUi(); });
 
-    expect(container.textContent).toContain("2D SLAM OCCUPANCY MAP");
+    expect(container.textContent).toContain("SLAM /map");
+    expect(container.textContent).not.toContain("2D SLAM OCCUPANCY MAP");
     expect(container.textContent).not.toContain("GLOBAL MAP");
     expect(container.textContent).not.toContain("MAP VIEW 3D");
     expect(container.textContent).not.toContain("Destination Tag");
     expect(container.textContent).not.toContain("Target Tag");
     expect(container.querySelector('[aria-label="Navigation target method"]')).toBeNull();
-    expect(container.querySelectorAll('[data-testid="robot-map-layers"] button')).toHaveLength(5);
+    expect(container.querySelectorAll('[data-testid="robot-map-layers"] button')).toHaveLength(7);
+    expect(buttonNamed("PAN")?.getAttribute("aria-pressed")).toBe("false");
+    expect(buttonNamed("POINT")?.getAttribute("aria-pressed")).toBe("true");
     expect(container.textContent).not.toContain("MQTT HOST");
     expect(container.querySelector('[data-testid="active-navigation-map-2d"]')).toBeTruthy();
     expect(container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')?.dataset.mapId)
       .toBe("SLAM-session-1");
     const mapCanvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')!;
-    const layerButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="robot-map-layers"] button'));
+    const toolbarButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="robot-map-layers"] button'));
+    expect(toolbarButtons.slice(0, 2).map((button) => button.textContent?.trim())).toEqual(["✋ PAN", "⌖ POINT"]);
+    const layerButtons = toolbarButtons.slice(2);
     expect(layerButtons.map((button) => button.textContent?.trim())).toEqual([
       "✓ ROBOT", "✓ SCAN", "✓ PATH", "□ TRAJECTORY", "□ GRID",
     ]);
@@ -728,20 +955,21 @@ describe("robot detail route stability", () => {
     useStore.getState().setRobotDetail("R01", { mappingSessionId: "session-1", mappingState: "MAPPING",
       slam2dMap: slamMap, slam3dAccumulatedCloud: cloud });
     renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); });
 
     expect(container.querySelector('[data-testid="slam-runtime-state"]')?.textContent).toBe("SLAM LIVE");
     expect(container.querySelector('[data-testid="nav2-runtime-state"]')?.textContent).toBe("NAV2 READY");
-    expect(container.textContent).toContain("ACTIVE MAP · FRAME map");
+    expect(container.textContent).toContain("ACTIVE MAP");
     expect(container.textContent).not.toContain("session-session-1");
     expect(container.textContent).not.toContain("GOALS DISABLED");
 
     await act(async () => { await settleUi(); });
     const liveMapCanvas = container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas');
     expect(liveMapCanvas?.dataset.mapId).toBe("SLAM-session-1");
-    await act(async () => { liveMapCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
-    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("POINT SELECTED");
-    expect(buttonNamed("PREVIEW PATH")?.disabled).toBe(false);
-    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    await act(async () => { liveMapCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 400, clientY: 340 })); });
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("SELECT YAW");
+    expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
+    await act(async () => { liveMapCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 400, clientY: 340 })); });
     expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).toContain("PATH_PREVIEW_REQUEST");
     expect(container.querySelector('[data-testid="slam-map-3d"]')).toBeNull();
 
@@ -760,6 +988,7 @@ describe("robot detail route stability", () => {
   it("fails closed when lifecycle diagnostics say bt_navigator is inactive", () => {
     setOnlineRobot("UNIFIED");
     setNavReadyCapabilities();
+    useStore.setState({ twin: { ...useStore.getState().twin!, robots: { R01: { ...r01(), control_mode: "AUTONOMOUS" } } } });
     useStore.setState({ rosDiagnostics: {
       ros: true, gazebo: true, controller_manager: true, slam: true, nav2: true,
       nav2_ready: false, nav2_actions_ready: true, nav2_lifecycle_ready: false,
@@ -793,11 +1022,17 @@ describe("robot detail route stability", () => {
     expect(container.querySelector('[data-testid="global-warehouse-map"]')).toBeNull();
     await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
     expect(container.querySelector('[data-testid="selected-point-status"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="selected-point-status"]')?.textContent).toBe("SELECT YAW");
     expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type)).not.toContain("PATH_PREVIEW_REQUEST");
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
+    expect(buttonNamed("PREVIEW PATH")).toBeUndefined();
 
-    await act(async () => { buttonNamed("YAW +")?.click(); });
-    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    const pickStart = { x: 320, y: 180 }, pickEnd = { x: 380, y: 220 };
+    const startWorld = canvasScreenWorld(canvas!, pickStart), endWorld = canvasScreenWorld(canvas!, pickEnd);
+    const selectedYaw = Math.atan2(endWorld.y - startWorld.y, endWorld.x - startWorld.x);
+    await act(async () => { mapPointer(canvas!, "pointermove", pickEnd.x, pickEnd.y); });
+    expect(canvas?.dataset.directionPreview).toBe("visible");
+    await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: pickEnd.x, clientY: pickEnd.y })); });
     const request = vi.mocked(wsSend).mock.calls.map(([message]) => message)
       .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
     expect(request?.type).toBe("PATH_PREVIEW_REQUEST");
@@ -805,7 +1040,7 @@ describe("robot detail route stability", () => {
     expect(request).toMatchObject({ robot_id: "R01", frame_id: "map", active_map_id: "NAV2-R01-map",
       active_map_revision: "nav2-r21", map_id: "NAV2-R01-map", map_revision: "nav2-r21",
       source_type: "ACTIVE_MAP_POINT", source_map_id: "NAV2-R01-map", source_map_revision: "nav2-r21" });
-    expect(Number.isFinite(request.yaw)).toBe(true);
+    expect(request.yaw).toBeCloseTo(selectedYaw, 2);
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
 
     const approved = {
@@ -820,7 +1055,8 @@ describe("robot detail route stability", () => {
 
     await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 330, clientY: 180 })); });
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
-    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toBe("SELECT YAW");
+    await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 330, clientY: 180 })); });
     const replacementRequest = vi.mocked(wsSend).mock.calls.map(([message]) => message)
       .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
     expect(replacementRequest?.type).toBe("PATH_PREVIEW_REQUEST");
@@ -835,9 +1071,17 @@ describe("robot detail route stability", () => {
     const goalMessage = vi.mocked(wsSend).mock.calls.map(([message]) => message)
       .find((message) => message.type === "NAV_GOAL");
     expect(goalMessage).toMatchObject({ type: "NAV_GOAL", robot_id: "R01",
+      x: replacementRequest.x, y: replacementRequest.y, yaw: replacementRequest.yaw,
       preview_request_id: replacementRequest.request_id, frame_id: "map",
       active_map_id: "NAV2-R01-map", active_map_revision: "nav2-r21",
       source_type: "ACTIVE_MAP_POINT", source_map_id: "NAV2-R01-map", source_map_revision: "nav2-r21" });
+
+    await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 400, clientY: 220 })); });
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toBe("SELECT YAW");
+    await act(async () => { buttonNamed("CANCEL")?.click(); });
+    expect(container.querySelector('[data-testid="point-navigation-state"]')?.textContent).toBe("WAITING FOR DESTINATION");
+    expect(container.querySelector('[data-testid="selected-point-status"]')).toBeNull();
+    expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
 
     act(() => useStore.getState().setRobotDetail("R01", { pathPreview: { ...approvedReplacement, path: [] } }));
     expect(buttonNamed("SEND GOAL")?.disabled).toBe(true);
@@ -870,7 +1114,7 @@ describe("robot detail route stability", () => {
     expect(container.querySelector('[data-testid="global-warehouse-map"]')).toBeNull();
     await act(async () => { localCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
     expect(container.querySelector('[data-testid="selected-point-status"]')).toBeTruthy();
-    await act(async () => { buttonNamed("PREVIEW PATH")?.click(); });
+    await act(async () => { localCanvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 320, clientY: 180 })); });
     const request = vi.mocked(wsSend).mock.calls.map(([message]) => message)
       .filter((message) => message.type === "PATH_PREVIEW_REQUEST").at(-1);
     expect(request).toMatchObject({ type: "PATH_PREVIEW_REQUEST", frame_id: "map",
@@ -954,6 +1198,23 @@ describe("robot detail route stability", () => {
     expect(Number.isFinite(Number(coordinateInput("Y · MAP")?.value))).toBe(true);
     expect(coordinateInput("X · MAP")?.value).not.toBe("");
     expect(coordinateInput("Y · MAP")?.value).not.toBe("");
+
+    const picked = { x: coordinateInput("X · MAP")?.value, y: coordinateInput("Y · MAP")?.value };
+    act(() => {
+      mapPointer(canvas!, "pointerdown", 350, 160);
+      mapPointer(canvas!, "pointermove", 380, 190);
+      mapPointer(canvas!, "pointerup", 380, 190);
+      canvas!.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 380, clientY: 190 }));
+    });
+    expect(coordinateInput("X · MAP")?.value).toBe(picked.x);
+    expect(coordinateInput("Y · MAP")?.value).toBe(picked.y);
+    act(() => {
+      mapPointer(canvas!, "pointerdown", 400, 180);
+      mapPointer(canvas!, "pointermove", 402, 180);
+      mapPointer(canvas!, "pointerup", 402, 180);
+      canvas!.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 402, clientY: 180 }));
+    });
+    expect(coordinateInput("X · MAP")?.value).not.toBe(picked.x);
 
     await act(async () => {
       useStore.getState().setRobotDetail("R01", {

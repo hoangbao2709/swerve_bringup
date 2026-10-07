@@ -14,7 +14,7 @@ import {
 import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotRuntimeCapabilities, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
 import { centerMapViewportCamera, fitMapViewportCamera, fixedWorldTransform, mapViewportSessionKey, occupancyMapWorldBounds, resolveMapViewport, zoomMapViewportCamera, type MapViewportState } from "../../layout/mapViewport";
-import { occupancyRasterKey, occupancyRasters } from "./occupancyRaster";
+import { occupancyRasterKey, occupancyRasters, RasterRequestGeneration } from "./occupancyRaster";
 import { displayedFramePose, useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
 import { mapPointTarget, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
 
@@ -432,6 +432,7 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [viewportState, setViewportState] = useState<MapViewportState | null>(null);
+  const rasterRequestGeneration = useRef(new RasterRequestGeneration());
   const displayedPose = useStableDisplayedFramePose(robot?.id === map.robot_id ? robot : undefined, poseMapIdentity);
   const [rasterState, setRasterState] = useState<{ map: RobotDetailMapSnapshot; raster: HTMLCanvasElement } | null>(() => {
     const raster = occupancyRasters.peek(map);
@@ -439,6 +440,7 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
   });
   useEffect(() => {
     let cancelled = false;
+    const requestGeneration = rasterRequestGeneration.current.begin();
     const cached = occupancyRasters.peek(map);
     if (cached) setRasterState({ map, raster: cached });
     else setRasterState((previous) => {
@@ -451,9 +453,11 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
         && occupancyRasterKey(previous.map) === occupancyRasterKey(map) ? previous : null;
     });
     void occupancyRasters.get(map).then((raster) => {
-      if (!cancelled && raster) setRasterState({ map, raster });
+      if (!cancelled && raster && rasterRequestGeneration.current.isCurrent(requestGeneration)) {
+        setRasterState({ map, raster });
+      }
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; rasterRequestGeneration.current.invalidate(); };
   }, [map]);
   const retainedRasterMatches = Boolean(rasterState
     && rasterState.map.robot_id === map.robot_id

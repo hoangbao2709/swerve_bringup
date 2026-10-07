@@ -688,8 +688,9 @@ class Readiness(Node):
             return False, 'slam_toolbox_node_missing'
         if conflicts:
             return False, f'incompatible_mapping_nodes_present:{",".join(conflicts)}'
-        if map_nodes != {'slam_toolbox'}:
-            return False, f'/map_publishers_must_be_slam_toolbox_only:{sorted(map_nodes)}'
+        if len(map_publishers) != 1 or map_nodes != {'slam_toolbox'}:
+            return False, (f'/map_publishers_must_be_slam_toolbox_only:count={len(map_publishers)}:'
+                           f'owners={sorted(map_nodes)}')
         if 'slam_toolbox' not in tf_nodes:
             return False, f'slam_toolbox_not_publishing_tf:{sorted(tf_nodes)}'
         if 'map_server' in names:
@@ -1342,8 +1343,8 @@ class Readiness(Node):
                 or costmap['max_y'] < navigation['max_y'] - tolerance):
             return 'global_costmap_extent_does_not_cover_registered_navigation_map'
         try:
-            map_nodes = {str(row.node_name).lstrip('/')
-                         for row in self.get_publishers_info_by_topic('/map')}
+            map_publishers = self.get_publishers_info_by_topic('/map')
+            map_nodes = {str(row.node_name).lstrip('/') for row in map_publishers}
             canonical_nodes = {str(row.node_name).lstrip('/')
                                for row in self.get_publishers_info_by_topic('/canonical_map')}
             navigation_nodes = {str(row.node_name).lstrip('/')
@@ -1352,8 +1353,9 @@ class Readiness(Node):
                                    for row in self.get_subscriptions_info_by_topic('/navigation_map')}
         except Exception as exc:
             return f'navigation_map_graph_query_failed:{type(exc).__name__}'
-        if map_nodes != {'slam_toolbox'}:
-            return f'/map_publishers_must_be_slam_toolbox_only:{sorted(map_nodes)}'
+        if len(map_publishers) != 1 or map_nodes != {'slam_toolbox'}:
+            return (f'/map_publishers_must_be_slam_toolbox_only:count={len(map_publishers)}:'
+                    f'owners={sorted(map_nodes)}')
         if canonical_nodes != {'canonical_map_server'}:
             return f'/canonical_map_publishers_must_be_canonical_map_server_only:{sorted(canonical_nodes)}'
         if navigation_nodes != {'swerve_bridge'}:

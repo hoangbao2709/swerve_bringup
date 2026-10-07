@@ -9,6 +9,25 @@ export function occupancyCellColor(occupancy: number): [number, number, number, 
 }
 
 const rasterKeys = new WeakMap<RobotDetailMapSnapshot, string>();
+
+/** A component-local generation prevents a late raster build from winning a newer request. */
+export class RasterRequestGeneration {
+  private generation = 0;
+
+  begin(): number {
+    this.generation += 1;
+    return this.generation;
+  }
+
+  invalidate(): void {
+    this.generation += 1;
+  }
+
+  isCurrent(generation: number): boolean {
+    return generation === this.generation;
+  }
+}
+
 export function occupancyRasterKey(map: RobotDetailMapSnapshot): string {
   const cached = rasterKeys.get(map);
   if (cached) return cached;

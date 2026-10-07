@@ -2229,27 +2229,27 @@ table.dt.full td { white-space: normal; }
 }
 @media (max-width: 580px) { .local-form-grid { grid-template-columns: 1fr; }.local-vda-group { grid-column: auto; }.robot-map-source-bar { min-height: 38px; }.robot-detail-goal-toolbar { flex-wrap: wrap; }.robot-detail-goal-toolbar > span { flex: 1 1 100%; }.robot-detail-target-toolbar { flex-wrap: wrap; } }
 
-/* Control layout: one left-side jog station, map, and the existing operation panel;
- * the fixed-height lower strip is reserved for real runtime error records. */
+/* Control layout: the map is the first column; navigation and the existing jog
+ * controls share one scrollable right-side operation column. */
 .industrial-hmi .hmi-control-main {
-  grid-template-columns: minmax(240px, 260px) minmax(0, 1fr) minmax(320px, 340px);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 340px);
   gap: 10px;
   padding: 10px;
 }
-.industrial-hmi .hmi-control-main > .hmi-manual-jog-panel { min-width: 0; min-height: 0; overflow: hidden; }
-.industrial-hmi .hmi-control-main .robot-detail-manual-head { align-items: flex-start; flex-direction: column; gap: 7px; padding: 11px 12px; }
-.industrial-hmi .hmi-control-main .robot-detail-manual-head > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 4px 8px; }
-.industrial-hmi .hmi-control-main .hmi-manual-kicker { grid-column: 1 / -1; }
-.industrial-hmi .hmi-control-main .robot-detail-manual-head b { margin: 0; font-size: 15px; }
-.industrial-hmi .hmi-control-main .robot-detail-manual-head small { grid-column: 1 / -1; font-size: 11px; line-height: 1.35; }
-.industrial-hmi .hmi-control-main .hmi-jog-layout { flex-direction: column; justify-content: space-evenly; gap: 12px; padding: 10px 8px; }
-.industrial-hmi .hmi-control-main .hmi-jog-pad { grid-template-columns: repeat(3, 62px); grid-template-rows: repeat(3, 48px); gap: 4px; }
+.industrial-hmi .hmi-operation-panel > .hmi-manual-jog-panel { flex: 0 0 auto; min-width: 0; margin-top: 10px; border-top: 2px solid #b8bdc2; }
+.industrial-hmi .hmi-control-main .robot-detail-manual-head { align-items: center; flex-direction: row; gap: 8px; padding: 6px 8px; }
+.industrial-hmi .hmi-control-main .robot-detail-manual-head > div { display: grid; grid-template-columns: auto auto; align-items: baseline; gap: 2px 7px; }
+.industrial-hmi .hmi-control-main .hmi-manual-kicker { grid-column: auto; }
+.industrial-hmi .hmi-control-main .robot-detail-manual-head b { margin: 0; font-size: 14px; }
+.industrial-hmi .hmi-control-main .robot-detail-manual-head small { grid-column: 1 / -1; font-size: 10px; line-height: 1.2; }
+.industrial-hmi .hmi-operation-panel .hmi-jog-layout { flex: 0 0 auto; flex-direction: row; align-items: center; justify-content: center; gap: 6px; padding: 7px 8px; }
+.industrial-hmi .hmi-operation-panel .hmi-jog-pad { grid-template-columns: repeat(3, 50px); grid-template-rows: repeat(3, 42px); gap: 3px; }
 .industrial-hmi .hmi-control-main .hmi-jog-pad .manual-key { font-size: 20px; }
 .industrial-hmi .hmi-control-main .hmi-jog-pad .manual-key small,
 .industrial-hmi .hmi-control-main .hmi-rotate-pad .manual-key small { font-size: 10px; }
-.industrial-hmi .hmi-control-main .hmi-rotate-pad { grid-template-columns: repeat(2, minmax(88px, 1fr)); width: 100%; max-width: 230px; gap: 6px; }
+.industrial-hmi .hmi-operation-panel .hmi-rotate-pad { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100px; gap: 4px; }
 .industrial-hmi .hmi-control-main .hmi-rotate-pad > span { font-size: 12px; }
-.industrial-hmi .hmi-control-main .hmi-rotate-pad .manual-key { min-height: 54px; font-size: 21px; }
+.industrial-hmi .hmi-operation-panel .hmi-rotate-pad .manual-key { min-height: 46px; font-size: 20px; }
 .industrial-hmi .hmi-error-log-footer { display: block; flex: 0 0 158px; min-height: 158px; padding: 0 10px 10px; background: var(--hmi-page); }
 .industrial-hmi .hmi-error-log { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--hmi-line); background: #fff; }
 .industrial-hmi .hmi-error-log > header { flex: 0 0 35px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px; border-bottom: 1px solid #c7ccd0; background: #f5f6f7; }
@@ -2269,16 +2269,15 @@ table.dt.full td { white-space: normal; }
 .industrial-hmi .hmi-error-level.is-info { border-color: #a8c2d6; color: #205f91; background: #eef6fc; }
 .industrial-hmi .hmi-error-level.is-ok { border-color: #86b790; color: #216a30; background: #edf7ef; }
 @media (max-width: 1450px) {
-  .industrial-hmi .hmi-control-main { grid-template-columns: minmax(190px, 210px) minmax(0, 1fr) minmax(260px, 290px); }
-  .industrial-hmi .hmi-control-main .hmi-jog-pad { grid-template-columns: repeat(3, 50px); grid-template-rows: repeat(3, 44px); }
-  .industrial-hmi .hmi-control-main .hmi-rotate-pad { grid-template-columns: repeat(2, minmax(70px, 1fr)); }
-  .industrial-hmi .hmi-control-main .hmi-rotate-pad .manual-key { min-height: 50px; }
+  .industrial-hmi .hmi-control-main { grid-template-columns: minmax(0, 1fr) minmax(260px, 290px); }
+  .industrial-hmi .hmi-operation-panel .hmi-jog-pad { grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(3, 40px); }
+  .industrial-hmi .hmi-operation-panel .hmi-rotate-pad { width: 92px; }
+  .industrial-hmi .hmi-operation-panel .hmi-rotate-pad .manual-key { min-height: 44px; }
   .industrial-hmi .hmi-error-log-footer { flex-basis: 146px; min-height: 146px; }
 }
 @media (max-width: 900px) {
-  .industrial-hmi .hmi-control-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(360px, 1fr) auto; overflow: auto; }
-  .industrial-hmi .hmi-control-main > .hmi-manual-jog-panel { min-height: 290px; }
-  .industrial-hmi .hmi-control-main .hmi-jog-layout { flex-direction: row; flex-wrap: wrap; }
-  .industrial-hmi .hmi-control-main .hmi-rotate-pad { width: auto; }
+  .industrial-hmi .hmi-control-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(360px, 1fr) minmax(440px, auto); overflow: auto; }
+  .industrial-hmi .hmi-operation-panel .hmi-jog-layout { flex-direction: row; flex-wrap: wrap; }
+  .industrial-hmi .hmi-operation-panel .hmi-rotate-pad { width: auto; }
   .industrial-hmi .hmi-error-log-footer { flex-basis: 158px; min-height: 158px; }
 }

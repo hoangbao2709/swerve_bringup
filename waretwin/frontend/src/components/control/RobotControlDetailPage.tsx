@@ -572,7 +572,6 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
         </header>
         <LocalRobotSection section={localSection} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} hostStatus={host} />
       </main> : <main className="robot-detail-main hmi-control-main">
-        <ManualBar controlMode={controlMode} controlOnline={controlOnline} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} />
         <section className="robot-detail-map-panel">
           <div className="robot-map-source-bar">
             <span className="robot-map-view-label">2D SLAM OCCUPANCY MAP</span>
@@ -630,6 +629,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
             <button type="button" disabled={!controlOnline} onClick={() => navCommand("NAV_CANCEL")}>CANCEL NAV</button>
           </div>
           {goalPreview && <div className="hmi-preview-state" role="status">{pathRequestState === "PLANNING" ? "Planning approved route…" : approvedPreview?.status === "VALID" ? `PREVIEW VALID · ${safeNumber(approvedPreview.path_length_m, 2, " m")}` : approvedPreview?.reason ?? "Preview the path before sending the goal."}</div>}
+          <ManualBar controlMode={controlMode} controlOnline={controlOnline} activeManualCommand={activeManualCommand} moveButtonEvents={moveButtonEvents} />
         </aside>
       </main>
       }
@@ -655,7 +655,7 @@ function ManualBarContent({ controlMode, controlOnline, activeManualCommand, mov
       disabled={!controlOnline || (item.action !== "STOP" && controlMode !== "MANUAL")}
       {...moveButtonEvents(item.action)}>{item.label}<small>{key}</small></button>;
   };
-  return <section className="robot-detail-manual hmi-manual-jog-panel" data-testid="manual-jog-left-panel">
+  return <section className="robot-detail-manual hmi-manual-jog-panel" aria-label="Manual jog panel" data-testid="manual-jog-panel">
     <div className="robot-detail-manual-head"><div><span className="hmi-manual-kicker">MANUAL JOG</span><b>{activeManualCommand ? `${activeManualCommand.replace(/_/g, " ")} LATCHED` : "STOPPED"}</b><small>{controlMode === "MANUAL" ? "Jog controls enabled · click again or STOP to halt" : "Select MANUAL mode to enable movement"}</small></div><span className={`hmi-state-pill ${controlMode === "MANUAL" ? "is-running" : "is-neutral"}`}>{controlMode}</span></div>
     <div className="hmi-jog-layout">
       <div className="hmi-jog-pad" role="group" aria-label="Manual movement controls">

@@ -951,6 +951,7 @@ class ResumeReadinessGate:
         owner_valid = command_topics['owner']['latest'] in {
             'NONE', 'WEB_MANUAL', 'DIRECT_MANUAL', 'NAV2', 'TAG_ROUTE', 'ESTOP'}
         slam_active = ('slam_toolbox' in nodes and not incompatible
+                       and len(pubs.get('/map', [])) == 1
                        and map_publishers == {'slam_toolbox'}
                        and 'slam_toolbox' in tf_publishers)
         arbiter_ready = (

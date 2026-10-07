@@ -93,6 +93,18 @@ def test_mapping_authority_requires_slam_as_the_only_map_publisher(readiness_mod
     assert ok
     assert 'live_map=/map publisher=slam_toolbox' in detail
 
+    # Graph node names are not unique in ROS 2. Two endpoints with the same
+    # name still mean two independent /map and map->odom publishers.
+    probe.get_publishers_info_by_topic = lambda topic: (
+        [SimpleNamespace(node_name='slam_toolbox'), SimpleNamespace(node_name='slam_toolbox')]
+        if topic == '/map' else
+        [SimpleNamespace(node_name='slam_toolbox'), SimpleNamespace(node_name='slam_toolbox'),
+         SimpleNamespace(node_name='ekf_filter_node')]
+    )
+    ok, detail = probe._mapping_runtime_authority()
+    assert not ok
+    assert '/map_publishers_must_be_slam_toolbox_only:count=2' in detail
+
     probe.get_node_names_and_namespaces = lambda: [
         ('slam_toolbox', '/'), ('ekf_v30e', '/'),
     ]
@@ -203,6 +215,13 @@ def test_registered_navigation_map_readiness_fails_closed_on_revision_and_duplic
         original(topic) + [type('Publisher', (), {'node_name': 'map_server'})()]
         if topic == '/map' else original(topic))
     assert '/map_publishers_must_be_slam_toolbox_only' in probe._unified_navigation_map_error()
+
+    probe = _full_registered_map_probe(readiness_module)
+    original = probe.get_publishers_info_by_topic
+    probe.get_publishers_info_by_topic = lambda topic: (
+        original(topic) + [type('Publisher', (), {'node_name': 'slam_toolbox'})()]
+        if topic == '/map' else original(topic))
+    assert '/map_publishers_must_be_slam_toolbox_only:count=2' in probe._unified_navigation_map_error()
 
 
 def test_readiness_binds_selected_nav2_yaml_to_published_bundle_revision(readiness_module):

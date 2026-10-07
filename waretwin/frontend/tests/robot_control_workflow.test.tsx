@@ -191,19 +191,22 @@ describe("robot quick detail workflow", () => {
 
 describe("robot detail route stability", () => {
 
-  it("places the existing jog controls left of the map and uses the lower strip for an empty real error log", () => {
+  it("keeps the map first and places the single existing jog panel below navigation in the right column", () => {
     setOnlineRobot();
     renderNode(<ControlDetailHarness robotId="R01" />);
 
     const main = container.querySelector<HTMLElement>(".hmi-control-main");
-    expect(main?.children[0]?.getAttribute("data-testid")).toBe("manual-jog-left-panel");
-    expect(main?.children[1]?.classList.contains("robot-detail-map-panel")).toBe(true);
-    expect(main?.children[2]?.getAttribute("aria-label")).toBe("Robot operation panel");
+    expect(main?.children[0]?.classList.contains("robot-detail-map-panel")).toBe(true);
+    expect(main?.children[1]?.getAttribute("aria-label")).toBe("Robot operation panel");
+    const manualPanel = main?.querySelector<HTMLElement>('[data-testid="manual-jog-panel"]');
+    expect(manualPanel?.parentElement).toBe(main?.children[1]);
+    expect(manualPanel?.previousElementSibling?.classList.contains("hmi-nav-management")).toBe(true);
+    expect(container.querySelectorAll('[data-testid="manual-jog-panel"]')).toHaveLength(1);
+    expect(main?.querySelectorAll(".manual-key")).toHaveLength(7);
     const errorLog = container.querySelector<HTMLElement>('[data-testid="control-error-log"]');
     expect(errorLog?.textContent).toContain("ERROR LOG");
     expect(errorLog?.textContent).toContain("No active errors.");
     expect(errorLog?.querySelector("button")).toBeNull();
-    expect(container.querySelectorAll(".hmi-control-main .manual-key")).toHaveLength(7);
   });
 
   it("shows newest real runtime errors first and uses a dash when no source is provided", () => {

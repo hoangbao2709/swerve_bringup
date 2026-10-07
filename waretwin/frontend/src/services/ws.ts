@@ -15,6 +15,7 @@ import type { ServerMessage, ClientMessage, TwinState, HeatmapLayer, RobotState 
 import { detailFramePatch, detailViewStatusPatch } from "../components/control/detailViewState";
 import { THRESHOLDS } from "../schema/twin_state";
 import { useStore } from "../state/store";
+import { MapSnapshotOrderGuard } from "../layout/mapSnapshotOrder";
 
 export type ConnState = "connecting" | "online" | "reconnecting" | "offline" | "error";
 
@@ -73,6 +74,7 @@ let reconnectAttempt = 0;
 let stopped = false;
 let localTick = -1;
 let onStateChange: ((s: ConnState) => void) | null = null;
+const mapSnapshotOrder = new MapSnapshotOrderGuard();
 type CopilotReply = { request_id: string; text: string; citations: Array<{ robot_id?: string; task_id?: string; event_id?: string }>; model?: string };
 const copilotListeners = new Set<(r: CopilotReply) => void>();
 /** 訂閱 COPILOT_REPLY；回傳取消函式 */
@@ -350,15 +352,37 @@ function handle(msg: ServerMessage) {
       st.setRobotDetail(msg.robot_id, detailViewStatusPatch(st.robotDetail[msg.robot_id], msg));
       break;
     case "MAP_SNAPSHOT":
+      {
+        const map = msg.map;
+        const current = st.robotDetail[map.robot_id]?.slam2dMap ?? null;
+        const expectedSessionId = st.robotDetail[map.robot_id]?.mappingSessionId;
+        const validSlamMap = map.map_source === "SLAM_TOOLBOX"
+          && map.frame_id === "map" && Boolean(map.mapping_session_id)
+          && map.active_map_id === `SLAM-${map.mapping_session_id}`;
+        const order = map.map_source === "SLAM_TOOLBOX" && validSlamMap
+          ? mapSnapshotOrder.accept(map, current, expectedSessionId)
+          : { accepted: map.map_source !== "SLAM_TOOLBOX", reason: validSlamMap ? "not_slam_map" : "invalid_slam_identity" };
+        if (map.map_source === "SLAM_TOOLBOX") console.debug("[MAP_SNAPSHOT]", {
+          mapping_session_id: map.mapping_session_id ?? null,
+          map_version: map.map_version ?? null,
+          stamp: map.stamp ?? null,
+          width: map.width,
+          height: map.height,
+          origin_x: map.origin?.x ?? null,
+          origin_y: map.origin?.y ?? null,
+          map_content_revision: map.map_content_revision ?? null,
+          accepted: order.accepted,
+          reason: order.reason,
+        });
       if (msg.map.map_source === "SLAM_TOOLBOX") {
-        if (msg.map.frame_id === "map" && msg.map.mapping_session_id
-            && msg.map.active_map_id === `SLAM-${msg.map.mapping_session_id}`) {
-          st.setRobotDetail(msg.map.robot_id, { slam2dMap: msg.map });
+        if (validSlamMap && order.accepted) {
+          st.setRobotDetail(map.robot_id, { slam2dMap: map });
         }
       } else {
-        st.setRobotDetail(msg.map.robot_id, { runtimeMapSnapshot: msg.map });
+        st.setRobotDetail(map.robot_id, { runtimeMapSnapshot: map });
       }
       break;
+      }
     case "NAV_GLOBAL_PATH":
       st.setRobotDetail(msg.path.robot_id, { globalPath: msg.path });
       break;

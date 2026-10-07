@@ -2176,6 +2176,10 @@ table.dt.full td { white-space: normal; }
 .industrial-hmi .robot-detail-no-errors { color: #216a30; font: 13px var(--font); }
 .industrial-hmi .local-diagnostic-runtime { border-top-color: #d5d9dc; }
 .industrial-hmi .local-vda-group { border-bottom-color: #d1d5d8; color: #35424c; font: 700 12px var(--font); letter-spacing: .02em; }
+.industrial-hmi .local-vda-capability { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px 12px; min-width: 0; padding: 10px 12px; border: 1px solid #d0d5d9; background: #f7f8f9; }
+.industrial-hmi .local-vda-capability > span:first-child { min-width: 0; color: #30383e; font: 700 13px/1.35 var(--font); }
+.industrial-hmi .local-vda-capability > .robot-detail-status { justify-self: end; white-space: nowrap; }
+.industrial-hmi .local-vda-capability > small { grid-column: 1 / -1; display: block; min-width: 0; color: #59636b; font: 13px/1.45 var(--font); overflow-wrap: anywhere; }
 .industrial-hmi .local-check-field { border-color: #c8cdd1; background: #f7f8f9; }
 .industrial-hmi .local-vda-footer { border-top-color: #d5d9dc; }
 .industrial-hmi .robot-detail-error-boundary { background: #e8eaed; color: #202428; }

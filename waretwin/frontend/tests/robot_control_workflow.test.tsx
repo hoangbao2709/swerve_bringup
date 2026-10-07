@@ -856,6 +856,113 @@ describe("robot detail route stability", () => {
     expect(vi.mocked(wsSend).mock.calls.map(([message]) => message.type).filter((type) => type === "PATH_PREVIEW_INVALIDATE").length).toBeGreaterThan(0);
   });
 
+  it("requests a fresh detail map after saved-map identity changes and reconnects, and fails closed while it is missing", async () => {
+    setOnlineRobot();
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { await settleUi(); });
+    const requestsBeforeMapChange = vi.mocked(wsSend).mock.calls
+      .filter(([message]) => message.type === "ROBOT_DETAIL_VIEW").length;
+
+    await act(async () => {
+      useStore.getState().setRobotDetail("R01", {
+        activeLocalMapId: "saved-R01-1", activeLocalMapRevision: "artifact-1",
+      });
+      await settleUi();
+    });
+    await act(async () => { buttonNamed("LOCALIZATION")?.click(); await settleUi(); });
+    expect(container.querySelector('[data-testid="localization-map-waiting"]')?.textContent)
+      .toBe("WAITING FOR ACTIVE SAVED MAP SNAPSHOT...");
+    expect(buttonNamed("PICK ON MAP")?.disabled).toBe(true);
+    const requestsAfterMapChange = vi.mocked(wsSend).mock.calls
+      .filter(([message]) => message.type === "ROBOT_DETAIL_VIEW");
+    expect(requestsAfterMapChange.length).toBeGreaterThan(requestsBeforeMapChange);
+    expect(requestsAfterMapChange.at(-1)?.[0]).toMatchObject({ view: "LIDAR_2D", robot_id: "R01" });
+
+    await act(async () => { useStore.setState({ websocketState: "RECONNECTING" }); await settleUi(); });
+    const requestsWhileReconnecting = vi.mocked(wsSend).mock.calls
+      .filter(([message]) => message.type === "ROBOT_DETAIL_VIEW").length;
+    await act(async () => { useStore.setState({ websocketState: "CONNECTED" }); await settleUi(); });
+    expect(vi.mocked(wsSend).mock.calls.filter(([message]) => message.type === "ROBOT_DETAIL_VIEW").length)
+      .toBeGreaterThan(requestsWhileReconnecting);
+  });
+
+  it("renders only a matching saved-map snapshot for localization and enables map picking", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    const localMap = { robot_id: "R01", frame_id: "map", map_source: "LOCAL_MAP" as const,
+      active_map_id: "saved-R01-1", active_map_revision: "artifact-1", width: 20, height: 20,
+      resolution: 0.1, origin: { x: -1, y: -1, yaw: 0 }, data: Array(400).fill(0) };
+    useStore.getState().setRobotDetail("R01", {
+      runtimeMapSnapshot: null, activeLocalMapId: localMap.active_map_id,
+      activeLocalMapRevision: localMap.active_map_revision,
+    });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { buttonNamed("LOCALIZATION")?.click(); await settleUi(); });
+    expect(buttonNamed("PICK ON MAP")?.disabled).toBe(true);
+
+    await act(async () => {
+      useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: localMap });
+      await settleUi();
+    });
+    let canvas = container.querySelector<HTMLCanvasElement>('.local-pose-map canvas[data-map-source="LOCAL_MAP"]');
+    expect(canvas).toBeTruthy();
+    expect(buttonNamed("PICK ON MAP")?.disabled).toBe(false);
+    await act(async () => { buttonNamed("PICK ON MAP")?.click(); });
+    await act(async () => { canvas?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 350, clientY: 160 })); });
+    const coordinateInput = (label: string) => Array.from(container.querySelectorAll<HTMLLabelElement>(".local-pose-fields label"))
+      .find((field) => field.textContent?.includes(label))?.querySelector<HTMLInputElement>("input");
+    expect(Number.isFinite(Number(coordinateInput("X · MAP")?.value))).toBe(true);
+    expect(Number.isFinite(Number(coordinateInput("Y · MAP")?.value))).toBe(true);
+    expect(coordinateInput("X · MAP")?.value).not.toBe("");
+    expect(coordinateInput("Y · MAP")?.value).not.toBe("");
+
+    await act(async () => {
+      useStore.getState().setRobotDetail("R01", {
+        activeLocalMapId: "saved-R01-2", activeLocalMapRevision: "artifact-2",
+      });
+      await settleUi();
+    });
+    expect(container.querySelector('.local-pose-map canvas[data-map-source="LOCAL_MAP"]')).toBeNull();
+    expect(buttonNamed("PICK ON MAP")?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="localization-map-waiting"]')?.textContent)
+      .toBe("WAITING FOR ACTIVE SAVED MAP SNAPSHOT...");
+
+    const wrongRevision = { ...localMap, active_map_id: "saved-R01-2", active_map_revision: "stale-revision" };
+    await act(async () => { useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: wrongRevision }); await settleUi(); });
+    expect(container.querySelector('.local-pose-map canvas[data-map-source="LOCAL_MAP"]')).toBeNull();
+    expect(buttonNamed("PICK ON MAP")?.disabled).toBe(true);
+
+    const matchingReplacement = { ...wrongRevision, active_map_revision: "artifact-2" };
+    await act(async () => { useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: matchingReplacement }); await settleUi(); });
+    canvas = container.querySelector<HTMLCanvasElement>('.local-pose-map canvas[data-map-source="LOCAL_MAP"]');
+    expect(canvas).toBeTruthy();
+    expect(buttonNamed("PICK ON MAP")?.disabled).toBe(false);
+  });
+
+  it("normalizes near-zero localization coordinates for display without changing the pose", async () => {
+    setOnlineRobot();
+    setNavReadyCapabilities();
+    const localMap = { robot_id: "R01", frame_id: "map", map_source: "LOCAL_MAP" as const,
+      active_map_id: "saved-R01-1", active_map_revision: "artifact-1", width: 20, height: 20,
+      resolution: 0.1, origin: { x: -1, y: -1, yaw: 0 }, data: Array(400).fill(0) };
+    useStore.getState().setRobotDetail("R01", { runtimeMapSnapshot: localMap,
+      activeLocalMapId: localMap.active_map_id, activeLocalMapRevision: localMap.active_map_revision });
+    useStore.setState({ robotCapabilities: { R01: { ...useStore.getState().robotCapabilities.R01!, localization_ready: true } },
+      twin: { ...useStore.getState().twin!, robots: { R01: { ...r01(), active_map_pose: {
+        x: -0.0001, y: -0.0001, yaw: -0.0001, frame_id: "map", map_id: localMap.active_map_id,
+        map_revision: localMap.active_map_revision, map_source: "LOCAL_MAP", pose_source: "TF", valid: true,
+        timestamp: new Date().toISOString(),
+      } } } } });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { buttonNamed("LOCALIZATION")?.click(); await settleUi(); });
+    expect(container.querySelector(".local-status-grid")?.textContent).toContain("0.000 m");
+    expect(container.querySelector(".local-status-grid")?.textContent).not.toContain("-0.000");
+    const xInput = Array.from(container.querySelectorAll<HTMLLabelElement>(".local-pose-fields label"))
+      .find((field) => field.textContent?.includes("X · MAP"))?.querySelector<HTMLInputElement>("input");
+    expect(xInput?.value).toBe("0.000");
+    expect(useStore.getState().twin.robots.R01.active_map_pose?.x).toBe(-0.0001);
+  });
+
   it("saves a Unified SLAM map without offering a full-stack load or pose-graph restart", async () => {
     setOnlineRobot("UNIFIED");
     useStore.setState({ robotCapabilities: { R01: {
@@ -1165,6 +1272,12 @@ describe("robot detail route stability", () => {
     expect(container.querySelector('input[type="password"]')?.getAttribute("type")).toBe("password");
     expect(container.textContent).toContain("INSTANT ACTION EXECUTION");
     expect(container.textContent).toContain("NOT IMPLEMENTED");
+    const capability = container.querySelector(".local-vda-capability");
+    expect(capability?.querySelector(":scope > span")?.textContent).toBe("INSTANT ACTION EXECUTION");
+    expect(capability?.querySelector(":scope > .robot-detail-status")?.textContent).toBe("NOT IMPLEMENTED");
+    expect(capability?.querySelector(":scope > small")?.textContent)
+      .toBe("Subscription and execution are disabled.MQTT CONNECTED does not imply this capability.");
+    expect(config.instant_actions_supported).toBe(false);
     expect(buttonNamed("SAVE & APPLY")?.disabled).toBe(true);
 
     const host = Array.from(container.querySelectorAll("label")).find((label) => label.textContent?.includes("MQTT HOST"))?.querySelector("input");

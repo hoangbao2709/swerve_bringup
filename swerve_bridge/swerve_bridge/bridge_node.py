@@ -1045,12 +1045,12 @@ class SwerveBridge(Node):
             'django_received_ms': request.get('django_received_ms'),
             'bridge_received_ms': request.get('_bridge_received_ms'),
             'bridge_applied_ms': time.time() * 1000}
-        if view == 'GLOBAL':
+        if view in ('GLOBAL', 'LIDAR_2D'):
             # /map is latched and normally changes only during Mapping or a
-            # map load. A newly opened Control Detail page still needs the
-            # current saved map even when another client received the original
-            # snapshot before it connected. Reuse the bounded cached payload;
-            # map_snapshot_timer does not re-hash or recompress unchanged data.
+            # map load. A newly opened 2D robot detail page needs the current
+            # active occupancy map even when another client received the
+            # original snapshot before it connected. Reuse the bounded cached
+            # payload; map_snapshot_timer does not re-hash or recompress unchanged data.
             self.last_sent_map_signature = None
             self.map_snapshot_worker.wake()
         self.send({'type': 'ROBOT_DETAIL_VIEW_STATUS', 'robot_id': self.robot_id,

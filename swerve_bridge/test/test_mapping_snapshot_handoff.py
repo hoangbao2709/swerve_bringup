@@ -225,7 +225,8 @@ def test_confirming_local_map_wakes_snapshot_worker():
     bridge.map_snapshot_worker.wake.assert_called_once_with()
 
 
-def test_requesting_global_view_replays_cached_map_for_late_client():
+@pytest.mark.parametrize('view', ('GLOBAL', 'LIDAR_2D'))
+def test_requesting_2d_detail_view_replays_cached_map_for_late_client(view):
     bridge = object.__new__(SwerveBridge)
     bridge.detail_view = 'LIDAR_2D'
     bridge.detail_view_epoch = 2
@@ -245,7 +246,7 @@ def test_requesting_global_view_replays_cached_map_for_late_client():
     bridge.accumulated_slam_cloud = BoundedVoxelMap(max_points=5, voxel_size=0.1)
     bridge.accumulated_slam_cloud.update([(1.0, 2.0, 0.3)])
 
-    assert bridge.set_detail_view('GLOBAL', {'request_id': 'new-client-view'}) is True
+    assert bridge.set_detail_view(view, {'request_id': 'new-client-view'}) is True
 
     assert bridge.last_sent_map_signature is None
     bridge.map_snapshot_worker.wake.assert_called_once_with()

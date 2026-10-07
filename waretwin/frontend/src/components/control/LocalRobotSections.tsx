@@ -59,6 +59,15 @@ function valueNumber(value: unknown, digits = 2, suffix = "") {
   return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : "N/A";
 }
 
+function formatMapCoordinate(value: number) {
+  return (Math.abs(value) < 0.0005 ? 0 : value).toFixed(3);
+}
+
+function mapCoordinateText(value: unknown, suffix = "") {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${formatMapCoordinate(number)}${suffix}` : "N/A";
+}
+
 function loadOperationLabel(phase?: string, status?: string) {
   const labels: Record<string, string> = {
     PREPARING: "PREPARING...",
@@ -518,9 +527,9 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
   return <SectionFrame>
     <SectionPanel title="LOCALIZATION STATE">
       <div className="local-status-grid">
-        <Metric label="X · MAP" value={current ? valueNumber(current.x, 3, " m") : "UNKNOWN"} mono />
-        <Metric label="Y · MAP" value={current ? valueNumber(current.y, 3, " m") : "UNKNOWN"} mono />
-        <Metric label="YAW" value={current ? valueNumber(current.yaw, 3, " rad") : "UNKNOWN"} mono />
+        <Metric label="X · MAP" value={current ? mapCoordinateText(current.x, " m") : "UNKNOWN"} mono />
+        <Metric label="Y · MAP" value={current ? mapCoordinateText(current.y, " m") : "UNKNOWN"} mono />
+        <Metric label="YAW" value={current ? mapCoordinateText(current.yaw, " rad") : "UNKNOWN"} mono />
         <Metric label="FRAME" value="map" mono />
         <Metric label="LOCALIZATION" value={activeLocalMapId
           ? runtimeCapabilities?.localization_ready ? "LOCALIZED" : "INITIAL POSE REQUIRED"
@@ -534,14 +543,14 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
     </SectionPanel>
     <SectionPanel title="INITIALIZE ROBOT POSE" className="local-pose-editor">
       <div className="local-pose-fields">
-        <label className="local-field"><span>X · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.x) ? pose.x.toFixed(3) : ""} onChange={(event) => update("x", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
-        <label className="local-field"><span>Y · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.y) ? pose.y.toFixed(3) : ""} onChange={(event) => update("y", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
-        <label className="local-field"><span>YAW (rad)</span><input type="number" step="0.01" value={Number.isFinite(pose.yaw) ? pose.yaw.toFixed(3) : ""} onChange={(event) => update("yaw", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
+        <label className="local-field"><span>X · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.x) ? formatMapCoordinate(pose.x) : ""} onChange={(event) => update("x", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
+        <label className="local-field"><span>Y · MAP (m)</span><input type="number" step="0.01" value={Number.isFinite(pose.y) ? formatMapCoordinate(pose.y) : ""} onChange={(event) => update("y", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
+        <label className="local-field"><span>YAW (rad)</span><input type="number" step="0.01" value={Number.isFinite(pose.yaw) ? formatMapCoordinate(pose.yaw) : ""} onChange={(event) => update("yaw", event.target.value === "" ? Number.NaN : Number(event.target.value))} /></label>
         <div className="local-pose-yaw"><button type="button" disabled={!Number.isFinite(pose.yaw)} onClick={() => update("yaw", pose.yaw - Math.PI / 12)}>YAW −</button><button type="button" disabled={!Number.isFinite(pose.yaw)} onClick={() => update("yaw", pose.yaw + Math.PI / 12)}>YAW +</button></div>
         <button type="button" className={pickMode ? "is-active" : ""} onClick={() => setPickMode((value) => !value)} disabled={!localizationMap}>PICK ON MAP</button>
         <button type="button" className="robot-console-primary" disabled={!controlOnline || busy || !poseReady} onClick={() => void apply()}>SET INITIAL POSE</button>
       </div>
-      {localizationMap ? <PosePickerMap map={localizationMap} robot={robot} pose={pose} showPose={poseReady} active={pickMode} onPick={(point) => { setPose((old) => ({ ...old, ...point })); setPoseEdited(true); }} /> : <div className="local-empty">Waiting for the robot scoped ROS map snapshot.</div>}
+      {localizationMap ? <PosePickerMap map={localizationMap} robot={robot} pose={pose} showPose={poseReady} active={pickMode} onPick={(point) => { setPose((old) => ({ ...old, ...point })); setPoseEdited(true); }} /> : <div className="local-empty" data-testid="localization-map-waiting">{activeLocalMapId ? "WAITING FOR ACTIVE SAVED MAP SNAPSHOT..." : "Waiting for the robot scoped ROS map snapshot."}</div>}
       <p className="local-help">The pose is applied through the current authoritative robot_localization EKF service. It changes localization and does not teleport the robot.</p>
     </SectionPanel>
     {error && <div className="local-feedback error" role="alert">{error}</div>}
@@ -807,7 +816,7 @@ function Vda5050Panel({ robotId }: { robotId: string }) {
         <label className="local-field"><span>CLIENT ID</span><input value={draft.client_id} onChange={(event) => update("client_id", event.target.value)} placeholder={`waretwin-${robotId}`} /></label>
         <div className="local-vda-group">TASK POLICY</div>
         <label className="local-field local-check-field"><span>ALLOW TASK</span><input type="checkbox" checked={draft.allow_task} onChange={(event) => update("allow_task", event.target.checked)} /></label>
-        <div className="local-vda-capability"><span>INSTANT ACTION EXECUTION</span><Status value="NOT IMPLEMENTED" /><small>Subscription and execution are disabled; MQTT CONNECTED does not imply this capability.</small></div>
+        <div className="local-vda-capability"><span>INSTANT ACTION EXECUTION</span><Status value="NOT IMPLEMENTED" /><small>Subscription and execution are disabled.<br />MQTT CONNECTED does not imply this capability.</small></div>
         <div className="local-vda-group">RUNTIME</div>
         <label className="local-field local-check-field"><span>AUTO RECONNECT</span><input type="checkbox" checked={draft.auto_reconnect} onChange={(event) => update("auto_reconnect", event.target.checked)} /></label>
         <label className="local-field"><span>RECONNECT INTERVAL · s</span><input type="number" min={1} max={300} value={draft.reconnect_interval} onChange={(event) => update("reconnect_interval", Number(event.target.value))} /></label>

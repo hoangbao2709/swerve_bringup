@@ -161,6 +161,16 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
       && String(runtimeMapSnapshot.active_map_revision ?? "") === String(activeLocalMapRevision ?? "")
       ? runtimeMapSnapshot : null
     : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot;
+  useEffect(() => {
+    if (!runtimeMapSnapshot) return;
+    const matchesActiveLocalMap = Boolean(activeLocalMapId
+      && runtimeMapSnapshot.map_source === "LOCAL_MAP"
+      && runtimeMapSnapshot.active_map_id === activeLocalMapId
+      && String(runtimeMapSnapshot.active_map_revision ?? "") === String(activeLocalMapRevision ?? ""));
+    if ((runtimeMapSnapshot.map_source === "LOCAL_MAP" || activeLocalMapId) && !matchesActiveLocalMap) {
+      setRobotDetail(robotId, { runtimeMapSnapshot: null });
+    }
+  }, [activeLocalMapId, activeLocalMapRevision, robotId, runtimeMapSnapshot, setRobotDetail]);
   const activeMapStatus = useLiveSlamMap ? activeMappingSnapshot ? "SLAM · LIVE · LOCAL_ONLY" : "WAITING FOR SLAM MAP"
     : activeLocalMapId
       ? localMapSyncStatus ?? (activeMap2dSnapshot ? "LOCAL_ONLY" : "WAITING FOR LOCAL MAP")
@@ -225,7 +235,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     const request_id = `${robotId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setRobotDetail(robotId, { viewStatus: { robot_id: robotId, requested_view: detailView, request_id, state: "REQUESTED" } });
     wsSend({ type: "ROBOT_DETAIL_VIEW", robot_id: robotId, view: detailView, request_id, delivery_ack: true });
-  }, [detailView, robotBridgeOnline, robotId, websocketState, setRobotDetail]);
+  }, [activeLocalMapId, activeLocalMapRevision, detailView, robotBridgeOnline, robotId, websocketState, setRobotDetail]);
   useLayoutEffect(() => {
     const cached = occupancyRasters.peek(activeMap2dSnapshot);
     if (!cached) return;

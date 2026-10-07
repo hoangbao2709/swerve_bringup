@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
   applyVda5050Configuration,
   getLocalRobotMaps,
@@ -13,6 +13,7 @@ import {
 } from "../../services/api";
 import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotRuntimeCapabilities, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
 import { createWorldTransform, worldToScreen, screenToWorld, type WorldBounds } from "../../layout/coordinates";
+import { centerMapViewportCamera, fitMapViewportCamera, fixedWorldTransform, mapViewportSessionKey, occupancyMapWorldBounds, resolveMapViewport, zoomMapViewportCamera, type MapViewportState } from "../../layout/mapViewport";
 import { occupancyRasterKey, occupancyRasters } from "./occupancyRaster";
 import { displayedFramePose, useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
 import { mapPointTarget, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
@@ -430,8 +431,7 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [zoom, setZoom] = useState(1);
-  const [center, setCenter] = useState<{ x: number; y: number } | null>(null);
+  const [viewportState, setViewportState] = useState<MapViewportState | null>(null);
   const displayedPose = useStableDisplayedFramePose(robot?.id === map.robot_id ? robot : undefined, poseMapIdentity);
   const [rasterState, setRasterState] = useState<{ map: RobotDetailMapSnapshot; raster: HTMLCanvasElement } | null>(() => {
     const raster = occupancyRasters.peek(map);
@@ -466,20 +466,14 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
         && occupancyRasterKey(rasterState.map) === occupancyRasterKey(map)));
   const raster = retainedRasterMatches ? rasterState?.raster ?? null : null;
   const rasterMap = retainedRasterMatches ? rasterState?.map ?? map : map;
-  const bounds = useMemo<WorldBounds>(() => {
-    const yaw = map.origin.yaw;
-    const width = map.width * map.resolution, height = map.height * map.resolution;
-    const corners = [[0, 0], [width, 0], [width, height], [0, height]].map(([x, y]) => ({
-      x: map.origin.x + x * Math.cos(yaw) - y * Math.sin(yaw),
-      y: map.origin.y + x * Math.sin(yaw) + y * Math.cos(yaw),
-    }));
-    return { minX: Math.min(...corners.map((p) => p.x)), maxX: Math.max(...corners.map((p) => p.x)), minY: Math.min(...corners.map((p) => p.y)), maxY: Math.max(...corners.map((p) => p.y)) };
-  }, [map]);
-  const transform = useMemo(() => createWorldTransform(size, bounds, zoom, center, 20), [bounds, center, size, zoom]);
-  useEffect(() => {
-    setZoom(1);
-    setCenter(null);
-  }, [map.robot_id, map.active_map_id, map.active_map_revision]);
+  const bounds = useMemo<WorldBounds>(() => occupancyMapWorldBounds(map), [map]);
+  const viewportSessionKey = mapViewportSessionKey(map);
+  const resolvedViewport = resolveMapViewport(viewportState, map, size);
+  const camera = resolvedViewport?.camera ?? { centerX: 0, centerY: 0, scalePxPerMeter: 1, fitScalePxPerMeter: 1 };
+  const transform = useMemo(() => fixedWorldTransform(size, camera), [camera, size]);
+  useLayoutEffect(() => {
+    setViewportState((current) => resolveMapViewport(current, map, size));
+  }, [viewportSessionKey, size.width, size.height]);
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -540,15 +534,20 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     const rect = event.currentTarget.getBoundingClientRect();
     onPick(screenToWorld({ x: event.clientX - rect.left, y: event.clientY - rect.top }, transform));
   };
+  const updateCamera = (update: (current: MapViewportState["camera"]) => MapViewportState["camera"]) => {
+    setViewportState((current) => {
+      const resolved = resolveMapViewport(current, map, size);
+      return resolved ? { ...resolved, camera: update(resolved.camera) } : current;
+    });
+  };
   return <div ref={hostRef} className={`local-pose-map ${active ? "is-picking" : ""}`}>
     <div className="hmi-map-toolbar" role="group" aria-label="Map controls" data-testid="robot-map-toolbar">
-      <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => setZoom((value) => Math.min(8, value * 1.25))}>+</button>
-      <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => setZoom((value) => Math.max(0.5, value / 1.25))}>−</button>
-      <button type="button" onClick={() => { setZoom(1); setCenter(null); }}>FIT</button>
+      <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => updateCamera((current) => zoomMapViewportCamera(current, 1.25))}>+</button>
+      <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => updateCamera((current) => zoomMapViewportCamera(current, 1 / 1.25))}>−</button>
+      <button type="button" onClick={() => updateCamera(() => fitMapViewportCamera(size, bounds))}>FIT</button>
       <button type="button" disabled={!displayedPose} onClick={() => {
         if (!displayedPose) return;
-        setCenter({ x: displayedPose.x, y: displayedPose.y });
-        setZoom((value) => Math.max(value, 2));
+        updateCamera((current) => centerMapViewportCamera(current, displayedPose));
       }}>CENTER ROBOT</button>
     </div>
     {layerState && onLayerToggle && <div className="hmi-map-layer-toolbar" role="group" aria-label="Map layers" data-testid="robot-map-layers">
@@ -567,6 +566,9 @@ function PosePickerMap({ map, poseMapIdentity = map, robot, scan = null, traject
     data-path-layer={navigationPath.length > 1 ? "visible" : "disabled"}
     data-trajectory-layer={trajectory.length > 1 ? "visible" : "disabled"}
     data-map-source={map.map_source} data-map-id={map.active_map_id}
+    data-viewport-center-x={camera.centerX} data-viewport-center-y={camera.centerY}
+    data-viewport-scale-px-per-meter={camera.scalePxPerMeter}
+    data-viewport-width={size.width} data-viewport-height={size.height}
     data-pose-source={displayedPose?.pose_source}
     data-render-x={displayedPose?.x} data-render-y={displayedPose?.y} data-render-yaw={displayedPose?.yaw}
     onClick={click} aria-label={ariaLabel} /></div>;

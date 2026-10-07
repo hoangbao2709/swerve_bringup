@@ -38,6 +38,7 @@ vi.mock("../src/services/ws", () => ({
   wsSend: vi.fn(() => true), wsManualCommand: vi.fn(() => true), wsSetRobotMode: vi.fn(() => true),
 }));
 import { RobotQuickDetailModal } from "../src/components/robot/RobotQuickDetailModal";
+import { AccumulatedSlamMap2DView } from "../src/components/control/LocalRobotSections";
 import { RobotControlDetailPage } from "../src/components/control/RobotControlDetailPage";
 import { Sidebar, type ControlSection } from "../src/components/shell/Sidebar";
 import { occupancyRasters } from "../src/components/control/occupancyRaster";
@@ -131,6 +132,15 @@ function setInputValue(input: HTMLInputElement, value: string) {
 }
 
 function settleUi() { return new Promise<void>((resolve) => window.setTimeout(resolve, 0)); }
+
+function canvasWorldPixel(canvas: HTMLCanvasElement, world: { x: number; y: number }) {
+  const width = Number(canvas.dataset.viewportWidth);
+  const height = Number(canvas.dataset.viewportHeight);
+  const centerX = Number(canvas.dataset.viewportCenterX);
+  const centerY = Number(canvas.dataset.viewportCenterY);
+  const scale = Number(canvas.dataset.viewportScalePxPerMeter);
+  return { x: width / 2 + (world.x - centerX) * scale, y: height / 2 - (world.y - centerY) * scale };
+}
 
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -462,17 +472,26 @@ describe("robot detail route stability", () => {
     await act(async () => { (mappingTab as HTMLElement).click(); });
     expect(container.textContent).toContain("ACCUMULATED SLAM MAP");
     expect(container.textContent).toContain("SAVE MAP");
-    expect(container.querySelectorAll("[role=tab]")).toHaveLength(4);
+    expect(container.querySelectorAll("[role=tab]")).toHaveLength(5);
     await act(async () => { buttonNamed("SYSTEM")?.click(); });
     expect(container.textContent).toContain("SUBSYSTEM STATUS");
+    expect(container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="SYSTEM"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="VDA5050"]')?.getAttribute("aria-selected")).toBe("false");
     expect(container.textContent).not.toContain("MQTT HOST");
-    await act(async () => { buttonNamed("VDA5050 ADVANCED SETTINGS")?.click(); });
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { buttonNamed("VDA5050")?.click(); await settleUi(); });
+    expect(container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="VDA5050"]')?.getAttribute("aria-selected")).toBe("true");
     expect(container.textContent).toContain("VDA5050 CONFIGURATION");
     expect(container.textContent).toContain("MQTT HOST");
     expect(container.textContent).toContain("ALLOW TASK");
     expect(container.querySelector('input[type="password"]')?.getAttribute("type")).toBe("password");
     expect(container.querySelector("h2")?.textContent).toBe("VDA5050 CONFIGURATION");
+    for (const field of ["ENABLED", "MQTT HOST", "MQTT PORT", "USERNAME", "PASSWORD · SECRET", "TLS", "MQTT VERSION",
+      "VDA5050 VERSION", "TOPIC PREFIX", "INTERFACE NAME", "MANUFACTURER", "SERIAL NUMBER", "CLIENT ID", "ALLOW TASK",
+      "AUTO RECONNECT", "RECONNECT INTERVAL · s", "CONNECTION TIMEOUT · s", "KEEPALIVE · s", "MQTT STATUS"]) {
+      expect(container.textContent).toContain(field);
+    }
+    expect(buttonNamed("TEST CONNECTION")).toBeTruthy();
+    expect(buttonNamed("SAVE & APPLY")).toBeTruthy();
   });
 
   it("shows only the active 2D occupancy map and point controls", async () => {
@@ -501,7 +520,7 @@ describe("robot detail route stability", () => {
     expect(container.textContent).not.toContain("Target Tag");
     expect(container.querySelector('[aria-label="Navigation target method"]')).toBeNull();
     expect(container.querySelectorAll('[data-testid="robot-map-layers"] button')).toHaveLength(5);
-    expect(container.textContent).not.toContain("VDA5050");
+    expect(container.textContent).not.toContain("MQTT HOST");
     expect(container.querySelector('[data-testid="active-navigation-map-2d"]')).toBeTruthy();
     expect(container.querySelector<HTMLCanvasElement>('[data-testid="active-navigation-map-2d"] canvas')?.dataset.mapId)
       .toBe("SLAM-session-1");
@@ -556,6 +575,78 @@ describe("robot detail route stability", () => {
     expect(canvas?.dataset.scanLayer).toBe("low-opacity-current-scan-overlay");
     expect(useStore.getState().robotDetail.R01.slam2dMap).toBe(baseMap);
     expect(useStore.getState().robotDetail.R01.slam2dMap?.map_content_revision).toBe("cells-before");
+  });
+
+  it("keeps the same-session map camera fixed while accumulated occupancy bounds and cells change", async () => {
+    const drawnRasterRevisions: string[] = [];
+    const drawingContext = {
+      setTransform: vi.fn(), fillRect: vi.fn(), save: vi.fn(), translate: vi.fn(), rotate: vi.fn(),
+      scale: vi.fn(), restore: vi.fn(), fillText: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(),
+      lineTo: vi.fn(), closePath: vi.fn(), fill: vi.fn(), stroke: vi.fn(),
+      drawImage: vi.fn((image: CanvasImageSource) => {
+        if (image instanceof HTMLCanvasElement) drawnRasterRevisions.push(image.dataset.mapContentRevision ?? "");
+      }),
+    } as unknown as CanvasRenderingContext2D;
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(drawingContext);
+    vi.mocked(occupancyRasters.get).mockImplementation(async (map) => {
+      const raster = document.createElement("canvas");
+      raster.dataset.mapContentRevision = map?.map_content_revision ?? "";
+      return raster;
+    });
+    const common = { robot_id: "R01", frame_id: "map", map_source: "SLAM_TOOLBOX" as const,
+      mapping_session_id: "session-camera", active_map_id: "SLAM-session-camera",
+      active_map_revision: "session-session-camera", resolution: .05 };
+    const frameA = { ...common, map_content_revision: "cells-a", width: 400, height: 500,
+      origin: { x: -5, y: -10, yaw: 0 }, data: [-1, 0, 100, -1] };
+    const frameB = { ...common, map_content_revision: "cells-b", width: 600, height: 700,
+      origin: { x: -8, y: -15, yaw: 0 }, data: [0, 0, 100, 100] };
+    const frameC = { ...common, map_content_revision: "cells-c", width: 800, height: 900,
+      origin: { x: -12, y: -20, yaw: 0 }, data: [100, 0, -1, 100] };
+
+    const robot = { ...r01(), slam_pose: { ...r01().slam_pose!, mapping_session_id: "session-camera",
+      map_id: "SLAM-session-camera", map_revision: "session-session-camera" } };
+    renderNode(<AccumulatedSlamMap2DView map={frameA} robot={robot} scan={null} />);
+    await act(async () => { await settleUi(); });
+    const canvas = container.querySelector<HTMLCanvasElement>('[data-testid="slam-map-2d-canvas"]')!;
+    const worldPoint = { x: 5, y: 5 };
+    const pixelA = canvasWorldPixel(canvas, worldPoint);
+
+    renderNode(<AccumulatedSlamMap2DView map={frameB} robot={robot} scan={null} />);
+    await act(async () => { await settleUi(); });
+    const pixelB = canvasWorldPixel(canvas, worldPoint);
+    expect(container.querySelector(".robot-detail-view-readout")?.textContent).toContain("600 × 700");
+
+    renderNode(<AccumulatedSlamMap2DView map={frameC} robot={robot} scan={null} />);
+    await act(async () => { await settleUi(); });
+    const pixelC = canvasWorldPixel(canvas, worldPoint);
+    expect(container.querySelector(".robot-detail-view-readout")?.textContent).toContain("800 × 900");
+    expect(Math.max(Math.hypot(pixelB.x - pixelA.x, pixelB.y - pixelA.y),
+      Math.hypot(pixelC.x - pixelA.x, pixelC.y - pixelA.y))).toBeLessThanOrEqual(1);
+    expect(occupancyRasters.get).toHaveBeenCalledWith(frameB);
+    expect(occupancyRasters.get).toHaveBeenCalledWith(frameC);
+    expect(drawnRasterRevisions).toContain("cells-b");
+    expect(drawnRasterRevisions).toContain("cells-c");
+
+    const scaleBeforeZoom = canvas.dataset.viewportScalePxPerMeter;
+    await act(async () => { buttonNamed("Zoom in")?.click(); });
+    const zoomedScale = canvas.dataset.viewportScalePxPerMeter;
+    expect(Number(zoomedScale)).toBeGreaterThan(Number(scaleBeforeZoom));
+    renderNode(<AccumulatedSlamMap2DView map={frameB} robot={robot} scan={null} />);
+    await act(async () => { await settleUi(); });
+    expect(canvas.dataset.viewportScalePxPerMeter).toBe(zoomedScale);
+
+    const centeredScale = canvas.dataset.viewportScalePxPerMeter;
+    await act(async () => { buttonNamed("CENTER ROBOT")?.click(); });
+    expect(Number(canvas.dataset.viewportCenterX)).toBeCloseTo(robot.slam_pose!.x, 8);
+    expect(Number(canvas.dataset.viewportCenterY)).toBeCloseTo(robot.slam_pose!.y, 8);
+    expect(canvas.dataset.viewportScalePxPerMeter).toBe(centeredScale);
+    renderNode(<AccumulatedSlamMap2DView map={frameC} robot={robot} scan={null} />);
+    await act(async () => { await settleUi(); });
+    expect(Number(canvas.dataset.viewportCenterX)).toBeCloseTo(robot.slam_pose!.x, 8);
+
+    const beforeFit = canvas.dataset.viewportScalePxPerMeter;
+    await act(async () => { buttonNamed("FIT")?.click(); });
+    expect(canvas.dataset.viewportScalePxPerMeter).not.toBe(beforeFit);
   });
 
   it("shows live SLAM and ready Nav2 together in Unified without disabling goals because SLAM is active", async () => {

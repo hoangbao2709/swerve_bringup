@@ -37,8 +37,9 @@ describe("single-page Robot Control route", () => {
     expect(navigation?.textContent).toContain("MAPPING");
     expect(navigation?.textContent).toContain("LOCALIZATION");
     expect(navigation?.textContent).toContain("SYSTEM");
+    expect(navigation?.textContent).toContain("VDA5050");
     expect(navigation?.textContent).not.toContain("Overview");
-    expect(navigation?.querySelectorAll(".wt-sidebar-item")).toHaveLength(4);
+    expect(navigation?.querySelectorAll(".wt-sidebar-item")).toHaveLength(5);
     expect(container.textContent).toContain("WAITING FOR ROBOT TELEMETRY");
   });
 
@@ -50,6 +51,6 @@ describe("single-page Robot Control route", () => {
     act(() => root.render(<RobotControlPage />));
     expect(container.querySelector('[data-testid="active-robot-control"]')?.textContent)
       .toBe("Robot Control · R01");
-    expect(container.querySelectorAll(".wt-sidebar-item")).toHaveLength(4);
+    expect(container.querySelectorAll(".wt-sidebar-item")).toHaveLength(5);
   });
 });

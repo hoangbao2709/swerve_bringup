@@ -1,6 +1,4 @@
 import { API_URL } from "./ws";
-import { useStore } from "../state/store";
-import type { TagNavigationState } from "../schema/twin_state";
 
 async function responseError(response: Response): Promise<string> {
   try {
@@ -14,87 +12,6 @@ async function responseError(response: Response): Promise<string> {
   }
 }
 
-export async function navigationApi(path: string, init: RequestInit = {}) {
-  const response = await apiFetch(`/api/navigation/${path}`, init);
-  if (!response.ok) throw new Error(await responseError(response));
-  return response.json();
-}
-
-export type RobotNavigationTag = {
-  id: number;
-  tag_id: number;
-  label: string;
-  family: string;
-  floor_id: string;
-  lane_id: string;
-  zone_id: number | null;
-  x: number | null;
-  y: number | null;
-  z: number | null;
-  yaw: number | null;
-  enabled: boolean;
-  navigable: boolean;
-  reason: string | null;
-  frame_id: "map";
-  map_id: string;
-  map_revision: string;
-  navigation_pose: { x: number; y: number; yaw: number } | null;
-  navigation_pose_source: string | null;
-  canonical_map_id?: string;
-  canonical_map_revision?: string;
-  canonical_navigation_pose?: { x: number; y: number; yaw: number } | null;
-  registration_revision?: number;
-  registration_source?: string;
-  tag_revision: string;
-  metadata: Record<string, unknown>;
-};
-
-export type RobotNavigationTagRegistry = {
-  robot_id: string;
-  source: "WAREHOUSE_NAVIGATION_TAG_REGISTRY";
-  warehouse_id: number | null;
-  warehouse_code?: string;
-  map_id: string | null;
-  map_revision: string | null;
-  canonical_map_id?: string | null;
-  canonical_map_revision?: string | null;
-  active_map_id?: string | null;
-  active_map_revision?: string | null;
-  frame_id: "map";
-  compatible: boolean;
-  reason: string | null;
-  registration_required?: boolean;
-  transform_source?: string | null;
-  registration_revision?: number | null;
-  registration?: {
-    canonical_map_id: string;
-    canonical_map_revision: string;
-    active_map_id: string;
-    active_map_revision: string;
-    tx: number;
-    ty: number;
-    yaw: number;
-    registration_revision: number;
-    source: string;
-  } | null;
-  registry_revision: string | null;
-  tags: RobotNavigationTag[];
-};
-
-export async function getRobotNavigationTags(robotId: string): Promise<RobotNavigationTagRegistry> {
-  const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/navigation-tags`);
-  if (!response.ok) throw new Error(await responseError(response));
-  return response.json() as Promise<RobotNavigationTagRegistry>;
-}
-
-export const startTagMission = (robot_id: string, target_tag_id: number) => {
-  const state = useStore.getState();
-  if (state.mapSync.status !== "SYNCED") {
-    return Promise.reject(new Error(`Cannot start mission: map revision mismatch (${state.mapSync.status})`));
-  }
-  return navigationApi("missions/start", { method: "POST", body: JSON.stringify({ robot_id, target_tag_id }) }) as Promise<TagNavigationState>;
-};
-export const missionAction = (id: number, action: "pause" | "resume" | "cancel" | "replan") => navigationApi(`missions/${id}/${action}`, { method: "POST" });
 export const emergencyStop = async (robotId: string) => {
   const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/emergency-stop`, { method: "POST" });
   if (!response.ok) throw new Error(await responseError(response));

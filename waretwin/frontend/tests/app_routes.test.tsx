@@ -4,11 +4,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 vi.mock("../src/services/backendRuntime", () => ({ useBackendRealtime: () => undefined }));
-vi.mock("../src/components/overview/OverviewPage", () => ({ OverviewPage: () => <div data-page="overview" /> }));
 vi.mock("../src/components/control/RobotControlPage", () => ({ RobotControlPage: () => <div data-page="control" /> }));
-vi.mock("../src/components/control/RobotControlDetailPage", () => ({ RobotControlDetailPage: ({ robotId }: { robotId: string }) => <div data-page={`robot-${robotId}`} /> }));
 
 import App from "../src/App";
+import { useStore } from "../src/state/store";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -23,19 +22,22 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  useStore.setState({ selectedRobot: null });
 });
 
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  useStore.setState({ selectedRobot: null });
   vi.clearAllMocks();
 });
 
 describe("direct local application routes", () => {
-  it("opens the original Overview directly at / without a user session", () => {
+  it("redirects / to Robot Control without rendering Overview", () => {
     mount("/");
-    expect(window.location.pathname).toBe("/");
-    expect(container.querySelector('[data-page="overview"]')).not.toBeNull();
+    expect(window.location.pathname).toBe("/control");
+    expect(container.querySelector('[data-page="control"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Overview");
   });
 
   it("renders Robot Control at /control", () => {
@@ -43,17 +45,19 @@ describe("direct local application routes", () => {
     expect(container.querySelector('[data-page="control"]')).not.toBeNull();
   });
 
-  it("passes a dynamic robot id to the detail route", () => {
+  it("redirects the compatibility robot route to /control and preserves selection", () => {
     mount("/robots/AMR-17/control");
-    expect(container.querySelector('[data-page="robot-AMR-17"]')).not.toBeNull();
+    expect(window.location.pathname).toBe("/control");
+    expect(useStore.getState().selectedRobot).toBe("AMR-17");
+    expect(container.querySelector('[data-page="control"]')).not.toBeNull();
   });
 
-  it.each(["/login", "/register", "/account", "/profile", "/operations", "/unknown"]) (
-    "redirects removed or unknown route %s to /",
+  it.each(["/overview", "/login", "/register", "/account", "/profile", "/operations", "/unknown"]) (
+    "redirects removed or unknown route %s to /control",
     (path) => {
     mount(path);
-    expect(window.location.pathname).toBe("/");
-    expect(container.querySelector('[data-page="overview"]')).not.toBeNull();
+    expect(window.location.pathname).toBe("/control");
+    expect(container.querySelector('[data-page="control"]')).not.toBeNull();
     },
   );
 });

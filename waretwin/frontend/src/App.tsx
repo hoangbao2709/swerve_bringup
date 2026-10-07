@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { useBackendRealtime } from "./services/backendRuntime";
-import { OverviewPage } from "./components/overview/OverviewPage";
+import { useStore } from "./state/store";
 import { RobotControlPage } from "./components/control/RobotControlPage";
-import { RobotControlDetailPage } from "./components/control/RobotControlDetailPage";
 
 /** The retained console is designed for desktop, with the original compact
  * fallback message kept for narrower Robot Control screens. */
@@ -20,8 +19,8 @@ function NarrowScreenGate({ children }: { children: React.ReactNode }) {
       <div className="narrow-gate">
         <div className="brand"><span className="ai">Ware</span><span>Twin</span></div>
         <h2>Designed for desktop</h2>
-        <p>WareTwin is a 3D operations console that works best on screens ≥ 1280 px wide (it still runs, scaled down, from 1024 px). On a phone the interface would shrink to about a quarter of its size and become unreadable.</p>
-        <p>Open <b>ware-twin.vercel.app</b> on a laptop or desktop browser for the full experience.</p>
+        <p>Robot Control works best on screens ≥ 1280 px wide (it still runs, scaled down, from 1024 px). On a phone the controls and map would become difficult to read.</p>
+        <p>Open the control console on a laptop or desktop browser for the full experience.</p>
         <button className="btn" onClick={() => setDismissed(true)}>Continue anyway</button>
       </div>
     );
@@ -36,7 +35,7 @@ function usePathname() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
-  return [path, (next: string) => { window.history.pushState({}, "", next); setPath(next); }] as const;
+  return [path, setPath] as const;
 }
 
 function decodeRouteSegment(value: string | undefined): string | null {
@@ -46,16 +45,18 @@ function decodeRouteSegment(value: string | undefined): string | null {
 
 export default function App() {
   useBackendRealtime();
-  const [path, navigate] = usePathname();
+  const [path, setPath] = usePathname();
   const detailMatch = path.match(/^\/robots\/([^/]+)\/control\/?$/);
   const detailRobotId = detailMatch ? decodeRouteSegment(detailMatch[1]) : null;
 
   useEffect(() => {
-    const retainedRoute = path === "/" || path === "/control" || Boolean(detailRobotId);
-    if (!retainedRoute) navigate("/");
-  }, [detailRobotId, path]);
+    if (detailRobotId) useStore.getState().select(detailRobotId);
+    if (path !== "/control") {
+      window.history.replaceState({}, "", "/control");
+      setPath("/control");
+    }
+  }, [detailRobotId, path, setPath]);
 
   if (path === "/control") return <NarrowScreenGate><RobotControlPage /></NarrowScreenGate>;
-  if (detailRobotId) return <NarrowScreenGate><RobotControlDetailPage robotId={detailRobotId} /></NarrowScreenGate>;
-  return <OverviewPage />;
+  return null;
 }

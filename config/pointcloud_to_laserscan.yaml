@@ -1,11 +1,12 @@
 pointcloud_to_laserscan:
   ros__parameters:
-    # The source remains the full filtered 3D cloud. Only this height slice
-    # becomes /scan, so high rack tiers do not become 2D obstacles.
+    # The 16-beam vertical scan has nearest beams at +/-1 deg (no zero-angle
+    # ring). At 30 m those returns lie +/-0.524 m from lidar_link. Include
+    # them for full-range 2D mapping while keeping the floor (-0.595 m) out.
     target_frame: lidar_link
     transform_tolerance: 0.05
-    min_height: -0.15
-    max_height: 0.30
+    min_height: -0.54
+    max_height: 0.54
     angle_min: -3.14159265359
     angle_max: 3.14159265359
     angle_increment: 0.00872664626

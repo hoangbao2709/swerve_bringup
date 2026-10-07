@@ -1,22 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { RobotDetailPathPreview } from "../src/schema/twin_state";
-import { axisAngleDistanceRad, directionalAngleDistanceRad, evaluatePreviewApproval, type PreviewApprovalInput } from "../src/components/control/navigationPreviewApproval";
+import { directionalAngleDistanceRad, evaluatePreviewApproval, type PreviewApprovalInput } from "../src/components/control/navigationPreviewApproval";
 
-const tag = { tag_id: 1103, tag_revision: "tag-r7", registration_revision: 23 };
 const timestamp = new Date("2026-10-07T00:00:00.000Z").toISOString();
+const target = {
+  frame_id: "map", map_id: "SLAM-session-a", map_revision: "session-session-a",
+  source_type: "ACTIVE_MAP_POINT" as const, source_map_id: "SLAM-session-a",
+  source_map_revision: "session-session-a", x: 3, y: 4, yaw: -3.141440167775226,
+};
 
 function validPreview(overrides: Partial<RobotDetailPathPreview> = {}): RobotDetailPathPreview {
   return {
     robot_id: "R01", request_id: "preview-1", status: "VALID", frame_id: "map",
-    path: [{ x: 1, y: 2 }, { x: 3, y: 4 }], active_path: [{ x: 1, y: 2 }, { x: 3, y: 4 }],
-    canonical_path: [{ x: 1, y: 2 }, { x: 3, y: 4 }], route_nodes: [1102, 1103],
-    route_segments: [{ from: 1102, to: 1103, axis: "X", length_m: 2 }],
-    active_route_points: [{ x: 1, y: 2, yaw: 0, kind: "TAG", tag_id: 1102 }],
-    canonical_route_points: [{ x: 1, y: 2, yaw: 0, kind: "TAG", tag_id: 1102 }],
-    route_revision: "route-r2", graph_revision: "graph-r4", path_length_m: 2,
-    goal: { x: 3, y: 4, yaw: -3.141440167775226 },
-    source_type: "TAG", source_id: "1103", tag_id: 1103, tag_revision: "tag-r7",
-    registry_revision: "registry-r9", registration_revision: 23,
+    path: [{ x: 1, y: 2 }, { x: 3, y: 4 }], path_length_m: 2,
+    goal: { x: 3, y: 4, yaw: target.yaw },
+    source_type: "ACTIVE_MAP_POINT", source_map_id: target.source_map_id,
+    source_map_revision: target.source_map_revision,
     active_map_id: "SLAM-session-a", active_map_revision: "session-session-a",
     timestamp, ...overrides,
   };
@@ -24,145 +23,62 @@ function validPreview(overrides: Partial<RobotDetailPathPreview> = {}): RobotDet
 
 function input(preview: RobotDetailPathPreview, overrides: Partial<PreviewApprovalInput> = {}): PreviewApprovalInput {
   return {
-    pathPreview: preview, requestId: "preview-1", targetMethod: "TAG",
-    target: { x: 3, y: 4, yaw: -3.141440167775226 },
-    activeMapId: "SLAM-session-a", activeMapRevision: "session-session-a", canonicalMapRevision: "23",
-    selectedTag: tag, orientationPolicy: "SHELF_WIDTH_PARALLEL",
-    registryRevision: "registry-r9", now: Date.parse(timestamp), ...overrides,
+    pathPreview: preview, requestId: "preview-1", target,
+    activeMapId: "SLAM-session-a", activeMapRevision: "session-session-a",
+    now: Date.parse(timestamp), ...overrides,
   };
 }
 
-describe("navigation preview approval", () => {
-  it("accepts equivalent shelf yaw values across the -pi/+pi boundary", () => {
-    const selectedYaw = -3.141440167775226;
-    const wrappedPreviewYaw = selectedYaw + Math.PI * 2;
-    const result = evaluatePreviewApproval(input(validPreview({ goal: { x: 3, y: 4, yaw: wrappedPreviewYaw } })));
-
-    expect(directionalAngleDistanceRad(wrappedPreviewYaw, selectedYaw)).toBeLessThan(1e-4);
-    expect(axisAngleDistanceRad(wrappedPreviewYaw, selectedYaw)).toBeLessThan(1e-4);
-    expect(result.gates.targetPositionMatches).toBe(true);
-    expect(result.gates.targetYawMatches).toBe(true);
+describe("point navigation preview approval", () => {
+  it("approves a valid preview for the selected point on the current active map", () => {
+    const result = evaluatePreviewApproval(input(validPreview()));
+    expect(result.approved).toBe(true);
     expect(result.approvedPreview?.status).toBe("VALID");
   });
 
-  it("accepts the reverse +pi/-pi wrap direction", () => {
-    const selectedYaw = Math.PI - 0.000152485814567;
-    const wrappedPreviewYaw = selectedYaw - Math.PI * 2;
-    const result = evaluatePreviewApproval(input(
-      validPreview({ goal: { x: 3, y: 4, yaw: wrappedPreviewYaw } }),
-      { target: { x: 3, y: 4, yaw: selectedYaw } },
-    ));
-
+  it("accepts equivalent headings across the -pi/+pi wrap boundary", () => {
+    const selectedYaw = target.yaw;
+    const wrappedPreviewYaw = selectedYaw + Math.PI * 2;
+    const result = evaluatePreviewApproval(input(validPreview({
+      goal: { x: target.x, y: target.y, yaw: wrappedPreviewYaw },
+    })));
+    expect(directionalAngleDistanceRad(wrappedPreviewYaw, selectedYaw)).toBeLessThan(1e-4);
+    expect(result.gates.targetPositionMatches).toBe(true);
     expect(result.gates.targetYawMatches).toBe(true);
     expect(result.approved).toBe(true);
   });
 
-  it("still rejects real yaw, X, and Y mismatches without widening positional tolerance", () => {
-    const preview = validPreview();
-    const yawMismatch = evaluatePreviewApproval(input({
-      ...preview, goal: { x: 3, y: 4, yaw: preview.goal!.yaw + 0.001 },
-    }));
-    const xMismatch = evaluatePreviewApproval(input({ ...preview, goal: { ...preview.goal!, x: 3.0002 } }));
-    const yMismatch = evaluatePreviewApproval(input({ ...preview, goal: { ...preview.goal!, y: 4.0002 } }));
-
-    expect(yawMismatch.approved).toBe(false);
+  it("rejects real yaw and position mismatches without widening tolerances", () => {
+    const yawMismatch = evaluatePreviewApproval(input(validPreview({
+      goal: { x: target.x, y: target.y, yaw: target.yaw + 0.001 },
+    })));
+    const xMismatch = evaluatePreviewApproval(input(validPreview({
+      goal: { x: target.x + 0.0002, y: target.y, yaw: target.yaw },
+    })));
+    const yMismatch = evaluatePreviewApproval(input(validPreview({
+      goal: { x: target.x, y: target.y + 0.0002, yaw: target.yaw },
+    })));
     expect(yawMismatch.rejectReason).toBe("TARGET_YAW_MISMATCH");
-    expect(xMismatch.approved).toBe(false);
     expect(xMismatch.rejectReason).toBe("TARGET_POSITION_MISMATCH");
-    expect(yMismatch.approved).toBe(false);
     expect(yMismatch.rejectReason).toBe("TARGET_POSITION_MISMATCH");
   });
 
-  it("accepts the captured live shelf result when yaw differs by pi on the undirected shelf axis", () => {
-    const result = evaluatePreviewApproval(input(validPreview({
-      goal: { x: 3, y: 4, yaw: 0.00015248581456694943 },
-    })));
-
-    expect(result.gates.targetPositionMatches).toBe(true);
-    expect(result.gates.targetYawMatches).toBe(true);
-    expect(result.rejectReason).toBeNull();
-    expect(result.approvedPreview?.goal?.yaw).toBe(0.00015248581456694943);
-  });
-
-  it.each([
-    { name: "captured shelf near -pi and opposite heading near zero", selected: -3.1414401678, preview: 0.0001524858 },
-    { name: "zero and pi", selected: 0, preview: Math.PI },
-    { name: "positive and negative pi over two", selected: Math.PI / 2, preview: -Math.PI / 2 },
-  ])("accepts SHELF_WIDTH_PARALLEL as an undirected axis: $name", ({ selected, preview }) => {
-    const result = evaluatePreviewApproval(input(validPreview({ goal: { x: 3, y: 4, yaw: preview } }), {
-      target: { x: 3, y: 4, yaw: selected }, orientationPolicy: "SHELF_WIDTH_PARALLEL",
-    }));
-    expect(result.gates.targetYawMatches).toBe(true);
-    expect(result.approved).toBe(true);
-  });
-
-  it("rejects a quarter-turn mismatch for SHELF_WIDTH_PARALLEL", () => {
-    const result = evaluatePreviewApproval(input(validPreview({ goal: { x: 3, y: 4, yaw: Math.PI / 2 } }), {
-      target: { x: 3, y: 4, yaw: 0 }, orientationPolicy: "SHELF_WIDTH_PARALLEL",
-    }));
-    expect(result.gates.targetYawMatches).toBe(false);
-    expect(result.rejectReason).toBe("TARGET_YAW_MISMATCH");
-  });
-
-  it.each(["LANE_FORWARD", "LANE_REVERSE", "EXPLICIT"])("keeps %s direction-sensitive modulo 2pi", (orientationPolicy) => {
-    const opposite = evaluatePreviewApproval(input(validPreview({ goal: { x: 3, y: 4, yaw: Math.PI } }), {
-      target: { x: 3, y: 4, yaw: 0 }, orientationPolicy,
-    }));
-    expect(opposite.gates.targetYawMatches).toBe(false);
-    expect(opposite.rejectReason).toBe("TARGET_YAW_MISMATCH");
-
-    if (orientationPolicy === "LANE_FORWARD") {
-      const epsilon = 0.0002;
-      const wrapped = evaluatePreviewApproval(input(validPreview({
-        goal: { x: 3, y: 4, yaw: Math.PI + epsilon },
-      }), {
-        target: { x: 3, y: 4, yaw: -Math.PI + epsilon }, orientationPolicy,
-      }));
-      expect(directionalAngleDistanceRad(Math.PI + epsilon, -Math.PI + epsilon)).toBeLessThan(1e-4);
-      expect(wrapped.gates.targetYawMatches).toBe(true);
-    }
-  });
-
-  it("keeps request, source, map, registration, route completeness, and freshness gates fail-closed", () => {
+  it("keeps request, map identity, active-map source, and freshness gates fail-closed", () => {
     const preview = validPreview();
     expect(evaluatePreviewApproval(input(preview, { requestId: "other" })).rejectReason).toBe("REQUEST_ID_MISMATCH");
     expect(evaluatePreviewApproval(input(validPreview({ status: "INVALID" }))).rejectReason).toBe("PREVIEW_NOT_VALID");
     expect(evaluatePreviewApproval(input(validPreview({ path: [] }))).rejectReason).toBe("PATH_EMPTY");
-    expect(evaluatePreviewApproval(input(validPreview({ route_revision: null }))).rejectReason).toBe("TAG_ROUTE_INCOMPLETE");
     expect(evaluatePreviewApproval(input(validPreview({ active_map_id: "SLAM-session-old" }))).rejectReason)
       .toBe("ACTIVE_MAP_ID_MISMATCH");
     expect(evaluatePreviewApproval(input(validPreview({ active_map_revision: "session-old" }))).rejectReason)
       .toBe("ACTIVE_MAP_REVISION_MISMATCH");
-    expect(evaluatePreviewApproval(input(validPreview({ tag_id: 1303 }))).rejectReason).toBe("TAG_SOURCE_MISMATCH");
-    expect(evaluatePreviewApproval(input(validPreview({ registry_revision: "registry-old" }))).rejectReason)
-      .toBe("TAG_SOURCE_MISMATCH");
-    expect(evaluatePreviewApproval(input(validPreview({ registration_revision: 22 }))).rejectReason)
-      .toBe("TAG_REGISTRATION_REVISION_MISMATCH");
+    expect(evaluatePreviewApproval(input(validPreview({ source_map_id: "CANONICAL" }))).rejectReason)
+      .toBe("MAP_SOURCE_MISMATCH");
     expect(evaluatePreviewApproval(input(validPreview({ timestamp: "invalid" }))).rejectReason)
       .toBe("PREVIEW_TIMESTAMP_INVALID");
-    expect(evaluatePreviewApproval(input(validPreview(), { now: Date.parse(timestamp) + 120_001 })).rejectReason)
+    expect(evaluatePreviewApproval(input(preview, { now: Date.parse(timestamp) + 120_001 })).rejectReason)
       .toBe("PREVIEW_TOO_OLD");
-    expect(evaluatePreviewApproval(input(validPreview(), { now: Date.parse(timestamp) - 5_001 })).rejectReason)
+    expect(evaluatePreviewApproval(input(preview, { now: Date.parse(timestamp) - 5_001 })).rejectReason)
       .toBe("PREVIEW_FROM_FUTURE");
-  });
-
-  it("keeps canonical MAP_POINT source map identity and request-source validation", () => {
-    const preview = validPreview({ source_type: "CANONICAL_MAP_POINT", source_id: null, tag_id: null,
-      tag_revision: null, registry_revision: null, registration_revision: null,
-      source_map_id: "CANONICAL", source_map_revision: "23",
-      source_goal: { x: 3, y: 4, yaw: 0.5 }, goal: { x: 3, y: 4, yaw: 0.5 },
-      route_revision: null, route_nodes: null, route_segments: null, active_route_points: null,
-      canonical_route_points: null });
-    const target = { x: 3, y: 4, yaw: 0.5, frame_id: "map", map_id: "SLAM-session-a",
-      map_revision: "session-session-a", source_type: "CANONICAL_MAP_POINT",
-      source_map_id: "CANONICAL", source_map_revision: "23" };
-    const approvalInput: PreviewApprovalInput = { ...input(preview), targetMethod: "MAP_POINT",
-      target, selectedTag: null, registryRevision: null };
-
-    expect(evaluatePreviewApproval(approvalInput).approved).toBe(true);
-    expect(evaluatePreviewApproval({ ...approvalInput,
-      pathPreview: { ...preview, source_map_revision: "22" } }).rejectReason).toBe("MAP_SOURCE_MISMATCH");
-    expect(evaluatePreviewApproval({ ...approvalInput,
-      target: { ...target, source_map_revision: "22" } }).rejectReason).toBe("MAP_SOURCE_MISMATCH");
   });
 });

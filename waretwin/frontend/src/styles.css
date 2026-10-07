@@ -1785,6 +1785,9 @@ table.dt.full td { white-space: normal; }
 
 /* Industrial robot control console. This view intentionally uses small radii,
  * thin graphite rules and monospace measurements; the map is the focal area. */
+.robot-control-workspace { width: 100%; min-width: 0; min-height: 100vh; height: 100vh; display: flex; overflow: hidden; background: #050a12; }
+.robot-control-workspace > .robot-detail-shell { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; height: 100vh; }
+.robot-control-waiting { flex: 1 1 auto; display: grid; place-items: center; color: #83a0b7; font: 700 12px var(--mono); letter-spacing: .12em; }
 .robot-detail-shell { min-height: 100vh; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #050a12; color: #dce9f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
 .robot-detail-header { flex: 0 0 auto; min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 14px; border-bottom: 1px solid #21364b; background: #09121e; }
 .robot-detail-identity, .robot-detail-header-actions { display: flex; align-items: center; gap: 9px; min-width: 0; }
@@ -1831,16 +1834,6 @@ table.dt.full td { white-space: normal; }
 .robot-detail-goal-toolbar > span { flex: 1 1 auto; min-width: 0; color: #87a1b6; font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .robot-detail-goal-toolbar button, .robot-detail-nav-bar button { min-height: 27px; padding: 0 8px; }
 .robot-detail-target-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 5px 8px; border-bottom: 1px solid #20394f; background: #0a1724; color: #7996ad; font: 8px var(--mono); letter-spacing: .1em; }
-.robot-detail-target-toolbar > div[role="group"] { display: flex; gap: 3px; }
-.robot-detail-target-toolbar button { min-height: 27px; padding: 0 9px; border: 1px solid #29455d; border-radius: 2px; color: #8da8bd; background: #0b1a28; font: 700 9px var(--mono); }
-.robot-detail-target-toolbar button.is-active { border-color: #32818a; color: #65e1dc; background: #0a2b32; }
-.robot-detail-tag-select { display: flex; align-items: center; gap: 7px; margin-left: auto; color: #7f9bb0; white-space: nowrap; }
-.robot-detail-tag-select select { min-width: min(300px, 35vw); min-height: 29px; border: 1px solid #2b4760; border-radius: 2px; padding: 0 8px; color: #e6f2fc; background: #0b1724; font: 9px var(--mono); }
-.robot-detail-tag-status { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 31px; padding: 4px 9px; border-bottom: 1px solid #172f44; background: #081522; color: #849eb3; font: 8px var(--mono); }
-.robot-detail-tag-status .is-error { color: #ff9d9d; }
-.robot-detail-tag-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-left: auto; }
-.robot-detail-tag-summary > span { color: #6f899d; white-space: nowrap; }
-.robot-detail-tag-summary b { color: #d7e9f5; font: 700 8px var(--mono); }
 .robot-detail-bottom { position: relative; flex: 0 0 auto; display: grid; grid-template-columns: minmax(330px, 1fr) minmax(390px, 1.15fr); gap: 6px; min-height: 135px; padding: 0 6px 6px; background: #050a12; }
 .robot-detail-manual, .robot-detail-nav-bar { min-width: 0; border: 1px solid #20384e; background: #091420; }
 .robot-detail-manual { display: flex; flex-direction: column; }
@@ -1866,9 +1859,9 @@ table.dt.full td { white-space: normal; }
 
 /* Robot-scoped local HMI sections and live sensor views. */
 .robot-local-tabs { flex: 0 0 auto; display: flex; gap: 3px; padding: 5px 7px 0; border-bottom: 1px solid #20384e; background: #08111c; }
-.robot-local-tabs button, .robot-map-source-bar button { min-height: 29px; padding: 0 12px; border: 1px solid #29445b; border-bottom: 0; border-radius: 2px 2px 0 0; background: #0b1723; color: #7590a7; font: 700 9px var(--mono); letter-spacing: .08em; }
-.robot-local-tabs button:hover, .robot-map-source-bar button:hover { color: #e5f7ff; border-color: #3c6c88; }
-.robot-local-tabs button.is-active, .robot-map-source-bar button.is-active { background: #102536; color: #70e8e2; border-color: #287483; box-shadow: inset 0 2px #28c5cb; }
+.robot-local-tabs button { min-height: 29px; padding: 0 12px; border: 1px solid #29445b; border-bottom: 0; border-radius: 2px 2px 0 0; background: #0b1723; color: #7590a7; font: 700 9px var(--mono); letter-spacing: .08em; }
+.robot-local-tabs button:hover { color: #e5f7ff; border-color: #3c6c88; }
+.robot-local-tabs button.is-active { background: #102536; color: #70e8e2; border-color: #287483; box-shadow: inset 0 2px #28c5cb; }
 .robot-detail-section-main { flex: 1 1 auto; min-height: 0; padding: 8px; overflow: auto; background: #050a12; }
 .local-robot-section { min-height: 100%; display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); align-content: start; gap: 8px; }
 .local-section-panel { min-height: 0; max-height: 100%; }
@@ -1943,9 +1936,10 @@ table.dt.full td { white-space: normal; }
 .local-vda-footer button { min-height: 32px; }.local-vda-footer button.robot-console-primary { background: #0d3b42; }
 .local-diagnostic-runtime { display: flex; gap: 16px; margin-top: 7px; padding-top: 7px; border-top: 1px solid #1b3043; }
 .local-topic-list { display: grid; gap: 5px; margin-top: 9px; color: #84a5bd; font: 9px var(--mono); }
-.robot-map-source-bar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; padding: 5px 8px 0; border-bottom: 1px solid #29445a; background: #091420; }
-.robot-map-source-bar > div { display: flex; align-items: end; gap: 3px; }.robot-map-source-bar > div[aria-label="LiDAR view dimension"] button { min-width: 42px; }
+.robot-map-source-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 5px 8px 0; border-bottom: 1px solid #29445a; background: #091420; }
+.robot-map-view-label { color: #87d5dc; font: 700 9px var(--mono); letter-spacing: .08em; white-space: nowrap; }
 .map-sync-warning { margin-left: auto; padding: 5px 7px; border: 1px solid #735c29; color: #f0cd68; font: 8px var(--mono); }
+.robot-map-source-bar .map-sync-warning + .map-sync-warning { margin-left: 0; }
 .robot-lidar-view { position: relative; flex: 1 1 auto; min-height: 220px; overflow: hidden; background: #06101a; }
 .robot-detail-view-stack { position: relative; flex: 1 1 auto; min-height: 220px; }
 .robot-detail-view-layer { position: absolute; inset: 0; display: flex; visibility: hidden; pointer-events: none; }
@@ -1956,4 +1950,4 @@ table.dt.full td { white-space: normal; }
 .robot-lidar-3d-view { min-height: 220px; }.robot-lidar-3d-view canvas { cursor: grab; }.robot-lidar-3d-view canvas:active { cursor: grabbing; }
 @media (max-width: 1000px) { .local-robot-section { grid-template-columns: 1fr; }.local-vda-panel { grid-column: auto; }.local-form-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); } }
 @media (max-width: 900px) { .robot-local-tabs { overflow-x: auto; }.robot-detail-section-main { overflow: visible; }.robot-map-source-bar { flex-wrap: wrap; }.local-status-grid { grid-template-columns: 1fr; }.local-vda-footer { align-items: flex-start; flex-direction: column; }.local-form-grid { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 580px) { .local-form-grid { grid-template-columns: 1fr; }.local-vda-group { grid-column: auto; }.robot-map-source-bar { min-height: 38px; }.robot-map-source-bar button { padding: 0 7px; }.robot-detail-goal-toolbar { flex-wrap: wrap; }.robot-detail-goal-toolbar > span { flex: 1 1 100%; }.robot-detail-target-toolbar { flex-wrap: wrap; }.robot-detail-tag-select { flex: 1 1 100%; margin-left: 0; }.robot-detail-tag-select select { flex: 1 1 auto; min-width: 0; }.robot-detail-tag-summary { margin-left: 0; } }
+@media (max-width: 580px) { .local-form-grid { grid-template-columns: 1fr; }.local-vda-group { grid-column: auto; }.robot-map-source-bar { min-height: 38px; }.robot-detail-goal-toolbar { flex-wrap: wrap; }.robot-detail-goal-toolbar > span { flex: 1 1 100%; }.robot-detail-target-toolbar { flex-wrap: wrap; } }

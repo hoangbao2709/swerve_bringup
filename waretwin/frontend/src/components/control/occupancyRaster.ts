@@ -2,6 +2,12 @@ import type { RobotDetailMapSnapshot } from "../../schema/twin_state";
 import { decodeOccupancyGrid } from "./occupancyGrid";
 import { detailPerformance } from "./detailPerformance";
 
+export function occupancyCellColor(occupancy: number): [number, number, number, number] {
+  if (occupancy < 0) return [145, 145, 145, 255];
+  if (occupancy > 65) return [20, 20, 20, 255];
+  return [245, 245, 245, 255];
+}
+
 const rasterKeys = new WeakMap<RobotDetailMapSnapshot, string>();
 export function occupancyRasterKey(map: RobotDetailMapSnapshot): string {
   const cached = rasterKeys.get(map);
@@ -63,19 +69,10 @@ async function build(map: RobotDetailMapSnapshot): Promise<HTMLCanvasElement | n
   const image = context.createImageData(map.width, map.height);
   for (let row = 0; row < map.height; row++) for (let col = 0; col < map.width; col++) {
     const occupancy = source[row * map.width + col];
-    const index = ((map.height - row - 1) * map.width + col) * 4;
-    if (occupancy < 0) {
-      // Unknown is a deliberate, subtle base color; it remains visually
-      // distinct from mapped free space without competing with the dark UI.
-      image.data[index] = 8; image.data[index + 1] = 18; image.data[index + 2] = 29;
-      image.data[index + 3] = 255;
-    } else if (occupancy > 65) {
-      image.data[index] = 232; image.data[index + 1] = 92; image.data[index + 2] = 92;
-      image.data[index + 3] = 242;
-    } else {
-      image.data[index] = 31; image.data[index + 1] = 73; image.data[index + 2] = 96;
-      image.data[index + 3] = 220;
-    }
+    // OccupancyGrid row 0 is the map's lower edge. The renderer applies a
+    // negative canvas Y scale, so keep source rows in ROS order here.
+    const index = (row * map.width + col) * 4;
+    image.data.set(occupancyCellColor(occupancy), index);
   }
   context.putImageData(image, 0, 0);
   detailPerformance("occupancy_raster", { duration_ms: performance.now() - started });

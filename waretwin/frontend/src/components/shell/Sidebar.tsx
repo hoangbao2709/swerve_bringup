@@ -26,8 +26,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const pathname = window.location.pathname;
 
   const workspace: MenuItem[] = [
-    { label: "Overview", caption: "Operations overview", icon: "⌂", path: "/" },
-    { label: "Robot Control", caption: "Tag navigation", icon: "◎", path: "/control" },
+    { label: "Robot Control", caption: "Manual + point navigation", icon: "◎", path: "/control" },
   ];
 
   const activate = (item: MenuItem) => {

@@ -155,6 +155,12 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const activeMap2dSnapshot = activeMapSnapshot?.active_map_id === activeMapId
       && String(activeMapSnapshot.active_map_revision ?? "") === String(activeMapRevision ?? "")
     ? activeMapSnapshot : null;
+  const localizationMapSnapshot = activeLocalMapId
+    ? runtimeMapSnapshot?.map_source === "LOCAL_MAP"
+      && runtimeMapSnapshot.active_map_id === activeLocalMapId
+      && String(runtimeMapSnapshot.active_map_revision ?? "") === String(activeLocalMapRevision ?? "")
+      ? runtimeMapSnapshot : null
+    : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot;
   const activeMapStatus = useLiveSlamMap ? activeMappingSnapshot ? "SLAM · LIVE · LOCAL_ONLY" : "WAITING FOR SLAM MAP"
     : activeLocalMapId
       ? localMapSyncStatus ?? (activeMap2dSnapshot ? "LOCAL_ONLY" : "WAITING FOR LOCAL MAP")
@@ -570,7 +576,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
           {activeSection === "SYSTEM" && <button type="button" className="hmi-secondary-action" onClick={() => onSectionChange("VDA5050")}>VDA5050 ADVANCED SETTINGS</button>}
           {activeSection === "VDA5050" && <button type="button" className="hmi-secondary-action" onClick={() => onSectionChange("SYSTEM")}>BACK TO SYSTEM</button>}
         </header>
-        <LocalRobotSection section={localSection} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={activeLocalMapId ? runtimeMapSnapshot : slamRuntimeActive ? slam2dMap : runtimeMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} hostStatus={host} />
+        <LocalRobotSection section={localSection} robotId={robotId} robot={robot} slam2dMap={slam2dMap} runtimeMapSnapshot={runtimeMapSnapshot} localizationMap={localizationMapSnapshot} scan={mappingScan} diagnostics={detailDiagnostics ?? diagnostics} errors={detailErrors.length ? detailErrors : detailDiagnostics?.errors ?? diagnostics?.errors ?? EMPTY_ERRORS} controlOnline={controlOnline} controlMode={controlMode} runtimeMode={runtimeMode} runtimeState={runtimeState} runtimeCapabilities={runtimeCapabilities} localization={localization} websocketState={websocketState} mapRevision={mapSync.publishedRevision} activeLocalMapId={activeLocalMapId} activeLocalMapRevision={activeLocalMapRevision} localMapSyncStatus={localMapSyncStatus} lidarStreamDiagnostics={lidarStreamDiagnostics} mappingSessionId={mappingSessionId} hostStatus={host} ensureManualMode={() => setMode("MANUAL")} />
       </main> : <main className="robot-detail-main hmi-control-main">
         <section className="robot-detail-map-panel">
           <div className="robot-map-source-bar">

@@ -563,6 +563,7 @@ export type RobotRuntimeCapabilities = {
   nav2_ready: boolean;
   manual_available: boolean;
   goal_available: boolean;
+  localization_ready?: boolean;
   map_ready: boolean;
   tag_navigation_available: boolean;
   goal_blocker_code?: string | null;

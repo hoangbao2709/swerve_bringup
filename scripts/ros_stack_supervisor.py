@@ -337,10 +337,11 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                 if target_mode not in ('unified', 'mapping', 'navigation'):
                     raise ValueError('mode transition target must be unified, mapping, or navigation')
                 slam_session_file = mode_request.get('slam_session_file')
-                if active_mode == 'unified' and (target_mode != 'unified' or slam_session_file):
+                if active_mode == 'unified' and (
+                        target_mode not in ('unified', 'navigation') or slam_session_file):
                     raise ValueError(
-                        'the UNIFIED stack cannot be switched or resumed by restarting ROS/Gazebo; '
-                        'use control-mode and in-process SLAM transition APIs')
+                        'the UNIFIED stack only supports a supervised handoff to NAVIGATION; '
+                        'mapping-mode changes and saved SLAM-session restore are unavailable')
                 if slam_session_file:
                     if target_mode not in ('mapping', 'unified') or mode_request.get('force_restart') is not True:
                         raise ValueError('saved SLAM restore requires a validated mapping-capable launch')

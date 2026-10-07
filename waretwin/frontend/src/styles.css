@@ -2139,6 +2139,9 @@ table.dt.full td { white-space: normal; }
 .industrial-hmi .local-map-list { max-height: none; }
 .industrial-hmi .local-map-row { padding: 8px 10px; border-color: #c8cdd1; background: #fafafa; color: #283139; }
 .industrial-hmi .local-map-row.is-selected { border-color: #1976c9; background: #eef6fc; }
+.industrial-hmi .local-map-active-badge { justify-self: start; margin-left: 7px; padding: 2px 5px; border: 1px solid #8ab996; color: #216a30; background: #edf7ef; font-size: 10px; line-height: 1.2; }
+.industrial-hmi .local-help.warning { color: #805300; }
+.industrial-hmi .local-feedback.warning { border-color: #dfbd76; color: #805300; background: #fff7e5; }
 .industrial-hmi .local-map-row b { color: #25313a; font: 700 13px var(--font); }
 .industrial-hmi .local-map-row small { color: #5b646b; font: 11px var(--font); }
 .industrial-hmi .local-map-toggles { margin: 0 0 8px; }

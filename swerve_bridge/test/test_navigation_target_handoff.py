@@ -1,5 +1,6 @@
 import math
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -590,3 +591,60 @@ def test_clear_estop_local_control_returns_correlated_applied_or_pending_result(
     assert result['result']['code'] == 'CLEAR_ESTOP_APPLIED'
     assert result['result']['emergency_stop_active'] is False
     assert result['result']['pre_stop_navigation_terminal'] is True
+
+
+def _saved_map_load_bridge(runtime_state='UNIFIED'):
+    bridge = object.__new__(SwerveBridge)
+    bridge.robot_id = 'R01'
+    bridge.runtime_state = runtime_state
+    bridge.applied_mode = 'MANUAL'
+    bridge.emergency_stop_active = False
+    bridge.active_goal = None
+    bridge.active_pose_goal = None
+    bridge.goal_request_pending = False
+    bridge.cancel_pending = False
+    bridge.local_map_load_pending = False
+    bridge.slam_paused = True
+    bridge.latest_odom = object()
+    bridge._robot_is_stopped = lambda: True
+    bridge.send = Mock()
+    bridge.now = lambda: '2026-10-03T00:00:00Z'
+    bridge.nav2_lifecycle_status = Mock(return_value={
+        'ready': False, 'states': {'map_server': 'active', 'bt_navigator': 'inactive'},
+        'blocker_reason': 'Required Nav2 lifecycle node(s) must be ACTIVE: /bt_navigator=inactive.',
+    })
+    bridge.map_load_client = SimpleNamespace(service_is_ready=Mock(return_value=True))
+    return bridge
+
+
+def test_saved_map_preflight_confirms_manual_stop_before_unified_handoff():
+    bridge = _saved_map_load_bridge('UNIFIED')
+    bridge.local_control({'operation': 'MAP_LOAD_PREFLIGHT', 'request_id': 'map-preflight-1'})
+    result = bridge.send.call_args.args[0]
+    assert result['type'] == 'LOCAL_CONTROL_RESULT'
+    assert result['request_id'] == 'map-preflight-1'
+    assert result['ok'] is True
+    assert result['result']['safe_to_load'] is True
+    assert result['result']['runtime_state'] == 'UNIFIED'
+    assert result['result']['mapping_state'] == 'PAUSED'
+
+    bridge.send.reset_mock()
+    bridge.active_pose_goal = object()
+    bridge.local_control({'operation': 'MAP_LOAD_PREFLIGHT', 'request_id': 'map-preflight-2'})
+    rejected = bridge.send.call_args.args[0]
+    assert rejected['ok'] is False
+    assert 'active navigation goal' in rejected['error']
+
+
+def test_saved_map_load_fails_closed_when_nav2_lifecycle_is_not_active():
+    bridge = _saved_map_load_bridge('NAVIGATION')
+    bridge.local_map_root = Path('/tmp/local-map-test')
+    bridge.local_control({
+        'operation': 'MAP_LOAD', 'request_id': 'map-load-inactive',
+        'map_id': 'saved-map-1', 'map_revision': 'rev-1',
+        'map_yaml': '/tmp/local-map-test/saved-map.yaml',
+    })
+    result = bridge.send.call_args.args[0]
+    assert result['ok'] is False
+    assert '/bt_navigator=inactive' in result['error']
+    bridge.map_load_client.service_is_ready.assert_not_called()

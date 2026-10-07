@@ -82,6 +82,47 @@ def test_nav2_swerve_controller_preserves_transit_heading_and_terminal_yaw_safet
     assert bt_params['default_server_timeout'] == 500
 
 
+def test_faster_manual_and_nav2_speed_profiles_stay_inside_swerve_hard_limits():
+    bridge_config = yaml.safe_load((ROOT / 'swerve_bridge/config/bridge.yaml').read_text(encoding='utf-8'))
+    bridge_params = bridge_config['swerve_bridge']['ros__parameters']
+    assert bridge_params['manual_linear_velocity'] == 0.40
+    assert bridge_params['manual_angular_velocity'] == 0.80
+
+    bridge_source = ast.parse((ROOT / 'swerve_bridge/swerve_bridge/bridge_node.py').read_text(encoding='utf-8'))
+    declared_defaults = {
+        node.args[0].value: node.args[1].value
+        for node in ast.walk(bridge_source)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'declare_parameter'
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[0].value in {'manual_linear_velocity', 'manual_angular_velocity'}
+    }
+    assert declared_defaults == {
+        'manual_linear_velocity': 0.40,
+        'manual_angular_velocity': 0.80,
+    }
+
+    nav_config = yaml.safe_load((ROOT / 'swerve_navigation/config/nav2_params.yaml').read_text(encoding='utf-8'))
+    follow_path = nav_config['controller_server']['ros__parameters']['FollowPath']
+    assert (follow_path['min_vel_x'], follow_path['max_vel_x']) == (-0.50, 0.50)
+    assert (follow_path['min_vel_y'], follow_path['max_vel_y']) == (-0.50, 0.50)
+    assert follow_path['max_speed_xy'] == 0.50
+    assert follow_path['max_vel_theta'] == 0.70
+    assert (follow_path['acc_lim_x'], follow_path['acc_lim_y']) == (0.70, 0.70)
+    assert (follow_path['acc_lim_theta'], follow_path['decel_lim_theta']) == (1.20, -1.20)
+    assert (follow_path['decel_lim_x'], follow_path['decel_lim_y']) == (-1.20, -1.20)
+
+    actuator = yaml.safe_load((ROOT / 'config/swerve_controller.yaml').read_text(encoding='utf-8'))
+    actuator_params = actuator['swerve_controller']['ros__parameters']
+    assert bridge_params['manual_linear_velocity'] <= actuator_params['max_linear_velocity']
+    assert bridge_params['manual_angular_velocity'] <= actuator_params['max_angular_velocity']
+    assert follow_path['max_speed_xy'] <= actuator_params['max_linear_velocity']
+    assert follow_path['max_vel_theta'] <= actuator_params['max_angular_velocity']
+
+
 def test_unified_nav2_readiness_order_matches_lifecycle_manager_start_order():
     readiness = (ROOT / 'scripts/navigation_readiness.py').read_text(encoding='utf-8')
     launch = (ROOT / 'swerve_navigation/launch/navigation.launch.py').read_text(encoding='utf-8')

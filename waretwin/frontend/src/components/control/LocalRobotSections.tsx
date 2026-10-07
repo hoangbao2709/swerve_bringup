@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import {
   applyVda5050Configuration,
   getLocalRobotMaps,
+  getLocalRuntimeMode,
   getVda5050Configuration,
   initializeLocalRobotPose,
   loadLocalRobotMap,
@@ -9,6 +10,7 @@ import {
   setMappingState,
   testVda5050Connection,
   type LocalRobotMap,
+  type LocalMapLoadResult,
   type Vda5050Configuration,
 } from "../../services/api";
 import type { RobotDetailError, RobotDetailMapSnapshot, RobotDetailScan, RobotLidarStreamDiagnostics, RobotRuntimeCapabilities, RobotSystemDiagnostics, RobotState, RobotWorldPoint } from "../../schema/twin_state";
@@ -17,6 +19,7 @@ import { centerMapViewportCamera, fitMapViewportCamera, fixedWorldTransform, map
 import { occupancyRasterKey, occupancyRasters, RasterRequestGeneration } from "./occupancyRaster";
 import { displayedFramePose, useStableDisplayedFramePose, type MapPoseIdentity } from "../../layout/robotPoseFrame";
 import { mapPointTarget, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
+import { useStore } from "../../state/store";
 
 type SectionName = "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type Pose = { x: number; y: number; yaw: number };
@@ -44,6 +47,7 @@ type Props = {
   mappingSessionId?: string | null;
   lidarStreamDiagnostics: RobotLidarStreamDiagnostics | null;
   hostStatus?: { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } } | null;
+  ensureManualMode?: () => void;
 };
 
 function valueText(value: unknown, fallback = "N/A") {
@@ -54,6 +58,26 @@ function valueNumber(value: unknown, digits = 2, suffix = "") {
   const number = Number(value);
   return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : "N/A";
 }
+
+function loadOperationLabel(phase?: string, status?: string) {
+  const labels: Record<string, string> = {
+    PREPARING: "PREPARING...",
+    PAUSING_MAPPING: "PAUSING MAPPING...",
+    SWITCHING_TO_NAVIGATION: "SWITCHING TO NAVIGATION...",
+    STARTING_NAV2: "STARTING NAV2...",
+    WAITING_FOR_MANUAL: "RESTORING MANUAL MODE...",
+    LOADING_MAP: "LOADING MAP...",
+    VERIFYING_MAP: "VERIFYING MAP...",
+    ROLLING_BACK: "ROLLING BACK...",
+  };
+  if (phase && labels[phase]) return labels[phase];
+  if (status === "REQUESTED") return labels.PREPARING;
+  if (status === "RESTARTING" || status === "STARTING") return labels.SWITCHING_TO_NAVIGATION;
+  if (status === "ROLLING_BACK") return labels.ROLLING_BACK;
+  return labels.STARTING_NAV2;
+}
+
+const waitForLoadPoll = () => new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
 
 function classForStatus(value: unknown) {
   const status = String(value ?? "").toUpperCase();
@@ -86,7 +110,8 @@ export function LocalRobotSection(props: Props) {
   return <DiagnosticsPanel {...props} />;
 }
 
-function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, controlOnline, controlMode, runtimeState, runtimeCapabilities, mappingSessionId }: Props) {
+function MappingPanel({ robotId, robot: rawRobot, slam2dMap, runtimeMapSnapshot, scan, diagnostics, controlOnline, controlMode, runtimeState, runtimeCapabilities, mappingSessionId, activeLocalMapRevision: selectedLocalMapRevision, ensureManualMode }: Props) {
+  const setRobotDetail = useStore((state) => state.setRobotDetail);
   const [maps, setMaps] = useState<LocalRobotMap[]>([]);
   const [selected, setSelected] = useState("");
   const [name, setName] = useState("");
@@ -97,16 +122,26 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [operationState, setOperationState] = useState("READY");
+  const [loadBlockReason, setLoadBlockReason] = useState("SELECT A SAVED MAP");
   const [trajectory, setTrajectory] = useState<RobotWorldPoint[]>([]);
   const [layers, setLayers] = useState({ robot: true, scan: true, trajectory: true, grid: false });
   const trajectoryRef = useRef<{ mapId: string; points: RobotWorldPoint[]; lastAt: number }>({ mapId: "", points: [], lastAt: 0 });
+  const manualRestoreRequest = useRef<string | null>(null);
 
   const slamRuntimeActive = runtimeState === "MAPPING" || runtimeState === "UNIFIED";
   const slamMap = slamRuntimeActive && !activeLocalMapId && slam2dMap?.robot_id === robotId
     && slam2dMap?.map_source === "SLAM_TOOLBOX"
     && (!mappingSessionId || slam2dMap.mapping_session_id === mappingSessionId) ? slam2dMap : null;
   const slamPose = slamMap && rawRobot ? displayedFramePose(rawRobot, slamMap) : undefined;
-  const robotPoseMatchesSlamMap = Boolean(slamMap && slamPose);
+  const expectedLocalMapRevision = selectedLocalMapRevision
+    ?? maps.find((map) => map.id === activeLocalMapId)?.revision ?? null;
+  const loadedLocalMap = activeLocalMapId && runtimeMapSnapshot?.map_source === "LOCAL_MAP"
+    && runtimeMapSnapshot.active_map_id === activeLocalMapId
+    && String(runtimeMapSnapshot.active_map_revision ?? "") === String(expectedLocalMapRevision ?? "")
+    ? runtimeMapSnapshot : null;
+  const displayMap = loadedLocalMap ?? slamMap;
+  const displayPose = displayMap && rawRobot ? displayedFramePose(rawRobot, displayMap) : undefined;
+  const robotPoseMatchesDisplayMap = Boolean(displayMap && displayPose);
   const mapping = diagnostics?.mapping;
 
   const refresh = useCallback(async () => {
@@ -115,8 +150,14 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     setMappingStateValue(result.mapping_state);
     setMappingDuration(Number(result.mapping_duration_s) || 0);
     setActiveLocalMapId(result.active_local_map_id);
+    const activeLocalMap = result.maps.find((map) => map.id === result.active_local_map_id);
+    setRobotDetail(robotId, {
+      activeLocalMapId: result.active_local_map_id,
+      activeLocalMapRevision: result.local_active_map_revision ?? activeLocalMap?.revision ?? null,
+      localMapSyncStatus: result.map_sync_status,
+    });
     if (!selected && result.maps.length) setSelected(result.maps[0].id);
-  }, [robotId, selected]);
+  }, [robotId, selected, setRobotDetail]);
 
   useEffect(() => {
     if (!controlOnline) return;
@@ -143,15 +184,62 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     return `SAVE SUCCESS · ${result.map.name} · revision ${result.map.revision}`;
   }, "SAVING");
   const load = () => {
-    if (!selected || runtimeState !== "NAVIGATION") return;
-    void run(() => loadLocalRobotMap(robotId, selected), (raw) => {
-      const result = raw as { active_map?: LocalRobotMap; map_sync_status?: string; message?: string };
-      if (!result.active_map || result.map_sync_status !== "LOCAL_ONLY") {
-        throw new Error("ROS did not confirm the selected saved map as the active local navigation map");
-      }
-      setActiveLocalMapId(result.active_map.id);
-      return `MAP LOADED · ${result.active_map.name} · ${result.message ?? "local map active"}`;
-    }, "LOADING");
+    if (loadBlockReason) { setError(loadBlockReason); return; }
+    const mapId = selected;
+    void (async () => {
+      setBusy(true); setError(""); setNotice(""); setOperationState("PREPARING...");
+      try {
+        let result: LocalMapLoadResult = await loadLocalRobotMap(robotId, mapId);
+        const deadline = Date.now() + 10 * 60 * 1000;
+        while (result.status === "TRANSITIONING") {
+          if (Date.now() >= deadline) throw new Error("Saved-map load timed out while the supervised runtime was transitioning");
+          setOperationState(loadOperationLabel(result.phase, result.transition?.status));
+          await waitForLoadPoll();
+          const runtimeResult = await getLocalRuntimeMode(robotId);
+          const transition = runtimeResult.transition;
+          if (["ERROR", "ROLLED_BACK"].includes(String(transition.status).toUpperCase())) {
+            throw new Error(transition.message || result.message || "The supervised navigation transition failed");
+          }
+          if (result.phase === "ROLLING_BACK"
+              && transition.status === "READY"
+              && String(transition.mode || "").toUpperCase() !== "NAVIGATION") {
+            throw new Error(result.message || "Saved-map load failed; previous runtime was restored");
+          }
+          if (result.phase === "WAITING_FOR_MANUAL") {
+            setOperationState("RESTORING MANUAL MODE...");
+            const requestKey = result.request_id || `${robotId}:${mapId}`;
+            if (manualRestoreRequest.current !== requestKey) {
+              manualRestoreRequest.current = requestKey;
+              ensureManualMode?.();
+            }
+          }
+          if (transition.status === "READY" && String(transition.mode || "").toUpperCase() === "NAVIGATION") {
+            setOperationState(loadOperationLabel(result.phase, transition.status));
+            result = await loadLocalRobotMap(robotId, mapId);
+          } else if (!result.request_id || transition.request_id === result.request_id) {
+            result = await loadLocalRobotMap(robotId, mapId);
+          }
+        }
+        if (result.status !== "LOADED" || !result.active_map
+            || result.active_map.id !== mapId || result.active_map_id !== mapId
+            || result.map_sync_status !== "LOCAL_ONLY" || result.map_source !== "LOCAL_MAP") {
+          throw new Error(result.message || "ROS did not confirm the selected saved map as the active /map");
+        }
+        setActiveLocalMapId(result.active_map.id);
+        setRobotDetail(robotId, {
+          activeLocalMapId: result.active_map.id,
+          activeLocalMapRevision: result.active_map.revision,
+          localMapSyncStatus: "LOCAL_ONLY",
+        });
+        setNotice(`MAP LOADED · ${result.active_map.name} · r${result.active_map.revision} · ${result.active_map.resolution.toFixed(3)} m/cell`);
+        setOperationState("MAP LOADED");
+        manualRestoreRequest.current = null;
+        await refresh();
+      } catch (caught) {
+        setOperationState("LOAD FAILED");
+        setError(caught instanceof Error ? caught.message : "Saved-map load failed");
+      } finally { setBusy(false); }
+    })();
   };
   const changeMapping = (action: "start" | "stop") => void run(
     () => setMappingState(robotId, action),
@@ -166,6 +254,29 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
   const isMapping = runtimeState === "MAPPING"
     || (isUnified && (runtimeCapabilities?.mapping_available ?? Boolean(diagnostics?.slam)));
   const paused = mappingState === "PAUSED";
+  useEffect(() => {
+    if (busy) { setLoadBlockReason("MAP TRANSITION IN PROGRESS"); return; }
+    if (!controlOnline) { setLoadBlockReason("ROBOT OFFLINE"); return; }
+    if (!selected) { setLoadBlockReason("SELECT A SAVED MAP"); return; }
+    if (controlMode !== "MANUAL" || (rawRobot?.control_mode && rawRobot.control_mode !== "MANUAL")) {
+      setLoadBlockReason("SWITCH TO MANUAL"); return;
+    }
+    if (diagnostics?.command_ownership?.estop_active === true
+        || String(rawRobot?.navigation_state || "").toUpperCase() === "EMERGENCY_STOPPED") {
+      setLoadBlockReason("CLEAR E-STOP BEFORE LOADING MAP"); return;
+    }
+    const navigationState = String(rawRobot?.navigation_state || "").toUpperCase();
+    if (!navigationState) { setLoadBlockReason("WAIT FOR ROBOT SAFETY STATUS"); return; }
+    if (!["IDLE", "MANUAL", "SUCCEEDED", "COMPLETED", "FAILED", "ERROR", "CANCELED", "CANCELLED", "REJECTED"].includes(navigationState)) {
+      setLoadBlockReason("NAVIGATION GOAL MUST BE CANCELLED"); return;
+    }
+    const velocities = [rawRobot?.vx, rawRobot?.vy, rawRobot?.wz].map(Number);
+    if (!velocities.every((velocity) => Number.isFinite(velocity) && Math.abs(velocity) <= 0.05)) {
+      setLoadBlockReason("STOP ROBOT BEFORE LOADING MAP"); return;
+    }
+    setLoadBlockReason("");
+  }, [busy, controlMode, controlOnline, diagnostics?.command_ownership?.estop_active,
+    rawRobot?.control_mode, rawRobot?.navigation_state, rawRobot?.vx, rawRobot?.vy, rawRobot?.wz, selected]);
   const startMapping = async () => {
     if (isMapping) { changeMapping("start"); return; }
     setError(isUnified ? "SLAM is not currently available in this Unified runtime. Wait for SLAM readiness before mapping." : "SLAM mapping requires the Unified runtime. Start one stack with ./scripts/start_stack.sh unified --gui --rviz.");
@@ -190,7 +301,7 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     setTrajectory(points);
   }, [isMapping, mapping?.tf_valid, paused, slamPose?.x, slamPose?.y, slamPose?.timestamp, slamMap]);
   return <SectionFrame className="hmi-mapping-layout">
-    <SectionPanel title="ACCUMULATED SLAM MAP · /map + CURRENT /scan" className="hmi-mapping-map">
+    <SectionPanel title={loadedLocalMap ? "ACTIVE SAVED LOCAL MAP · /map" : "ACCUMULATED SLAM MAP · /map + CURRENT /scan"} className="hmi-mapping-map">
       <div className="local-map-toggles" role="group" aria-label="Mapping map layers">
         {(["robot", "scan", "trajectory", "grid"] as const).map((layer) => <button
           key={layer} type="button" aria-pressed={layers[layer]} className={layers[layer] ? "is-active" : ""}
@@ -198,20 +309,20 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
           {layers[layer] ? "✓ " : "□ "}{layer.toUpperCase()}
         </button>)}
       </div>
-      {slamMap ? <PosePickerMap map={slamMap} robot={robotPoseMatchesSlamMap ? rawRobot : undefined}
-        scan={scan?.robot_id === robotId && scan.mapping_session_id === slamMap.mapping_session_id ? scan : null}
-        showRobot={layers.robot} showScan={layers.scan} showGrid={layers.grid} showPose={false}
-        trajectory={layers.trajectory && robotPoseMatchesSlamMap ? trajectory : []} pose={{
-        x: slamPose?.x ?? 0, y: slamPose?.y ?? 0, yaw: slamPose?.yaw ?? 0,
-      }} active={false} onPick={() => undefined} /> : <div className="local-empty">Waiting for a fresh accumulated SLAM Toolbox /map. Live LiDAR frames are sensor views and are not the warehouse map.</div>}
+      {displayMap ? <PosePickerMap map={displayMap} robot={robotPoseMatchesDisplayMap ? rawRobot : undefined}
+        scan={slamMap && scan?.robot_id === robotId && scan.mapping_session_id === slamMap.mapping_session_id ? scan : null}
+        showRobot={layers.robot} showScan={Boolean(slamMap && layers.scan)} showGrid={layers.grid} showPose={false}
+        trajectory={layers.trajectory && slamMap && robotPoseMatchesDisplayMap ? trajectory : []} pose={{
+        x: displayPose?.x ?? 0, y: displayPose?.y ?? 0, yaw: displayPose?.yaw ?? 0,
+      }} active={false} onPick={() => undefined} /> : <div className="local-empty">{activeLocalMapId ? "Waiting for the confirmed active saved /map snapshot." : "Waiting for a fresh accumulated SLAM Toolbox /map. Live LiDAR frames are sensor views and are not the warehouse map."}</div>}
     </SectionPanel>
     <SectionPanel title="MAPPING STATUS" className="hmi-mapping-status">
       <div className="local-status-grid hmi-mapping-primary-metrics">
         <Metric label="STATE" value={isMapping ? mappingState : isUnified ? "WAITING FOR SLAM" : "INACTIVE"} />
-        <Metric label="MAP SIZE" value={slamMap ? `${slamMap.width} × ${slamMap.height} cells` : "WAITING FOR SLAM MAP"} mono />
-        <Metric label="RESOLUTION" value={valueNumber(slamMap?.resolution, 3, " m/cell")} mono />
-        <Metric label="KNOWN CELLS" value={slamMap?.known_cells ?? "—"} mono />
-        <Metric label="EXPLORED AREA" value={valueNumber(slamMap?.explored_area_m2, 2, " m²")} mono />
+        <Metric label="MAP SIZE" value={displayMap ? `${displayMap.width} × ${displayMap.height} cells` : "WAITING FOR MAP"} mono />
+        <Metric label="RESOLUTION" value={valueNumber(displayMap?.resolution, 3, " m/cell")} mono />
+        <Metric label="KNOWN CELLS" value={displayMap?.known_cells ?? "—"} mono />
+        <Metric label="EXPLORED AREA" value={valueNumber(displayMap?.explored_area_m2, 2, " m²")} mono />
         <Metric label="SESSION TIME" value={`${valueNumber(mappingDuration, 1, " s")}${isMapping && !paused ? " · LIVE" : ""}`} mono />
       </div>
       <div className="local-action-row hmi-mapping-actions">
@@ -227,7 +338,7 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
           <Metric label="LIVE LIDAR · /scan" value={mapping?.scan_live ? `LIVE · ${valueNumber(mapping.scan_hz, 2, " Hz")} · ${mapping.scan_frame ?? "frame unknown"}` : "WAITING"} />
           <Metric label="ODOMETRY" value={mapping?.odom_live ? `LIVE · ${valueNumber(mapping.odom_hz, 2, " Hz")} · ${mapping.odom_frame ?? "?"} → ${mapping.base_frame ?? "?"}` : "WAITING"} />
           <Metric label="TF · map ← lidar" value={mapping?.tf_lidar_to_map_valid ? "OK" : mapping?.tf_error ?? "WAITING / INVALID"} />
-          <Metric label="ACCUMULATED /map" value={mapping?.map_live && slamMap ? "LIVE · SLAM TOOLBOX" : "WAITING FOR SLAM MAP"} />
+          <Metric label="ACCUMULATED /map" value={loadedLocalMap ? "ACTIVE · SAVED LOCAL MAP" : mapping?.map_live && slamMap ? "LIVE · SLAM TOOLBOX" : "WAITING FOR SLAM MAP"} />
           <Metric label="MAP UPDATE RATE" value={mapping?.map_live ? `${valueNumber(mapping.map_hz, 2, " Hz")} · v${slamMap?.map_version ?? mapping.map_version ?? "—"}` : "WAITING"} />
           <Metric label="MAP → ODOM OWNER" value={mapping?.map_odom_owner ?? "UNVERIFIED"} />
           <Metric label="WORKFLOW STATE" value={operationState} mono />
@@ -235,12 +346,11 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
           <Metric label="UNKNOWN CELLS" value={slamMap?.unknown_cells ?? "—"} mono />
           <Metric label="OCCUPIED CELLS" value={slamMap?.occupied_cells ?? "—"} mono />
           <Metric label="FREE CELLS" value={slamMap?.free_cells ?? "—"} mono />
-          <Metric label="ROBOT POSE · TF map → base" value={robotPoseMatchesSlamMap && slamPose ? `${valueNumber(slamPose.x, 2)}, ${valueNumber(slamPose.y, 2)} m · ${valueNumber(slamPose.yaw, 2)} rad` : "WAITING FOR MATCHING SLAM POSE"} mono />
-          <Metric label="ACTIVE MAP" value={activeLocalMapId ? `${activeLocalMapId} · r${slamMap?.active_map_revision ?? "—"}` : isMapping ? `${slamMap?.active_map_id ?? "SLAM SESSION WAITING"} · LOCAL ONLY` : "CANONICAL"} mono />
+          <Metric label="ROBOT POSE · TF map → base" value={robotPoseMatchesDisplayMap && displayPose ? `${valueNumber(displayPose.x, 2)}, ${valueNumber(displayPose.y, 2)} m · ${valueNumber(displayPose.yaw, 2)} rad` : "WAITING FOR MATCHING MAP POSE"} mono />
+          <Metric label="ACTIVE MAP" value={activeLocalMapId ? `${activeLocalMapId} · r${runtimeMapSnapshot?.active_map_revision ?? "—"}` : isMapping ? `${slamMap?.active_map_id ?? "SLAM SESSION WAITING"} · LOCAL ONLY` : "CANONICAL"} mono />
           <Metric label="TRAJECTORY SAMPLES" value={trajectory.length} mono /><Metric label="AVAILABLE MAPS" value={maps.length} mono />
         </div>
-        <p className="local-help">SLAM and Nav2 stay available together in Unified. This panel does not restart the stack.</p>
-        {isUnified && <p className="local-help" role="status">In-place saved-map localization and SLAM pose-graph restore are unavailable in this Unified build. These actions stay disabled instead of restarting Gazebo or the ROS stack.</p>}
+        <p className="local-help">Loading a saved map uses the supervised SLAM-to-Navigation handoff. Saved SLAM pose-graph restoration remains a separate operation.</p>
       </details>
     </SectionPanel>
     <SectionPanel title="SAVE MAP" className="hmi-mapping-save">
@@ -255,15 +365,18 @@ function MappingPanel({ robotId, robot: rawRobot, slam2dMap, scan, diagnostics, 
     <SectionPanel title="AVAILABLE MAPS · THIS ROBOT" className="hmi-mapping-list">
       {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list">
         {maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
-          <span><b>{map.name}</b><small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
+          <span><b>{map.name}</b>{activeLocalMapId === map.id && <strong className="local-map-active-badge">ACTIVE</strong>}<small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
           <small>r{map.revision}</small>
         </button>)}
       </div>}
       <div className="local-action-row">
-        <button type="button" disabled={!controlOnline || controlMode !== "MANUAL" || runtimeState !== "NAVIGATION" || busy || !selected} onClick={load}>LOAD SAVED MAP</button>
+        <button type="button" aria-describedby="saved-map-load-state" disabled={Boolean(loadBlockReason) || busy} onClick={load}>{busy ? `${operationState}` : "LOAD SAVED MAP"}</button>
         <button type="button" disabled title="In-process SLAM pose-graph restore is not implemented yet">RESUME SAVED SLAM SESSION</button>
-        {activeLocalMapId && <Status value="LOCAL_ONLY · LOCAL NAVIGATION ENABLED" />}
+        {activeLocalMapId && <Status value="ACTIVE LOCAL MAP" />}
       </div>
+      <p id="saved-map-load-state" className={loadBlockReason ? "local-help warning" : "local-help"} role="status">
+        {busy ? operationState : loadBlockReason || (activeLocalMapId === selected ? "SELECTED MAP IS ALREADY ACTIVE" : "READY · MANUAL MODE AND STOP REQUIRED")}
+      </p>
     </SectionPanel>
   </SectionFrame>;
 }
@@ -363,12 +476,16 @@ export function ActiveNavigationMap2DView({ map, robot, scan, target, navigation
   </div>;
 }
 
-function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, localization }: Props) {
+function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, localization, runtimeCapabilities, activeLocalMapId, activeLocalMapRevision }: Props) {
   const current = useMemo<Pose | null>(() => {
     const reported = robot?.active_map_pose;
-    return reported?.valid && [reported.x, reported.y, reported.yaw].every(Number.isFinite)
+    const identityMatches = !activeLocalMapId || Boolean(localizationMap && reported?.map_id === localizationMap.active_map_id
+      && String(reported?.map_revision ?? "") === String(localizationMap.active_map_revision ?? ""));
+    return reported?.valid && identityMatches
+      && (!activeLocalMapId || runtimeCapabilities?.localization_ready === true)
+      && [reported.x, reported.y, reported.yaw].every(Number.isFinite)
       ? { x: reported.x, y: reported.y, yaw: reported.yaw } : null;
-  }, [robot?.active_map_pose]);
+  }, [activeLocalMapId, localizationMap, robot?.active_map_pose, runtimeCapabilities?.localization_ready]);
   const [pose, setPose] = useState<Pose>({ x: Number.NaN, y: Number.NaN, yaw: Number.NaN });
   const [poseEdited, setPoseEdited] = useState(false);
   const [pickMode, setPickMode] = useState(false);
@@ -405,9 +522,15 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
         <Metric label="Y · MAP" value={current ? valueNumber(current.y, 3, " m") : "UNKNOWN"} mono />
         <Metric label="YAW" value={current ? valueNumber(current.yaw, 3, " rad") : "UNKNOWN"} mono />
         <Metric label="FRAME" value="map" mono />
-        <Metric label="LOCALIZATION" value={localization} />
+        <Metric label="LOCALIZATION" value={activeLocalMapId
+          ? runtimeCapabilities?.localization_ready ? "LOCALIZED" : "INITIAL POSE REQUIRED"
+          : localization} />
+        {activeLocalMapId && <Metric label="ACTIVE SAVED MAP" value={`${activeLocalMapId} · r${activeLocalMapRevision ?? "—"}`} mono />}
         <Metric label="OWNER" value="ekf_v30e · map → odom" mono />
       </div>
+      {activeLocalMapId && <p className={runtimeCapabilities?.localization_ready ? "local-feedback ok" : "local-feedback warning"} role="status">
+        {runtimeCapabilities?.localization_ready ? "LOCALIZED · confirmed TF matches the active saved map." : "INITIAL POSE REQUIRED · point navigation remains unavailable until the requested map-frame pose is confirmed."}
+      </p>}
     </SectionPanel>
     <SectionPanel title="INITIALIZE ROBOT POSE" className="local-pose-editor">
       <div className="local-pose-fields">

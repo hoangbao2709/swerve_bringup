@@ -26,6 +26,7 @@ def test_offline_nav_server_never_blocks_shared_control_executor(method, payload
         loaded_local_map_id=None, emergency_stop_active=False, control_mode='AUTONOMOUS',
         active_goal=None, active_pose_goal=None, goal_request_pending=False,
         nav_client=client, nav_pose_client=client,
+        nav2_lifecycle_status=lambda: {'ready': True},
         send_nav_status=lambda context, status, reason: errors.append((status, reason)))
     getattr(SwerveBridge, method)(node, payload)
     assert errors == [('FAILED', ('GoToTag' if method == 'navigate' else 'NavigateToPose')

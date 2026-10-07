@@ -165,6 +165,18 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   useStore.setState(initialState);
+  vi.mocked(api.getLocalRobotMaps).mockReset().mockResolvedValue({
+    robot_id: "R01", maps: [], runtime_mode: "GAZEBO_ROS", mapping_state: "MAPPING",
+    mapping_duration_s: 0, active_local_map_id: null, local_active_map_id: null,
+    local_active_map_revision: null, active_map_id: null, active_map_revision: null,
+    canonical_map_revision: null, map_sync_status: null, robot_control_mode: "MANUAL", robot_stopped: false,
+  });
+  vi.mocked(api.getLocalRuntimeMode).mockReset().mockResolvedValue({
+    robot_id: "R01", current_mode: "MAPPING",
+    transition: { robot_id: "R01", mode: "mapping", status: "READY" },
+  });
+  vi.mocked(api.loadLocalRobotMap).mockReset();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -700,8 +712,8 @@ describe("robot detail route stability", () => {
     const mappingAdvanced = container.querySelector<HTMLDetailsElement>(".hmi-advanced-details")!;
     expect(mappingAdvanced.open).toBe(false);
     await act(async () => { mappingAdvanced.open = true; mappingAdvanced.dispatchEvent(new Event("toggle", { bubbles: true })); });
-    expect(container.textContent).toContain("SLAM and Nav2 stay available together in Unified");
-    expect(container.textContent).toContain("In-place saved-map localization");
+    expect(container.textContent).toContain("supervised SLAM-to-Navigation handoff");
+    expect(container.textContent).not.toContain("in-place saved-map localization");
 
     expect(container.querySelector<HTMLCanvasElement>('[data-testid="slam-map-2d-canvas"]')?.dataset.mapSource).toBe("SLAM_TOOLBOX");
   });
@@ -903,12 +915,138 @@ describe("robot detail route stability", () => {
     expect(buttonNamed("RESUME SAVED SLAM SESSION")?.disabled).toBe(true);
     const advancedDetails = container.querySelector<HTMLDetailsElement>(".hmi-advanced-details")!;
     await act(async () => { advancedDetails.open = true; advancedDetails.dispatchEvent(new Event("toggle", { bubbles: true })); });
-    expect(container.textContent).toContain("SLAM and Nav2 stay available together in Unified");
+    expect(container.textContent).toContain("supervised SLAM-to-Navigation handoff");
     expect(container.textContent).not.toContain("SWITCH TO NAVIGATION");
     expect(api.loadLocalRobotMap).not.toHaveBeenCalled();
     expect(api.resumeLocalRobotSlamSession).not.toHaveBeenCalled();
     expect(api.requestLocalRuntimeMode).not.toHaveBeenCalled();
     expect(wsSetRobotMode).not.toHaveBeenCalled();
+  });
+
+  it("loads a selected saved map from Unified through a 202 supervised transition", async () => {
+    vi.useFakeTimers();
+    setOnlineRobot("UNIFIED");
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...useStore.getState().twin!, robots: {
+      ...useStore.getState().twin!.robots,
+      R01: { ...r01(), control_mode: "MANUAL", navigation_state: "MANUAL", vx: 0, vy: 0, wz: 0 },
+    } } });
+    const savedMap: LocalRobotMap = {
+      id: "saved-floor-a", name: "floor_a", robot_id: "R01", created_at: "2026-10-01T10:00:00Z",
+      resolution: 0.05, origin: [-2, -3, 0], revision: "rev-a", frame_id: "map", width: 80, height: 120,
+      map_kind: "SAVED_LOCAL_MAP", canonical_map_promoted: false,
+    };
+    let activeId: string | null = null;
+    vi.mocked(api.getLocalRobotMaps).mockImplementation(async () => ({
+      robot_id: "R01", maps: [savedMap], runtime_mode: "GAZEBO_ROS", mapping_state: "MAPPING",
+      mapping_duration_s: 20, active_local_map_id: activeId, local_active_map_id: activeId,
+      local_active_map_revision: activeId ? savedMap.revision : null,
+      active_map_id: activeId, active_map_revision: activeId ? savedMap.revision : null,
+      canonical_map_revision: 21, map_sync_status: "LOCAL_ONLY",
+      robot_control_mode: "MANUAL", robot_stopped: true,
+    }));
+    vi.mocked(api.getLocalRuntimeMode).mockResolvedValue({
+      robot_id: "R01", current_mode: "NAVIGATION",
+      transition: { robot_id: "R01", request_id: "load-a-1", mode: "navigation", status: "READY" },
+    });
+    vi.mocked(api.loadLocalRobotMap)
+      .mockResolvedValueOnce({
+        ok: true, status: "TRANSITIONING", robot_id: "R01", active_map: savedMap,
+        active_map_id: savedMap.id, active_map_revision: savedMap.revision,
+        request_id: "load-a-1", phase: "PAUSING_MAPPING",
+        transition: { robot_id: "R01", request_id: "load-a-1", mode: "navigation", status: "REQUESTED" },
+        message: "supervised transition queued",
+      })
+      .mockImplementationOnce(async () => {
+        activeId = savedMap.id;
+        return { ok: true, status: "LOADED", robot_id: "R01", active_map: savedMap,
+          active_map_id: savedMap.id, active_map_revision: savedMap.revision,
+          map_source: "LOCAL_MAP", map_sync_status: "LOCAL_ONLY", message: "confirmed" };
+      });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { buttonNamed("MAPPING")?.click(); await Promise.resolve(); await Promise.resolve(); });
+    expect(buttonNamed("LOAD SAVED MAP")?.disabled).toBe(false);
+    await act(async () => {
+      buttonNamed("LOAD SAVED MAP")?.click();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+    });
+    expect(api.loadLocalRobotMap).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("MAP LOADED · floor_a");
+    expect(container.querySelector(".local-map-active-badge")?.textContent).toBe("ACTIVE");
+  });
+
+  it("restores the existing MANUAL control mode after runtime restart before continuing map load", async () => {
+    vi.useFakeTimers();
+    setOnlineRobot("UNIFIED");
+    setNavReadyCapabilities();
+    useStore.setState({ twin: { ...useStore.getState().twin!, robots: {
+      ...useStore.getState().twin!.robots,
+      R01: { ...r01(), control_mode: "MANUAL", navigation_state: "MANUAL", vx: 0, vy: 0, wz: 0 },
+    } } });
+    const savedMap: LocalRobotMap = {
+      id: "saved-floor-manual", name: "floor_manual", robot_id: "R01", created_at: "2026-10-01T10:00:00Z",
+      resolution: 0.05, origin: [-2, -3, 0], revision: "rev-manual", frame_id: "map", width: 80, height: 120,
+      map_kind: "SAVED_LOCAL_MAP", canonical_map_promoted: false,
+    };
+    vi.mocked(api.getLocalRobotMaps).mockResolvedValue({
+      robot_id: "R01", maps: [savedMap], runtime_mode: "GAZEBO_ROS", mapping_state: "PAUSED",
+      mapping_duration_s: 20, active_local_map_id: null, local_active_map_id: null,
+      local_active_map_revision: null, active_map_id: "SLAM-session", active_map_revision: "session-rev",
+      canonical_map_revision: 21, map_sync_status: "LOCAL_ONLY", robot_control_mode: "MANUAL",
+      robot_stopped: true,
+    });
+    vi.mocked(api.getLocalRuntimeMode).mockResolvedValue({
+      robot_id: "R01", current_mode: "NAVIGATION",
+      transition: { robot_id: "R01", request_id: "load-manual-1", mode: "navigation", status: "READY" },
+    });
+    vi.mocked(api.loadLocalRobotMap)
+      .mockResolvedValueOnce({
+        ok: true, status: "TRANSITIONING", robot_id: "R01", active_map: savedMap,
+        active_map_id: savedMap.id, active_map_revision: savedMap.revision,
+        request_id: "load-manual-1", phase: "WAITING_FOR_MANUAL",
+        transition: { robot_id: "R01", request_id: "load-manual-1", mode: "navigation", status: "READY" },
+        message: "restore MANUAL before map load",
+      })
+      .mockResolvedValueOnce({
+        ok: true, status: "LOADED", robot_id: "R01", active_map: savedMap,
+        active_map_id: savedMap.id, active_map_revision: savedMap.revision,
+        map_source: "LOCAL_MAP", map_sync_status: "LOCAL_ONLY", message: "confirmed",
+      });
+    vi.mocked(wsSetRobotMode).mockClear();
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { buttonNamed("MAPPING")?.click(); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      buttonNamed("LOAD SAVED MAP")?.click();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+    });
+    expect(wsSetRobotMode).toHaveBeenCalledWith("R01", "MANUAL");
+    expect(api.loadLocalRobotMap).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("MAP LOADED · floor_manual");
+  });
+
+  it("rediscovers the active saved-map identity from the backend after browser refresh", async () => {
+    setOnlineRobot("NAVIGATION");
+    const savedMap: LocalRobotMap = {
+      id: "saved-floor-refresh", name: "floor_refresh", robot_id: "R01", created_at: "2026-10-01T10:00:00Z",
+      resolution: 0.05, origin: [-2, -3, 0], revision: "rev-refresh", frame_id: "map", width: 80, height: 120,
+      map_kind: "SAVED_LOCAL_MAP", canonical_map_promoted: false,
+    };
+    vi.mocked(api.getLocalRobotMaps).mockResolvedValue({
+      robot_id: "R01", maps: [savedMap], runtime_mode: "GAZEBO_ROS", mapping_state: "INACTIVE",
+      mapping_duration_s: 0, active_local_map_id: savedMap.id, local_active_map_id: savedMap.id,
+      local_active_map_revision: savedMap.revision, active_map_id: savedMap.id,
+      active_map_revision: savedMap.revision, canonical_map_revision: 21,
+      map_sync_status: "LOCAL_ONLY", robot_control_mode: "MANUAL", robot_stopped: true,
+    });
+    renderNode(<ControlDetailHarness robotId="R01" />);
+    await act(async () => { buttonNamed("MAPPING")?.click(); await settleUi(); });
+    expect(useStore.getState().robotDetail.R01?.activeLocalMapId).toBe(savedMap.id);
+    expect(useStore.getState().robotDetail.R01?.activeLocalMapRevision).toBe(savedMap.revision);
+    expect(container.querySelector(".local-map-active-badge")?.textContent).toBe("ACTIVE");
   });
 
   it("does not present a cached Nav2/canonical grid as the accumulated SLAM map", async () => {

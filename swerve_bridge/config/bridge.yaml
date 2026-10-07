@@ -37,6 +37,6 @@ swerve_bridge:
     emergency_stop_topic: /emergency_stop
     navigate_action: /go_to_tag
     navigate_server_timeout: 2.0
-    manual_linear_velocity: 0.25
-    manual_angular_velocity: 0.60
+    manual_linear_velocity: 0.40
+    manual_angular_velocity: 0.80
     manual_command_timeout: 0.40

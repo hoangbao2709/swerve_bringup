@@ -174,6 +174,60 @@ def get_robot_map(robot_id: str, map_id: str) -> tuple[dict[str, Any], Path, Pat
     raise FileNotFoundError('map not found for this robot')
 
 
+def validate_robot_map_artifacts(robot_id: str, map_id: str) -> tuple[dict[str, Any], Path, Path]:
+    """Validate the registered YAML/PGM pair immediately before Nav2 loads it."""
+    record, yaml_path, image_path = get_robot_map(robot_id, map_id)
+    if (record.get('map_kind') != 'SAVED_LOCAL_MAP'
+            or record.get('canonical_map_promoted') is not False
+            or record.get('frame_id') != 'map'):
+        raise ValueError('selected map is not a robot-local saved navigation map')
+    artifacts = record.get('navigation_artifacts')
+    if not isinstance(artifacts, dict) or artifacts.get('yaml') is not True or artifacts.get('image') is not True:
+        raise ValueError('selected saved map registry entry has incomplete navigation artifacts')
+
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ValueError('YAML support is unavailable for saved map validation') from exc
+    try:
+        document = yaml.safe_load(yaml_path.read_text(encoding='utf-8')) or {}
+        image_reference = Path(str(document['image']))
+        resolved_image = (image_reference if image_reference.is_absolute()
+                          else yaml_path.parent / image_reference).resolve(strict=True)
+        resolution = float(document['resolution'])
+        origin = [float(value) for value in document['origin']]
+        negate = int(document['negate'])
+        occupied_threshold = float(document['occupied_thresh'])
+        free_threshold = float(document['free_thresh'])
+        width, height = _pgm_dimensions(image_path)
+        image_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()
+        registered_origin = [float(value) for value in record['origin']]
+        registered_resolution = float(record['resolution'])
+        registered_width, registered_height = int(record['width']), int(record['height'])
+    except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError,
+            OverflowError) as exc:
+        raise ValueError(f'selected saved map artifacts are invalid: {type(exc).__name__}') from exc
+
+    root = robot_map_dir(robot_id).resolve(strict=True)
+    if (not yaml_path.is_relative_to(root) or not resolved_image.is_relative_to(root)
+            or resolved_image != image_path.resolve(strict=True)):
+        raise ValueError('selected map YAML does not reference its registered robot-local PGM')
+    if (not math.isfinite(resolution) or resolution <= 0.0
+            or len(origin) != 3 or not all(math.isfinite(value) for value in origin)
+            or negate not in (0, 1)
+            or not math.isfinite(occupied_threshold) or not math.isfinite(free_threshold)
+            or not 0.0 <= free_threshold < occupied_threshold <= 1.0
+            or not math.isclose(resolution, registered_resolution, rel_tol=0.0, abs_tol=1e-6)
+            or any(not math.isclose(value, registered, rel_tol=0.0, abs_tol=1e-6)
+                   for value, registered in zip(origin, registered_origin))
+            or width != registered_width or height != registered_height):
+        raise ValueError('selected saved map YAML, PGM dimensions, and registry geometry do not match')
+    registered_hash = str(record.get('image_sha256') or '').lower()
+    if not registered_hash or image_hash != registered_hash:
+        raise ValueError('selected saved map PGM hash does not match its registry entry')
+    return record, yaml_path, image_path
+
+
 def get_robot_slam_session(robot_id: str, map_id: str) -> tuple[dict[str, Any], Path, Path, Path]:
     """Resolve a registered SLAM Toolbox session without exposing its paths in the API."""
     record, _yaml_path, _image_path = get_robot_map(robot_id, map_id)

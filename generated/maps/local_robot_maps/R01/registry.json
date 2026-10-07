@@ -1,0 +1,43 @@
+[
+  {
+    "id": "69d81da430174422b0ce309c4611c00d",
+    "map_id": "69d81da430174422b0ce309c4611c00d",
+    "name": "dg",
+    "robot_id": "R01",
+    "created_at": "2026-10-07T06:24:35.556757+00:00",
+    "resolution": 0.05,
+    "origin": [
+      -5.52,
+      -15.2,
+      0.0
+    ],
+    "revision": "69d81da43017",
+    "frame_id": "map",
+    "width": 1199,
+    "height": 603,
+    "map_kind": "SAVED_LOCAL_MAP",
+    "canonical_map_promoted": false,
+    "known_cells": 443330,
+    "unknown_cells": 279667,
+    "free_cells": 432454,
+    "occupied_cells": 10876,
+    "explored_area_m2": 1108.3250330306591,
+    "source_mapping_session_id": "1d0e71668645",
+    "source_map_version": 8125,
+    "navigation_artifacts": {
+      "yaml": true,
+      "image": true,
+      "image_format": ".pgm"
+    },
+    "slam_session_state": {
+      "status": "AVAILABLE",
+      "engine": "SLAM_TOOLBOX",
+      "artifact_id": "7e896da7c24e4fad922dc49759fd55d0"
+    },
+    "image_sha256": "c9492dd3148da2e5b3fe617395777cac5f343eb538106db7eec7775b731bbc54",
+    "_yaml": "dg.yaml",
+    "_image": "dg.pgm",
+    "_slam_posegraph": "dg_slam_session.posegraph",
+    "_slam_data": "dg_slam_session.data"
+  }
+]

@@ -28,27 +28,27 @@ controller_server:
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: false
-      min_vel_x: -0.55
-      max_vel_x: 0.35
-      min_vel_y: -0.55
-      max_vel_y: 0.35
+      min_vel_x: -0.50
+      max_vel_x: 0.50
+      min_vel_y: -0.50
+      max_vel_y: 0.50
       # Keep terminal heading corrections below the swerve controller's
       # 1.5 rad/s physical command limit.
-      max_vel_theta: 0.5
+      max_vel_theta: 0.70
       min_speed_xy: 0.0
-      max_speed_xy: 0.35
+      max_speed_xy: 0.50
       min_speed_theta: 0.0
-      acc_lim_x: 0.45
-      acc_lim_y: 0.45
-      # 1 rad/s^2 at a 0.300042 m module arm is 0.300042 m/s^2, or
-      # 4.45 rad/s^2 at the 0.0675 m wheel radius. This remains below the
+      acc_lim_x: 0.70
+      acc_lim_y: 0.70
+      # 1.2 rad/s^2 at a 0.300042 m module arm is 0.3600504 m/s^2, or
+      # 5.33 rad/s^2 at the 0.0675 m wheel radius. This remains below the
       # swerve actuator's 10 rad/s^2 wheel acceleration limit while giving
       # the simulated-time controller enough dynamic window to rotate at
       # this host's sub-real-time Gazebo factor.
-      acc_lim_theta: 1.0
-      decel_lim_x: -1.10
-      decel_lim_y: -1.10
-      decel_lim_theta: -1.0
+      acc_lim_theta: 1.20
+      decel_lim_x: -1.20
+      decel_lim_y: -1.20
+      decel_lim_theta: -1.20
       vx_samples: 21
       vy_samples: 21
       vtheta_samples: 20

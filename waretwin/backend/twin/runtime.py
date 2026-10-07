@@ -151,6 +151,7 @@ class TwinRuntime:
         self.local_map_overrides: dict[str, str] = {}
         self.local_map_revisions: dict[str, str] = {}
         self.local_map_status: dict[str, dict[str, Any]] = {}
+        self.local_map_localization_confirmations: dict[str, dict[str, str]] = {}
         self.robot_map_geometry: dict[str, dict[str, Any]] = {}
         self.local_map_transitions: set[str] = set()
         self.pending_local_map_loads: dict[str, dict[str, Any]] = {}
@@ -359,6 +360,7 @@ class TwinRuntime:
             control_applied=control_applied, estop_clear=estop_clear,
             command_fresh=command_fresh)
         goal_available = goal_blocker is None
+        localization_ready = self.navigation_localization_state(rid, active_map) is not None
         registration = self.robot_map_registrations.get(rid, {})
         tag_navigation_available = bool(
             goal_available and (
@@ -376,6 +378,7 @@ class TwinRuntime:
             'nav2_ready': nav2_ready,
             'manual_available': manual_available,
             'goal_available': goal_available,
+            'localization_ready': localization_ready,
             'goal_blocker_code': goal_blocker[0] if goal_blocker else None,
             'goal_blocker_reason': goal_blocker[1] if goal_blocker else None,
             'map_ready': map_ready,
@@ -486,6 +489,9 @@ class TwinRuntime:
                     'full Nav2 map is not tied to the current active map, canonical revision, '
                     'and exact registration revision')
         if self.navigation_localization_state(rid, active_map) is None:
+            if active_map.get('map_source') == 'LOCAL_MAP':
+                return 'INITIAL_POSE_REQUIRED', (
+                    'set and confirm the robot initial pose on the active saved map before point navigation')
             return 'LOCALIZATION_NOT_READY', 'a fresh TF pose in the confirmed active map is required for navigation'
         return None
 
@@ -497,6 +503,12 @@ class TwinRuntime:
 
     def navigation_localization_state(self, robot_id: str, active_map: dict[str, Any]) -> dict[str, str] | None:
         rid = str(robot_id)
+        if active_map.get('map_source') == 'LOCAL_MAP':
+            confirmation = self.local_map_localization_confirmations.get(rid, {})
+            if (confirmation.get('active_map_id') != str(active_map.get('active_map_id') or '')
+                    or confirmation.get('active_map_revision')
+                    != str(active_map.get('active_map_revision') or '')):
+                return None
         timeout = float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0))
         pose_heartbeat = self.robot_pose_heartbeats.get(rid)
         if pose_heartbeat is None or time.monotonic() - pose_heartbeat > timeout:
@@ -1499,6 +1511,17 @@ class TwinRuntime:
                 self.robot_runtime_map_snapshots.pop(robot_id, None)
                 self.robot_slam_map_snapshots.pop(robot_id, None)
                 self.robot_map_geometry.pop(robot_id, None)
+            previous_runtime_mode = previous_mode or self.operation_mode
+            if (previous_runtime_mode != incoming_mode
+                    and robot_id in self.local_map_overrides):
+                # A runtime handoff changes /map ownership. Do not keep
+                # advertising a previously loaded local map after the stack
+                # has restarted into another map-owning runtime.
+                self.local_map_overrides.pop(robot_id, None)
+                self.local_map_revisions.pop(robot_id, None)
+                self.local_map_status[robot_id] = {'loaded': False}
+                self.local_map_localization_confirmations.pop(robot_id, None)
+                self.invalidate_path_previews(robot_id, 'runtime changed map ownership')
             self.robot_runtime_modes[robot_id] = incoming_mode
             if incoming_mode in MAPPING_CAPABLE_MODES and mapping_session:
                 self.robot_mapping_sessions[robot_id] = mapping_session
@@ -1807,8 +1830,12 @@ class TwinRuntime:
             if robot_id:
                 map_id = str(data.get('map_id') or '')
                 if data.get('loaded') and map_id:
-                    self.local_map_overrides[robot_id] = map_id
                     revision = str(data.get('active_map_revision') or data.get('map_revision') or '')
+                    confirmation = self.local_map_localization_confirmations.get(robot_id, {})
+                    if (confirmation.get('active_map_id') != map_id
+                            or confirmation.get('active_map_revision') != revision):
+                        self.local_map_localization_confirmations.pop(robot_id, None)
+                    self.local_map_overrides[robot_id] = map_id
                     if revision:
                         self.local_map_revisions[robot_id] = revision
                     self.local_map_status[robot_id] = {
@@ -1820,6 +1847,7 @@ class TwinRuntime:
                 else:
                     self.local_map_overrides.pop(robot_id, None)
                     self.local_map_revisions.pop(robot_id, None)
+                    self.local_map_localization_confirmations.pop(robot_id, None)
                     self.local_map_status[robot_id] = {
                         'loaded': False,
                         'canonical_map_revision': data.get('canonical_map_revision'),

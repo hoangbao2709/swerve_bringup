@@ -134,8 +134,8 @@ class SwerveBridge(Node):
         self.declare_parameter('navigate_action', '/go_to_tag')
         self.declare_parameter('navigate_pose_action', '/navigate_to_pose')
         self.declare_parameter('navigate_server_timeout', 2.0)
-        self.declare_parameter('manual_linear_velocity', 0.25)
-        self.declare_parameter('manual_angular_velocity', 0.60)
+        self.declare_parameter('manual_linear_velocity', 0.40)
+        self.declare_parameter('manual_angular_velocity', 0.80)
         self.declare_parameter('manual_command_timeout', 0.40)
         self.declare_parameter('artifact_root', 'generated/maps')
         self.declare_parameter('local_map_root', os.path.join(
@@ -3076,6 +3076,21 @@ class SwerveBridge(Node):
             'timestamp': self.now(),
         })
 
+    def _saved_map_load_safety_error(self):
+        """Authoritative bridge-side safety check shared by preflight and load."""
+        if self.emergency_stop_active:
+            return 'clear E-STOP before loading a saved map'
+        if self.applied_mode != 'MANUAL':
+            return 'wait until the command arbiter confirms MANUAL mode before loading a map'
+        if not self._robot_is_stopped():
+            return 'stop the robot before loading a saved map'
+        if (self.active_goal is not None or self.active_pose_goal is not None
+                or self.goal_request_pending or getattr(self, 'cancel_pending', False)):
+            return 'cancel or wait for the active navigation goal before loading a map'
+        if self.local_map_load_pending:
+            return 'another saved map load is already in progress'
+        return None
+
     def local_control(self, data):
         operation = str(data.get('operation') or '').upper()
         if operation == 'CLEAR_ESTOP':
@@ -3129,15 +3144,41 @@ class SwerveBridge(Node):
             future.add_done_callback(lambda completed: self.map_save_result(
                 completed, data, prefix, session_prefix))
             return
-        if operation == 'MAP_LOAD':
-            if self.runtime_state not in ('NAVIGATION', 'UNIFIED'):
-                self._send_local_control_result(data, False, error='map loading requires the active Nav2 navigation runtime')
+        if operation == 'MAP_LOAD_PREFLIGHT':
+            safety_error = self._saved_map_load_safety_error()
+            if safety_error:
+                self._send_local_control_result(data, False, error=safety_error)
                 return
-            if (self.emergency_stop_active or self.control_mode != 'MANUAL' or not self._robot_is_stopped()
-                    or self.active_goal is not None or self.active_pose_goal is not None
-                    or self.goal_request_pending or self.local_map_load_pending):
-                self._send_local_control_result(data, False,
-                                                error='map loading requires a stopped robot in MANUAL mode with no active goal')
+            if self.runtime_state not in ('MAPPING', 'UNIFIED', 'NAVIGATION'):
+                self._send_local_control_result(
+                    data, False, error=f'saved map loading is unavailable in {self.runtime_state} runtime')
+                return
+            lifecycle = self.nav2_lifecycle_status() if self.runtime_state == 'NAVIGATION' else None
+            self._send_local_control_result(data, True, {
+                'safe_to_load': True,
+                'runtime_state': self.runtime_state,
+                'mapping_state': ('PAUSED' if self.slam_paused else 'MAPPING')
+                    if self.runtime_state in ('MAPPING', 'UNIFIED') else 'INACTIVE',
+                'nav2_lifecycle_ready': lifecycle['ready'] if lifecycle else False,
+                'nav2_lifecycle_states': lifecycle['states'] if lifecycle else {},
+                'nav2_lifecycle_blocker_reason': lifecycle['blocker_reason'] if lifecycle else None,
+                'map_load_service_ready': bool(
+                    self.runtime_state == 'NAVIGATION' and self.map_load_client.service_is_ready()),
+            })
+            return
+        if operation == 'MAP_LOAD':
+            if self.runtime_state != 'NAVIGATION':
+                self._send_local_control_result(
+                    data, False, error='saved map loading requires the supervised NAVIGATION runtime; live SLAM must not own /map')
+                return
+            safety_error = self._saved_map_load_safety_error()
+            if safety_error:
+                self._send_local_control_result(data, False, error=safety_error)
+                return
+            lifecycle = self.nav2_lifecycle_status()
+            if not lifecycle['ready']:
+                self._send_local_control_result(
+                    data, False, error=lifecycle['blocker_reason'] or 'required Nav2 lifecycle nodes are not ACTIVE')
                 return
             yaml_path = Path(str(data.get('map_yaml') or '')).expanduser().resolve()
             local_root = self.local_map_root

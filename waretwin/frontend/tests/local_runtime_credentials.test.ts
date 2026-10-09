@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("local browser runtime connections", () => {
-  it("calls REST without cookies or a user Authorization header", async () => {
+  it("uses same-origin gateway cookies without a browser bearer token", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -18,7 +18,7 @@ describe("local browser runtime connections", () => {
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(init).toBeDefined();
-    expect(init?.credentials).toBe("omit");
+    expect(init?.credentials).toBe("same-origin");
     expect(new Headers(init?.headers).has("authorization")).toBe(false);
   });
 

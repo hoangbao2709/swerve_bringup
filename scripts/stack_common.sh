@@ -38,6 +38,32 @@ stack_valid_ros_domain() {
   (( domain >= 0 && domain <= 232 ))
 }
 
+stack_host_is_loopback() {
+  python3 - "${1:-}" <<'PY'
+import ipaddress
+import socket
+import sys
+
+host = sys.argv[1]
+if host == 'localhost':
+    raise SystemExit(0)
+try:
+    addresses = [ipaddress.ip_address(host.split('%', 1)[0])]
+except ValueError:
+    try:
+        addresses = [ipaddress.ip_address(item[4][0].split('%', 1)[0])
+                     for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)]
+    except OSError:
+        raise SystemExit(1)
+raise SystemExit(0 if addresses and all(item.is_loopback for item in addresses) else 1)
+PY
+}
+
+stack_loopback_cors_origins() {
+  local port="$1"
+  printf 'http://localhost:%s,http://127.0.0.1:%s,http://[::1]:%s\n' "$port" "$port" "$port"
+}
+
 stack_controller_active() {
   local controller_output="${1:-}" wanted="${2:-}"
   printf '%s\n' "$controller_output" |
@@ -155,7 +181,7 @@ stack_owned_pid() {
   cmd="$(stack_cmdline "$pid" 2>/dev/null || true)"
   cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
   case "$name" in
-    backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py runserver"* || "$cmd" == *"-m daphne"* || "$cmd" == *"$STACK_ROOT/waretwin/backend/run.sh"* ]] ;;
+    backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py runserver"* || "$cmd" == *"-m uvicorn"* || "$cmd" == *"-m daphne"* || "$cmd" == *"$STACK_ROOT/waretwin/backend/run.sh"* ]] ;;
     frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* || "$cmd" == *"runtime/static_server.py"* ]] ;;
     ros) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"ros_stack_supervisor.py"* || "$cmd" == *"system.launch.py"* || "$cmd" == *"ros2 launch swerve_bringup"* ]] ;;
     ros_bridge) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"$STACK_ROOT/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node"* ]] ;;
@@ -180,7 +206,7 @@ stack_owned_group() {
     cmd="$(stack_cmdline "$pid" 2>/dev/null || true)"
     cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
     case "$name" in
-      backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py"* || "$cmd" == *"-m daphne"* || "$cmd" == *"run.sh"* ]] && return 0 ;;
+      backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py"* || "$cmd" == *"-m uvicorn"* || "$cmd" == *"-m daphne"* || "$cmd" == *"run.sh"* ]] && return 0 ;;
       frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* || "$cmd" == *"runtime/static_server.py"* ]] && return 0 ;;
       ros) [[ "$cwd" == "$STACK_ROOT" || "$cmd" == *"$STACK_ROOT/install/"* ]] && [[ "$cmd" == *"ros_stack_supervisor.py"* || "$cmd" == *"gzserver"* || "$cmd" == *"gzclient"* || "$cmd" == *"rviz2"* || "$cmd" == *"ros2 launch swerve_bringup"* || "$cmd" == *"system.launch.py"* || "$cmd" == *"swerve_bridge"* || "$cmd" == *"slam_toolbox"* || "$cmd" == *"nav2_"* ]] && return 0 ;;
       ros_bridge) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"$STACK_ROOT/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node"* ]] && return 0 ;;

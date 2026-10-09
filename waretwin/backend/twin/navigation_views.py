@@ -253,6 +253,9 @@ def mission_action(request, mission_id: int, action: str):
 @csrf_exempt
 @require_http_methods(['POST'])
 def emergency_stop(request, robot_id: str):
+    # E-STOP is independent of the ordinary manual-owner lease and invalidates
+    # it immediately. The ROS bridge/arbiter latch remains authoritative.
+    getattr(runtime, 'manual_owners', {}).pop(robot_id, None)
     mission = current_mission(robot_id)
     result = async_to_sync(runtime.gateway().send_command)(robot_id, 'EMERGENCY_STOP', {'mission_id': mission.id if mission else None})
     if not result.get('ok'):
@@ -267,6 +270,7 @@ def emergency_stop(request, robot_id: str):
 @require_http_methods(['POST'])
 def clear_emergency_stop(request, robot_id: str):
     """Clear the ROS stop latch without resuming a mission automatically."""
+    getattr(runtime, 'manual_owners', {}).pop(robot_id, None)
     result = async_to_sync(runtime.gateway().request_control)(
         robot_id, 'CLEAR_ESTOP', {}, timeout=5.0)
     applied = result.get('result') if isinstance(result.get('result'), dict) else {}

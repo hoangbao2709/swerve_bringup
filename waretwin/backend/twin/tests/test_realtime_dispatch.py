@@ -103,11 +103,12 @@ class RealtimeDispatchTests(IsolatedAsyncioTestCase):
         consumer.send_json = AsyncMock()
         with patch('twin.consumers.runtime.handle_message', new_callable=AsyncMock) as route:
             await consumer.receive_json({'type': 'ROBOT_MODE', 'robot_id': 'R01', 'mode': 'MANUAL'})
-            consumer.send_json.assert_awaited_once_with({
-                'type': 'ERROR', 'code': 'CONTROL_CHANNEL_RESTRICTED',
-                'message': 'manual-only channel accepts ROBOT_MANUAL frames',
-            })
             route.assert_not_awaited()
+        consumer.send_json.assert_awaited_once_with({
+            'type': 'ERROR', 'code': 'CONTROL_CHANNEL_RESTRICTED',
+            'message': 'manual-only channel accepts manual acquire/command frames',
+        })
+        with patch('twin.consumers.runtime.handle_message', new_callable=AsyncMock) as route:
             await consumer.receive_json({'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'STOP'})
             route.assert_awaited_once()
 

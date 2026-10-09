@@ -80,7 +80,7 @@ def test_backend_uses_worktree_python_not_copied_activate_path():
     assert 'BACKEND_PYTHON_PATH="$PWD/.venv/bin/python"' in source
     assert 'source .venv/bin/activate' not in source
     assert 'pydantic, wsaccel' in source
-    assert '"$BACKEND_PYTHON_PATH" -m daphne' in source
+    assert '-m uvicorn config.asgi:application' in source
 
 
 def test_bridge_hot_reload_registration_checks_worktree_and_real_executable():

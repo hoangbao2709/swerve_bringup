@@ -1,6 +1,7 @@
 """Dedicated bounded Web manual sender, independent of ROS/telemetry probing."""
 import threading
 import time
+import uuid
 from collections import deque
 
 
@@ -14,6 +15,8 @@ class ManualRefreshWorker:
         self.wake = threading.Event()
         self.shutdown = threading.Event()
         self.action = None
+        self.lease_id = None
+        self.lease_acquisition_sent = False
         self.generation = self.sequence = 0
         self.events = deque(maxlen=2048)
         self.error = None
@@ -27,20 +30,33 @@ class ManualRefreshWorker:
         if action == 'STOP':
             return self.stop()
         with self.state_lock:
+            if self.action is None:
+                self.lease_id = uuid.uuid4().hex
+                self.lease_acquisition_sent = False
             self.generation += 1
             self.action = action
         self.wake.set()
 
-    def _emit(self, action, generation=None):
+    def _emit(self, action, generation=None, lease_id=None):
         with self.write_lock:
             with self.state_lock:
                 if generation is not None and (generation != self.generation or action != self.action):
                     return
                 self.sequence += 1
                 sequence = self.sequence
+                command_lease_id = lease_id if lease_id is not None else self.lease_id
+                acquire = action != 'STOP' and not self.lease_acquisition_sent
+                if acquire:
+                    self.lease_acquisition_sent = True
+            if acquire:
+                self.send({'type': 'MANUAL_ACQUIRE', 'robot_id': self.robot_id,
+                           'lease_id': command_lease_id})
             started = time.monotonic()
-            self.send({'type': 'ROBOT_MANUAL', 'robot_id': self.robot_id,
-                       'action': action, 'sequence_id': sequence, 'client_monotonic': started})
+            payload = {'type': 'ROBOT_MANUAL', 'robot_id': self.robot_id,
+                       'action': action, 'sequence_id': sequence, 'client_monotonic': started}
+            if command_lease_id is not None:
+                payload['lease_id'] = command_lease_id
+            self.send(payload)
             self.events.append({'sequence_id': sequence, 'action': action,
                                 'T0': started, 'send_completed': time.monotonic()})
 
@@ -49,8 +65,10 @@ class ManualRefreshWorker:
         with self.state_lock:
             self.generation += 1
             self.action = None
+            lease_id, self.lease_id = self.lease_id, None
+            self.lease_acquisition_sent = False
         self.wake.set()
-        self._emit('STOP')
+        self._emit('STOP', lease_id=lease_id)
 
     def close(self):
         try:
@@ -75,6 +93,8 @@ class ManualRefreshWorker:
                     self.error = exc
                     with self.state_lock:
                         self.action = None
+                        self.lease_id = None
+                        self.lease_acquisition_sent = False
             # Pace starts, not completions: network duration must not be added
             # to every refresh period. No overdue ticks/commands are queued.
             self.wake.wait(max(0, started + self.interval - time.monotonic()))

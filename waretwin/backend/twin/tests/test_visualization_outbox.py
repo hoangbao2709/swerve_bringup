@@ -6,17 +6,25 @@ from twin.visualization_outbox import VisualizationOutbox
 
 class VisualizationOutboxTests(IsolatedAsyncioTestCase):
     async def test_acceleration_keeps_utf8_validation_and_fragmented_masking(self):
-        from autobahn.websocket.utf8validator import Utf8Validator
-        from autobahn.websocket.xormasker import create_xor_masker
+        import array
+        from websocket import _abnf, _utils
+        from wsaccel.utf8validator import Utf8Validator
+        from wsaccel.xormask import XorMaskerSimple
+        self.assertIs(_utils.Utf8Validator, Utf8Validator)
+        self.assertIs(_abnf.XorMaskerSimple, XorMaskerSimple)
         self.assertTrue(Utf8Validator.__module__.startswith('wsaccel'))
-        self.assertTrue(create_xor_masker.__module__.startswith('wsaccel'))
+        self.assertTrue(XorMaskerSimple.__module__.startswith('wsaccel'))
         validator = Utf8Validator()
         self.assertTrue(validator.validate('LiDAR bản đồ'.encode())[0])
         validator.reset()
         self.assertFalse(validator.validate(b'\xff')[0])
+        self.assertTrue(_utils.validate_utf8('LiDAR bản đồ'.encode()))
+        self.assertFalse(_utils.validate_utf8(b'\xff'))
         mask, data = b'abcd', bytes(range(256)) * 8
-        masker = create_xor_masker(mask, len(data))
+        masker = XorMaskerSimple(mask)
         self.assertEqual(masker.process(data[:7]) + masker.process(data[7:]),
+            bytes(value ^ mask[index % 4] for index, value in enumerate(data)))
+        self.assertEqual(_abnf._mask(array.array('B', mask), array.array('B', data)),
             bytes(value ^ mask[index % 4] for index, value in enumerate(data)))
 
     async def test_browser_receipt_bounds_transport_and_ack_bypasses_it(self):

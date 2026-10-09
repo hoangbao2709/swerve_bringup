@@ -121,7 +121,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
 
     async def test_nav2_lifecycle_diagnostics_are_retained_and_missing_data_fails_closed(self):
         keys = ('nav2', 'nav2_ready', 'nav2_actions_ready', 'nav2_lifecycle_ready',
-                'nav2_lifecycle_states', 'nav2_lifecycle_blocker_code',
+                'nav2_lifecycle_states', 'nav2_lifecycle_state_details', 'nav2_lifecycle_blocker_code',
                 'nav2_lifecycle_blocker_reason')
         previous = {key: (key in runtime.ros_diagnostics, runtime.ros_diagnostics.get(key))
                     for key in keys}
@@ -133,6 +133,10 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
         diagnostics = {
             'nav2': True, 'nav2_ready': False, 'nav2_actions_ready': True,
             'nav2_lifecycle_ready': False, 'nav2_lifecycle_states': states,
+            'nav2_lifecycle_state_details': {
+                'planner_server': {'label': 'unknown', 'id': None, 'age_s': 3.0,
+                                   'error': 'get_state_service_unavailable'},
+            },
             'nav2_lifecycle_blocker_code': 'NAV2_LIFECYCLE_NOT_ACTIVE',
             'nav2_lifecycle_blocker_reason': '/bt_navigator=inactive',
         }
@@ -140,6 +144,8 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
             with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
                 await runtime.handle_ros_diagnostics({'diagnostics': diagnostics})
             self.assertEqual(runtime.ros_diagnostics['nav2_lifecycle_states'], states)
+            self.assertEqual(runtime.ros_diagnostics['nav2_lifecycle_state_details'],
+                diagnostics['nav2_lifecycle_state_details'])
             self.assertEqual(runtime.ros_diagnostics['nav2_lifecycle_blocker_code'],
                              'NAV2_LIFECYCLE_NOT_ACTIVE')
 
@@ -147,6 +153,7 @@ class RosCoordinateTests(IsolatedAsyncioTestCase):
                 await runtime.handle_ros_diagnostics({'diagnostics': {'nav2': True, 'nav2_ready': True}})
             self.assertFalse(runtime.ros_diagnostics['nav2_lifecycle_ready'])
             self.assertEqual(runtime.ros_diagnostics['nav2_lifecycle_states'], {})
+            self.assertEqual(runtime.ros_diagnostics['nav2_lifecycle_state_details'], {})
             self.assertIsNone(runtime.ros_diagnostics['nav2_lifecycle_blocker_code'])
         finally:
             for key, (present, value) in previous.items():

@@ -1,8 +1,8 @@
 """Isolate the existing refresh worker from the diagnostic ROS probe's GIL.
 
-Only acceptance uses this adapter. Commands use the local Django WebSocket
-without a user session. One synchronous IPC command is in flight; there is no
-command FIFO.
+Only acceptance uses this adapter. Commands use the configured, operator-
+authorized Django WebSocket. One synchronous IPC command is in flight; there is
+no command FIFO.
 """
 import json
 import subprocess
@@ -14,9 +14,10 @@ from pathlib import Path
 
 
 class ProcessManualRefreshWorker:
-    def __init__(self, url, robot_id, interval=.1, on_message=None):
+    def __init__(self, url, robot_id, interval=.1, on_message=None, origin=None):
         self.url, self.robot_id, self.interval = url, robot_id, interval
         self.on_message = on_message
+        self.origin = origin
         self.events = deque(maxlen=2048)
         self.error = None
         self.condition = threading.Condition()
@@ -33,7 +34,8 @@ class ProcessManualRefreshWorker:
         self.reader = threading.Thread(target=self._read, name='manual-process-receipts', daemon=True)
         self.reader.start()
         try:
-            self._request({'url': self.url, 'robot_id': self.robot_id, 'interval': self.interval})
+            self._request({'url': self.url, 'robot_id': self.robot_id, 'interval': self.interval,
+                           'origin': self.origin})
         except Exception:
             self.closing = True
             self.process.terminate(); self.process.wait(timeout=3)
@@ -95,7 +97,8 @@ def worker():
         with output_lock:
             print(json.dumps(payload), flush=True)
     init = json.loads(sys.stdin.readline())
-    ws = websocket.create_connection(init['url'], timeout=1)
+    ws = websocket.create_connection(init['url'], timeout=1,
+                                     origin=init['origin'] or None)
     # This non-rendering control client uses bounded display delivery rather
     # than receiving/decoding a duplicate LiDAR stream beside the real browser.
     # With no frame receipt, one disposable frame remains in flight; control
@@ -117,9 +120,12 @@ def worker():
         except Exception as exc:
             output({'kind': 'error', 'error': type(exc).__name__})
             raise
-        output({'kind': 'event', 'message': message, 'event': {
-            'sequence_id': message['sequence_id'], 'action': message['action'],
-            'T0': message['client_monotonic'], 'send_completed': time.monotonic()}})
+        event = ({'sequence_id': message['sequence_id'], 'action': message['action'],
+                  'T0': message['client_monotonic'], 'send_completed': time.monotonic()}
+                 if message.get('type') == 'ROBOT_MANUAL' else
+                 {'sequence_id': None, 'action': 'ACQUIRE',
+                  'T0': time.monotonic(), 'send_completed': time.monotonic()})
+        output({'kind': 'event', 'message': message, 'event': event})
     sender = ManualRefreshWorker(send, init['robot_id'], init['interval']).start()
     output({'kind': 'ack', 'id': init['id']})
     try:

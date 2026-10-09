@@ -81,6 +81,25 @@ class RobotVda5050Configuration(models.Model):
     def __str__(self):
         return f'VDA5050<{self.robot_id}>'
 
+
+class Vda5050OrderReceipt(models.Model):
+    """Durable replay guard for broker-delivered VDA5050 orders.
+
+    A newer update ID supersedes an older one per robot/order. The record is
+    committed before the order is forwarded to ROS, so a backend restart does
+    not make an already-seen order executable again.
+    """
+    robot_id = models.CharField(max_length=64)
+    order_id = models.CharField(max_length=128)
+    latest_update_id = models.PositiveBigIntegerField()
+    payload_sha256 = models.CharField(max_length=64)
+    route_status = models.CharField(max_length=24, default='CLAIMED')
+    received_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=('robot_id', 'order_id'), name='uniq_vda_order_robot_order')]
+
 class Mission(models.Model):
     STATUS = [('PENDING','PENDING'),('SENT','SENT'),('RUNNING','RUNNING'),('DONE','DONE'),('FAILED','FAILED'),('CANCELLED','CANCELLED')]
     mission_id = models.CharField(max_length=64, unique=True)

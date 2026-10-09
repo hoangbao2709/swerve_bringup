@@ -745,6 +745,13 @@ class CmdRobotManual(_Base):
     ]
     sequence_id: Optional[int] = Field(default=None, ge=0)
     client_monotonic: Optional[float] = Field(default=None, allow_inf_nan=False, ge=0)
+    lease_id: Optional[str] = Field(default=None, min_length=16, max_length=64)
+
+
+class CmdManualAcquire(_Base):
+    type: Literal["MANUAL_ACQUIRE"] = "MANUAL_ACQUIRE"
+    robot_id: RobotId = Field(min_length=1, max_length=64)
+    lease_id: str = Field(min_length=16, max_length=64)
 
 
 class CmdNavGoal(_Base):
@@ -841,7 +848,7 @@ class SimControlBody(_Base):
 
 ClientMessage = Annotated[
     Union[CmdResync, CmdSimControl, CmdInject, CmdClearInjection, CmdCreateTask,
-          CmdAssignTask, CmdAckAlert, CmdSelectRobot, CmdRobotMode, CmdRobotManual,
+          CmdAssignTask, CmdAckAlert, CmdSelectRobot, CmdRobotMode, CmdManualAcquire, CmdRobotManual,
           CmdNavGoal, CmdNavControl, CmdPathPreviewRequest, CmdPathPreviewInvalidate, CmdRobotDetailView,
           CmdWhatIfRun, CmdCopilotAsk],
     Field(discriminator="type"),

@@ -1,7 +1,7 @@
-import { Component, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { apiFetch, clearEmergencyStop, emergencyStop } from "../../services/api";
-import { WS_URL, wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
-import { MANUAL_COMMAND_REFRESH_MS, nextManualCommand, type ActiveManualCommand } from "../../services/manualCommand";
+import { WS_URL, wsAcquireManual, wsManualCommand, wsSetRobotMode, wsSend, type ManualAction } from "../../services/ws";
+import { MANUAL_COMMAND_REFRESH_MS, type ActiveManualCommand } from "../../services/manualCommand";
 import { useStore } from "../../state/store";
 import type { RobotDetailError, RobotDetailPathPreview, RobotSystemDiagnostics } from "../../schema/twin_state";
 import { ActiveNavigationMap2DView, LocalRobotSection, type ActiveMapLayers } from "./LocalRobotSections";
@@ -35,6 +35,15 @@ const MANUAL_ACTIONS: Array<{
   { action: "ROTATE_RIGHT", label: "↻", title: "Rotate right (E)" },
 ];
 const EMPTY_ERRORS: RobotDetailError[] = [];
+type ManualButtonHandlers = {
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: () => void;
+  onPointerCancel: () => void;
+  onLostPointerCapture: () => void;
+  onPointerLeave: () => void;
+  onClick: () => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+};
 
 function isMapPointTarget(target: MapPointNavigationTarget | null): target is MapPointNavigationTarget {
   return Boolean(target && target.frame_id === "map" && target.source_type === "ACTIVE_MAP_POINT"
@@ -155,6 +164,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   const manualTimer = useRef<number | null>(null);
   const activeManualCommandRef = useRef<ActiveManualCommand | null>(null);
   const activeManualRobotId = useRef<string | null>(null);
+  const manualLeaseId = useRef<string | null>(null);
   const manualWorker = useRef<Worker | null>(null);
   const manualKeyboardHandlers = useRef<{
     activate: (action: ManualAction) => void;
@@ -329,8 +339,9 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     setActiveManualCommand(null);
     if ((hadActiveCommand || force) && controlOnline && commandRobotId) {
       if (manualWorker.current) manualWorker.current.postMessage({ type: "STOP", robot_id: commandRobotId });
-      else wsManualCommand(commandRobotId, "STOP");
+      else wsManualCommand(commandRobotId, "STOP", manualLeaseId.current ?? undefined);
     }
+    manualLeaseId.current = null;
   }, [controlOnline, robotId]);
 
   useEffect(() => () => stopManual(), [stopManual]);
@@ -411,37 +422,37 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     setError("");
   }, [controlOnline, robotId, setRobotDetail, stopManual]);
 
-  const toggleManual = useCallback((action: ManualAction) => {
-    if (action === "STOP") {
-      stopManual(true);
-      return;
-    }
+  const holdManual = useCallback((action: Exclude<ManualAction, "STOP">) => {
+    if (activeManualCommandRef.current === action) return;
     if (controlMode !== "MANUAL" || modeTransitionState === "REQUESTED" || modeTransitionState === "FAILED") { setError("Wait for applied MANUAL mode before driving"); return; }
     if (estopActive) { setError("Manual control is blocked while E-STOP is active"); return; }
     if (!controlOnline) { setError("Manual control is disabled while ROS bridge is disconnected"); return; }
-    const nextCommand = nextManualCommand(activeManualCommandRef.current, action);
-    if (!nextCommand) {
-      stopManual(true);
+    if (manualWorker.current) {
+      manualWorker.current.postMessage({ type: "HOLD", robot_id: robotId, action });
+      setManualCommand(action);
       return;
     }
-    if (manualWorker.current) {
-      manualWorker.current.postMessage({ type: "HOLD", robot_id: robotId, action: nextCommand });
-      setManualCommand(nextCommand);
-      return;
+    if (!manualLeaseId.current) {
+      const leaseId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+      if (!wsAcquireManual(robotId, leaseId)) { setError("Manual control channel is disconnected"); return; }
+      manualLeaseId.current = leaseId;
     }
     if (manualTimer.current !== null) window.clearInterval(manualTimer.current);
-    if (!wsManualCommand(robotId, nextCommand)) {
+    if (!wsManualCommand(robotId, action, manualLeaseId.current)) {
       setError("Manual command was not sent");
       stopManual(true);
       return;
     }
-    setManualCommand(nextCommand);
+    setManualCommand(action);
+    const leaseId = manualLeaseId.current;
     manualTimer.current = window.setInterval(() => {
-      if (!wsManualCommand(robotId, nextCommand)) stopManual(true);
+      if (!wsManualCommand(robotId, action, leaseId ?? undefined)) stopManual(true);
     }, MANUAL_COMMAND_REFRESH_MS);
   }, [controlMode, controlOnline, estopActive, modeTransitionState, robotId, setManualCommand, stopManual]);
 
-  manualKeyboardHandlers.current = { activate: toggleManual, stop: stopManual };
+  manualKeyboardHandlers.current = { activate: (action) => { if (action !== "STOP") holdManual(action); }, stop: stopManual };
 
   useEffect(() => {
     const keyActions: Record<string, ManualAction> = {
@@ -459,9 +470,34 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
       event.preventDefault();
       manualKeyboardHandlers.current.activate(action);
     };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!keyActions[event.key]) return;
+      event.preventDefault();
+      manualKeyboardHandlers.current.stop();
+    };
+    const onBlur = () => manualKeyboardHandlers.current.stop();
+    const onPointerUp = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".manual-key-stop")) return;
+      manualKeyboardHandlers.current.stop();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") manualKeyboardHandlers.current.stop();
+    };
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onBlur);
+    window.addEventListener("pagehide", onBlur);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onBlur);
+      window.removeEventListener("pagehide", onBlur);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       manualKeyboardHandlers.current.stop();
     };
   }, []);
@@ -592,12 +628,24 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   };
 
   const changeRobot = (next: string) => {
+    stopManual(true);
     if (next) select(next);
   };
 
   const moveButtonEvents = useCallback((action: ManualAction) => ({
-    onClick: () => toggleManual(action),
-  }), [toggleManual]);
+    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (action === "STOP") { event.preventDefault(); return; }
+      if (event.button !== 0) return;
+      event.preventDefault();
+      holdManual(action);
+    },
+    onPointerUp: () => { if (action !== "STOP") stopManual(); },
+    onPointerCancel: () => { if (action !== "STOP") stopManual(); },
+    onLostPointerCapture: () => { if (action !== "STOP") stopManual(); },
+    onPointerLeave: () => { if (action !== "STOP") stopManual(); },
+    onClick: () => { if (action === "STOP") stopManual(true); },
+    onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => event.preventDefault(),
+  }), [holdManual, stopManual]);
 
   const slamLive = diagnostics?.mapping?.slam_state === "ACTIVE" && diagnostics.mapping.map_live;
   const rawNavigationState = String(navigationStatus ?? robot?.navigation_state ?? "").toUpperCase();
@@ -744,7 +792,7 @@ function ManualBarContent({
   controlMode: string;
   controlOnline: boolean;
   activeManualCommand: ActiveManualCommand | null;
-  moveButtonEvents: (action: ManualAction) => { onClick: () => void };
+  moveButtonEvents: (action: ManualAction) => ManualButtonHandlers;
   expanded: boolean;
   controls: string;
   onToggle: () => void;
@@ -791,7 +839,7 @@ function ManualBarContent({
           <span className="hmi-manual-kicker">MANUAL JOG</span>
           <b>
             {activeManualCommand
-              ? `${activeManualCommand.replace(/_/g, " ")} LATCHED`
+              ? `${activeManualCommand.replace(/_/g, " ")} · HOLDING`
               : "STOPPED"}
           </b>
         </div>

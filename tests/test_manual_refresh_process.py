@@ -15,6 +15,7 @@ from manual_refresh_process import ProcessManualRefreshWorker
 
 def test_process_reuses_refresh_worker_and_stop_invalidates_old_holds():
     rows = []
+    acquisitions = []
     class Handler(socketserver.BaseRequestHandler):
         def read(self, size):
             result = b''
@@ -44,6 +45,7 @@ def test_process_reuses_refresh_worker_and_stop_invalidates_old_holds():
                     if first & 15 == 1:
                         message = json.loads(payload)
                         if message['type'] == 'ROBOT_MANUAL': rows.append(message)
+                        elif message['type'] == 'MANUAL_ACQUIRE': acquisitions.append(message)
             except (EOFError, ConnectionError): pass
     with socketserver.ThreadingTCPServer(('127.0.0.1', 0), Handler) as server:
         server.daemon_threads = True
@@ -54,6 +56,8 @@ def test_process_reuses_refresh_worker_and_stop_invalidates_old_holds():
             end = time.monotonic() + 2
             while len(rows) < 4 and time.monotonic() < end: time.sleep(.01)
             assert len(rows) >= 4
+            assert len(acquisitions) == 1
+            assert acquisitions[0]['lease_id'] == rows[0]['lease_id']
             sender.stop()
             end = time.monotonic() + 2
             while not any(row['action'] == 'STOP' for row in rows) and time.monotonic() < end: time.sleep(.01)

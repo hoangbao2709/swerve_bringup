@@ -1,12 +1,14 @@
 Django>=5.1,<5.3
 channels>=4.1,<5
-daphne>=4.1,<5
-# Autobahn's CPython UTF-8 validation / RFC6455 masking accelerator.
+uvicorn>=0.54,<0.55
+websockets>=15,<16
+# websocket-client's optional CPython UTF-8 validation / RFC6455 masking accelerator.
 wsaccel>=0.6.6,<0.7
 pydantic>=2.7,<3
 python-dotenv>=1.0,<2
 websocket-client>=1.7,<2
-cryptography>=42,<47
+cryptography>=50.0.2,<51
 paho-mqtt>=2,<3
 
 openpyxl>=3.1,<4
+PyYAML>=6,<7

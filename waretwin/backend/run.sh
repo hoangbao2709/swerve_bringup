@@ -27,7 +27,7 @@ fi
 # The full setup script owns deterministic dependency installation. Runtime
 # startup must not silently mutate the Python environment; opt into the old
 # developer convenience explicitly when needed.
-if ! clean_python -c 'import django, channels, daphne, dotenv, pydantic, wsaccel' >/dev/null 2>&1; then
+if ! clean_python -c 'import django, channels, uvicorn, websockets, dotenv, pydantic, wsaccel' >/dev/null 2>&1; then
   if [[ "${WARETWIN_DEV_AUTO_INSTALL:-0}" == '1' ]]; then
     echo '[WARN] WARETWIN_DEV_AUTO_INSTALL=1: installing backend dependencies for development.' >&2
     clean_python -m pip install -r requirements.txt
@@ -50,4 +50,6 @@ for _key in "${!_explicit_env[@]}"; do export "$_key=${_explicit_env[$_key]}"; d
 unset _key _explicit_env
 clean_python manage.py migrate
 clean_python manage.py sync_master_data
-exec env -u PYTHONPATH -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH "$BACKEND_PYTHON_PATH" -m daphne -b "${BACKEND_HOST:-127.0.0.1}" -p "${BACKEND_PORT:-8000}" config.asgi:application
+exec env -u PYTHONPATH -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH "$BACKEND_PYTHON_PATH" \
+  -m uvicorn config.asgi:application --host "${BACKEND_HOST:-127.0.0.1}" \
+  --port "${BACKEND_PORT:-8000}" --workers 1 --ws websockets --timeout-keep-alive 5 --no-access-log

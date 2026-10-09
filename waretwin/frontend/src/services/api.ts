@@ -189,5 +189,8 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   if (init.body && !headers.has("content-type") && !(init.body instanceof FormData)) {
     headers.set("content-type", "application/json");
   }
-  return fetch(`${API_URL}${path}`, { ...init, headers, credentials: "omit" });
+  // Same-origin credentials let the configured authenticated gateway attach
+  // its operator session in PROTECTED_LAN mode. They are never sent to a
+  // different origin (and LOCAL_LOOPBACK still rejects non-loopback origins).
+  return fetch(`${API_URL}${path}`, { ...init, headers, credentials: "same-origin" });
 }

@@ -9,7 +9,7 @@ import {
 class FakeSocket implements ManualWorkerSocket {
   readyState = 1;
   bufferedAmount = 0;
-  sent: Array<{ type: string; robot_id: string; action: string }> = [];
+  sent: Array<{ type: string; robot_id: string; action?: string; lease_id?: string }> = [];
   closeCalls = 0;
   throwOnSend = false;
 
@@ -61,10 +61,11 @@ describe("manual worker refresh state machine", () => {
   it("sends HOLD immediately and refreshes at the single configured period", () => {
     const { session, socket, timers } = setup();
     session.setAction("R01", "FORWARD");
-    expect(socket()?.sent).toEqual([{ type: "ROBOT_MANUAL", robot_id: "R01", action: "FORWARD" }]);
+    expect(socket()?.sent.map(({ type }) => type)).toEqual(["MANUAL_ACQUIRE", "ROBOT_MANUAL"]);
+    expect(socket()?.sent[1]).toMatchObject({ type: "ROBOT_MANUAL", robot_id: "R01", action: "FORWARD", lease_id: expect.any(String) });
     expect(Array.from(timers.intervals.values()).map(({ delayMs }) => delayMs)).toEqual([MANUAL_COMMAND_REFRESH_MS]);
     timers.tick();
-    expect(socket()?.sent.map(({ action }) => action)).toEqual(["FORWARD", "FORWARD"]);
+    expect(socket()?.sent.filter(({ type }) => type === "ROBOT_MANUAL").map(({ action }) => action)).toEqual(["FORWARD", "FORWARD"]);
   });
 
   it("switches the refreshed action directly without inserting STOP", () => {
@@ -72,7 +73,7 @@ describe("manual worker refresh state machine", () => {
     session.setAction("R01", "FORWARD");
     session.setAction("R01", "LEFT");
     timers.tick();
-    expect(socket()?.sent.map(({ action }) => action)).toEqual(["FORWARD", "LEFT", "LEFT"]);
+    expect(socket()?.sent.filter(({ type }) => type === "ROBOT_MANUAL").map(({ action }) => action)).toEqual(["FORWARD", "LEFT", "LEFT"]);
     expect(session.activeManualCommand).toBe("LEFT");
   });
 
@@ -81,7 +82,7 @@ describe("manual worker refresh state machine", () => {
     const actions = ["FORWARD", "FORWARD_LEFT", "FORWARD_RIGHT", "LEFT", "RIGHT",
       "BACKWARD", "BACKWARD_LEFT", "BACKWARD_RIGHT", "ROTATE_LEFT", "ROTATE_RIGHT"] as const;
     for (const action of actions) session.setAction("R01", action);
-    expect(socket()?.sent.map(({ action }) => action)).toEqual(actions);
+    expect(socket()?.sent.filter(({ type }) => type === "ROBOT_MANUAL").map(({ action }) => action)).toEqual(actions);
     session.stop("R01");
     expect(socket()?.sent.at(-1)?.action).toBe("STOP");
   });
@@ -91,7 +92,7 @@ describe("manual worker refresh state machine", () => {
     session.setAction("R01", "FORWARD");
     session.stop("R01");
     timers.tick();
-    expect(socket()?.sent.map(({ action }) => action)).toEqual(["FORWARD", "STOP"]);
+    expect(socket()?.sent.filter(({ type }) => type === "ROBOT_MANUAL").map(({ action }) => action)).toEqual(["FORWARD", "STOP"]);
     expect(session.activeManualCommand).toBeNull();
     expect(timers.intervals.size).toBe(0);
   });
@@ -101,7 +102,7 @@ describe("manual worker refresh state machine", () => {
     session.setAction("R01", "RIGHT");
     session.disconnect("R01");
     timers.tick();
-    expect(socket()?.sent.map(({ action }) => action)).toEqual(["RIGHT", "STOP"]);
+    expect(socket()?.sent.filter(({ type }) => type === "ROBOT_MANUAL").map(({ action }) => action)).toEqual(["RIGHT", "STOP"]);
     expect(socket()?.closeCalls).toBe(1);
     expect(session.activeManualCommand).toBeNull();
     expect(timers.intervals.size).toBe(0);

@@ -20,7 +20,7 @@ from twin.local_control import (
     slam_map_restoration_evidence,
     validate_map_name,
 )
-from twin.models import RobotVda5050Configuration
+from twin.models import RobotVda5050Configuration, Vda5050OrderReceipt
 from twin.runtime import runtime
 from twin.local_control_views import SimulationRuntimeAdapter
 from twin.vda5050 import (
@@ -333,7 +333,7 @@ class Vda5050ConfigurationTests(TestCase):
         message = type('Message', (), {'topic': 'vda5050/uagv/v2/PTAGV/R01/order', 'payload': b'{"orderId":"blocked"}'})()
         with patch('twin.ros_bridge_consumer.registry.send') as send:
             _on_order(config, client, message)
-        send.assert_not_called()
+            send.assert_not_called()
 
         # A callback from the old client can race with an Apply operation.
         # It must use the newly applied robot policy, not the stale model
@@ -343,6 +343,52 @@ class Vda5050ConfigurationTests(TestCase):
             with patch('twin.ros_bridge_consumer.registry.send') as send:
                 _on_order(config, client, message)
             send.assert_not_called()
+
+    def test_mqtt_orders_are_durable_and_stale_updates_are_not_forwarded(self):
+        config = type('Config', (), {
+            'robot_id': 'R01', 'allow_task': True,
+        })()
+        client = object()
+        message = lambda update, payload_suffix='': type('Message', (), {
+            'topic': 'vda5050/uagv/v2/PTAGV/R01/order',
+            'payload': json.dumps({
+                'orderId': 'mission-7', 'orderUpdateId': update,
+                'nodes': [], 'note': payload_suffix,
+            }).encode(),
+        })()
+        with patch.dict('twin.vda5050._task_policy', {'R01': (True, False)}):
+            with patch('twin.ros_bridge_consumer.registry.send', return_value=True) as send:
+                _on_order(config, client, message(4))
+                _on_order(config, client, message(4, 'changed-payload'))
+                _on_order(config, client, message(3))
+                _on_order(config, client, message(5))
+        self.assertEqual(send.call_count, 2)
+        receipt = Vda5050OrderReceipt.objects.get(robot_id='R01', order_id='mission-7')
+        self.assertEqual(receipt.latest_update_id, 5)
+        self.assertEqual(receipt.route_status, 'ROUTED')
+
+    def test_bridge_offline_consumes_order_update_to_prevent_restart_replay(self):
+        config = type('Config', (), {'robot_id': 'R01', 'allow_task': True})()
+        message = type('Message', (), {
+            'topic': 'vda5050/uagv/v2/PTAGV/R01/order',
+            'payload': b'{"orderId":"mission-offline","orderUpdateId":1}',
+        })()
+        with patch.dict('twin.vda5050._task_policy', {'R01': (True, False)}):
+            with patch('twin.ros_bridge_consumer.registry.send', return_value=False) as send:
+                _on_order(config, object(), message)
+                _on_order(config, object(), message)
+        send.assert_called_once()
+        receipt = Vda5050OrderReceipt.objects.get(robot_id='R01', order_id='mission-offline')
+        self.assertEqual(receipt.route_status, 'BRIDGE_OFFLINE')
+
+    @override_settings(WARETWIN_OPERATOR_AUTH_MODE='PROTECTED_LAN')
+    def test_protected_lan_requires_tls_for_enabled_broker(self):
+        with self.assertRaisesRegex(ValueError, 'requires TLS'):
+            validate_configuration({'enabled': True, 'mqtt_host': 'broker.local', 'tls_enabled': False})
+        result = validate_configuration({
+            'enabled': True, 'mqtt_host': 'broker.local', 'tls_enabled': True,
+        })
+        self.assertTrue(result['tls_enabled'])
 
 
 class LocalControlApiTests(TestCase):

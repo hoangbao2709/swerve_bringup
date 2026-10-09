@@ -8,6 +8,7 @@ It never publishes the robot pose as a Gazebo ground-truth pose directly.
 """
 import math
 import os
+import signal
 import time
 
 import rclpy
@@ -192,8 +193,10 @@ def main(args=None):
     rclpy.init(args=args); node = V30ESim()
     try: rclpy.spin(node)
     except KeyboardInterrupt: pass
-    node.destroy_node()
-    if rclpy.ok(): rclpy.shutdown()
+    finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        node.destroy_node()
+        if rclpy.ok(): rclpy.shutdown()
 
 
 if __name__ == '__main__': main()

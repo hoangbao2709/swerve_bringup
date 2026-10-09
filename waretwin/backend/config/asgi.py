@@ -7,8 +7,9 @@ django_asgi_app = get_asgi_application()
 
 from channels.routing import ProtocolTypeRouter, URLRouter
 from twin.routing import websocket_urlpatterns
+from twin.operator_security import OperatorSecurityMiddleware
 
-application = ProtocolTypeRouter({
+application = OperatorSecurityMiddleware(ProtocolTypeRouter({
     'http': django_asgi_app,
     'websocket': URLRouter(websocket_urlpatterns),
-})
+}))

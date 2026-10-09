@@ -1,6 +1,7 @@
 import logging
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
+from django.db import DatabaseError, transaction
 
 
 log = logging.getLogger(__name__)
@@ -16,14 +17,14 @@ class Command(BaseCommand):
         try:
             from django.db import connection
 
-            if connection.vendor == 'sqlite':
+            if connection.vendor == 'sqlite' and not connection.in_atomic_block:
                 with connection.cursor() as cursor:
                     cursor.execute('PRAGMA journal_mode=WAL;')
                     cursor.execute('PRAGMA synchronous=NORMAL;')
                     cursor.execute('PRAGMA busy_timeout=30000;')
                 self.stdout.write(self.style.SUCCESS('SQLite configured: WAL + busy_timeout=30000ms'))
-        except Exception as exc:
-            log.exception('SQLite WAL setup failed; continuing without the optional tuning')
+        except DatabaseError as exc:
+            log.warning('Optional SQLite WAL tuning failed; continuing without it: %s', type(exc).__name__)
             self.stderr.write(self.style.WARNING(f'SQLite WAL setup skipped: {type(exc).__name__}: {exc}'))
 
         try:
@@ -36,15 +37,20 @@ class Command(BaseCommand):
             )
             from twin.warehouse_services import ensure_active_map, sync_from_layout
 
-            if WarehouseMap.objects.exists():
-                active = ensure_active_map(runtime.layout)
-                result = sync_from_layout(active.layout, warehouse=active.warehouse, prune=False)
-            else:
-                result = sync_from_layout(runtime.layout)
-                active = ensure_active_map(runtime.layout)
-            workpoints = sync_workpoints_from_layout(active.warehouse, active.layout, prune=False)
-            robots = sync_robot_profiles(active.warehouse, runtime.engine.state.get('robots') or {})
-            inventory = sync_inventory_placeholders(active.warehouse)
+            # The active warehouse/map and its scheduler catalog form one
+            # startup consistency boundary. Never report success after a
+            # partial sync: navigation must not become available against a
+            # mixed master-data revision.
+            with transaction.atomic():
+                if WarehouseMap.objects.exists():
+                    active = ensure_active_map(runtime.layout)
+                    result = sync_from_layout(active.layout, warehouse=active.warehouse, prune=False)
+                else:
+                    result = sync_from_layout(runtime.layout)
+                    active = ensure_active_map(runtime.layout)
+                workpoints = sync_workpoints_from_layout(active.warehouse, active.layout, prune=False)
+                robots = sync_robot_profiles(active.warehouse, runtime.engine.state.get('robots') or {})
+                inventory = sync_inventory_placeholders(active.warehouse)
             self.stdout.write(self.style.SUCCESS(
                 f"Warehouse master data synced: {result['warehouses']} warehouse, "
                 f"{result['zones']} zones, {result['shelves']} shelves; "
@@ -53,10 +59,8 @@ class Command(BaseCommand):
                 f"active map warehouse_id={active.warehouse_id} revision={active.revision}"
             ))
         except Exception as exc:
-            # Master-data sync is intentionally non-destructive. Keep startup
-            # diagnostics visible while allowing an operator to inspect/fix the
-            # database and rerun this command explicitly.
-            log.exception('Warehouse master-data synchronization failed')
-            self.stderr.write(self.style.WARNING(
-                f'Warehouse master-data sync skipped: {type(exc).__name__}: {exc}'
-            ))
+            log.exception('Critical warehouse master-data synchronization failed')
+            raise CommandError(
+                f'critical warehouse master-data synchronization failed: {type(exc).__name__}; '
+                'backend/robot startup must remain unavailable until corrected'
+            ) from exc

@@ -2,6 +2,7 @@
 """Filter the native 3D LiDAR cloud without changing its message type."""
 
 import math
+import signal
 
 import rclpy
 from rclpy.node import Node
@@ -100,6 +101,7 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

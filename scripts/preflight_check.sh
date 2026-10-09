@@ -110,7 +110,7 @@ if command -v rg >/dev/null 2>&1; then ok "ripgrep"; else fail "ripgrep not foun
 
 BACKEND_PYTHON="$ROOT_DIR/waretwin/backend/.venv/bin/python"
 if [[ -x "$BACKEND_PYTHON" ]] && env -u PYTHONPATH -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH \
-  "$BACKEND_PYTHON" -c 'import django, channels, daphne, pydantic, websocket, wsaccel, pytest, yaml' >/dev/null 2>&1; then
+  "$BACKEND_PYTHON" -c 'import django, channels, uvicorn, websockets, pydantic, websocket, wsaccel, pytest, yaml' >/dev/null 2>&1; then
   ok "Backend dependencies"
 else
   fail "Backend virtualenv/dependencies missing; run ./scripts/setup_full_stack.sh"

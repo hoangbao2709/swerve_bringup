@@ -19,7 +19,10 @@ from typing import Any
 
 from asgiref.sync import async_to_sync
 from django.conf import settings
+from django.db import DatabaseError, transaction
 from cryptography.fernet import Fernet, InvalidToken
+
+from .models import Vda5050OrderReceipt
 
 log = logging.getLogger(__name__)
 _manager_lock = threading.RLock()
@@ -130,6 +133,9 @@ def validate_configuration(values: dict[str, Any]) -> dict[str, Any]:
         'keepalive': _bounded_int(values, 'keepalive', 30, 5, 3600),
         'client_id': text('client_id', '', 128),
     }
+    if (enabled and getattr(settings, 'WARETWIN_OPERATOR_AUTH_MODE', 'LOCAL_LOOPBACK') == 'PROTECTED_LAN'
+            and not values_out['tls_enabled']):
+        raise ValueError('PROTECTED_LAN requires TLS for enabled VDA5050 broker connections')
     for key in ('interface_name', 'manufacturer', 'serial_number'):
         if values_out[key] and not segment_re.fullmatch(values_out[key]):
             raise ValueError(f'{key} contains characters that are invalid in an MQTT topic')
@@ -205,16 +211,46 @@ def _on_order(config, client, message) -> None:
         log.warning('VDA5050 message rejected: payload too large for robot %s', config.robot_id)
         return
     try:
-        body = json.loads(message.payload.decode('utf-8'))
+        body = json.loads(message.payload.decode('utf-8'), parse_constant=lambda value: (_ for _ in ()).throw(
+            ValueError(f'invalid JSON numeric constant: {value}')))
         if not isinstance(body, dict):
             raise ValueError('message must be an object')
+        order_id = body.get('orderId')
+        update_id = body.get('orderUpdateId')
+        if (not isinstance(order_id, str) or not order_id or len(order_id) > 128
+                or type(update_id) is not int or not 0 <= update_id <= 9_223_372_036_854_775_807):
+            raise ValueError('orderId/orderUpdateId are invalid')
+        payload_hash = hashlib.sha256(json.dumps(
+            body, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')).hexdigest()
+        # Commit the newest version before crossing the ROS boundary. A crash
+        # after dispatch therefore cannot replay the same order on restart.
+        with transaction.atomic():
+            receipt, created = Vda5050OrderReceipt.objects.select_for_update().get_or_create(
+                robot_id=config.robot_id, order_id=order_id,
+                defaults={'latest_update_id': update_id, 'payload_sha256': payload_hash,
+                          'route_status': 'CLAIMED'},
+            )
+            if not created:
+                if update_id <= receipt.latest_update_id:
+                    log.warning('VDA5050 duplicate/stale order rejected: robot=%s order=%s update=%s',
+                                config.robot_id, order_id, update_id)
+                    return
+                receipt.latest_update_id = update_id
+                receipt.payload_sha256 = payload_hash
+                receipt.route_status = 'CLAIMED'
+                receipt.save(update_fields=('latest_update_id', 'payload_sha256',
+                                            'route_status', 'received_at'))
         from .ros_bridge_consumer import registry
         sent = async_to_sync(registry.send)({
             'type': 'VDA5050_ORDER', 'robot_id': config.robot_id, 'order': body,
         })
+        Vda5050OrderReceipt.objects.filter(
+            robot_id=config.robot_id, order_id=order_id, latest_update_id=update_id,
+        ).update(route_status='ROUTED' if sent else 'BRIDGE_OFFLINE')
         if not sent:
-            log.warning('VDA5050 %s not routed: R%s bridge is offline', suffix, config.robot_id)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+            log.warning('VDA5050 order not routed: R%s bridge is offline; orderUpdateId is consumed',
+                        config.robot_id)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RuntimeError, DatabaseError) as exc:
         log.warning('VDA5050 %s rejected for robot %s: %s', suffix, config.robot_id, type(exc).__name__)
 
 
@@ -262,6 +298,9 @@ def test_connection(config, password: str) -> dict[str, Any]:
 def apply_configuration(config) -> dict[str, Any]:
     """Replace a live robot-scoped MQTT client; return real connection state."""
     robot_id = config.robot_id
+    if (config.enabled and getattr(settings, 'WARETWIN_OPERATOR_AUTH_MODE', 'LOCAL_LOOPBACK') == 'PROTECTED_LAN'
+            and not config.tls_enabled):
+        raise ValueError('PROTECTED_LAN requires TLS for enabled VDA5050 broker connections')
     with _manager_lock:
         # Change policy before retiring the previous client so messages it
         # already queued are checked against the newly saved configuration.
@@ -332,6 +371,12 @@ def ensure_configuration_active(config) -> dict[str, Any]:
     robot_id = config.robot_id
     if not config.enabled:
         return get_connection_state(robot_id)
+    if (getattr(settings, 'WARETWIN_OPERATOR_AUTH_MODE', 'LOCAL_LOOPBACK') == 'PROTECTED_LAN'
+            and not config.tls_enabled):
+        failed = {'status': 'ERROR', 'last_error': 'TLS is required for VDA5050 in PROTECTED_LAN'}
+        with _manager_lock:
+            _states[robot_id] = failed
+        return dict(failed)
     now = time.monotonic()
     with _manager_lock:
         state = _states.get(robot_id, {})

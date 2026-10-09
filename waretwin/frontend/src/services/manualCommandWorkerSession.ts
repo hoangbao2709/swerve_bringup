@@ -23,6 +23,8 @@ const MAX_BUFFERED_BYTES = 8192;
 export class ManualCommandWorkerSession {
   private activeAction: ActiveManualCommand | null = null;
   private robotId = "";
+  private leaseId: string | null = null;
+  private leaseAcquisitionSent = false;
   private refreshTimer: unknown | null = null;
   private errorReportedForConnection = false;
   private closingAfterFailure = false;
@@ -47,16 +49,23 @@ export class ManualCommandWorkerSession {
     this.stopRefresh();
     const lostAction = this.activeAction !== null;
     this.activeAction = null;
+    this.leaseId = null;
+    this.leaseAcquisitionSent = false;
     this.closingAfterFailure = false;
     if (lostAction) this.reportOnce("manual refresh channel disconnected; the backend watchdog will stop motion");
   }
 
   setAction(robotId: string, action: ManualWorkerAction) {
-    this.robotId = robotId;
     if (action === "STOP") {
       this.stop(robotId);
       return;
     }
+    if (this.robotId !== robotId || this.activeAction === null) {
+      this.stopRefresh();
+      this.leaseId = createLeaseId();
+      this.leaseAcquisitionSent = false;
+    }
+    this.robotId = robotId;
     this.activeAction = action;
     this.refreshNow();
   }
@@ -65,8 +74,14 @@ export class ManualCommandWorkerSession {
     this.robotId = robotId;
     this.stopRefresh();
     this.activeAction = null;
-    if (this.closingAfterFailure) return;
+    if (this.closingAfterFailure) {
+      this.leaseId = null;
+      this.leaseAcquisitionSent = false;
+      return;
+    }
     this.send("STOP");
+    this.leaseId = null;
+    this.leaseAcquisitionSent = false;
   }
 
   disconnect(robotId: string) {
@@ -98,6 +113,14 @@ export class ManualCommandWorkerSession {
       return;
     }
     if (socket.readyState !== SOCKET_OPEN) return;
+    if (!this.leaseId) {
+      this.leaseId = createLeaseId();
+      this.leaseAcquisitionSent = false;
+    }
+    if (!this.leaseAcquisitionSent) {
+      if (!this.sendFrame({ type: "MANUAL_ACQUIRE", robot_id: this.robotId, lease_id: this.leaseId })) return;
+      this.leaseAcquisitionSent = true;
+    }
     if (!this.send(this.activeAction)) return;
     this.refreshTimer = this.timers.setInterval(() => {
       const action = this.activeAction;
@@ -106,6 +129,11 @@ export class ManualCommandWorkerSession {
   }
 
   private send(action: ManualWorkerAction): boolean {
+    return this.sendFrame({ type: "ROBOT_MANUAL", robot_id: this.robotId, action,
+      ...(this.leaseId ? { lease_id: this.leaseId } : {}) });
+  }
+
+  private sendFrame(frame: Record<string, unknown>): boolean {
     if (this.closingAfterFailure) return false;
     const socket = this.getSocket();
     if (!socket || socket.readyState !== SOCKET_OPEN) return false;
@@ -114,7 +142,7 @@ export class ManualCommandWorkerSession {
       return false;
     }
     try {
-      socket.send(JSON.stringify({ type: "ROBOT_MANUAL", robot_id: this.robotId, action }));
+      socket.send(JSON.stringify(frame));
       return true;
     } catch {
       this.failClosed("manual command send failed; refresh stopped and socket closed");
@@ -125,6 +153,8 @@ export class ManualCommandWorkerSession {
   private failClosed(message: string) {
     this.stopRefresh();
     this.activeAction = null;
+    this.leaseId = null;
+    this.leaseAcquisitionSent = false;
     this.closingAfterFailure = true;
     this.reportOnce(message);
     const socket = this.getSocket();
@@ -149,4 +179,9 @@ export class ManualCommandWorkerSession {
     this.errorReportedForConnection = true;
     this.reportError(message);
   }
+}
+
+function createLeaseId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }

@@ -50,9 +50,12 @@ export function resolveBackendUrls(
   const protocol = runtimeLocation.protocol === "https:" ? "https" : "http";
   const host = runtimeLocation.hostname || "127.0.0.1";
   const port = runtimeEnv.VITE_BACKEND_PORT?.trim();
-  const defaultApiUrl = `${protocol}://${host}${port ? `:${port}` : ""}`;
-  const apiUrl = trimTrailingSlash(runtimeEnv.VITE_API_BASE_URL || runtimeEnv.VITE_API_URL || defaultApiUrl);
-  const explicitWsUrl = runtimeEnv.VITE_WS_BASE_URL || runtimeEnv.VITE_WS_URL;
+  const sameOrigin = runtimeEnv.VITE_API_SAME_ORIGIN === "true";
+  const defaultApiUrl = `${protocol}://${host}${!sameOrigin && port ? `:${port}` : ""}`;
+  const apiUrl = trimTrailingSlash(sameOrigin
+    ? `${protocol}://${host}`
+    : runtimeEnv.VITE_API_BASE_URL || runtimeEnv.VITE_API_URL || defaultApiUrl);
+  const explicitWsUrl = sameOrigin ? "" : runtimeEnv.VITE_WS_BASE_URL || runtimeEnv.VITE_WS_URL;
   return {
     apiUrl,
     wsUrl: explicitWsUrl ? websocketEndpoint(explicitWsUrl) : websocketUrlFromApi(apiUrl),
@@ -92,7 +95,7 @@ async function refreshLayout(meta: Extract<ServerMessage, { type: "LAYOUT_UPDATE
       layoutListeners.forEach((fn) => fn(meta));
       return;
     }
-    const response = await fetch(`${API_URL}/api/layout`, { credentials: "omit" });
+    const response = await fetch(`${API_URL}/api/layout`, { credentials: "same-origin" });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     const next = await response.json();
     useStore.getState().setLayout(next, {
@@ -108,7 +111,7 @@ async function refreshLayout(meta: Extract<ServerMessage, { type: "LAYOUT_UPDATE
 
 async function refreshMapSyncStatus() {
   try {
-    const response = await fetch(`${API_URL}/api/map/sync-status`, { credentials: "omit" });
+    const response = await fetch(`${API_URL}/api/map/sync-status`, { credentials: "same-origin" });
     if (!response.ok) return;
     const data = await response.json() as Record<string, unknown>;
     useStore.getState().setMapSync({
@@ -171,9 +174,14 @@ export function wsSetRobotMode(robot_id: string, mode: "MANUAL" | "AUTONOMOUS"):
   return wsSend({ type: "ROBOT_MODE", robot_id, mode });
 }
 
+/** Acquire a per-robot dead-man lease before any motion frame is accepted. */
+export function wsAcquireManual(robot_id: string, lease_id: string): boolean {
+  return wsSend({ type: "MANUAL_ACQUIRE", robot_id, lease_id });
+}
+
 /** Send one dead-man manual command. The bridge stops when commands expire. */
-export function wsManualCommand(robot_id: string, action: ManualAction): boolean {
-  return wsSend({ type: "ROBOT_MANUAL", robot_id, action });
+export function wsManualCommand(robot_id: string, action: ManualAction, lease_id?: string): boolean {
+  return wsSend({ type: "ROBOT_MANUAL", robot_id, action, ...(lease_id ? { lease_id } : {}) });
 }
 
 // 分頁從背景回到前景：累積的 PATCH 可能被瀏覽器節流，直接要一份 FULL 最省事（具名 listener 才能在 disconnect 時移除）
@@ -212,7 +220,7 @@ function open() {
     void refreshMapSyncStatus();
     // Pull the database-backed map once on connect so / always matches admin pages.
     const st = useStore.getState();
-    fetch(`${API_URL}/api/layout`, { credentials: "omit" })
+    fetch(`${API_URL}/api/layout`, { credentials: "same-origin" })
       .then(async (r) => {
         if (!r.ok) throw new Error(`${r.status}`);
         const next = await r.json();

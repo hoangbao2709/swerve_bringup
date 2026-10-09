@@ -29,7 +29,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/frontend/dist/index.html
 add_custom_target(frontend ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/frontend/dist/index.html)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/frontend)
 install(DIRECTORY launch runtime DESTINATION share/${PROJECT_NAME}
-  PATTERN "__pycache__" EXCLUDE)
+  PATTERN "__pycache__" EXCLUDE PATTERN "tests" EXCLUDE PATTERN "*.pyc" EXCLUDE)
 install(DIRECTORY backend/config backend/twin DESTINATION share/${PROJECT_NAME}/backend
   PATTERN "__pycache__" EXCLUDE PATTERN "tests" EXCLUDE)
 install(FILES backend/manage.py backend/requirements.txt DESTINATION share/${PROJECT_NAME}/backend)

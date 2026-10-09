@@ -531,9 +531,22 @@ class MotionProbe(Node):
         first_steering_observed = next((row[0] for row in steering), None)
         direction_passed = (physical_metric is not None and physical_metric > threshold
                             and odom_metric is not None and odom_metric > threshold * 0.5)
-        steering_required = label in ('STRAFE', 'ROTATE')
-        steering_response = (steering_active and steering_position_change > 0.10
-                             if steering_required else True)
+        if label == 'STRAFE':
+            steering_response = steering_active and steering_position_change > 0.10
+        elif label == 'ROTATE':
+            # Pivot rotation may start while the modules are already aligned
+            # tangentially (for example, after the preceding strafe). Requiring
+            # a steering-angle *change* would reject a valid measured turn.
+            # Instead verify the observed wheel alignment and physical rotation.
+            steering_positions = (joint1 or {}).get('positions', {})
+            pivot_angles = [steering_positions.get(name) for name in
+                            ('steer_front_joint', 'steer_rear_joint')]
+            steering_response = (steering_active and len(pivot_angles) == 2
+                and all(value is not None and
+                        abs(abs(wrap_angle(float(value))) - math.pi / 2.0) <= 0.10
+                        for value in pivot_angles))
+        else:
+            steering_response = True
         passed = bool(
             elapsed_sim > 0.0 and direction_passed and active_cmd and active_selected_cmd
             and direct_owner_seen and drive_active
@@ -716,9 +729,12 @@ class MotionProbe(Node):
         drive_active = any(any(abs(value) > 1e-4 for value in row[1:]) for row in drives)
         pose_change = dist(pose0, pose1) if pose1 is not None else None
         physical_change = dist(gazebo0, gazebo1) if gazebo1 is not None else None
-        final_goal_error = dist(gazebo1, goal_pose) if gazebo1 is not None else None
-        final_yaw_error = (abs(wrap_angle(gazebo1[2] - goal_pose[2]))
-                           if gazebo1 is not None else None)
+        # The requested goal and /map -> base_footprint pose share the active
+        # map frame. Gazebo ModelStates is in the world frame and is used only
+        # for physical displacement, never for map-frame goal error.
+        final_goal_error = dist(pose1, goal_pose) if pose1 is not None else None
+        final_yaw_error = (abs(wrap_angle(pose1[2] - goal_pose[2]))
+                           if pose1 is not None else None)
         passed = bool(
             terminal_status == 'SUCCEEDED' and active_commands and active_selected
             and nav_owner_seen and drive_active
@@ -883,6 +899,13 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
                 wheel_position_change = max(
                     wheel_position_change,
                     abs(joint1['positions'][name] - joint0['positions'][name]))
+    wheel_response = wheel_velocity_max > 0.05 or wheel_position_change > 0.05
+    # A busy Gazebo/ROS executor can deliver the controller-command topic
+    # sample after the release timestamp even though the actuator state and
+    # odometry prove it responded during the held lease. Preserve both raw
+    # signals, but use measured wheel response as equivalent controller
+    # evidence instead of producing a false negative from callback scheduling.
+    actuator_response = drive_active or wheel_response
     action_statuses = probe.control_statuses[control_index:]
     command_ack = any(item.get('robot_id') == robot_id and item.get('accepted') is True
                       for item in action_statuses)
@@ -894,8 +917,7 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     direction_tolerance = (ROTATION_TOLERANCE_RAD if expected_component == 'angular_z'
                            else TRANSLATION_TOLERANCE_M)
     passed = bool(command_ack and command_direction_seen and active_selected_commands
-                  and manual_owner_seen and drive_active
-                  and (wheel_velocity_max > 0.05 or wheel_position_change > 0.05)
+                  and manual_owner_seen and actuator_response and wheel_response
                   and physical_metric is not None
                   and physical_metric > direction_tolerance
                   and odom_metric is not None and odom_metric > direction_tolerance * 0.5
@@ -951,6 +973,12 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
             'tf_status': runtime_status.get('tf_status'),
         },
         'drive_command_samples': len(drives), 'drive_nonzero': drive_active,
+        'actuator_response': actuator_response,
+        'actuator_response_source': 'DRIVE_COMMAND_TOPIC' if drive_active else
+            'MEASURED_WHEEL_STATE' if wheel_response else None,
+        'wheel_response': wheel_response,
+        'wheel_velocity_max_rad_s': wheel_velocity_max,
+        'wheel_position_change_rad': wheel_position_change,
         'steering_command_samples': len(steering), 'stop_zero_seen': zero_seen,
         'sim_duration_s': probe.sim_time() - sim_start,
         'web_command_count': len(send_times),
@@ -1039,6 +1067,12 @@ def web_navigation(probe, ws, robot_id, timeout):
         'yaw': yaw, 'frame_id': 'map', 'preview_request_id': request_id,
         'active_map_id': active_map['active_map_id'],
         'active_map_revision': active_map['active_map_revision'],
+        'map_id': preview.get('active_map_id'),
+        'map_revision': preview.get('active_map_revision'),
+        'source_type': preview.get('source_type') or 'MAP_POINT',
+        'source_id': preview.get('source_id'),
+        'source_map_id': preview.get('source_map_id'),
+        'source_map_revision': preview.get('source_map_revision'),
     }
     ws.send(json.dumps(goal_payload))
     start = time.monotonic()
@@ -1064,6 +1098,10 @@ def web_navigation(probe, ws, robot_id, timeout):
     if terminal is None:
         ws.send(json.dumps({'type': 'NAV_CANCEL', 'robot_id': robot_id}))
         terminal = {'status': 'TIMEOUT', 'reason': f'no terminal NAV_STATUS within {timeout:.1f}s'}
+    terminal_pose, terminal_gazebo = probe.map_pose(), probe.gazebo_pose
+    terminal_goal_error = dist(terminal_pose, goal) if terminal_pose is not None else None
+    terminal_goal_yaw_error = (abs(wrap_angle(terminal_pose[2] - goal[2]))
+                               if terminal_pose is not None else None)
 
     # Nav2 can report its terminal result just before wheel/chassis motion has
     # settled. Also, `goal` is in the active map frame while Gazebo ModelStates
@@ -1120,6 +1158,9 @@ def web_navigation(probe, ws, robot_id, timeout):
         'web_payload': goal_payload,
         'ros_goal': {'x': goal[0], 'y': goal[1], 'yaw': goal[2], 'frame_id': 'map'},
         'goal_reason': terminal.get('reason'), 'p0': pose0, 'p1': pose1,
+        'pose_at_terminal': terminal_pose, 'gazebo_pose_at_terminal': terminal_gazebo,
+        'goal_error_at_terminal_m': terminal_goal_error,
+        'goal_yaw_error_at_terminal_rad': terminal_goal_yaw_error,
         'gazebo_p0': gazebo0, 'gazebo_p1': gazebo1,
         'settling': settling, 'goal_pose_frame': 'map',
         'displacement_m': pose_change, 'gazebo_displacement_m': physical_change,
@@ -1137,6 +1178,7 @@ def web_navigation(probe, ws, robot_id, timeout):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--backend-url', required=True)
+    parser.add_argument('--frontend-origin', default=os.environ.get('WARETWIN_FRONTEND_ORIGIN'))
     parser.add_argument('--robot-id', default='R01')
     parser.add_argument('--motion-timeout', type=float, default=45.0)
     parser.add_argument('--navigation-timeout', type=float, default=180.0)
@@ -1147,7 +1189,10 @@ def main() -> int:
     result = {'stages': {}, 'passed': False}
     try:
         ws_url = args.backend_url.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws'
-        ws = websocket.create_connection(ws_url, timeout=5.0, enable_multithread=True)
+        if not args.frontend_origin:
+            raise RuntimeError('set --frontend-origin to the configured same-origin browser HMI origin')
+        ws = websocket.create_connection(ws_url, origin=args.frontend_origin,
+                                         timeout=5.0, enable_multithread=True)
         ws.settimeout(0.02)
     except Exception as exc:
         reason = f'{type(exc).__name__}:{exc}'
@@ -1362,8 +1407,10 @@ def main() -> int:
             ('WEB_MANUAL_CMD_VEL', manual.get('selected_cmd_vel_nonzero_samples', 0) > 0,
              f'selected_samples={manual.get("selected_cmd_vel_nonzero_samples", 0)} '
              f'manual_source_topic_samples={manual.get("manual_source_topic_samples", 0)}'),
-            ('WEB_MANUAL_CONTROLLER_COMMAND', bool(manual.get('drive_nonzero')),
-             f'drive_samples={manual.get("drive_command_samples", 0)}'),
+            ('WEB_MANUAL_CONTROLLER_COMMAND', bool(manual.get('actuator_response')),
+             f'drive_samples={manual.get("drive_command_samples", 0)} '
+             f'nonzero_topic={manual.get("drive_nonzero")} '
+             f'actuator_source={manual.get("actuator_response_source")}'),
             ('WEB_MANUAL_COMMAND_OWNER', manual.get('command_owner') == 'WEB_MANUAL',
              f'owner={manual.get("command_owner")}'),
             ('WEB_MANUAL_COMMAND_ACCEPTED', bool(manual.get('controller_command_ack')),

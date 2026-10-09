@@ -25,6 +25,7 @@ from .sim.whatif import run_whatif
 from .conveyor_plc import PLCSimulator
 from .coordinates import ros_pose_to_waretwin, ros_twist_to_waretwin, validated_canonical_pose
 from .control_timing import profile_async, profile_sync
+from .manual_ownership import MANUAL_OWNER_TTL_S, acquire as acquire_manual_owner, refresh as refresh_manual_owner, release as release_manual_owner
 from .navigation_targets import plan_registered_tag_route
 from .map_registration import (
     GAZEBO_REGISTRATION_SOURCE,
@@ -115,6 +116,7 @@ class TwinRuntime:
         self.loop_errors = 0
         self.last_error: str | None = None
         self._task: asyncio.Task | None = None
+        self.manual_owners: dict[str, dict[str, Any]] = {}
         self._whatif_lock = asyncio.Lock()
         self.channel_layer = None
         self.ros_bridge_connected = False
@@ -762,6 +764,7 @@ class TwinRuntime:
     async def bridge_disconnected(self, robot_id: str | None = None) -> None:
         if robot_id:
             rid = str(robot_id)
+            self.manual_owners.pop(rid, None)
             self.connected_robot_ids.discard(rid)
             self.robot_command_diagnostics.pop(rid, None)
             self.command_ownership.pop(rid, None)
@@ -771,6 +774,7 @@ class TwinRuntime:
             self.robot_navigation_maps.pop(rid, None)
             self._aggregate_robot_map_sync()
         else:
+            self.manual_owners.clear()
             self.connected_robot_ids.clear()
             self.robot_command_diagnostics.clear()
             self.command_ownership.clear()
@@ -1926,6 +1930,12 @@ class TwinRuntime:
                 for name, state in lifecycle_states.items()
                 if isinstance(name, str) and isinstance(state, str)
             } if isinstance(lifecycle_states, dict) else {})
+        lifecycle_details = values.get('nav2_lifecycle_state_details')
+        self.ros_diagnostics['nav2_lifecycle_state_details'] = ({
+                str(name): dict(detail)
+                for name, detail in lifecycle_details.items()
+                if isinstance(name, str) and isinstance(detail, dict)
+            } if isinstance(lifecycle_details, dict) else {})
         for key in ('nav2_lifecycle_blocker_code', 'nav2_lifecycle_blocker_reason'):
             value = values.get(key)
             self.ros_diagnostics[key] = str(value) if value is not None else None
@@ -2244,6 +2254,36 @@ class TwinRuntime:
             await self.broadcast_full()
         elif t == 'SELECT_ROBOT':
             return
+        elif t == 'MANUAL_ACQUIRE':
+            if not self.is_external or not self.robot_bridge_online(msg.robot_id):
+                await consumer.send_json({'type': 'ERROR', 'code': 'CONTROL_UNAVAILABLE',
+                    'message': 'manual ownership requires an online ROS bridge'})
+                return
+            now = time.monotonic()
+            diagnostics = self.robot_command_diagnostics.get(msg.robot_id, {})
+            diagnostics_fresh = (now - float(diagnostics.get('received_monotonic', 0.0))
+                                 <= float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0)))
+            mode_request = getattr(self, 'control_mode_requests', {}).get(msg.robot_id, {})
+            if (not diagnostics_fresh
+                    or str(diagnostics.get('active_control_mode') or '').upper() != 'MANUAL'
+                    or diagnostics.get('estop_active') is not False
+                    or mode_request.get('mode_transition_state') == 'REQUESTED'):
+                await consumer.send_json({'type': 'ERROR', 'code': 'MANUAL_CONTROL_NOT_READY',
+                    'message': 'wait for fresh applied MANUAL mode and confirmed clear E-STOP before acquiring control'})
+                return
+            operator = getattr(consumer, 'scope', {}).get('waretwin_operator') or {}
+            accepted, code = acquire_manual_owner(
+                self.manual_owners, robot_id=msg.robot_id, channel_name=consumer.channel_name,
+                lease_id=msg.lease_id, identity=str(operator.get('identity') or 'local-loopback'),
+                now=now, ttl=MANUAL_OWNER_TTL_S)
+            if not accepted:
+                await consumer.send_json({'type': 'ERROR', 'code': code,
+                    'message': 'another operator currently owns manual control for this robot'})
+                return
+            log.info('manual control lease acquired identity=%s robot=%s',
+                     operator.get('identity', 'local-loopback'), msg.robot_id)
+            await consumer.send_json({'type': 'MANUAL_OWNERSHIP', 'robot_id': msg.robot_id,
+                'accepted': True, 'lease_id': msg.lease_id, 'expires_in_s': MANUAL_OWNER_TTL_S})
         elif t == 'ROBOT_MODE':
             if (msg.robot_id in self.local_map_transitions
                     and msg.mode != 'MANUAL'):
@@ -2274,6 +2314,10 @@ class TwinRuntime:
                 'applied_mode': eng.state['robots'].get(msg.robot_id, {}).get('control_mode'),
                 'mode_transition_state': 'REQUESTED',
             }
+            # A mode transition is a safety barrier. The bridge also clears ROS
+            # sources on the mode topic; revoke the browser lease so stale
+            # refresh frames cannot reacquire it after a later mode switch.
+            self.manual_owners.pop(msg.robot_id, None)
             result = await self.gateway().send_command(
                 msg.robot_id, 'CONTROL_MODE', {'mode': msg.mode, 'request_id': request_id})
             if msg.mode == 'MANUAL' and result.get('ok'):
@@ -2305,12 +2349,30 @@ class TwinRuntime:
                     'message': f'ROS bridge for {msg.robot_id} is offline; manual command was not sent',
                 })
                 return
-            if not hasattr(self, 'manual_owners'):
-                self.manual_owners = {}
-            if msg.action != 'STOP':
-                self.manual_owners[msg.robot_id] = consumer.channel_name
+            if msg.action == 'STOP':
+                # STOP is a safe, priority release; it never grants authority
+                # and invalidates any previous lease before reaching ROS.
+                release_manual_owner(self.manual_owners, robot_id=msg.robot_id,
+                                     channel_name=getattr(consumer, 'channel_name', ''), require_owner=False)
             else:
-                self.manual_owners.pop(msg.robot_id, None)
+                now = time.monotonic()
+                lease_id = str(msg.lease_id or '')
+                accepted, code = refresh_manual_owner(
+                    self.manual_owners, robot_id=msg.robot_id,
+                    channel_name=consumer.channel_name, lease_id=lease_id, now=now)
+                diagnostics = self.robot_command_diagnostics.get(msg.robot_id, {})
+                diagnostics_fresh = (now - float(diagnostics.get('received_monotonic', 0.0))
+                                     <= float(getattr(settings, 'WARETWIN_ROS_HEARTBEAT_TIMEOUT_S', 3.0)))
+                mode_request = getattr(self, 'control_mode_requests', {}).get(msg.robot_id, {})
+                if (not diagnostics_fresh
+                        or str(diagnostics.get('active_control_mode') or '').upper() != 'MANUAL'
+                        or diagnostics.get('estop_active') is not False
+                        or mode_request.get('mode_transition_state') == 'REQUESTED'):
+                    accepted, code = False, 'MANUAL_CONTROL_NOT_READY'
+                if not accepted:
+                    await consumer.send_json({'type': 'ERROR', 'code': code,
+                        'message': 'manual command rejected: ownership, mode, E-STOP, or telemetry is not safe'})
+                    return
             manual_payload = {'action': msg.action}
             if msg.sequence_id is not None:
                 manual_payload['sequence_id'] = msg.sequence_id

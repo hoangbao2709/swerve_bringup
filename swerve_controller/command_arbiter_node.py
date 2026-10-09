@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import json
+import signal
 import time
 
 import rclpy
@@ -179,7 +180,17 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        node.selected_pub.publish(Twist())
+        # A repeated launch SIGINT must not interrupt the final zero and node
+        # cleanup after the executor has already stopped.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        # The launch SIGINT handler may already have invalidated the context.
+        # Publish a final zero only while ROS can still deliver it.
+        if rclpy.ok():
+            try:
+                node.selected_pub.publish(Twist())
+            except RuntimeError:
+                if rclpy.ok():
+                    raise
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

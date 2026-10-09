@@ -161,7 +161,7 @@ backend_python() {
   # metadata. Keep backend dependency checks/install isolated and repeatable.
   env -u PYTHONPATH -u AMENT_PREFIX_PATH -u COLCON_PREFIX_PATH .venv/bin/python "$@"
 }
-if ! backend_python -c 'import django, channels, daphne, dotenv, pydantic, websocket, wsaccel, openpyxl, pytest, yaml' >/dev/null 2>&1 \
+if ! backend_python -c 'import django, channels, uvicorn, websockets, dotenv, pydantic, websocket, wsaccel, openpyxl, pytest, yaml' >/dev/null 2>&1 \
    || ! backend_python -m pip check >/dev/null 2>&1; then
   backend_python -m pip install --disable-pip-version-check -r requirements-dev.txt
 else

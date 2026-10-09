@@ -1,0 +1,84 @@
+name: WareTwin quality gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-22.04
+    env:
+      WARETWIN_RUNTIME_DIR: ${{ runner.temp }}/waretwin-runtime
+      WARETWIN_DATABASE_PATH: ${{ runner.temp }}/waretwin-runtime/test.sqlite3
+      WARETWIN_LOG_DIR: ${{ runner.temp }}/waretwin-runtime/logs
+      WARETWIN_ARTIFACT_ROOT: ${{ runner.temp }}/waretwin-maps
+      WARETWIN_OPERATOR_AUTH_MODE: LOCAL_LOOPBACK
+      WARETWIN_OPERATOR_ALLOWED_ORIGINS: http://127.0.0.1:5173
+      CORS_ALLOWED_ORIGINS: http://127.0.0.1:5173
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install backend test dependencies
+        run: python -m pip install -r waretwin/backend/requirements-dev.txt
+      - name: Audit pinned runtime dependencies
+        run: |
+          python -m pip install pip-audit
+          pip-audit -r waretwin/runtime/requirements.lock
+      - name: Check backend and run tests against an isolated database
+        working-directory: waretwin/backend
+        run: |
+          python manage.py check
+          python manage.py test --verbosity 1
+          python -m compileall -q config twin
+
+  frontend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: waretwin/frontend/package-lock.json
+      - name: Install locked frontend dependencies
+        working-directory: waretwin/frontend
+        run: npm ci --no-audit --no-fund
+      - name: Run frontend tests and production build
+        working-directory: waretwin/frontend
+        run: |
+          npm audit --audit-level=high
+          npm test -- --run
+          npm run build
+
+  ros-packages:
+    runs-on: ubuntu-22.04
+    container: ros:humble-ros-base
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: waretwin/frontend/package-lock.json
+      - name: Install Colcon and declared ROS dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3-colcon-common-extensions python3-rosdep
+          rosdep update
+          rosdep install --from-paths . swerve_bridge waretwin --ignore-src --rosdistro humble -r -y
+      - name: Build all nested ROS packages without symlinks
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --base-paths . swerve_bridge waretwin \
+            --packages-select swerve_bringup swerve_bridge waretwin_web \
+            --build-base "$RUNNER_TEMP/build" \
+            --install-base "$RUNNER_TEMP/install" \
+            --log-base "$RUNNER_TEMP/colcon-log"
+          python3 scripts/check_waretwin_release_artifacts.py "$RUNNER_TEMP/install/waretwin_web/share/waretwin_web"

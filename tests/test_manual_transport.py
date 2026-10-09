@@ -41,17 +41,21 @@ def test_refresh_is_independent_of_slow_probe_and_stop_is_final():
     sender.stop()
     count = len(sent)
     time.sleep(.05)
-    assert len(sent) == count and sent[-1]['action'] == 'STOP'
+    manual = [row for row in sent if row.get('type') == 'ROBOT_MANUAL']
+    assert len(sent) == count and manual[-1]['action'] == 'STOP'
     sender.close()
-    assert len([row for row in sent if row['action'] == 'FORWARD']) >= 5
-    assert [r['sequence_id'] for r in sent] == list(range(1, len(sent) + 1))
+    forward = [row for row in manual if row['action'] == 'FORWARD']
+    assert len(forward) >= 5
+    assert [r['sequence_id'] for r in manual] == list(range(1, len(manual) + 1))
+    acquisition = next(row for row in sent if row.get('type') == 'MANUAL_ACQUIRE')
+    assert acquisition['lease_id'] == forward[0]['lease_id'] == manual[-1]['lease_id']
     assert not sender.thread.is_alive()
 
 
 def test_refresh_period_does_not_add_network_duration_or_queue_old_ticks():
     starts = []
     def send(message):
-        if message['action'] != 'STOP':
+        if message.get('type') == 'ROBOT_MANUAL' and message['action'] != 'STOP':
             starts.append(time.monotonic())
             time.sleep(.03)
     sender = ManualRefreshWorker(send, 'R01', .06).start()
@@ -69,7 +73,7 @@ def test_stop_invalidates_blocked_old_send_before_wire_stop():
     entered, release = threading.Event(), threading.Event()
     sent = []
     def send(message):
-        if message['action'] == 'FORWARD':
+        if message.get('type') == 'ROBOT_MANUAL' and message['action'] == 'FORWARD':
             entered.set()
             assert release.wait(2)
         sent.append(message)
@@ -82,7 +86,9 @@ def test_stop_invalidates_blocked_old_send_before_wire_stop():
     release.set()
     stopper.join(1)
     sender.close()
-    assert [r['action'] for r in sent] == ['FORWARD', 'STOP', 'STOP']
+    manual = [r for r in sent if r.get('type') == 'ROBOT_MANUAL']
+    assert [r['action'] for r in manual] == ['FORWARD', 'STOP', 'STOP']
+    assert sent[0]['type'] == 'MANUAL_ACQUIRE'
 
 
 def test_outbound_is_latest_only_and_critical_is_fifo_priority():

@@ -21,11 +21,34 @@ set -u
 # The bridge is intentionally kept under swerve_bridge/. Colcon stops normal
 # discovery at the top-level swerve_bringup package, so both base paths are
 # explicit here, including the nested web package.
-colcon build \
+LOG_BASE_ARGS=()
+BUILD_ARGS=()
+while (($#)); do
+  case "$1" in
+    --log-base)
+      if (($# < 2)); then
+        echo "--log-base requires a directory" >&2
+        exit 2
+      fi
+      LOG_BASE_ARGS=(--log-base "$2")
+      shift 2
+      ;;
+    --log-base=*)
+      LOG_BASE_ARGS=("$1")
+      shift
+      ;;
+    *)
+      BUILD_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+colcon "${LOG_BASE_ARGS[@]}" build \
   --cmake-clean-cache \
   --base-paths . swerve_bridge waretwin \
   --packages-select swerve_bringup swerve_bridge waretwin_web \
-  --event-handlers console_direct+ "$@"
+  --event-handlers console_direct+ "${BUILD_ARGS[@]}"
 
 echo
 echo "Build complete. In a ROS terminal run: source $ROOT_DIR/scripts/ros_env.sh"

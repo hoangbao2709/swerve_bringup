@@ -2,6 +2,7 @@
 """Encoder-based odometry for the two-module swerve base."""
 
 import math
+import signal
 from typing import Dict, Optional
 
 import rclpy
@@ -218,6 +219,7 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

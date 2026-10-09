@@ -159,6 +159,9 @@ def run_case(args, case_name: str, case_dir: str) -> dict:
         runtime_path = os.path.join(ROOT, '.runtime', 'stack.env')
         backend_url = (read_simple_env(runtime_path, 'BACKEND_URL')
                        or f"http://127.0.0.1:{read_simple_env(runtime_path, 'BACKEND_PORT') or '8000'}")
+        frontend_origin = read_simple_env(runtime_path, 'FRONTEND_URL')
+        if frontend_origin:
+            ros_env['WARETWIN_FRONTEND_ORIGIN'] = frontend_origin
         result['backend_url'] = backend_url
         result['ros_environment'] = {
             key: (ros_env.get(key) or '<unset>') for key in (
@@ -252,6 +255,8 @@ def run_case(args, case_name: str, case_dir: str) -> dict:
                 '--navigation-timeout', str(args.navigation_timeout),
                 '--json', e2e_json,
             ]
+            if frontend_origin:
+                e2e_cmd.extend(['--frontend-origin', frontend_origin])
             e2e = subprocess.run(
                 e2e_cmd, cwd=ROOT, env=ros_env, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True,

@@ -90,8 +90,11 @@ requested_twists={'FORWARD':[linear,0.,0.],'BACKWARD':[-linear,0.,0.],
  'ROTATE_LEFT':[0.,0.,angular],'ROTATE_RIGHT':[0.,0.,-angular]}
 if os.environ.get('ACCEPTANCE_MANUAL_PROCESS') == '1':
  from manual_refresh_process import ProcessManualRefreshWorker
+ origin=os.environ.get('WARETWIN_FRONTEND_ORIGIN') or next((value.strip() for value in
+  os.environ.get('WARETWIN_OPERATOR_ALLOWED_ORIGINS',os.environ.get('CORS_ALLOWED_ORIGINS','')).split(',')
+  if value.strip()),None)
  sender=ProcessManualRefreshWorker(backend.replace('http://','ws://')+'/ws',
-  'R01', on_message=lambda message:record('client',message)).start()
+  'R01', on_message=lambda message:record('client',message),origin=origin).start()
 else:
  sender=ManualRefreshWorker(lambda message:(record('client',message),ws.send(json.dumps(message))), 'R01').start()
 def command(action):

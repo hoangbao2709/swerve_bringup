@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import signal
 import threading
 import time
 
@@ -265,6 +266,7 @@ def main(args=None):
     try: executor.spin()
     except KeyboardInterrupt: pass
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         executor.shutdown(); node.destroy_node()
         if rclpy.ok(): rclpy.shutdown()
 

@@ -437,6 +437,9 @@ def local_runtime_mode(request, robot_id: str):
     state = adapter.get_mode_status(robot_id)
     if state.get('status') in ('STARTING', 'REQUESTED', 'RESTARTING', 'ROLLING_BACK'):
         return _error('a runtime mode transition is already in progress', 409)
+    # A runtime restart/map-mode change invalidates any browser lease. A
+    # still-held old WebSocket must reacquire explicitly after the transition.
+    getattr(runtime, 'manual_owners', {}).pop(robot_id, None)
     result = adapter.request_mode_change(robot_id, target)
     if not result.get('ok'):
         return _error(str(result.get('message') or 'runtime adapter rejected the transition'),

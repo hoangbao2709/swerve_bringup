@@ -4,6 +4,7 @@ import json
 import hashlib
 import math
 import queue
+import signal
 from .control_mailbox import ControlMailbox
 from .outbound_mailbox import OutboundMailbox
 from .visualization_worker import VisualizationWorker
@@ -284,6 +285,7 @@ class SwerveBridge(Node):
         self.active_pose_context = None
         self.path_preview_goals = {}
         self.active_vda_order = None
+        self._vda_latest_order_update_ids = {}
         self.slam_paused = False
         self.slam_mapping_elapsed_s = 0.0
         self.slam_mapping_started_monotonic = time.monotonic() if self.runtime_state in ('MAPPING', 'UNIFIED') else None
@@ -1339,8 +1341,10 @@ class SwerveBridge(Node):
             return
         self.cmd_pub.publish(self.manual_twist)
 
-    def _robot_is_stopped(self):
-        if self.latest_odom is None:
+    def _robot_is_stopped(self, max_age_s=1.0):
+        odom_at = getattr(self, 'last_odom_monotonic', None)
+        if (self.latest_odom is None or odom_at is None
+                or time.monotonic() - odom_at > max_age_s):
             return False
         twist = self.latest_odom.twist.twist
         values = (twist.linear.x, twist.linear.y, twist.angular.z)
@@ -2026,6 +2030,7 @@ class SwerveBridge(Node):
             'nav2_actions_ready': nav2_actions_ready,
             'nav2_lifecycle_ready': nav2_lifecycle['ready'],
             'nav2_lifecycle_states': nav2_lifecycle['states'],
+            'nav2_lifecycle_state_details': nav2_lifecycle['state_details'],
             'nav2_lifecycle_blocker_code': nav2_lifecycle['blocker_code'],
             'nav2_lifecycle_blocker_reason': nav2_lifecycle['blocker_reason'],
             'tf': tf,
@@ -2125,24 +2130,43 @@ class SwerveBridge(Node):
         cache = getattr(self, 'nav2_lifecycle_states', {})
         now = time.monotonic()
         labels = {}
+        state_details = {}
         not_active = []
         for name in required:
             sample = cache.get(name)
+            error = None
+            state_id = None
+            age_s = None
             if isinstance(sample, str):
                 label = sample.strip().lower()
             elif isinstance(sample, dict):
                 label = str(sample.get('label') or 'unknown').strip().lower()
                 updated = sample.get('updated_monotonic')
-                if (updated is None or now - float(updated) > NAV2_LIFECYCLE_STATE_MAX_AGE_S
-                        or now < float(updated)):
+                state_id = sample.get('id')
+                error = sample.get('error')
+                if updated is not None:
+                    try:
+                        age_s = now - float(updated)
+                    except (TypeError, ValueError):
+                        age_s = None
+                if (age_s is None or age_s > NAV2_LIFECYCLE_STATE_MAX_AGE_S or age_s < 0):
+                    error = error or 'lifecycle_state_sample_stale'
                     label = 'unknown'
             else:
                 label = 'unknown'
+                error = 'lifecycle_state_not_observed'
             if label not in ('active', 'inactive', 'unconfigured', 'finalized',
                              'configuring', 'activating', 'deactivating', 'errorprocessing',
                              'cleaningup', 'shuttingdown'):
                 label = 'unknown'
+                error = error or 'lifecycle_state_label_unrecognized'
             labels[name] = label
+            state_details[name] = {
+                'label': label,
+                'id': state_id,
+                'age_s': round(age_s, 3) if age_s is not None and math.isfinite(age_s) else None,
+                'error': str(error)[:240] if error else None,
+            }
             if label != 'active':
                 not_active.append(name)
 
@@ -2156,11 +2180,16 @@ class SwerveBridge(Node):
                       f'{getattr(self, "runtime_state", "UNKNOWN")}.')
         else:
             code = 'NAV2_LIFECYCLE_NOT_ACTIVE'
-            details = ', '.join(f'/{name}={labels[name]}' for name in not_active)
+            details = ', '.join(
+                f'/{name}={labels[name]}' + (
+                    f'({state_details[name]["error"]})'
+                    if state_details[name].get('error') else '')
+                for name in not_active)
             reason = f'Required Nav2 lifecycle node(s) must be ACTIVE: {details}.'
         return {
             'ready': ready,
             'states': labels,
+            'state_details': state_details,
             'blocker_code': code,
             'blocker_reason': reason,
         }
@@ -3457,6 +3486,13 @@ class SwerveBridge(Node):
             return {'ok': False, 'code': 'CLEAR_ESTOP_REJECTED_GOAL_PENDING',
                     'emergency_stop_active': True, 'pre_stop_navigation_terminal': False,
                     'message': message}
+        if not self._robot_is_stopped():
+            self.cmd_pub.publish(Twist())
+            message = 'E-STOP remains active until fresh odometry confirms the robot is stopped'
+            self.send_nav_status({'robot_id': self.robot_id}, 'EMERGENCY_STOPPED', message)
+            return {'ok': False, 'code': 'CLEAR_ESTOP_REJECTED_ROBOT_NOT_STOPPED',
+                    'emergency_stop_active': True, 'pre_stop_navigation_terminal': True,
+                    'message': message}
         self.emergency_stop_active = False
         self.estop_pub.publish(Bool(data=False))
         self.pending_cancel_state = None
@@ -4327,17 +4363,19 @@ class SwerveBridge(Node):
             self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
                        'status': 'REJECTED', 'reason': 'order payload must be an object'})
             return
-        order_id = str(order.get('orderId') or '')
-        try:
-            update_id = int(order.get('orderUpdateId', 0))
-            raw_nodes = order.get('nodes')
-        except (TypeError, ValueError):
-            raw_nodes = None
-            update_id = -1
-        if (not order_id or len(order_id) > 128 or update_id < 0
+        order_id = order.get('orderId')
+        update_id = order.get('orderUpdateId')
+        raw_nodes = order.get('nodes')
+        if (not isinstance(order_id, str) or not order_id.strip() or len(order_id) > 128
+                or type(update_id) is not int or not 0 <= update_id <= 9_223_372_036_854_775_807
                 or not isinstance(raw_nodes, list) or not raw_nodes or len(raw_nodes) > 200):
             self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
                        'status': 'REJECTED', 'reason': 'orderId, orderUpdateId, or nodes are invalid'})
+            return
+        if self.runtime_state not in ('NAVIGATION', 'UNIFIED'):
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': 'fleet orders require NAVIGATION or UNIFIED runtime mode'})
             return
         if self.control_mode != 'AUTONOMOUS' or self.emergency_stop_active:
             self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
@@ -4359,6 +4397,25 @@ class SwerveBridge(Node):
                        'status': 'REJECTED', 'order_id': order_id,
                        'reason': f'fleet orders are blocked while map synchronization is {self.map_sync_status}'})
             return
+        active_map = self.active_map_identity()
+        if not active_map.get('active_map_id') or not active_map.get('active_map_revision'):
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': 'fleet orders require a confirmed active map identity and revision'})
+            return
+        if self.runtime_state == 'UNIFIED':
+            navigation_map = self.navigation_map_status
+            if (navigation_map.get('ready') is not True
+                    or str(navigation_map.get('active_map_id') or '') != str(active_map['active_map_id'])
+                    or str(navigation_map.get('active_map_revision') or '') != str(active_map['active_map_revision'])
+                    or str(navigation_map.get('canonical_map_revision') or '')
+                        != str(active_map.get('canonical_map_revision') or '')
+                    or not isinstance(self.navigation_grid_occupancy, dict)
+                    or self.navigation_grid_occupancy.get('ready') is not True):
+                self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                           'status': 'REJECTED', 'order_id': order_id,
+                           'reason': 'fleet orders are blocked while canonical navigation-map identity is unconfirmed'})
+                return
         if self.active_vda_order or self.active_pose_goal or self.active_goal or self.goal_request_pending:
             self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
                        'status': 'REJECTED', 'order_id': order_id,
@@ -4391,13 +4448,51 @@ class SwerveBridge(Node):
                        'status': 'REJECTED', 'order_id': order_id,
                        'reason': 'order has no released map-frame navigation node'})
             return
+        if self.runtime_state == 'UNIFIED':
+            for target in targets:
+                try:
+                    coverage_error = validate_target_coverage(
+                        self.navigation_grid_occupancy, x=target['x'], y=target['y'])
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    coverage_error = {'code': 'NAVIGATION_MAP_INVALID', 'reason': str(exc)}
+                if coverage_error:
+                    self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                               'status': 'REJECTED', 'order_id': order_id,
+                               'reason': f"{coverage_error.get('code', 'NAVIGATION_MAP_INVALID')}: "
+                                         f"{json.dumps(coverage_error, sort_keys=True)}"})
+                    return
+        lifecycle = self.nav2_lifecycle_status()
+        if not lifecycle.get('ready') or not self.nav_pose_client.server_is_ready():
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': 'Nav2 lifecycle or NavigateToPose action server is not ready'})
+            return
         try:
             pose, _frame = self._lookup_robot_pose()
+            if not all(math.isfinite(float(pose[key])) for key in ('x', 'y', 'yaw')):
+                raise TransformException('active map pose is non-finite')
             first = targets[0]
-            if math.hypot(pose[0] - first['x'], pose[1] - first['y']) <= first['allowed_deviation_xy']:
+            if math.hypot(float(pose['x']) - first['x'],
+                          float(pose['y']) - first['y']) <= first['allowed_deviation_xy']:
                 targets.pop(0)
-        except TransformException:
-            pass
+        except (TransformException, KeyError, TypeError, ValueError) as exc:
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'reason': f'LOCALIZATION_NOT_READY: fresh map-to-base TF is required ({exc})'})
+            return
+        latest_updates = getattr(self, '_vda_latest_order_update_ids', None)
+        if not isinstance(latest_updates, dict):
+            latest_updates = {}
+            self._vda_latest_order_update_ids = latest_updates
+        if update_id <= latest_updates.get(order_id, -1):
+            self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
+                       'status': 'REJECTED', 'order_id': order_id,
+                       'order_update_id': update_id,
+                       'reason': 'duplicate or stale orderUpdateId was rejected'})
+            return
+        latest_updates[order_id] = update_id
+        while len(latest_updates) > 512:
+            latest_updates.pop(next(iter(latest_updates)))
         if not targets:
             self.send({'type': 'VDA5050_RUNTIME_STATUS', 'robot_id': self.robot_id,
                        'status': 'FINISHED', 'order_id': order_id, 'order_update_id': update_id})
@@ -4642,7 +4737,22 @@ def main(args=None):
     node = SwerveBridge()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        # ros2 launch delivers SIGINT to owned nodes for orderly shutdown.
+        # Let the finally block close worker threads and the bridge socket.
+        pass
+    except RuntimeError as exc:
+        # In Humble the default SIGINT handler can invalidate the context
+        # while the executor is converting a just-taken subscription sample.
+        # Treat only that known shutdown race as normal; surface every runtime
+        # failure that occurs while the context is still active.
+        if rclpy.ok() or 'Unable to convert call argument to Python object' not in str(exc):
+            raise
     finally:
+        # ros2 launch may forward a second SIGINT while this process is
+        # already unwinding a subscription callback. Ignore duplicate Ctrl-C
+        # during deterministic worker/socket/node cleanup.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.destroy_node()
         # Ctrl-C can already have shut down the default context through the
         # executor. Avoid turning a normal stop into an RCLError traceback.

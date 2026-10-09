@@ -64,6 +64,9 @@ def _nav_safety_bridge():
     bridge.pending_cancel_state = None
     bridge.pending_cancel_reason = None
     bridge.pending_replan = None
+    bridge.last_odom_monotonic = time.monotonic()
+    bridge.latest_odom = SimpleNamespace(twist=SimpleNamespace(twist=SimpleNamespace(
+        linear=SimpleNamespace(x=0.0, y=0.0), angular=SimpleNamespace(z=0.0))))
     bridge.tag_route_context = None
     bridge.tag_route_waiting_auth = None
     bridge.paused_pose_context = None
@@ -75,6 +78,94 @@ def _nav_safety_bridge():
     bridge.send_nav_status = Mock()
     bridge.now = lambda: '2026-10-03T00:00:00Z'
     return bridge
+
+
+def _vda_order_bridge(runtime_state='NAVIGATION'):
+    bridge = _nav_safety_bridge()
+    bridge.runtime_state = runtime_state
+    bridge.loaded_local_map_id = None
+    bridge.local_map_load_pending = False
+    bridge.map_sync_status = 'SYNCED'
+    bridge.active_vda_order = None
+    bridge._vda_latest_order_update_ids = {}
+    bridge.active_map_identity = Mock(return_value={
+        'active_map_id': 'CANONICAL', 'active_map_revision': 'revision-1',
+        'canonical_map_revision': 'revision-1',
+    })
+    bridge.navigation_map_status = {
+        'ready': True, 'active_map_id': 'CANONICAL',
+        'active_map_revision': 'revision-1', 'canonical_map_revision': 'revision-1',
+    }
+    bridge.navigation_grid_occupancy = {'ready': True}
+    bridge.nav2_lifecycle_status = Mock(return_value={'ready': True})
+    bridge.nav_pose_client = SimpleNamespace(server_is_ready=Mock(return_value=True))
+    bridge._lookup_robot_pose = Mock(return_value=({'x': 0.0, 'y': 0.0, 'yaw': 0.0}, 'map'))
+    bridge._navigate_vda_target = Mock()
+    return bridge
+
+
+def _vda_order(order_id='order-1', update_id=1):
+    return {'order': {
+        'orderId': order_id, 'orderUpdateId': update_id,
+        'nodes': [{
+            'released': True, 'nodeId': 'node-1', 'sequenceId': 1,
+            'nodePosition': {'mapId': 'map', 'x': 1.0, 'y': 1.0, 'theta': 0.0},
+        }],
+    }}
+
+
+def test_vda_order_rejects_when_fresh_localization_is_unavailable(monkeypatch):
+    bridge = _vda_order_bridge()
+    bridge._lookup_robot_pose = Mock(side_effect=bridge_node.TransformException('TF stale'))
+
+    bridge.accept_vda_order(_vda_order())
+
+    assert bridge.active_vda_order is None
+    assert bridge._navigate_vda_target.call_count == 0
+    assert bridge.send.call_args.args[0]['status'] == 'REJECTED'
+    assert 'LOCALIZATION_NOT_READY' in bridge.send.call_args.args[0]['reason']
+
+
+def test_vda_order_rejects_unregistered_unified_map(monkeypatch):
+    bridge = _vda_order_bridge('UNIFIED')
+    bridge.navigation_map_status['active_map_revision'] = 'stale-revision'
+
+    bridge.accept_vda_order(_vda_order())
+
+    assert bridge.active_vda_order is None
+    assert bridge._navigate_vda_target.call_count == 0
+    assert bridge.send.call_args.args[0]['status'] == 'REJECTED'
+    assert 'canonical navigation-map identity' in bridge.send.call_args.args[0]['reason']
+
+
+def test_vda_order_requires_confirmed_map_nav2_and_rejects_replay(monkeypatch):
+    monkeypatch.setattr(bridge_node, 'validate_target_coverage', lambda *_args, **_kwargs: None)
+    bridge = _vda_order_bridge('UNIFIED')
+    request = _vda_order('order-2', 3)
+
+    bridge.accept_vda_order(request)
+    assert bridge.active_vda_order['order_update_id'] == 3
+    assert bridge._navigate_vda_target.call_count == 1
+
+    bridge.active_vda_order = None
+    bridge.active_goal = None
+    bridge.active_pose_goal = None
+    bridge.goal_request_pending = False
+    bridge.accept_vda_order(request)
+    assert bridge._navigate_vda_target.call_count == 1
+    assert bridge.send.call_args.args[0]['status'] == 'REJECTED'
+    assert 'duplicate or stale' in bridge.send.call_args.args[0]['reason']
+
+
+def test_vda_order_rejects_when_nav2_is_not_ready():
+    bridge = _vda_order_bridge()
+    bridge.nav2_lifecycle_status.return_value = {'ready': False}
+
+    bridge.accept_vda_order(_vda_order())
+
+    assert bridge.active_vda_order is None
+    assert bridge._navigate_vda_target.call_count == 0
+    assert 'Nav2 lifecycle' in bridge.send.call_args.args[0]['reason']
 
 
 def _tag_route_context():
@@ -222,6 +313,29 @@ def test_nav2_readiness_fails_closed_when_bt_navigator_is_inactive():
     assert status['blocker_code'] == 'NAV2_LIFECYCLE_NOT_ACTIVE'
     assert '/bt_navigator=inactive' in status['blocker_reason']
     assert bridge.nav2_action_servers_ready() is False
+
+
+def test_nav2_readiness_fails_closed_and_reports_stale_lifecycle_probe_cause():
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'UNIFIED'
+    bridge.nav2_lifecycle_nodes = _lifecycle_nodes('UNIFIED')
+    bridge.nav2_lifecycle_states = {
+        name: {'label': 'active', 'id': 3, 'updated_monotonic': time.monotonic(), 'error': None}
+        for name in bridge.nav2_lifecycle_nodes
+    }
+    bridge.nav2_lifecycle_states['planner_server'] = {
+        'label': 'unknown', 'id': None,
+        'updated_monotonic': time.monotonic() - 3.0,
+        'error': 'TimeoutError: get_state response timed out',
+    }
+
+    status = bridge.nav2_lifecycle_status()
+
+    assert status['ready'] is False
+    assert status['states']['planner_server'] == 'unknown'
+    assert status['state_details']['planner_server']['error'] == 'TimeoutError: get_state response timed out'
+    assert status['state_details']['planner_server']['age_s'] >= 3.0
+    assert '/planner_server=unknown(TimeoutError: get_state response timed out)' in status['blocker_reason']
 
 
 def test_point_goal_is_not_dispatched_while_bt_navigator_is_inactive():
@@ -510,6 +624,23 @@ def test_estop_on_active_nav2_goal_does_not_clear_before_cancel_result():
     assert applied['code'] == 'CLEAR_ESTOP_APPLIED'
     assert not bridge.emergency_stop_active
     assert handle.cancel_goal_async.call_count == 1
+
+
+def test_estop_reset_requires_fresh_stopped_odometry():
+    bridge = _nav_safety_bridge()
+    bridge.emergency_stop({'stop_id': 'estop-moving'})
+    bridge.latest_odom.twist.twist.linear.x = 0.12
+    rejected = bridge.clear_emergency_stop({})
+    assert rejected['code'] == 'CLEAR_ESTOP_REJECTED_ROBOT_NOT_STOPPED'
+    assert rejected['emergency_stop_active'] is True
+    assert bridge.emergency_stop_active is True
+    assert all(call.args[0].data is True for call in bridge.estop_pub.publish.call_args_list)
+
+    bridge.latest_odom.twist.twist.linear.x = 0.0
+    bridge.last_odom_monotonic = time.monotonic() - 2.0
+    stale = bridge.clear_emergency_stop({})
+    assert stale['code'] == 'CLEAR_ESTOP_REJECTED_ROBOT_NOT_STOPPED'
+    assert bridge.emergency_stop_active is True
 
 
 def test_tag_route_yaw_only_motion_cannot_complete_a_translating_waypoint():

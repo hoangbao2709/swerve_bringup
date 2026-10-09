@@ -141,6 +141,32 @@ fi
 
 FRONTEND_HOST_SELECTED="${FRONTEND_HOST:-127.0.0.1}"
 BACKEND_HOST_SELECTED="${BACKEND_HOST:-127.0.0.1}"
+OPERATOR_AUTH_MODE_SELECTED="${WARETWIN_OPERATOR_AUTH_MODE:-LOCAL_LOOPBACK}"
+case "${OPERATOR_AUTH_MODE_SELECTED^^}" in
+  LOCAL_LOOPBACK|PROTECTED_LAN) OPERATOR_AUTH_MODE_SELECTED="${OPERATOR_AUTH_MODE_SELECTED^^}" ;;
+  *) echo 'WARETWIN_OPERATOR_AUTH_MODE must be LOCAL_LOOPBACK or PROTECTED_LAN' >&2; exit 2 ;;
+esac
+export WARETWIN_OPERATOR_AUTH_MODE="$OPERATOR_AUTH_MODE_SELECTED"
+if [[ "$OPERATOR_AUTH_MODE_SELECTED" == LOCAL_LOOPBACK ]]; then
+  stack_host_is_loopback "$BACKEND_HOST_SELECTED" || { echo 'LOCAL_LOOPBACK requires BACKEND_HOST to resolve only to loopback' >&2; exit 2; }
+  stack_host_is_loopback "$FRONTEND_HOST_SELECTED" || { echo 'LOCAL_LOOPBACK requires FRONTEND_HOST to resolve only to loopback' >&2; exit 2; }
+fi
+if [[ "$OPERATOR_AUTH_MODE_SELECTED" == PROTECTED_LAN ]]; then
+  if ! python3 - "$ROOT_DIR/waretwin/backend/.env" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+info = os.stat(path, follow_symlinks=False)
+raise SystemExit(0 if stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                 and not stat.S_IMODE(info.st_mode) & 0o077 else 1)
+PY
+  then
+    echo 'PROTECTED_LAN requires backend/.env to be a regular owner-only file (chmod 600)' >&2
+    exit 2
+  fi
+fi
 BACKEND_READY_TIMEOUT_S="${WARETWIN_BACKEND_READY_TIMEOUT_S:-120}"
 if ! [[ "$BACKEND_READY_TIMEOUT_S" =~ ^[0-9]+$ ]] || (( BACKEND_READY_TIMEOUT_S < 1 )); then
   echo "Invalid WARETWIN_BACKEND_READY_TIMEOUT_S=$BACKEND_READY_TIMEOUT_S; use a positive integer" >&2
@@ -150,7 +176,11 @@ BACKEND_URL="http://127.0.0.1:$BACKEND_PORT_SELECTED"
 ROS_WS_URL_SELECTED="ws://127.0.0.1:$BACKEND_PORT_SELECTED/ws/ros"
 FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT_SELECTED"
 ALLOWED_HOSTS_SELECTED="$(stack_allowed_hosts "${DJANGO_ALLOWED_HOSTS:-}")"
-CORS_SELECTED="$(stack_cors_origins "$FRONTEND_PORT_SELECTED" "${CORS_ALLOWED_ORIGINS:-}")"
+if [[ "$OPERATOR_AUTH_MODE_SELECTED" == LOCAL_LOOPBACK ]]; then
+  CORS_SELECTED="$(stack_loopback_cors_origins "$FRONTEND_PORT_SELECTED")"
+else
+  CORS_SELECTED="${WARETWIN_PUBLIC_ORIGINS:-}"
+fi
 
 umask 077
 cat > "$STACK_RUNTIME_DIR/stack.env" <<EOF
@@ -184,6 +214,10 @@ case "$FRONTEND_MODE_SELECTED" in
   development) FRONTEND_RUN_SCRIPT=dev ;;
   *) echo 'WARETWIN_FRONTEND_MODE must be production or development' >&2; exit 2 ;;
 esac
+if [[ "$OPERATOR_AUTH_MODE_SELECTED" == PROTECTED_LAN && "$FRONTEND_MODE_SELECTED" != production ]]; then
+  echo 'PROTECTED_LAN requires the installed production frontend behind the authenticated TLS reverse proxy' >&2
+  exit 2
+fi
 
 echo "Starting backend on $BACKEND_URL"
 setsid env BACKEND_HOST="$BACKEND_HOST_SELECTED" BACKEND_PORT="$BACKEND_PORT_SELECTED" \

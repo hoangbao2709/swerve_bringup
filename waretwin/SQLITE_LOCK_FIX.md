@@ -4,7 +4,7 @@ Root cause fixed:
 
 - Scheduler GET endpoints previously called `ensure_scheduler_master_data()`.
 - That function synchronized ~389 work-points and 20 robot profiles on **every GET**, turning parallel dashboard reads into concurrent SQLite writes.
-- Under Daphne/ASGI this produced `sqlite3.OperationalError: database is locked`.
+- Under concurrent ASGI requests this produced `sqlite3.OperationalError: database is locked`.
 
 Changes:
 

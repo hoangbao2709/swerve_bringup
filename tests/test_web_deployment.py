@@ -49,6 +49,7 @@ class Deployment:
     def __init__(self, root, **kwargs):
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+        self.root.chmod(0o700)
         self.backend = str(kwargs.pop('backend_port', free_port()))
         self.frontend = str(free_port())
         self.args = dict(runtime_dir=str(root), backend_port=self.backend, frontend_port=self.frontend,
@@ -72,7 +73,7 @@ class Deployment:
             if self.process.poll() is not None:
                 raise AssertionError((self.root / 'launch.log').read_text())
             status = json.loads((self.root / 'web-status.json').read_text())
-            return status if status['state'] == 'WEB_READY' else None
+            return status if status['state'] == 'READY' else None
         status = wait_for(check)
         self.runtime_pid = status['pid']
         self.frontend_url = status['frontend_url']
@@ -137,14 +138,16 @@ def test_installed_http_websocket_assets_and_spa(web):
     with pytest.raises(HTTPError) as error:
         web.get('/assets/missing.js')
     assert error.value.code == 404
-    ws = websocket.create_connection(f'ws://127.0.0.1:{web.backend}/ws', timeout=15)
+    ws = websocket.create_connection(f'ws://127.0.0.1:{web.backend}/ws',
+                                    origin=web.frontend_url, timeout=15)
     try:
         assert json.loads(ws.recv())['type'] == 'FULL'
     finally:
         ws.close()
     # ROS endpoint exists and rejects unauthenticated bridges.
     with pytest.raises(websocket.WebSocketBadStatusException):
-        websocket.create_connection(f'ws://127.0.0.1:{web.backend}/ws/ros', timeout=5)
+        websocket.create_connection(f'ws://127.0.0.1:{web.backend}/ws/ros',
+                                     origin=web.frontend_url, timeout=5)
 
 
 def test_browser_renders_installed_frontend_without_script_errors(web):
@@ -207,7 +210,7 @@ def test_persistence_and_repeated_launch(web):
 @pytest.mark.parametrize('component', ['backend', 'frontend'])
 def test_essential_failure_stops_owned_children(web, component):
     pid = next(pid for pid in web.children if
-               ('daphne' if component == 'backend' else 'static_server.py') in Path(f'/proc/{pid}/cmdline').read_text())
+               ('uvicorn' if component == 'backend' else 'static_server.py') in Path(f'/proc/{pid}/cmdline').read_text())
     os.kill(pid, signal.SIGTERM)
     assert web.process.wait(timeout=55) != 0
     for child in web.children:
@@ -253,6 +256,6 @@ def test_full_stack_fails_closed_without_canonical_bundle(tmp_path):
     assert deployment.process.wait(timeout=90) != 0
     assert 'No valid published canonical bundle' in (deployment.root / 'launch.log').read_text()
     status = json.loads((deployment.root / 'web-status.json').read_text())
-    assert status['state'] == 'STOPPED'
+    assert status['state'] == 'ERROR'
     assert not (deployment.root / 'logs/ros.log').exists()
     deployment.log.close()

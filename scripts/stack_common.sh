@@ -155,8 +155,8 @@ stack_owned_pid() {
   cmd="$(stack_cmdline "$pid" 2>/dev/null || true)"
   cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
   case "$name" in
-    backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py runserver"* || "$cmd" == *"$STACK_ROOT/waretwin/backend/run.sh"* ]] ;;
-    frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* ]] ;;
+    backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py runserver"* || "$cmd" == *"-m daphne"* || "$cmd" == *"$STACK_ROOT/waretwin/backend/run.sh"* ]] ;;
+    frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* || "$cmd" == *"runtime/static_server.py"* ]] ;;
     ros) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"ros_stack_supervisor.py"* || "$cmd" == *"system.launch.py"* || "$cmd" == *"ros2 launch swerve_bringup"* ]] ;;
     ros_bridge) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"$STACK_ROOT/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node"* ]] ;;
     *) return 1 ;;
@@ -180,8 +180,8 @@ stack_owned_group() {
     cmd="$(stack_cmdline "$pid" 2>/dev/null || true)"
     cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
     case "$name" in
-      backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py"* || "$cmd" == *"run.sh"* ]] && return 0 ;;
-      frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* ]] && return 0 ;;
+      backend) [[ "$cwd" == "$STACK_ROOT/waretwin/backend" ]] && [[ "$cmd" == *"manage.py"* || "$cmd" == *"-m daphne"* || "$cmd" == *"run.sh"* ]] && return 0 ;;
+      frontend) [[ "$cwd" == "$STACK_ROOT/waretwin/frontend" ]] && [[ "$cmd" == *"vite"* || "$cmd" == *"npm"* || "$cmd" == *"runtime/static_server.py"* ]] && return 0 ;;
       ros) [[ "$cwd" == "$STACK_ROOT" || "$cmd" == *"$STACK_ROOT/install/"* ]] && [[ "$cmd" == *"ros_stack_supervisor.py"* || "$cmd" == *"gzserver"* || "$cmd" == *"gzclient"* || "$cmd" == *"rviz2"* || "$cmd" == *"ros2 launch swerve_bringup"* || "$cmd" == *"system.launch.py"* || "$cmd" == *"swerve_bridge"* || "$cmd" == *"slam_toolbox"* || "$cmd" == *"nav2_"* ]] && return 0 ;;
       ros_bridge) [[ "$cwd" == "$STACK_ROOT" ]] && [[ "$cmd" == *"$STACK_ROOT/install/swerve_bridge/lib/swerve_bridge/swerve_bridge_node"* ]] && return 0 ;;
     esac

@@ -512,3 +512,9 @@ LiDAR. TAG routes use the published geometry-derived orthogonal lane graph,
 are previewed leg-by-leg with Nav2, and execute sequentially through their
 intermediate navigation nodes. In the LIDAR 2D view, accumulated `/map` is the
 base raster and the current `/scan` is only a restrained overlay.
+
+## ROS 2 installation
+
+Installable Web Local and full-stack ROS launch commands, runtime configuration,
+map persistence, and deployment checks are documented in
+[`waretwin/ROS_DEPLOYMENT.md`](waretwin/ROS_DEPLOYMENT.md).

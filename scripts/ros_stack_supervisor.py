@@ -234,12 +234,14 @@ def _run_readiness(root: Path, mode: str, robot_id: str, backend_url: str | None
                    deadline: float, child: subprocess.Popen,
                    env: dict[str, str] | None = None) -> tuple[bool, str]:
     script = root / 'scripts' / 'navigation_readiness.py'
+    reason = 'readiness deadline expired'
     while time.monotonic() < deadline:
         if child.poll() is not None:
             return False, f'{mode} ROS launch exited with status {child.returncode}'
         remaining = deadline - time.monotonic()
         args = [sys.executable, str(script), '--mode', mode, '--model', 'swerve_base',
                 '--robot-id', robot_id, '--timeout', str(min(30.0, max(2.0, remaining)))]
+        args.extend(('--use-sim', (env or os.environ).get('WARETWIN_USE_SIM', 'true')))
         if backend_url:
             args.extend(('--backend-url', backend_url))
         if log_path:
@@ -299,7 +301,8 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                    readiness_root: Path | None = None,
                    backend_url: str | None = None,
                    map_file: str | None = None,
-                   mode_timeout: float = 600.0) -> int:
+                   mode_timeout: float = 600.0,
+                   initial_readiness: bool = False) -> int:
     active_revision = initial_revision
     command = list(base_command)
     active_mode = str(initial_mode or next(
@@ -322,6 +325,19 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
             print(f'[MAP-SUPERVISOR] launching revision={active_revision or "development"}', flush=True)
             _reset_nav2_lifecycle_state(lifecycle_state_file, active_mode)
             child = subprocess.Popen(command)
+            if initial_readiness:
+                selected_map = next((arg.split(':=', 1)[1] for arg in command
+                                     if arg.startswith('map_file:=')), map_file)
+                ready, reason = _run_readiness(
+                    readiness_root, active_mode, robot_id, backend_url, selected_map,
+                    os.environ.get('WARETWIN_ROS_LOG_PATH'),
+                    time.monotonic() + mode_timeout, child)
+                _write_mode_status(mode_status_file,
+                    {'robot_id': robot_id, 'mode': active_mode},
+                    'READY' if ready else 'ERROR', reason)
+                if not ready:
+                    _stop_process(child)
+                    return 1
         code = child.poll()
         if code is not None:
             return code
@@ -368,7 +384,7 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                     child = subprocess.Popen(target_command, env=transition_env)
                     ready, reason = _run_readiness(
                         readiness_root, target_mode, robot_id, backend_url,
-                        map_file, None, time.monotonic() + mode_timeout, child,
+                        map_file, os.environ.get('WARETWIN_ROS_LOG_PATH'), time.monotonic() + mode_timeout, child,
                         env=transition_env)
                     if ready:
                         active_mode, command = target_mode, target_command
@@ -387,7 +403,7 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                         child = subprocess.Popen(previous_command, env=rollback_env)
                         restored, restore_reason = _run_readiness(
                             readiness_root, previous_mode, robot_id, backend_url,
-                            map_file, None, time.monotonic() + mode_timeout, child,
+                            map_file, os.environ.get('WARETWIN_ROS_LOG_PATH'), time.monotonic() + mode_timeout, child,
                             env=rollback_env)
                         if restored:
                             active_mode, command = previous_mode, previous_command
@@ -424,6 +440,11 @@ def run_supervisor(request_file: Path, initial_revision: int | None,
                 child = None
                 active_revision = requested_revision
                 command = new_command
+                map_file = next((arg.split(':=', 1)[1] for arg in command
+                                 if arg.startswith('map_file:=')), map_file)
+                _write_mode_status(mode_status_file,
+                    {'robot_id': robot_id, 'mode': active_mode}, 'RESTARTING',
+                    'verified map revision selected; readiness is pending')
                 request_file.unlink(missing_ok=True)
                 continue
         except FileNotFoundError:
@@ -449,6 +470,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument('--backend-url')
     parser.add_argument('--map-file')
     parser.add_argument('--mode-timeout', type=float, default=600.0)
+    parser.add_argument('--initial-readiness', action='store_true',
+                        help='gate initial launch and each map reload using existing readiness')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.mode_timeout <= 0:
@@ -466,6 +489,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         backend_url=args.backend_url,
         map_file=args.map_file,
         mode_timeout=args.mode_timeout,
+        initial_readiness=args.initial_readiness,
     )
 
 

@@ -86,7 +86,7 @@ class UnifiedRuntimeCapabilityTests(TestCase):
 
     def test_unified_navigation_gate_requires_ready_nav2_autonomous_and_clear_estop(self):
         cases = (
-            ({'nav2_ready': False}, 'NAV2_NOT_READY'),
+            ({'nav2_ready': False}, 'NAV2_LIFECYCLE_NOT_ACTIVE'),
             ({'control_mode': 'MANUAL'}, 'CONTROL_MODE_NOT_AUTONOMOUS'),
             ({'estop_active': True}, 'ESTOP_STATE_UNCONFIRMED'),
         )

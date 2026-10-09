@@ -25,11 +25,11 @@ source /etc/os-release
 # is not installed by the ROS apt bundle, so a Node mismatch should produce the
 # actionable version error immediately even on a machine where sudo is not
 # available in the current terminal.
-command -v node >/dev/null 2>&1 || fail 'Node.js >=20 is required; install Node 22 LTS before rerunning setup'
+command -v node >/dev/null 2>&1 || fail 'Node.js 22 or newer is required to build the frontend'
 NODE_VERSION="$(node -p 'process.versions.node')"
 NODE_MAJOR="${NODE_VERSION%%.*}"
-if ! [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] || ((NODE_MAJOR < 20)); then
-  fail "Node.js >=20 is required (Node 22 LTS recommended; detected $NODE_VERSION). Install with nvm: nvm install 22 && nvm use 22"
+if ! [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] || ((NODE_MAJOR < 22)); then
+  fail "Node.js >=22 is required (detected $NODE_VERSION). Install with nvm: nvm install 22 && nvm use 22"
 fi
 command -v npm >/dev/null 2>&1 || fail 'npm is missing; install Node 22 LTS before rerunning setup'
 NPM_VERSION="$(npm --version)"
@@ -148,7 +148,7 @@ fi
 
 cd "$ROOT_DIR"
 echo 'Resolving ROS package dependencies with rosdep...'
-rosdep install --from-paths "$ROOT_DIR" "$ROOT_DIR/swerve_bridge" \
+rosdep install --from-paths "$ROOT_DIR" "$ROOT_DIR/swerve_bridge" "$ROOT_DIR/waretwin" \
   --ignore-src --rosdistro humble -r -y
 
 BACKEND_DIR="$ROOT_DIR/waretwin/backend"
@@ -221,6 +221,8 @@ npm test
 cd "$ROOT_DIR"
 scripts/build_ros.sh
 source scripts/ros_env.sh
+/usr/bin/python3 "$(ros2 pkg prefix waretwin_web)/share/waretwin_web/runtime/service.py" \
+  --share "$(ros2 pkg prefix waretwin_web)/share/waretwin_web" --setup
 scripts/preflight_check.sh
 
 cat <<EOF

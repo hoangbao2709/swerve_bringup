@@ -5,13 +5,13 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = BASE_DIR.parent.parent
-LOG_DIR = PROJECT_ROOT / 'logs'
+load_dotenv(BASE_DIR / '.env')
+RUNTIME_DIR = Path(os.getenv('WARETWIN_RUNTIME_DIR', BASE_DIR))
+LOG_DIR = Path(os.getenv('WARETWIN_LOG_DIR', PROJECT_ROOT / 'logs'))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load the backend-local environment before reading any setting.  override=False
 # keeps explicit process/container environment variables authoritative.
-load_dotenv(BASE_DIR / '.env')
-
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'development-only-change-me')
 DEBUG = os.getenv('DJANGO_DEBUG', '0') == '1'
 ALLOWED_HOSTS = [x.strip() for x in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if x.strip()]
@@ -46,7 +46,7 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': Path(os.getenv('WARETWIN_DATABASE_PATH', RUNTIME_DIR / 'db.sqlite3')),
         # SQLite is development/local storage here. Wait briefly for the single
         # writer instead of immediately returning OperationalError under ASGI.
         'OPTIONS': {'timeout': 30},
@@ -57,6 +57,8 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = 'static/'
+STATIC_ROOT = RUNTIME_DIR / 'static'
+WARETWIN_LAYOUT_DIR = RUNTIME_DIR / 'layouts'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CHANNEL_LAYERS = {

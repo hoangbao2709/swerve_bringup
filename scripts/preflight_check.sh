@@ -52,13 +52,13 @@ fi
 if command -v node >/dev/null 2>&1; then
   NODE_VERSION="$(node -p 'process.versions.node')"
   NODE_MAJOR="${NODE_VERSION%%.*}"
-  if [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] && (( NODE_MAJOR >= 20 )); then
+  if [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] && (( NODE_MAJOR >= 22 )); then
     ok "Node $NODE_VERSION"
   else
-    fail "Node.js >=20 required (Node 22 LTS recommended; detected $NODE_VERSION). Install with nvm: nvm install 22 && nvm use 22"
+    fail "Node.js >=22 required (detected $NODE_VERSION). Install with nvm: nvm install 22 && nvm use 22"
   fi
 else
-  fail "Node.js >=20 not found; install Node 22 LTS"
+  fail "Node.js >=22 not found; install Node 22 LTS"
 fi
 
 if command -v npm >/dev/null 2>&1; then
@@ -132,7 +132,8 @@ fi
 if [[ -f "$ROOT_DIR/install/local_setup.bash" ]] && command -v ros2 >/dev/null 2>&1 \
    && { set +u; source "$ROOT_DIR/install/local_setup.bash"; set -u; } \
    && ros2 pkg prefix swerve_bringup >/dev/null 2>&1 \
-   && ros2 pkg prefix swerve_bridge >/dev/null 2>&1; then
+   && ros2 pkg prefix swerve_bridge >/dev/null 2>&1 \
+   && ros2 pkg prefix waretwin_web >/dev/null 2>&1; then
   ok "ROS workspace"
 else
   fail "ROS workspace is not built; run ./scripts/build_ros.sh"

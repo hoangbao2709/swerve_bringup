@@ -1,4 +1,4 @@
-export type ControlSection = "CONTROL" | "MAPPING" | "LOCALIZATION" | "MAPS" | "VDA5050" | "DIAGNOSIS";
+export type ControlSection = "CONTROL" | "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSIS";
 
 type SidebarProps = {
   activeSection?: ControlSection;
@@ -12,7 +12,6 @@ const sections: Array<{ id: ControlSection; label: string; icon: string }> = [
   { id: "CONTROL", label: "CONTROL", icon: "⌖" },
   { id: "MAPPING", label: "MAPPING", icon: "▦" },
   { id: "LOCALIZATION", label: "LOCALIZATION", icon: "◎" },
-  { id: "MAPS", label: "MAPS", icon: "▧" },
   { id: "VDA5050", label: "VDA5050", icon: "⇄" },
   { id: "DIAGNOSIS", label: "DIAGNOSIS", icon: "⚙" },
 ];

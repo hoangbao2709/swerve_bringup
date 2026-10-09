@@ -65,13 +65,13 @@ def test_controller_spawner_uses_humble_compatible_cli():
     assert '--switch-timeout' not in launch
 
 
-def test_production_frontend_build_is_explicit_and_precedes_runtime_start():
+def test_production_frontend_uses_installed_assets_without_runtime_build():
     source = (ROOT / 'scripts/start_stack.sh').read_text()
     assert 'WARETWIN_FRONTEND_MODE:-production' in source
     assert 'development) FRONTEND_RUN_SCRIPT=dev' in source
-    assert 'FRONTEND_RUN_SCRIPT=preview' in source
-    assert source.index('npm run build') < source.index('echo "Starting backend')
-    assert "VITE_BACKEND_PORT=\"$BACKEND_PORT_SELECTED\"" in source
+    assert 'FRONTEND_RUN_SCRIPT=static' in source
+    assert 'npm run build' not in source
+    assert '--backend-port "$BACKEND_PORT_SELECTED"' in source
     assert '--strictPort' in source
 
 
@@ -80,7 +80,7 @@ def test_backend_uses_worktree_python_not_copied_activate_path():
     assert 'BACKEND_PYTHON_PATH="$PWD/.venv/bin/python"' in source
     assert 'source .venv/bin/activate' not in source
     assert 'pydantic, wsaccel' in source
-    assert '"$BACKEND_PYTHON_PATH" manage.py runserver' in source
+    assert '"$BACKEND_PYTHON_PATH" -m daphne' in source
 
 
 def test_bridge_hot_reload_registration_checks_worktree_and_real_executable():

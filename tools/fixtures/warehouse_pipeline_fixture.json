@@ -20,13 +20,15 @@
     {"uuid": "tag-intersection", "tag_id": 1002, "floor_id": "F1", "x": 8, "y": 3, "z": 0, "yaw": 0, "placement": "auto", "locked": false, "source_aisles": ["A1", "A2"]},
     {"uuid": "tag-a1-end", "tag_id": 1003, "floor_id": "F1", "x": 11, "y": 3, "z": 0, "yaw": 0, "placement": "manual", "locked": true, "source_aisles": ["A1"]},
     {"uuid": "tag-a2-end", "tag_id": 1004, "floor_id": "F1", "x": 8, "y": 9, "z": 0, "yaw": 1.57079632679, "placement": "auto", "locked": false, "source_aisles": ["A2"]},
-    {"uuid": "tag-a3-end", "tag_id": 1005, "floor_id": "F1", "x": 11, "y": 8, "z": 0, "yaw": 3.14159265359, "placement": "auto", "locked": false, "source_aisles": ["A3"]}
+    {"uuid": "tag-a3-end", "tag_id": 1005, "floor_id": "F1", "x": 11, "y": 8, "z": 0, "yaw": 3.14159265359, "placement": "auto", "locked": false, "source_aisles": ["A3"]},
+    {"uuid": "tag-a2-a3", "tag_id": 1006, "floor_id": "F1", "x": 8, "y": 8, "z": 0, "yaw": 1.57079632679, "placement": "auto", "locked": false, "source_aisles": ["A2", "A3"]}
   ],
   "navigation_edges": [
     {"uuid": "edge-a1-1", "from_tag_uuid": "tag-a1-start", "to_tag_uuid": "tag-intersection", "from_tag_id": 1001, "to_tag_id": 1002, "aisle_id": "A1", "floor_id": "F1", "distance": 7, "cost": 7, "direction": "bidirectional", "bidirectional": true, "enabled": true},
     {"uuid": "edge-a1-2", "from_tag_uuid": "tag-intersection", "to_tag_uuid": "tag-a1-end", "from_tag_id": 1002, "to_tag_id": 1003, "aisle_id": "A1", "floor_id": "F1", "distance": 3, "cost": 3, "direction": "bidirectional", "bidirectional": true, "enabled": true},
-    {"uuid": "edge-a2", "from_tag_uuid": "tag-intersection", "to_tag_uuid": "tag-a2-end", "from_tag_id": 1002, "to_tag_id": 1004, "aisle_id": "A2", "floor_id": "F1", "distance": 6, "cost": 6, "direction": "forward", "bidirectional": false, "enabled": true},
-    {"uuid": "edge-a3", "from_tag_uuid": "tag-a3-end", "to_tag_uuid": "tag-intersection", "from_tag_id": 1005, "to_tag_id": 1002, "aisle_id": "A3", "floor_id": "F1", "distance": 3, "cost": 3, "direction": "reverse", "bidirectional": false, "enabled": true}
+    {"uuid": "edge-a2", "from_tag_uuid": "tag-intersection", "to_tag_uuid": "tag-a2-a3", "from_tag_id": 1002, "to_tag_id": 1006, "aisle_id": "A2", "floor_id": "F1", "distance": 5, "cost": 5, "direction": "forward", "bidirectional": false, "enabled": true},
+    {"uuid": "edge-a2-end", "from_tag_uuid": "tag-a2-a3", "to_tag_uuid": "tag-a2-end", "from_tag_id": 1006, "to_tag_id": 1004, "aisle_id": "A2", "floor_id": "F1", "distance": 1, "cost": 1, "direction": "forward", "bidirectional": false, "enabled": true},
+    {"uuid": "edge-a3", "from_tag_uuid": "tag-a3-end", "to_tag_uuid": "tag-a2-a3", "from_tag_id": 1005, "to_tag_id": 1006, "aisle_id": "A3", "floor_id": "F1", "distance": 3, "cost": 3, "direction": "reverse", "bidirectional": false, "enabled": true}
   ],
   "racks": [
     {"id": "RACK-A", "zone": "", "position": [4, 0, 0], "size": [1, 1, 1], "rotation": 0, "levels": 1, "model": "rack", "blocks_grid": true, "floor": "F1"},

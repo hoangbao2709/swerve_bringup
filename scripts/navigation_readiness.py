@@ -210,10 +210,11 @@ class Readiness(Node):
     """Checks live data and state, never just graph membership."""
     def __init__(self, model, mode='navigation', map_file=None,
                  robot_id='R01', backend_url=None, log_path=None,
-                 lifecycle_state_file=None):
+                 lifecycle_state_file=None, use_sim=True):
+        self.use_sim = use_sim
         super().__init__('navigation_readiness_probe', parameter_overrides=[
-            Parameter('use_sim_time', Parameter.Type.BOOL, True)])
-        if not self.get_parameter('use_sim_time').value:
+            Parameter('use_sim_time', Parameter.Type.BOOL, use_sim)])
+        if self.get_parameter('use_sim_time').value != use_sim:
             raise RuntimeError('FAIL: readiness probe use_sim_time is false')
         self.model = model
         self.mode = str(mode).lower()
@@ -1118,6 +1119,9 @@ class Readiness(Node):
             ('BRIDGE_READY', ('ROS_BRIDGE_R01_READY',)),
         )
         for summary_name, stages in groups:
+            if summary_name == 'GAZEBO_READY' and not getattr(self, 'use_sim', True):
+                print('GAZEBO_READY=NOT_APPLICABLE physical_robot', flush=True)
+                continue
             observed = [result['stages'].get(name) for name in stages]
             if all(value is True for value in observed):
                 status = 'PASS'
@@ -1668,12 +1672,7 @@ class Readiness(Node):
             rclpy.spin_once(self, timeout_sec=0.2)
         return False, last_reason
 
-    def check(self, timeout):
-        started, deadline = time.monotonic(), time.monotonic() + timeout
-        self.deadline = deadline
-        result = {'stages': {}, 'startup_wall_time': None, 'startup_timeline': [],
-                  'spawn_entity_duration_s': None, 'nav_ready': False, 'reason': None}
-
+    def _simulation_prerequisites(self, result, deadline):
         if not self._stage(
             result, 'GAZEBO_PROCESS_READY', self._gazebo_process_present,
             'process=gzserver', 'process_not_running:gzserver',
@@ -1711,6 +1710,17 @@ class Readiness(Node):
         ):
             return self._finish(result, 'Gazebo /model_states is not publishing')
         print(f'GAZEBO_WORLD={sorted(self.gazebo_model_names)}', flush=True)
+        return None
+
+    def check(self, timeout):
+        started, deadline = time.monotonic(), time.monotonic() + timeout
+        self.deadline = deadline
+        result = {'stages': {}, 'startup_wall_time': None, 'startup_timeline': [],
+                  'spawn_entity_duration_s': None, 'nav_ready': False, 'reason': None}
+        if self.use_sim:
+            failure = self._simulation_prerequisites(result, deadline)
+            if failure is not None:
+                return failure
 
         if not self._stage(
             result, 'ROBOT_DESCRIPTION_SERVICE_READY',
@@ -1738,11 +1748,11 @@ class Readiness(Node):
                            f'joints={len(description_root.findall("joint"))}',
         )
 
-        entity_confirmed = self._wait_entity(deadline)
+        entity_confirmed = self._wait_entity(deadline) if self.use_sim else True
         result['stages']['ROBOT_SPAWNED'] = entity_confirmed
         if result['stages']['ROBOT_SPAWNED']:
             self._report_stage(result, 'ROBOT_SPAWNED', True,
-                               success_detail=f' entity={self.model}')
+                               success_detail=f' entity={self.model}' if self.use_sim else ' physical robot; no Gazebo spawn required')
         else:
             reason = self.last_spawn_error or f'entity_not_created:{self.model}'
             spawn_log_errors = self._spawn_log_errors()
@@ -1951,6 +1961,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--timeout', type=float, default=120.0)
     parser.add_argument('--model', default='swerve_base')
+    parser.add_argument('--use-sim', choices=('true', 'false'), default='true')
     parser.add_argument('--robot-id', default='R01')
     parser.add_argument('--mode', choices=('unified', 'mapping', 'navigation'), default='unified')
     parser.add_argument('--map-file')
@@ -1966,7 +1977,7 @@ def main(argv=None):
     rclpy.init(args=ros_args)
     node = Readiness(args.model, args.mode, args.map_file,
                      args.robot_id, args.backend_url, args.log_path,
-                     args.lifecycle_state_file)
+                     args.lifecycle_state_file, use_sim=args.use_sim == 'true')
     try:
         try:
             result = node.check(args.timeout)

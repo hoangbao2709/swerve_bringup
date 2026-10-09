@@ -20,13 +20,12 @@ set -u
 
 # The bridge is intentionally kept under swerve_bridge/. Colcon stops normal
 # discovery at the top-level swerve_bringup package, so both base paths are
-# explicit here.
+# explicit here, including the nested web package.
 colcon build \
-  --symlink-install \
   --cmake-clean-cache \
-  --base-paths . swerve_bridge \
-  --packages-select swerve_bringup swerve_bridge \
-  --event-handlers console_direct+
+  --base-paths . swerve_bridge waretwin \
+  --packages-select swerve_bringup swerve_bridge waretwin_web \
+  --event-handlers console_direct+ "$@"
 
 echo
 echo "Build complete. In a ROS terminal run: source $ROOT_DIR/scripts/ros_env.sh"

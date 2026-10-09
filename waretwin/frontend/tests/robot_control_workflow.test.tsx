@@ -860,16 +860,31 @@ describe("robot detail route stability", () => {
     expect(container.querySelector(".manual-key-forward")?.hasAttribute("disabled")).toBe(true);
   });
 
-  it("keeps mapping, maps, diagnosis and VDA5050 as direct robot sections", async () => {
+  it("keeps Mapping as one map-creation and saved-map management section", async () => {
     renderNode(<ControlDetailHarness robotId="R01" />);
     expect(container.querySelector('[role="tablist"][aria-label="Control views"]')).toBeTruthy();
     const mappingTab = Array.from(container.querySelectorAll("[role=tab]")).find((tab) => tab.getAttribute("aria-label") === "MAPPING");
     await act(async () => { (mappingTab as HTMLElement).click(); });
     expect(container.textContent).toContain("ACCUMULATED SLAM MAP");
     expect(container.textContent).toContain("SAVE MAP");
-    expect(container.querySelectorAll("[role=tab]")).toHaveLength(6);
-    await act(async () => { buttonNamed("MAPS")?.click(); await settleUi(); });
-    expect(container.textContent).toContain("STORED MAPS");
+    expect(container.querySelectorAll("[role=tab]")).toHaveLength(5);
+    expect(container.querySelector('[role="tab"][aria-label="MAPS"]')).toBeNull();
+    for (const label of ["MAPPING STATUS", "MAPPING CONTROL", "SAVE MAP", "SAVED MAPS", "MAP PREVIEW", "MAP DETAILS", "LOAD / RELOAD MAP"]) {
+      expect(container.textContent).toContain(label);
+    }
+    const mappingPanels = Array.from(container.querySelectorAll(".hmi-mapping-workflow-layout > .local-section-panel"));
+    const panelTitles = mappingPanels.map((panel) => panel.querySelector("header")?.textContent ?? "");
+    expect(panelTitles[0]).toContain("ACCUMULATED SLAM MAP");
+    expect(panelTitles.slice(1, 4)).toEqual(["MAPPING STATUS", "MAPPING CONTROL", "SAVE MAP"]);
+    expect(panelTitles.slice(4).map((title) => title.split(" · ")[0])).toEqual([
+      "SAVED MAPS", "MAP PREVIEW", "MAP DETAILS", "LOAD / RELOAD MAP",
+    ]);
+    expect(mappingPanels.findIndex((panel) => panel.classList.contains("hmi-mapping-map")))
+      .toBeLessThan(mappingPanels.findIndex((panel) => panel.classList.contains("hmi-mapping-status")));
+    expect(mappingPanels.findIndex((panel) => panel.classList.contains("hmi-mapping-list")))
+      .toBeLessThan(mappingPanels.findIndex((panel) => panel.classList.contains("hmi-mapping-preview")));
+    expect(container.querySelectorAll(".hmi-mapping-library-list")).toHaveLength(1);
+    expect(container.querySelectorAll(".hmi-map-load-button")).toHaveLength(1);
     await act(async () => { buttonNamed("DIAGNOSIS")?.click(); });
     expect(container.textContent).toContain("SUBSYSTEM STATUS");
     expect(container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="DIAGNOSIS"]')?.getAttribute("aria-selected")).toBe("true");
@@ -917,11 +932,12 @@ describe("robot detail route stability", () => {
       runtimeMapSnapshot: localSnapshot,
     });
     renderNode(<ControlDetailHarness robotId="R01" />);
-    await act(async () => { buttonNamed("MAPS")?.click(); await settleUi(); await settleUi(); });
+    await act(async () => { buttonNamed("MAPPING")?.click(); await settleUi(); await settleUi(); });
     expect(container.querySelector('[data-testid="active-navigation-map-2d"]')).toBeNull();
-    expect(container.querySelector(".hmi-maps-preview .local-pose-map")).toBeTruthy();
+    expect(container.querySelector(".hmi-mapping-preview .local-pose-map")).toBeTruthy();
     expect(container.querySelector(".hmi-map-detail-state")?.textContent).toContain("ACTIVE MAP");
-    expect(container.querySelector(".hmi-map-load-actions button")?.textContent).toContain("RELOAD ACTIVE MAP");
+    expect(container.querySelector(".hmi-map-load-button")?.textContent).toContain("RELOAD ACTIVE MAP");
+    expect(container.querySelector(".hmi-map-details-grid")?.textContent).toContain("LOCAL_ONLY");
   });
 
   it("shows only the active 2D occupancy map and point controls", async () => {

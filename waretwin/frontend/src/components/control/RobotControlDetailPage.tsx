@@ -11,6 +11,7 @@ import { detailPerformance } from "./detailPerformance";
 import { displayedNavigationMapIdentity as getDisplayedNavigationMapIdentity, mapPointPreviewPayload, mapPointTarget, type MapPointNavigationTarget } from "./navigationMapIdentity";
 import { evaluatePreviewApproval } from "./navigationPreviewApproval";
 import { resolveDemoRoute } from "./demoRoute";
+import { runtimeEnv } from "../../runtimeEnv";
 
 type HostStatus = { system?: { cpu_load_1m?: number | null; memory?: { used_percent?: number | null } } };
 const MANUAL_ACTIONS: Array<{
@@ -608,8 +609,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
     ?? diagnostics?.nav2_lifecycle_blocker_reason ?? "";
   const localSection = activeSection === "DIAGNOSIS" ? "DIAGNOSTICS"
     : activeSection === "VDA5050" ? "VDA5050"
-      : activeSection === "MAPS" ? "MAPS"
-        : activeSection === "MAPPING" ? "MAPPING" : "LOCALIZATION";
+      : activeSection === "MAPPING" ? "MAPPING" : "LOCALIZATION";
   const dashboardStateRows: Array<[string, string]> = [
     ["CURRENT STATE", runtimeState], ["CONTROL MODE", controlMode],
     ["MAPPING", diagnostics?.mapping?.slam_state ?? "UNKNOWN"],
@@ -627,7 +627,7 @@ function RobotControlDetailContent({ robotId, activeSection, onSectionChange }: 
   ];
 
   return (
-    <div className={`robot-detail-shell industrial-hmi${activeSection === "CONTROL" ? " is-control-view" : ""}${activeSection === "CONTROL" && import.meta.env.VITE_DEMO_COMPACT_VIEW === "true" ? " demo-compact-map" : ""}`}>
+    <div className={`robot-detail-shell industrial-hmi${activeSection === "CONTROL" ? " is-control-view" : ""}${activeSection === "CONTROL" && runtimeEnv.VITE_DEMO_COMPACT_VIEW === "true" ? " demo-compact-map" : ""}`}>
       <header className="robot-detail-header">
         <div className="robot-detail-identity">
           {activeSection === "CONTROL" && <span className="hmi-app-identity">WARETWIN</span>}

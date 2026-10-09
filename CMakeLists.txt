@@ -120,6 +120,10 @@ install(
 
 ament_export_dependencies(rosidl_default_runtime)
 
+# The web full-stack entrypoint reuses these exact safety gates from the install.
+install(FILES scripts/ros_stack_supervisor.py scripts/navigation_readiness.py
+  DESTINATION share/${PROJECT_NAME}/scripts)
+
 install(
   PROGRAMS test_navigation.py
   DESTINATION lib/${PROJECT_NAME}

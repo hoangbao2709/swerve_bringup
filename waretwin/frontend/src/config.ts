@@ -1,5 +1,5 @@
 /** Runtime flags for the frontend. */
-const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+import { runtimeEnv as env } from "./runtimeEnv";
 export type RuntimeMode = "GAZEBO_ROS" | "REAL_ROBOT";
 export const RUNTIME_MODE: RuntimeMode = env.VITE_RUNTIME_MODE === "REAL_ROBOT" ? "REAL_ROBOT" : "GAZEBO_ROS";
 

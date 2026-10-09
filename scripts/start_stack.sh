@@ -112,6 +112,12 @@ if stack_owned_group backend || stack_owned_group frontend || stack_owned_group 
 fi
 
 requested_backend="${BACKEND_PORT_ARG:-${BACKEND_PORT:-8000}}"
+# Prevent duplicate runtimes even when ROS launch uses a different data directory.
+WARETWIN_LOCK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/waretwin"
+mkdir -p "$WARETWIN_LOCK_DIR"
+exec 9>"$WARETWIN_LOCK_DIR/stack.lock"
+flock -n 9 || { echo 'A WareTwin ROS launch or legacy stack already owns the runtime.' >&2; exit 1; }
+# Child processes inherit descriptor 9, retaining ownership after this script exits.
 requested_frontend="${FRONTEND_PORT_ARG:-${FRONTEND_PORT:-5173}}"
 if [[ -n "$BACKEND_PORT_ARG" ]] && stack_port_busy "$requested_backend"; then
   stack_port_owner_message "$requested_backend" >&2
@@ -171,9 +177,9 @@ EOF
 FRONTEND_MODE_SELECTED="${WARETWIN_FRONTEND_MODE:-production}"
 case "$FRONTEND_MODE_SELECTED" in
   production)
-    echo 'Building production frontend (React development validation is expensive on the VM)'
-    (cd "$ROOT_DIR/waretwin/frontend" && env VITE_RUNTIME_MODE=GAZEBO_ROS VITE_DEMO_MODE=false VITE_DEMO_COMPACT_VIEW="$WARETWIN_DEMO_VISUAL" VITE_BACKEND_MODE=true VITE_BACKEND_PORT="$BACKEND_PORT_SELECTED" VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run build)
-    FRONTEND_RUN_SCRIPT=preview
+    FRONTEND_PACKAGE_SHARE="$(ros2 pkg prefix waretwin_web)/share/waretwin_web"
+    [[ -f "$FRONTEND_PACKAGE_SHARE/frontend/index.html" ]] || { echo 'Installed frontend missing; run scripts/build_ros.sh' >&2; exit 1; }
+    FRONTEND_RUN_SCRIPT=static
     ;;
   development) FRONTEND_RUN_SCRIPT=dev ;;
   *) echo 'WARETWIN_FRONTEND_MODE must be production or development' >&2; exit 2 ;;
@@ -355,8 +361,15 @@ echo "[ROBOT] id=$ROBOT_ID spawn=($SPAWN_TEXT)"
 echo "[ROS_DOMAIN_ID] $ROS_DOMAIN_ID_SELECTED"
 
 echo "Starting frontend on $FRONTEND_URL"
-setsid bash -c "cd '$ROOT_DIR/waretwin/frontend' && exec env VITE_RUNTIME_MODE=GAZEBO_ROS VITE_DEMO_MODE=false VITE_DEMO_COMPACT_VIEW='$WARETWIN_DEMO_VISUAL' VITE_BACKEND_MODE=true VITE_BACKEND_PORT='$BACKEND_PORT_SELECTED' VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run '$FRONTEND_RUN_SCRIPT' -- --host '$FRONTEND_HOST_SELECTED' --port '$FRONTEND_PORT_SELECTED' --strictPort" \
+if [[ "$FRONTEND_RUN_SCRIPT" == static ]]; then
+  setsid bash -c 'cd "$1"; shift; exec python3 "$@"' _ "$ROOT_DIR/waretwin/frontend" \
+    "$FRONTEND_PACKAGE_SHARE/runtime/static_server.py" --directory "$FRONTEND_PACKAGE_SHARE/frontend" \
+    --host "$FRONTEND_HOST_SELECTED" --port "$FRONTEND_PORT_SELECTED" --backend-port "$BACKEND_PORT_SELECTED" \
+    --runtime-mode GAZEBO_ROS --demo-compact-view "$WARETWIN_DEMO_VISUAL" > "$(stack_log_file frontend)" 2>&1 < /dev/null &
+else
+  setsid bash -c "cd '$ROOT_DIR/waretwin/frontend' && exec env VITE_RUNTIME_MODE=GAZEBO_ROS VITE_BACKEND_PORT='$BACKEND_PORT_SELECTED' VITE_API_BASE_URL= VITE_WS_BASE_URL= npm run '$FRONTEND_RUN_SCRIPT' -- --host '$FRONTEND_HOST_SELECTED' --port '$FRONTEND_PORT_SELECTED' --strictPort" \
   > "$(stack_log_file frontend)" 2>&1 < /dev/null &
+fi
 stack_write_pid frontend "$!"
 if ! stack_wait_http "$FRONTEND_URL" 30; then
   echo "Frontend did not become ready; see $(stack_log_file frontend)" >&2

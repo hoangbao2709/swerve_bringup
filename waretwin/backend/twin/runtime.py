@@ -78,8 +78,8 @@ class TwinRuntime:
     SECTIONS = ('tasks', 'lifts', 'zones', 'conveyors', 'cameras', 'sensors', 'people', 'alerts')
 
     def __init__(self) -> None:
-        self.layout_dir = Path(settings.BASE_DIR) / 'layouts'
-        self.layout_dir.mkdir(exist_ok=True)
+        self.layout_dir = Path(settings.WARETWIN_LAYOUT_DIR)
+        self.layout_dir.mkdir(parents=True, exist_ok=True)
         active = self.layout_dir / 'active.json'
         if active.exists():
             try:
@@ -405,7 +405,8 @@ class TwinRuntime:
             mode = str(self.robot_runtime_modes.get(rid) or self.operation_mode).upper()
             nav2_ready = bool(diagnostics_fresh and mode in NAVIGATION_CAPABLE_MODES
                               and diagnostics.get('nav2')
-                              and diagnostics.get('nav2_ready') is True)
+                              and diagnostics.get('nav2_ready') is True
+                              and diagnostics.get('nav2_lifecycle_ready') is True)
         if not nav2_ready:
             diagnostics = self.ros_diagnostics
             diagnostics_at = self.ros_diagnostics_received_monotonic

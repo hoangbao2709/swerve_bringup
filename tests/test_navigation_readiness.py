@@ -464,7 +464,7 @@ def test_gazebo_world_readiness_is_reported_once():
     )
     check_method = next(
         node for node in readiness_class.body
-        if isinstance(node, ast.FunctionDef) and node.name == 'check'
+        if isinstance(node, ast.FunctionDef) and node.name == '_simulation_prerequisites'
     )
     world_stage_calls = []
     for node in ast.walk(check_method):

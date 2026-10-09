@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/scripts/stack_common.sh"
+if python3 "$ROOT_DIR/waretwin/runtime/control.py" --managed; then
+  python3 "$ROOT_DIR/waretwin/runtime/control.py" --stop
+  exit $?
+fi
 
 stop_failures=0
 # A bridge-only hot reload may have a separately registered process group.

@@ -22,7 +22,7 @@ import { displayedFramePose, useStableDisplayedFramePose, type MapPoseIdentity }
 import { mapPointTarget, type MapPointNavigationTarget, type NavigationMapIdentity } from "./navigationMapIdentity";
 import { useStore } from "../../state/store";
 
-type SectionName = "MAPPING" | "MAPS" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
+type SectionName = "MAPPING" | "LOCALIZATION" | "VDA5050" | "DIAGNOSTICS";
 type Pose = { x: number; y: number; yaw: number };
 type Props = {
   section: SectionName;
@@ -114,13 +114,13 @@ function Metric({ label, value, mono = false }: { label: string; value: unknown;
 }
 
 export function LocalRobotSection(props: Props) {
-  if (props.section === "MAPPING" || props.section === "MAPS") return <MappingPanel {...props} />;
+  if (props.section === "MAPPING") return <MappingPanel {...props} />;
   if (props.section === "LOCALIZATION") return <LocalizationPanel {...props} />;
   if (props.section === "VDA5050") return <Vda5050Panel robotId={props.robotId} />;
   return <DiagnosticsPanel {...props} />;
 }
 
-function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMapSnapshot, scan, diagnostics, controlOnline, controlMode, runtimeState, runtimeCapabilities, mappingSessionId, activeLocalMapRevision: selectedLocalMapRevision, ensureManualMode }: Props) {
+function MappingPanel({ robotId, robot: rawRobot, slam2dMap, runtimeMapSnapshot, scan, diagnostics, controlOnline, controlMode, runtimeState, runtimeCapabilities, mappingSessionId, activeLocalMapRevision: selectedLocalMapRevision, localMapSyncStatus, mapRevision, ensureManualMode }: Props) {
   const setRobotDetail = useStore((state) => state.setRobotDetail);
   const [maps, setMaps] = useState<LocalRobotMap[]>([]);
   const [selected, setSelected] = useState("");
@@ -131,6 +131,8 @@ function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMap
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [loadNotice, setLoadNotice] = useState("");
   const [operationState, setOperationState] = useState("READY");
   const [loadBlockReason, setLoadBlockReason] = useState("SELECT A SAVED MAP");
   const [trajectory, setTrajectory] = useState<RobotWorldPoint[]>([]);
@@ -150,6 +152,11 @@ function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMap
     && runtimeMapSnapshot.active_map_id === activeLocalMapId
     && String(runtimeMapSnapshot.active_map_revision ?? "") === String(expectedLocalMapRevision ?? "")
     ? runtimeMapSnapshot : null;
+  const selectedMapIsActive = Boolean(selectedMap && selectedMap.id === activeLocalMapId);
+  const selectedMapPreview = selectedMapIsActive ? loadedLocalMap : null;
+  const selectedMapExtent = selectedMap?.width && selectedMap?.height
+    ? `${valueNumber(selectedMap.width * selectedMap.resolution, 2)} × ${valueNumber(selectedMap.height * selectedMap.resolution, 2)} m`
+    : "N/A";
   const displayMap = loadedLocalMap ?? slamMap;
   const displayPose = displayMap && rawRobot ? displayedFramePose(rawRobot, displayMap) : undefined;
   const robotPoseMatchesDisplayMap = Boolean(displayMap && displayPose);
@@ -195,10 +202,10 @@ function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMap
     return `SAVE SUCCESS · ${result.map.name} · revision ${result.map.revision}`;
   }, "SAVING");
   const load = () => {
-    if (loadBlockReason) { setError(loadBlockReason); return; }
+    if (loadBlockReason) { setLoadError(loadBlockReason); return; }
     const mapId = selected;
     void (async () => {
-      setBusy(true); setError(""); setNotice(""); setOperationState("PREPARING...");
+      setBusy(true); setLoadError(""); setLoadNotice(""); setOperationState("PREPARING...");
       try {
         let result: LocalMapLoadResult = await loadLocalRobotMap(robotId, mapId);
         const deadline = Date.now() + 10 * 60 * 1000;
@@ -242,13 +249,13 @@ function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMap
           activeLocalMapRevision: result.active_map.revision,
           localMapSyncStatus: "LOCAL_ONLY",
         });
-        setNotice(`MAP LOADED · ${result.active_map.name} · r${result.active_map.revision} · ${result.active_map.resolution.toFixed(3)} m/cell`);
+        setLoadNotice(`MAP LOADED · ${result.active_map.name} · r${result.active_map.revision} · ${result.active_map.resolution.toFixed(3)} m/cell`);
         setOperationState("MAP LOADED");
         manualRestoreRequest.current = null;
         await refresh();
       } catch (caught) {
         setOperationState("LOAD FAILED");
-        setError(caught instanceof Error ? caught.message : "Saved-map load failed");
+        setLoadError(caught instanceof Error ? caught.message : "Saved-map load failed");
       } finally { setBusy(false); }
     })();
   };
@@ -311,54 +318,7 @@ function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMap
     trajectoryRef.current = { ...current, points, lastAt: now };
     setTrajectory(points);
   }, [isMapping, mapping?.tf_valid, paused, slamPose?.x, slamPose?.y, slamPose?.timestamp, slamMap]);
-  if (section === "MAPS") {
-    const selectedMapIsActive = Boolean(selectedMap && selectedMap.id === activeLocalMapId);
-    const selectedMapPreview = selectedMapIsActive ? loadedLocalMap : null;
-    const extent = selectedMap?.width && selectedMap?.height
-      ? `${valueNumber(selectedMap.width * selectedMap.resolution, 2)} × ${valueNumber(selectedMap.height * selectedMap.resolution, 2)} m`
-      : "N/A";
-    return <SectionFrame className="hmi-maps-layout">
-      <SectionPanel title={`STORED MAPS (${maps.length})`} className="hmi-maps-list">
-        {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list hmi-stored-map-list">
-          {maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
-            <span><b>{map.name}</b>{activeLocalMapId === map.id && <strong className="local-map-active-badge">ACTIVE</strong>}<small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
-            <small>r{map.revision}</small>
-          </button>)}
-        </div>}
-      </SectionPanel>
-      <SectionPanel title="MAP PREVIEW" className="hmi-maps-preview">
-        {selectedMapPreview ? <PosePickerMap map={selectedMapPreview} robot={rawRobot} pose={{ x: 0, y: 0, yaw: 0 }} active={false} onPick={() => undefined} ariaLabel={`Active saved map preview ${selectedMapPreview.active_map_id}`} />
-          : <div className="local-empty hmi-map-preview-empty">{selectedMap ? "This saved map is not active. Load it to receive its confirmed navigation-map preview." : "Select a stored map to inspect its details."}</div>}
-      </SectionPanel>
-      <SectionPanel title="MAP DETAILS" className="hmi-maps-details">
-        {selectedMap ? <>
-          <div className="hmi-map-detail-state"><b>{selectedMap.name}</b>{selectedMapIsActive && <strong className="local-map-active-badge">ACTIVE MAP</strong>}</div>
-          <div className="local-status-grid hmi-map-details-grid">
-            <Metric label="STATUS" value={selectedMapIsActive ? "ACTIVE · LOCAL MAP" : "STORED · NOT ACTIVE"} />
-            <Metric label="RESOLUTION" value={valueNumber(selectedMap.resolution, 3, " m/cell")} mono />
-            <Metric label="WIDTH × HEIGHT" value={selectedMap.width && selectedMap.height ? `${selectedMap.width} × ${selectedMap.height}` : "N/A"} mono />
-            <Metric label="EXTENT" value={extent} mono />
-            <Metric label="ORIGIN" value={selectedMap.origin?.slice(0, 3).map((part) => valueNumber(part, 3)).join(", ") ?? "N/A"} mono />
-            <Metric label="CREATED" value={selectedMap.created_at} />
-            <Metric label="REVISION" value={selectedMap.revision} mono />
-            <Metric label="KNOWN CELLS" value={selectedMap.known_cells ?? "N/A"} mono />
-            <Metric label="FREE CELLS" value={selectedMap.free_cells ?? "N/A"} mono />
-            <Metric label="OCCUPIED CELLS" value={selectedMap.occupied_cells ?? "N/A"} mono />
-            <Metric label="EXPLORED AREA" value={valueNumber(selectedMap.explored_area_m2, 2, " m²")} mono />
-            <Metric label="SLAM SESSION" value={selectedMap.slam_session_state?.status ?? "NOT AVAILABLE"} />
-          </div>
-          <div className="local-action-row hmi-map-load-actions">
-            <button type="button" className="robot-console-primary" aria-describedby="saved-map-load-state" disabled={Boolean(loadBlockReason) || busy} onClick={load}>{busy ? operationState : selectedMapIsActive ? "RELOAD ACTIVE MAP" : "LOAD SAVED MAP"}</button>
-          </div>
-          <p id="saved-map-load-state" className={loadBlockReason ? "local-help warning" : "local-help"} role="status">
-            {busy ? operationState : error || notice || loadBlockReason || (selectedMapIsActive ? "SELECTED MAP IS ACTIVE" : "READY · MANUAL MODE AND STOP REQUIRED")}
-          </p>
-        </> : <div className="local-empty">Select a stored map to view its registered metadata and available actions.</div>}
-      </SectionPanel>
-    </SectionFrame>;
-  }
-
-  return <SectionFrame className="hmi-mapping-layout">
+  return <SectionFrame className="hmi-mapping-workflow-layout">
     <SectionPanel title={loadedLocalMap ? "ACTIVE SAVED LOCAL MAP · /map" : "ACCUMULATED SLAM MAP · /map + CURRENT /scan"} className="hmi-mapping-map">
       <div className="local-map-toggles" role="group" aria-label="Mapping map layers">
         {(["robot", "scan", "trajectory", "grid"] as const).map((layer) => <button
@@ -382,10 +342,6 @@ function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMap
         <Metric label="KNOWN CELLS" value={displayMap?.known_cells ?? "—"} mono />
         <Metric label="EXPLORED AREA" value={valueNumber(displayMap?.explored_area_m2, 2, " m²")} mono />
         <Metric label="SESSION TIME" value={`${valueNumber(mappingDuration, 1, " s")}${isMapping && !paused ? " · LIVE" : ""}`} mono />
-      </div>
-      <div className="local-action-row hmi-mapping-actions">
-        <button type="button" className="robot-console-primary" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !isMapping || (isMapping && mappingState === "MAPPING")} onClick={() => void startMapping()}>{isMapping && mappingState === "MAPPING" ? "MAPPING ACTIVE" : paused ? "RESUME MAPPING" : isMapping ? "START MAPPING" : isUnified ? "SLAM UNAVAILABLE" : "UNIFIED RUNTIME REQUIRED"}</button>
-        <button type="button" disabled={!controlOnline || !isMapping || busy || paused} onClick={() => changeMapping("stop")}>PAUSE MAPPING</button>
       </div>
       <details className="hmi-advanced-details"><summary>ADVANCED MAPPING DETAILS</summary>
         <div className="local-status-grid">
@@ -411,6 +367,13 @@ function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMap
         <p className="local-help">Loading a saved map uses the supervised SLAM-to-Navigation handoff. Saved SLAM pose-graph restoration remains a separate operation.</p>
       </details>
     </SectionPanel>
+    <SectionPanel title="MAPPING CONTROL" className="hmi-mapping-control">
+      <div className="local-action-row hmi-mapping-actions">
+        <button type="button" className="robot-console-primary" disabled={!controlOnline || controlMode !== "MANUAL" || busy || !isMapping || mappingState === "MAPPING"} onClick={() => void startMapping()}>{isMapping && mappingState === "MAPPING" ? "MAPPING ACTIVE" : paused ? "RESUME MAPPING" : isMapping ? "START MAPPING" : isUnified ? "SLAM UNAVAILABLE" : "UNIFIED RUNTIME REQUIRED"}</button>
+        <button type="button" disabled={!controlOnline || !isMapping || busy || paused} onClick={() => changeMapping("stop")}>PAUSE MAPPING</button>
+      </div>
+      <p className="local-help">Start and resume require an online robot in Manual mode with SLAM ready. Pause before saving the accumulated map.</p>
+    </SectionPanel>
     <SectionPanel title="SAVE MAP" className="hmi-mapping-save">
       <div className="local-form-row">
         <label className="local-field local-field-grow"><span>MAP NAME</span><input value={name} maxLength={64} onChange={(event) => setName(event.target.value)} placeholder="warehouse_floor_1" /></label>
@@ -420,20 +383,50 @@ function MappingPanel({ section, robotId, robot: rawRobot, slam2dMap, runtimeMap
       {error && <div className="local-feedback error" role="alert">{error}</div>}
       {notice && <div className="local-feedback ok" role="status">{notice}</div>}
     </SectionPanel>
-    <SectionPanel title="SAVED MAPS · THIS ROBOT" className="hmi-mapping-list">
-      {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : <div className="local-map-list">
-        {maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
+    <SectionPanel title={`SAVED MAPS · THIS ROBOT (${maps.length})`} className="hmi-mapping-list">
+      <div className="local-map-list hmi-mapping-library-list">
+        {maps.length === 0 ? <div className="local-empty">No saved maps for {robotId}.</div> : maps.map((map) => <button type="button" className={`local-map-row ${selected === map.id ? "is-selected" : ""}`} key={map.id} onClick={() => setSelected(map.id)}>
           <span><b>{map.name}</b>{activeLocalMapId === map.id && <strong className="local-map-active-badge">ACTIVE</strong>}<small>{map.created_at} · {map.resolution.toFixed(3)} m/cell · SLAM {map.slam_session_state?.status ?? "NOT_SAVED"}</small></span>
           <small>r{map.revision}</small>
         </button>)}
-      </div>}
-      <div className="local-action-row">
-        <button type="button" aria-describedby="saved-map-load-state" disabled={Boolean(loadBlockReason) || busy} onClick={load}>{busy ? `${operationState}` : "LOAD SAVED MAP"}</button>
-        <button type="button" disabled title="In-process SLAM pose-graph restore is not implemented yet">RESUME SAVED SLAM SESSION</button>
-        {activeLocalMapId && <Status value="ACTIVE LOCAL MAP" />}
       </div>
+      <div className="local-action-row hmi-mapping-session-actions">
+        <button type="button" disabled title="In-process SLAM pose-graph restore is not implemented yet">RESUME SAVED SLAM SESSION</button>
+      </div>
+    </SectionPanel>
+    <SectionPanel title="MAP PREVIEW" className="hmi-mapping-preview">
+      {selectedMapPreview ? <PosePickerMap map={selectedMapPreview} robot={rawRobot} pose={{ x: 0, y: 0, yaw: 0 }} active={false} onPick={() => undefined} ariaLabel={`Active saved map preview ${selectedMapPreview.active_map_id}`} />
+        : <div className="local-empty hmi-map-preview-empty">{selectedMap ? "This saved map is not active. Load it to receive its confirmed navigation-map preview." : "Select a stored map to inspect its details."}</div>}
+    </SectionPanel>
+    <SectionPanel title="MAP DETAILS" className="hmi-mapping-details">
+      {selectedMap ? <>
+        <div className="hmi-map-detail-state"><b>{selectedMap.name}</b>{selectedMapIsActive && <strong className="local-map-active-badge">ACTIVE MAP</strong>}</div>
+        <div className="local-status-grid hmi-map-details-grid">
+          <Metric label="STATUS" value={selectedMapIsActive ? "ACTIVE · LOCAL MAP" : "STORED · NOT ACTIVE"} />
+          <Metric label="MAP ID" value={selectedMap.map_id ?? selectedMap.id} mono />
+          <Metric label="MAP REVISION" value={selectedMap.revision} mono />
+          <Metric label="FRAME" value={selectedMap.frame_id} mono />
+          <Metric label="MAP SYNC STATUS" value={selectedMapIsActive ? localMapSyncStatus ?? "UNVERIFIED" : "NOT ACTIVE"} />
+          <Metric label="CANONICAL REVISION" value={mapRevision ?? "N/A"} mono />
+          <Metric label="ACTIVE LOCAL MAP" value={activeLocalMapId ?? "NONE"} mono />
+          <Metric label="ACTIVE LOCAL REVISION" value={expectedLocalMapRevision ?? "N/A"} mono />
+          <Metric label="RESOLUTION" value={valueNumber(selectedMap.resolution, 3, " m/cell")} mono />
+          <Metric label="WIDTH × HEIGHT" value={selectedMap.width && selectedMap.height ? `${selectedMap.width} × ${selectedMap.height}` : "N/A"} mono />
+          <Metric label="EXTENT" value={selectedMapExtent} mono />
+          <Metric label="ORIGIN" value={selectedMap.origin?.slice(0, 3).map((part) => valueNumber(part, 3)).join(", ") ?? "N/A"} mono />
+          <Metric label="CREATED" value={selectedMap.created_at} />
+          <Metric label="KNOWN CELLS" value={selectedMap.known_cells ?? "N/A"} mono />
+          <Metric label="FREE CELLS" value={selectedMap.free_cells ?? "N/A"} mono />
+          <Metric label="OCCUPIED CELLS" value={selectedMap.occupied_cells ?? "N/A"} mono />
+          <Metric label="EXPLORED AREA" value={valueNumber(selectedMap.explored_area_m2, 2, " m²")} mono />
+          <Metric label="SLAM SESSION" value={selectedMap.slam_session_state?.status ?? "NOT AVAILABLE"} />
+        </div>
+      </> : <div className="local-empty">Select a stored map to view its identity, synchronization, occupancy metadata, and statistics.</div>}
+    </SectionPanel>
+    <SectionPanel title="LOAD / RELOAD MAP" className="hmi-mapping-load">
+      <button type="button" className="robot-console-primary hmi-map-load-button" aria-describedby="saved-map-load-state" disabled={!selectedMap || Boolean(loadBlockReason) || busy} onClick={load}>{busy ? operationState : selectedMapIsActive ? "RELOAD ACTIVE MAP" : "LOAD SAVED MAP"}</button>
       <p id="saved-map-load-state" className={loadBlockReason ? "local-help warning" : "local-help"} role="status">
-        {busy ? operationState : loadBlockReason || (activeLocalMapId === selected ? "SELECTED MAP IS ALREADY ACTIVE" : "READY · MANUAL MODE AND STOP REQUIRED")}
+        {busy ? operationState : loadError || loadNotice || loadBlockReason || (selectedMapIsActive ? "SELECTED MAP IS ACTIVE" : "READY · MANUAL MODE AND STOP REQUIRED")}
       </p>
     </SectionPanel>
   </SectionFrame>;

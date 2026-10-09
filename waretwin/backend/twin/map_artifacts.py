@@ -25,8 +25,9 @@ from .nav2_export import floor_artifact_name, render_nav2_map
 from .navigation_graph import prepare_published_navigation
 
 ROOT = Path(__file__).resolve().parents[3]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+_export_root = Path(settings.BASE_DIR) if (Path(settings.BASE_DIR) / 'tools').is_dir() else ROOT
+if str(_export_root) not in sys.path:
+    sys.path.insert(0, str(_export_root))
 
 from tools.export_gazebo_world import export_gazebo_world  # noqa: E402
 

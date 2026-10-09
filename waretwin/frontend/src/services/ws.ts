@@ -16,13 +16,14 @@ import { detailFramePatch, detailViewStatusPatch } from "../components/control/d
 import { THRESHOLDS } from "../schema/twin_state";
 import { useStore } from "../state/store";
 import { MapSnapshotOrderGuard } from "../layout/mapSnapshotOrder";
+import { runtimeEnv } from "../runtimeEnv";
 
 export type ConnState = "connecting" | "online" | "reconnecting" | "offline" | "error";
 
 type RuntimeLocation = Pick<Location, "protocol" | "hostname">;
 type RuntimeUrls = { apiUrl: string; wsUrl: string };
 
-const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+const env = runtimeEnv;
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/$/, "");

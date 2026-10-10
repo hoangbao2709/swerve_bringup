@@ -1007,6 +1007,29 @@ def initialize_robot_pose(request, robot_id: str):
             or applied.get('active_map_id') != active_map['active_map_id']
             or str(applied.get('active_map_revision') or '') != str(active_map['active_map_revision'])):
         return _error('localization service did not confirm the requested pose on the active map', 502)
+    try:
+        request_stamp_s = float(applied['request_stamp_s'])
+        tf_stamp_s = float(applied['tf_stamp_s'])
+        tf_age_s = float(applied['tf_age_s'])
+        position_error_m = float(applied['position_error_m'])
+        yaw_error_rad = float(applied['yaw_error_rad'])
+        confirmation_duration_s = float(applied['tf_confirmation_duration_sim_s'])
+        confirmation_samples = int(applied['tf_confirmation_samples'])
+        position_tolerance_m = float(applied['position_tolerance_m'])
+        yaw_tolerance_rad = float(applied['yaw_tolerance_rad'])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return _error('localization confirmation omitted its timestamp evidence', 502)
+    if (not all(math.isfinite(value) for value in (
+                request_stamp_s, tf_stamp_s, tf_age_s, position_error_m, yaw_error_rad,
+                confirmation_duration_s, position_tolerance_m, yaw_tolerance_rad))
+            or tf_stamp_s < request_stamp_s
+            or tf_age_s < -0.1 or tf_age_s > 0.5
+            or position_tolerance_m <= 0.0 or position_tolerance_m > 0.05
+            or yaw_tolerance_rad <= 0.0 or yaw_tolerance_rad > 0.05
+            or position_error_m > position_tolerance_m
+            or yaw_error_rad > yaw_tolerance_rad
+            or confirmation_duration_s < 0.25 or confirmation_samples < 3):
+        return _error('localization confirmation is stale, unstable, or outside the requested pose tolerance', 502)
     if active_map.get('map_source') == 'LOCAL_MAP':
         runtime.local_map_localization_confirmations[robot_id] = {
             'active_map_id': str(active_map['active_map_id']),
@@ -1015,7 +1038,16 @@ def initialize_robot_pose(request, robot_id: str):
     return JsonResponse({'ok': True, 'robot_id': robot_id, 'frame_id': frame_id,
                          'pose': pose, 'active_map_id': active_map['active_map_id'],
                          'active_map_revision': active_map['active_map_revision'],
-                         'localization_owner': 'ekf_v30e'})
+                         'localization_owner': 'ekf_v30e',
+                         'request_stamp_s': request_stamp_s,
+                         'tf_stamp_s': tf_stamp_s,
+                         'tf_age_s': tf_age_s,
+                         'position_error_m': position_error_m,
+                         'yaw_error_rad': yaw_error_rad,
+                         'position_tolerance_m': position_tolerance_m,
+                         'yaw_tolerance_rad': yaw_tolerance_rad,
+                         'tf_confirmation_duration_sim_s': confirmation_duration_s,
+                         'tf_confirmation_samples': confirmation_samples})
 
 
 def _get_vda_config(robot_id: str):

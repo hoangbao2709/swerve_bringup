@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import os
@@ -10,6 +11,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections import deque
+from threading import RLock, Thread
 
 import rclpy
 import websocket
@@ -19,11 +22,14 @@ from gazebo_msgs.msg import ModelStates
 from nav_msgs.msg import OccupancyGrid, Odometry
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
+from rclpy.clock import ClockType
+from rclpy.duration import Duration
 from rclpy.executors import SingleThreadedExecutor, await_or_execute
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rcl_interfaces.srv import GetParameters
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -34,6 +40,10 @@ TRANSLATION_TOLERANCE_M = 0.05
 ROTATION_TOLERANCE_RAD = 0.05
 NAV_GOAL_XY_TOLERANCE_M = 0.05
 NAV_GOAL_YAW_TOLERANCE_RAD = 0.05
+MAX_TF_COMPONENT_AGE_SIM_S = 0.5
+MAX_TF_COMPONENT_SKEW_SIM_S = 0.5
+TF_LOOKUP_TIMEOUT_S = 0.05
+MAX_SIM_CLOCK_WALL_AGE_S = 1.0
 MOTION_DURATION_SIM_S = 2.0
 WEB_COMMAND_REFRESH_WALL_S = 0.10
 EXPECTED_ROBOT_ENTITY = 'swerve_base'
@@ -42,9 +52,9 @@ EXPECTED_ROBOT_ENTITY = 'swerve_base'
 class PublisherInfoExecutor(SingleThreadedExecutor):
     """Keep Humble's DDS MessageInfo for /cmd_vel publisher attribution."""
 
-    def __init__(self, node, publisher_subscription):
+    def __init__(self, node, info_subscriptions):
         super().__init__()
-        self.publisher_subscription = publisher_subscription
+        self.info_subscriptions = set(info_subscriptions)
         self.add_node(node)
 
     def _take_subscription(self, sub):
@@ -55,10 +65,152 @@ class PublisherInfoExecutor(SingleThreadedExecutor):
         if message_info is None:
             return
         message, info = message_info
-        if sub is self.publisher_subscription:
+        if sub in self.info_subscriptions:
             await await_or_execute(sub.callback, message, info)
         else:
             await await_or_execute(sub.callback, message)
+
+
+class EpochTfObserver(Node):
+    """Receive TF independently and replace subscriptions after a clock rewind.
+
+    The acceptance probe performs blocking HTTP/WebSocket work between its ROS
+    callbacks. Isolating TF reception prevents those operations from starving
+    the transform buffer. Recreating the listener discards queued volatile
+    /tf samples and reacquires transient-local /tf_static data.
+    """
+
+    def __init__(self):
+        super().__init__('simulation_e2e_tf_observer', parameter_overrides=[
+            Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        self.simulation_time_s = None
+        self.clock_received_monotonic = None
+        self.clock_samples = []
+        self.clock_source_samples = deque(maxlen=20000)
+        self.clock_resets = []
+        self.epoch_generation = 0
+        self.clock_update_callbacks = []
+        self._snapshot_lock = RLock()
+        self.tf = Buffer()
+        clock_qos = QoSProfile(depth=20, reliability=ReliabilityPolicy.BEST_EFFORT,
+                               durability=DurabilityPolicy.VOLATILE)
+        self.clock_subscription = self.create_subscription(
+            Clock, '/clock', self._clock_cb, clock_qos)
+        self.tf_listener = TransformListener(self.tf, self)
+        # ``Node.executor`` is a managed property that registers this node with
+        # an executor; it is not a place to store the executor instance. Keep
+        # the observer's executor separately so replacing it cannot detach the
+        # node or leave the worker without an executor.
+        self.tf_executor = PublisherInfoExecutor(self, (self.clock_subscription,))
+        self.thread = Thread(target=self.tf_executor.spin,
+                             name='simulation-e2e-tf-observer', daemon=True)
+        self.thread.start()
+
+    def _clock_cb(self, msg, info=None):
+        stamp = msg.clock
+        current = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        received = time.monotonic()
+        source_ns = int(info.get('source_timestamp', 0) or 0) if isinstance(info, dict) else 0
+        received_ns = int(info.get('received_timestamp', 0) or 0) if isinstance(info, dict) else 0
+        with self._snapshot_lock:
+            previous = self.simulation_time_s
+            if previous is not None and current < previous - 0.5:
+                self.tf_listener.unregister()
+                self.tf = Buffer()
+                self.tf_listener = TransformListener(self.tf, self)
+                self.epoch_generation += 1
+                self.clock_resets.append({
+                    'previous_sim_s': previous,
+                    'current_sim_s': current,
+                    'backward_jump_s': previous - current,
+                    'epoch_generation': self.epoch_generation,
+                    'wall_monotonic_s': received,
+                })
+                self.clock_source_samples.clear()
+            self.simulation_time_s = current
+            self.clock_received_monotonic = received
+            if source_ns > 0:
+                sample = {
+                    'source_timestamp_ns': source_ns,
+                    'received_timestamp_ns': received_ns,
+                    'simulation_time_s': current,
+                }
+                source_stamps = [row['source_timestamp_ns']
+                                 for row in self.clock_source_samples]
+                index = bisect.bisect_left(source_stamps, source_ns)
+                if index < len(source_stamps) and source_stamps[index] == source_ns:
+                    self.clock_source_samples[index] = sample
+                else:
+                    self.clock_source_samples.insert(index, sample)
+                    if len(self.clock_source_samples) > self.clock_source_samples.maxlen:
+                        self.clock_source_samples.popleft()
+            if not self.clock_samples or received - self.clock_samples[-1]['wall_monotonic_s'] >= 0.25:
+                self.clock_samples.append({'simulation_time_s': current,
+                                           'wall_monotonic_s': received})
+            epoch = self.epoch_generation
+            callbacks = tuple(self.clock_update_callbacks)
+        for callback in callbacks:
+            callback(epoch)
+
+    def add_clock_update_callback(self, callback):
+        self.clock_update_callbacks.append(callback)
+
+    def clock_source_timestamp_bounds(self):
+        with self._snapshot_lock:
+            if not self.clock_source_samples:
+                return None, None
+            return (self.clock_source_samples[0]['source_timestamp_ns'],
+                    self.clock_source_samples[-1]['source_timestamp_ns'])
+
+    def tf_snapshot(self):
+        with self._snapshot_lock:
+            return (self.tf, self.epoch_generation, self.simulation_time_s,
+                    self.clock_received_monotonic)
+
+    def simulation_time_at_source_timestamp(self, source_timestamp_ns):
+        """Map a Gazebo message source timestamp through the live /clock samples."""
+        try:
+            target = int(source_timestamp_ns)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        with self._snapshot_lock:
+            samples = list(self.clock_source_samples)
+        if target <= 0 or len(samples) < 2:
+            return None
+        source_times = [sample['source_timestamp_ns'] for sample in samples]
+        right_index = bisect.bisect_left(source_times, target)
+        if right_index < len(samples) and source_times[right_index] == target:
+            return {
+                'simulation_time_s': samples[right_index]['simulation_time_s'],
+                'source_timestamp_ns': target,
+                'clock_source_timestamps_ns': [target],
+                'interpolation_span_wall_s': 0.0,
+                'method': 'exact_rmw_source_timestamp',
+            }
+        if right_index == 0 or right_index >= len(samples):
+            return None
+        before, after = samples[right_index - 1], samples[right_index]
+        span_ns = after['source_timestamp_ns'] - before['source_timestamp_ns']
+        if span_ns <= 0:
+            return None
+        fraction = (target - before['source_timestamp_ns']) / span_ns
+        simulation_time_s = (before['simulation_time_s']
+            + (after['simulation_time_s'] - before['simulation_time_s']) * fraction)
+        return {
+            'simulation_time_s': simulation_time_s,
+            'source_timestamp_ns': target,
+            'clock_source_timestamps_ns': [before['source_timestamp_ns'],
+                                           after['source_timestamp_ns']],
+            'interpolation_span_wall_s': span_ns * 1e-9,
+            'method': 'interpolated_between_rmw_clock_source_timestamps',
+        }
+
+    def close(self):
+        self.tf_executor.shutdown(timeout_sec=2.0)
+        self.thread.join(timeout=2.0)
+        self.tf_listener.unregister()
+        self.tf_executor.remove_node(self)
+        self.destroy_node()
 
 
 def yaw_from_quaternion(q) -> float:
@@ -84,10 +236,240 @@ def dist(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
     return math.hypot(b[0] - a[0], b[1] - a[1])
 
 
+def failed_acceptance_conditions(checks: dict[str, bool]) -> list[str]:
+    """Return every failed or unavailable named release criterion."""
+    return [name for name, passed in checks.items() if passed is not True]
+
+
+def compose_planar_transforms(parent_to_mid: tuple[float, float, float],
+                              mid_to_child: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Compose planar map->odom and odom->base transforms."""
+    px, py, pyaw = parent_to_mid
+    mx, my, myaw = mid_to_child
+    cosine, sine = math.cos(pyaw), math.sin(pyaw)
+    return (px + cosine * mx - sine * my,
+            py + sine * mx + cosine * my,
+            wrap_angle(pyaw + myaw))
+
+
+def map_pose_from_world(map_pose_reference: tuple[float, float, float],
+                        world_pose_reference: tuple[float, float, float],
+                        current_world_pose: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Project Gazebo ground truth through a measured map/world alignment."""
+    delta_yaw = wrap_angle(map_pose_reference[2] - world_pose_reference[2])
+    cosine, sine = math.cos(delta_yaw), math.sin(delta_yaw)
+    tx = map_pose_reference[0] - (cosine * world_pose_reference[0]
+                                  - sine * world_pose_reference[1])
+    ty = map_pose_reference[1] - (sine * world_pose_reference[0]
+                                  + cosine * world_pose_reference[1])
+    return (cosine * current_world_pose[0] - sine * current_world_pose[1] + tx,
+            sine * current_world_pose[0] + cosine * current_world_pose[1] + ty,
+            wrap_angle(current_world_pose[2] + delta_yaw))
+
+
+def transform_is_fresh(age_sim_s: float, *, maximum_age: float = MAX_TF_COMPONENT_AGE_SIM_S) -> bool:
+    """Reject stale or materially future-dated TF samples in simulation time."""
+    return math.isfinite(age_sim_s) and -0.05 <= age_sim_s <= maximum_age
+
+
+def transform_is_confirmable_when_settled(sample: dict | None) -> bool:
+    """Bound post-stop TF age; start-of-motion admission still requires fresh TF.
+
+    SLAM may stop refreshing map->odom while the chassis is stationary. This
+    bounded post-settle observation is accepted only alongside mechanical
+    settling and an independent Gazebo-to-map accuracy check.
+    """
+    if not isinstance(sample, dict) or sample.get('frame_ids_valid') is not True:
+        return False
+    try:
+        skew = float(sample['component_time_skew_sim_s'])
+        ages = [float(sample[key]['age_sim_s'])
+                for key in ('map_to_odom', 'odom_to_base')]
+        pose = tuple(float(value) for value in sample['pose'])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return (all(math.isfinite(value) for value in (*ages, *pose, skew))
+            and all(-0.05 <= age <= 1.0 for age in ages)
+            and skew <= MAX_TF_COMPONENT_SKEW_SIM_S)
+
+
+def pose_pair_skew_sim_s(map_sample: dict | None,
+                         gazebo_sim_s: float | None) -> float | None:
+    if not isinstance(map_sample, dict) or gazebo_sim_s is None:
+        return None
+    try:
+        odom_stamp = float(map_sample['stamp_sim_s'])
+        gazebo_stamp = float(gazebo_sim_s)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(odom_stamp) or not math.isfinite(gazebo_stamp):
+        return None
+    return abs(gazebo_stamp - odom_stamp)
+
+
+def common_tf_sample_time(map_to_odom_stamp_s: float,
+                          odom_to_base_stamp_s: float,
+                          requested_stamp_s: float | None = None) -> float | None:
+    """Select a non-extrapolating timestamp shared by the two dynamic TF edges.
+
+    Asking TF2 for ``map -> base`` at Time(0) can return an old compound-chain
+    timestamp even while the individual dynamic edges have newer samples. The
+    latest common timestamp for this known ``map -> odom -> base`` chain is the
+    earlier latest edge timestamp. TF2 then interpolates each edge at exactly
+    that time; requests later than either edge are rejected, never extrapolated.
+    """
+    try:
+        map_stamp = float(map_to_odom_stamp_s)
+        odom_stamp = float(odom_to_base_stamp_s)
+        requested = (min(map_stamp, odom_stamp) if requested_stamp_s is None
+                     else float(requested_stamp_s))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(value) for value in (map_stamp, odom_stamp, requested)):
+        return None
+    latest_common = min(map_stamp, odom_stamp)
+    return requested if requested <= latest_common + 1e-9 else None
+
+
+def common_pose_pair_stamp(tf_stamp_s: float, gazebo_stamp_s: float,
+                           minimum_stamp_s: float | None = None) -> float | None:
+    """Choose an exact shared pose time, optionally after a state transition."""
+    try:
+        tf_stamp = float(tf_stamp_s)
+        gazebo_stamp = float(gazebo_stamp_s)
+        minimum = None if minimum_stamp_s is None else float(minimum_stamp_s)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    values = (tf_stamp, gazebo_stamp) if minimum is None else (
+        tf_stamp, gazebo_stamp, minimum)
+    if not all(math.isfinite(value) for value in values):
+        return None
+    shared = min(tf_stamp, gazebo_stamp)
+    if minimum is not None and shared < minimum - 1e-6:
+        return None
+    return shared
+
+
+def ready_navigation_map_signature(runtime_status, robot_id,
+                                   verified_local_map_identity=None):
+    """Return the readiness identity for the active runtime's map contract.
+
+    UNIFIED mode requires the bridge's registered canonical map tuple to match
+    the active SLAM map.  A supervised NAVIGATION handoff instead loads a
+    robot-local saved map directly in Nav2; that mode intentionally has no
+    canonical registration tuple, so callers must supply the exact local map
+    identity whose YAML/PGM and live OccupancyGrid were independently checked.
+    """
+    if not isinstance(runtime_status, dict):
+        return None
+    active = (runtime_status.get('local_active_maps') or {}).get(robot_id) or {}
+    nav_map = (runtime_status.get('navigation_maps') or {}).get(robot_id) or {}
+    active_id = str(active.get('active_map_id') or '')
+    active_revision = str(active.get('active_map_revision') or '')
+    if verified_local_map_identity is not None:
+        expected_id = str(verified_local_map_identity.get('active_map_id') or '')
+        expected_revision = str(verified_local_map_identity.get('active_map_revision') or '')
+        capabilities = (runtime_status.get('robot_capabilities') or {}).get(robot_id) or {}
+        local_id = str(active.get('local_active_map_id') or '')
+        local_revision = str(active.get('local_active_map_revision') or '')
+        if (str(runtime_status.get('runtime_state') or '').upper() != 'NAVIGATION'
+                or active.get('map_source') != 'LOCAL_MAP'
+                or active.get('map_sync_status') != 'LOCAL_ONLY'
+                or not expected_id or not expected_revision
+                or active_id != expected_id or active_revision != expected_revision
+                or local_id != expected_id or local_revision != expected_revision
+                or capabilities.get('nav2_ready') is not True):
+            return None
+        # The caller supplies this identity only after independently validating
+        # that Nav2's fresh /navigation_map raster exactly matches the selected
+        # registry artifact.  Keep it separate from canonical registrations.
+        return ('LOCAL_MAP', active_id, active_revision,
+                str(active.get('map_content_revision') or ''))
+    nav_id = str(nav_map.get('active_map_id') or '')
+    nav_revision = str(nav_map.get('active_map_revision') or '')
+    navigation_revision = str(nav_map.get('navigation_map_revision') or '')
+    if (nav_map.get('ready') is not True or not active_id or not active_revision
+            or nav_id != active_id or nav_revision != active_revision
+            or not navigation_revision):
+        return None
+    return (active_id, active_revision, navigation_revision,
+            str(nav_map.get('canonical_map_revision') or ''),
+            str(nav_map.get('registration_revision') or ''),
+            str(nav_map.get('registration_source') or ''))
+
+
+def interpolate_gazebo_pose(samples, simulation_time_s: float):
+    """Return ModelStates pose at a shared simulation stamp; never extrapolate."""
+    try:
+        target = float(simulation_time_s)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(target) or not samples:
+        return None
+    ordered = list(samples)
+    for sample in ordered:
+        stamp = float(sample['simulation_time_s'])
+        if abs(stamp - target) <= 1e-9:
+            return {
+                'pose': tuple(sample['pose']), 'simulation_time_s': target,
+                'source_stamps_sim_s': [stamp], 'interpolation_span_sim_s': 0.0,
+                'method': 'exact_model_states_callback_stamp',
+            }
+    for before, after in zip(ordered, ordered[1:]):
+        t0, t1 = float(before['simulation_time_s']), float(after['simulation_time_s'])
+        if t0 <= target <= t1 and t1 > t0:
+            fraction = (target - t0) / (t1 - t0)
+            yaw_delta = wrap_angle(float(after['pose'][2]) - float(before['pose'][2]))
+            return {
+                'pose': (
+                    float(before['pose'][0])
+                    + (float(after['pose'][0]) - float(before['pose'][0])) * fraction,
+                    float(before['pose'][1])
+                    + (float(after['pose'][1]) - float(before['pose'][1])) * fraction,
+                    wrap_angle(float(before['pose'][2]) + yaw_delta * fraction),
+                ),
+                'simulation_time_s': target,
+                'source_stamps_sim_s': [t0, t1],
+                'interpolation_span_sim_s': t1 - t0,
+                'method': 'linear_model_states_interpolation',
+            }
+    return None
+
+
+def insert_gazebo_pose_sample(samples, sample, max_samples=10000):
+    """Keep independently timestamped Gazebo poses in simulation-time order.
+
+    ROS callbacks can be dispatched late after another callback performs
+    blocking work. Callback arrival order is therefore not a safe proxy for
+    source-time order. Keep history sorted and replace duplicate stamps so
+    interpolation and latest-sample selection remain deterministic.
+    """
+    stamp = float(sample['simulation_time_s'])
+    if not math.isfinite(stamp):
+        return deque(samples, maxlen=max_samples)
+    ordered = list(samples)
+    stamps = [float(row['simulation_time_s']) for row in ordered]
+    index = bisect.bisect_left(stamps, stamp)
+    if index < len(ordered) and abs(stamps[index] - stamp) <= 1e-9:
+        replacement = dict(sample)
+        replacement['simulation_time_s'] = stamps[index]
+        ordered[index] = replacement
+    elif index > 0 and abs(stamps[index - 1] - stamp) <= 1e-9:
+        replacement = dict(sample)
+        replacement['simulation_time_s'] = stamps[index - 1]
+        ordered[index - 1] = replacement
+    else:
+        ordered.insert(index, sample)
+    if len(ordered) > max_samples:
+        ordered = ordered[-max_samples:]
+    return deque(ordered, maxlen=max_samples)
+
+
 class MotionProbe(Node):
     def __init__(self):
         super().__init__('simulation_e2e_acceptance', parameter_overrides=[
             Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        self.tf_observer = EpochTfObserver()
         self.odom = None
         self.odom_velocity = None
         self.odom_sample_monotonic = None
@@ -97,10 +479,25 @@ class MotionProbe(Node):
         self.gazebo_pose = None
         self.gazebo_pose_count = 0
         self.gazebo_pose_sample_monotonic = None
+        self.gazebo_pose_sim_s = None
+        self.gazebo_pose_history = deque(maxlen=10000)
+        self.gazebo_history_lock = RLock()
+        self.gazebo_history_epoch = 0
+        self.pending_gazebo_samples = deque(maxlen=100)
+        self.gazebo_unaligned_sample_count = 0
+        self.gazebo_discarded_unaligned_sample_count = 0
+        self.gazebo_unaligned_last = None
+        self.gazebo_valid_sample_count = 0
+        self.tf_observer.add_clock_update_callback(self._flush_pending_gazebo_samples)
         self.joint_state = None
         self.wheel_radius = None
         self.joint_events: list[tuple[float, dict, dict]] = []
         self.map = None
+        self.map_sample_count = 0
+        self.map_sample_monotonic = None
+        self.navigation_map = None
+        self.navigation_map_sample_count = 0
+        self.navigation_map_sample_monotonic = None
         self.cmd_events: list[tuple[float, float, float, float]] = []
         self.manual_cmd_events: list[tuple[float, float, float, float]] = []
         self.nav_cmd_events: list[tuple[float, float, float, float]] = []
@@ -112,18 +509,37 @@ class MotionProbe(Node):
         self.action_status_events: list[tuple[float, dict[bytes, int]]] = []
         self.ws_messages: list[dict] = []
         self.ws_errors: list[str] = []
+        self.operator_ws_closed = False
         self.nav_statuses: list[dict] = []
         self.control_statuses: list[dict] = []
         self.runtime_status = None
+        self.navigation_trace_enabled = False
+        self.navigation_trace_started = None
+        self.navigation_trace_last_sample = 0.0
+        self.navigation_trace: list[dict] = []
         self.command = self.create_publisher(Twist, '/cmd_vel', 10)
         self.nav_command = self.create_publisher(Twist, '/cmd_vel_nav', 10)
         qos = QoSProfile(depth=20, reliability=ReliabilityPolicy.BEST_EFFORT,
                          durability=DurabilityPolicy.VOLATILE)
         self.create_subscription(Odometry, '/odom', self._odom_cb, qos)
         self.create_subscription(Odometry, '/odometry/filtered', self._filtered_odom_cb, qos)
-        self.create_subscription(ModelStates, '/model_states', self._model_states_cb, 10)
+        # Gazebo ModelStates is independent ground truth. Keep its callback on
+        # the dedicated observer executor with /clock and TF so synchronous
+        # HTTP/WebSocket calls on MotionProbe cannot queue stale samples and
+        # later mislabel an old callback as the newest pose.
+        self.model_states_subscription = self.tf_observer.create_subscription(
+            ModelStates, '/model_states', self._model_states_cb, 10)
+        self.tf_observer.tf_executor.info_subscriptions.add(
+            self.model_states_subscription)
         self.create_subscription(JointState, '/joint_states', self._joint_state_cb, 20)
         self.create_subscription(OccupancyGrid, '/map', self._map_cb,
+                                 QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                            durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        # The active Nav2 map is published on /navigation_map in the
+        # REGISTERED_CANONICAL and STATIC_MAP launch modes. Keep a separate
+        # observation from SLAM's /map so acceptance checks do not mistake a
+        # stopped/stale SLAM grid for the map Nav2 actually loaded.
+        self.create_subscription(OccupancyGrid, '/navigation_map', self._navigation_map_cb,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                             durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.cmd_subscription = self.create_subscription(
@@ -149,9 +565,8 @@ class MotionProbe(Node):
         self.create_subscription(
             GoalStatusArray, '/navigate_to_pose/_action/status', self._action_status_cb, 10)
         self.navigation = ActionClient(self, NavigateToPose, '/navigate_to_pose')
-        self.tf = Buffer()
-        self.tf_listener = TransformListener(self.tf, self)
-        self.motion_executor = PublisherInfoExecutor(self, self.cmd_subscription)
+        self.motion_executor = PublisherInfoExecutor(
+            self, (self.cmd_subscription,))
 
     def _odom_cb(self, msg):
         p = pose_from_odom(msg)
@@ -166,7 +581,7 @@ class MotionProbe(Node):
         if all(math.isfinite(value) for value in p):
             self.filtered_odom = p
 
-    def _model_states_cb(self, msg):
+    def _model_states_cb(self, msg, info=None):
         try:
             index = msg.name.index(EXPECTED_ROBOT_ENTITY)
         except ValueError:
@@ -175,11 +590,98 @@ class MotionProbe(Node):
             return
         pose = pose_from_pose(msg.pose[index])
         if all(math.isfinite(value) for value in pose):
-            self.gazebo_pose = pose
+            _, epoch, simulation_time_s, _clock_wall = self.tf_observer.tf_snapshot()
+            info_source_timestamp = (int(info.get('source_timestamp', 0) or 0)
+                                     if isinstance(info, dict) else 0)
+            info_received_timestamp = (int(info.get('received_timestamp', 0) or 0)
+                                       if isinstance(info, dict) else 0)
+            source_time = self.tf_observer.simulation_time_at_source_timestamp(
+                info_source_timestamp)
             body_twist = msg.twist[index]
-            self.gazebo_velocity = (body_twist.linear.x, body_twist.linear.y, body_twist.angular.z)
+            velocity = (body_twist.linear.x, body_twist.linear.y,
+                        body_twist.angular.z)
             self.gazebo_pose_count += 1
-            self.gazebo_pose_sample_monotonic = time.monotonic()
+            if source_time is None:
+                # ModelStates has no Header. Never turn callback dispatch time
+                # into pose freshness. A source stamp just ahead of /clock is
+                # held briefly and retried when the next clock bracket arrives.
+                # Stamps outside the retained clock range are discarded.
+                self.gazebo_unaligned_sample_count += 1
+                self.gazebo_unaligned_last = {
+                    'source_timestamp_ns': info_source_timestamp,
+                    'received_timestamp_ns': info_received_timestamp,
+                    'callback_epoch': epoch,
+                    'callback_wall_monotonic_s': time.monotonic(),
+                }
+                if info_source_timestamp > 0 and info_received_timestamp > 0:
+                    self.pending_gazebo_samples.append({
+                        'pose': pose, 'velocity': velocity,
+                        'source_timestamp_ns': info_source_timestamp,
+                        'received_timestamp_ns': info_received_timestamp,
+                        'epoch': epoch,
+                    })
+                    self._flush_pending_gazebo_samples(epoch)
+                else:
+                    self.gazebo_discarded_unaligned_sample_count += 1
+                return
+            self._record_aligned_gazebo_sample(
+                pose, velocity, info_source_timestamp, info_received_timestamp,
+                source_time, epoch)
+
+    def _record_aligned_gazebo_sample(self, pose, velocity, source_timestamp_ns,
+                                      received_timestamp_ns, source_time, epoch):
+            simulation_time_s = float(source_time['simulation_time_s'])
+            received_age = (time.time_ns() - received_timestamp_ns) * 1e-9
+            # Convert the RMW wall-clock receive time to a monotonic reference
+            # while retaining the original age, so freshness checks include
+            # executor queue delay and do not bless late callbacks.
+            sample_monotonic = time.monotonic() - max(0.0, received_age)
+            with self.gazebo_history_lock:
+                if epoch != self.gazebo_history_epoch:
+                    self.gazebo_pose_history.clear()
+                    self.gazebo_history_epoch = epoch
+            self.gazebo_pose = pose
+            self.gazebo_velocity = velocity
+            self.gazebo_pose_sample_monotonic = sample_monotonic
+            self.gazebo_pose_sim_s = simulation_time_s
+            sample = {
+                'simulation_time_s': simulation_time_s,
+                'pose': pose,
+                'velocity': velocity,
+                'wall_monotonic_s': sample_monotonic,
+                'received_timestamp_ns': received_timestamp_ns,
+                'source_timestamp_ns': source_timestamp_ns,
+                'timestamp_evidence': source_time,
+            }
+            with self.gazebo_history_lock:
+                self.gazebo_pose_history = insert_gazebo_pose_sample(
+                    self.gazebo_pose_history, sample,
+                    max_samples=self.gazebo_pose_history.maxlen or 10000)
+            self.gazebo_valid_sample_count += 1
+
+    def _flush_pending_gazebo_samples(self, current_epoch=None):
+        if not self.pending_gazebo_samples:
+            return
+        if current_epoch is None:
+            _, current_epoch, _, _ = self.tf_observer.tf_snapshot()
+        lower_ns, upper_ns = self.tf_observer.clock_source_timestamp_bounds()
+        pending = list(self.pending_gazebo_samples)
+        self.pending_gazebo_samples.clear()
+        for sample in pending:
+            source_ns = sample['source_timestamp_ns']
+            if sample['epoch'] != current_epoch:
+                self.gazebo_discarded_unaligned_sample_count += 1
+                continue
+            source_time = self.tf_observer.simulation_time_at_source_timestamp(source_ns)
+            if source_time is None:
+                if lower_ns is not None and source_ns < lower_ns:
+                    self.gazebo_discarded_unaligned_sample_count += 1
+                else:
+                    self.pending_gazebo_samples.append(sample)
+                continue
+            self._record_aligned_gazebo_sample(
+                sample['pose'], sample['velocity'], source_ns,
+                sample['received_timestamp_ns'], source_time, current_epoch)
 
     def _joint_state_cb(self, msg):
         positions = {name: float(msg.position[index]) for index, name in enumerate(msg.name)
@@ -199,6 +701,15 @@ class MotionProbe(Node):
         if (msg.info.width > 0 and msg.info.height > 0
                 and len(msg.data) == msg.info.width * msg.info.height):
             self.map = msg
+            self.map_sample_count += 1
+            self.map_sample_monotonic = time.monotonic()
+
+    def _navigation_map_cb(self, msg):
+        if (msg.info.width > 0 and msg.info.height > 0
+                and len(msg.data) == msg.info.width * msg.info.height):
+            self.navigation_map = msg
+            self.navigation_map_sample_count += 1
+            self.navigation_map_sample_monotonic = time.monotonic()
 
     def _cmd_cb(self, msg, info=None):
         self._record_command(self.cmd_events, msg)
@@ -217,35 +728,70 @@ class MotionProbe(Node):
 
     def pump(self, ws=None, timeout=0.02):
         self.motion_executor.spin_once(timeout_sec=timeout)
-        if ws is not None:
-            try:
-                raw = ws.recv()
-            except websocket.WebSocketTimeoutException:
-                return
-            except websocket.WebSocketConnectionClosedException as exc:
-                self.ws_errors.append(f'websocket_closed:{exc}')
-                return
-            if not raw:
-                return
-            try:
-                message = json.loads(raw)
-            except (TypeError, json.JSONDecodeError):
-                self.ws_errors.append('invalid_websocket_json')
-                return
-            if not isinstance(message, dict):
-                return
-            self.ws_messages.append(message)
-            if message.get('type') == 'RUNTIME_STATUS':
-                self.runtime_status = message
-            elif message.get('type') == 'NAV_STATUS':
-                self.nav_statuses.append(message)
-            elif message.get('type') == 'ROBOT_CONTROL_STATUS':
-                self.control_statuses.append(message)
-            elif message.get('type') == 'ERROR':
-                self.ws_errors.append(
-                    f'{message.get("code", "ERROR")}:{message.get("message", "")}'
-                )
+        try:
+            if ws is not None:
+                try:
+                    raw = ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    raw = None
+                except websocket.WebSocketConnectionClosedException as exc:
+                    self.ws_errors.append(f'websocket_closed:{exc}')
+                    self.operator_ws_closed = True
+                    raw = None
+                except (ConnectionResetError, BrokenPipeError, OSError) as exc:
+                    self.ws_errors.append(f'websocket_transport_error:{type(exc).__name__}:{exc}')
+                    self.operator_ws_closed = True
+                    raw = None
+                if raw:
+                    try:
+                        message = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        self.ws_errors.append('invalid_websocket_json')
+                        message = None
+                    if isinstance(message, dict):
+                        self.ws_messages.append(message)
+                        if message.get('type') == 'RUNTIME_STATUS':
+                            self.runtime_status = message
+                        elif message.get('type') == 'NAV_STATUS':
+                            self.nav_statuses.append(message)
+                        elif message.get('type') == 'ROBOT_CONTROL_STATUS':
+                            self.control_statuses.append(message)
+                        elif message.get('type') == 'ERROR':
+                            self.ws_errors.append(
+                                f'{message.get("code", "ERROR")}:{message.get("message", "")}'
+                            )
+        finally:
+            self.record_navigation_sample()
 
+    def record_navigation_sample(self, *, force=False):
+        if not self.navigation_trace_enabled:
+            return
+        monotonic_now = time.monotonic()
+        if not force and monotonic_now - self.navigation_trace_last_sample < 0.10:
+            return
+        if self.navigation_trace_started is None:
+            self.navigation_trace_started = monotonic_now
+        map_sample, gazebo_sample = self.map_gazebo_pose_pair()
+        gazebo_pose = ((gazebo_sample or {}).get('pose')
+                       if map_sample is not None else None)
+        gazebo_age = (gazebo_sample or {}).get('sample_age_wall_s')
+        def latest(events):
+            return list(events[-1][1:]) if events else None
+        self.navigation_trace.append({
+            'elapsed_wall_s': round(monotonic_now - self.navigation_trace_started, 3),
+            'observer_simulation_time_s': self.sim_time(),
+            'simulation_time_s': ((map_sample or {}).get('pose_pair_timestamp_sim_s')
+                                  if map_sample is not None else None),
+            'map_tf': map_sample,
+            'gazebo_pose': gazebo_pose,
+            'gazebo_velocity': self.gazebo_velocity,
+            'gazebo_sample_age_wall_s': gazebo_age,
+            'odom_velocity': self.odom_velocity,
+            'nav_command': latest(self.nav_cmd_events),
+            'selected_command': latest(self.selected_cmd_events),
+            'command_owner': latest(self.command_owner_events),
+        })
+        self.navigation_trace_last_sample = monotonic_now
     def wait_until(self, predicate, timeout, ws=None):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -255,6 +801,9 @@ class MotionProbe(Node):
         return bool(predicate())
 
     def sim_time(self) -> float:
+        _, _epoch, observer_time, _clock_wall = self.tf_observer.tf_snapshot()
+        if observer_time is not None:
+            return float(observer_time)
         return self.get_clock().now().nanoseconds * 1e-9
 
     def wait_mechanical_settling(self, ws=None, timeout=45.0,
@@ -317,12 +866,190 @@ class MotionProbe(Node):
                 return {**result, 'duration_s': result['settling_wall_seconds']}
 
     def map_pose(self):
+        sample = self.map_pose_sample()
+        return sample['pose'] if sample and sample.get('fresh') else None
+
+    def map_pose_sample(self, at_sim_time_s=None):
+        tf, generation, clock_time_s, clock_received = self.tf_observer.tf_snapshot()
+        if clock_time_s is None or clock_received is None:
+            return None
         try:
-            transform = self.tf.lookup_transform('map', 'base_footprint', rclpy.time.Time()).transform
-            return (transform.translation.x, transform.translation.y,
-                    yaw_from_quaternion(transform.rotation))
+            map_to_odom_latest = tf.lookup_transform('map', 'odom', rclpy.time.Time())
+            odom_to_base_latest = tf.lookup_transform(
+                'odom', 'base_footprint', rclpy.time.Time())
+
+            def stamp_seconds(stamped):
+                stamp = stamped.header.stamp
+                return int(stamp.sec) + int(stamp.nanosec) * 1e-9
+
+            map_latest_s = stamp_seconds(map_to_odom_latest)
+            odom_latest_s = stamp_seconds(odom_to_base_latest)
+            target_time_s = common_tf_sample_time(
+                map_latest_s, odom_latest_s, at_sim_time_s)
+            if target_time_s is None:
+                return None
+            target_time = rclpy.time.Time(
+                nanoseconds=round(target_time_s * 1_000_000_000),
+                clock_type=ClockType.ROS_TIME)
+            timeout = Duration(seconds=TF_LOOKUP_TIMEOUT_S)
+            map_to_odom = tf.lookup_transform(
+                'map', 'odom', target_time, timeout=timeout)
+            odom_to_base = tf.lookup_transform(
+                'odom', 'base_footprint', target_time, timeout=timeout)
+            map_to_base = tf.lookup_transform(
+                'map', 'base_footprint', target_time, timeout=timeout)
+            now_ns = round(float(clock_time_s) * 1_000_000_000)
+
+            def transform_sample(stamped, *, source_stamp_s=None):
+                transform = stamped.transform
+                pose = (float(transform.translation.x), float(transform.translation.y),
+                        yaw_from_quaternion(transform.rotation))
+                stamp_ns = round(stamp_seconds(stamped) * 1_000_000_000)
+                return {
+                    'pose': pose,
+                    'stamp_sim_s': stamp_ns / 1_000_000_000,
+                    'age_sim_s': (now_ns - stamp_ns) / 1_000_000_000,
+                    'parent_frame': stamped.header.frame_id,
+                    'child_frame': stamped.child_frame_id,
+                    **({'source_latest_stamp_sim_s': source_stamp_s,
+                        'source_latest_age_sim_s': clock_time_s - source_stamp_s}
+                       if source_stamp_s is not None else {}),
+                }
+
+            map_odom_sample = transform_sample(map_to_odom, source_stamp_s=map_latest_s)
+            odom_base_sample = transform_sample(odom_to_base, source_stamp_s=odom_latest_s)
+            common_sample = transform_sample(map_to_base)
+            latest_skew = abs(map_latest_s - odom_latest_s)
+            sampled_component_skew = abs(
+                map_odom_sample['stamp_sim_s'] - odom_base_sample['stamp_sim_s'])
+            pose = common_sample['pose']
+            composed_pose = compose_planar_transforms(
+                map_odom_sample['pose'], odom_base_sample['pose'])
+            component_frames_valid = (
+                map_odom_sample['parent_frame'].lstrip('/') == 'map'
+                and map_odom_sample['child_frame'].lstrip('/') == 'odom'
+                and odom_base_sample['parent_frame'].lstrip('/') == 'odom'
+                and odom_base_sample['child_frame'].lstrip('/') == 'base_footprint'
+            )
+            latest_source_ages = (clock_time_s - map_latest_s,
+                                  clock_time_s - odom_latest_s)
+            sources_fresh = all(transform_is_fresh(age) for age in latest_source_ages)
+            common_age = clock_time_s - target_time_s
+            clock_wall_age = time.monotonic() - clock_received
+            observer_unchanged = self.tf_observer.tf_snapshot()[1] == generation
+            sampled_at_requested_time = (
+                abs(map_odom_sample['stamp_sim_s'] - target_time_s) <= 1e-6
+                and abs(odom_base_sample['stamp_sim_s'] - target_time_s) <= 1e-6
+                and abs(common_sample['stamp_sim_s'] - target_time_s) <= 1e-6
+            )
+            fresh = bool(component_frames_valid and sampled_at_requested_time
+                         and transform_is_fresh(common_age)
+                         and clock_wall_age <= MAX_SIM_CLOCK_WALL_AGE_S
+                         and observer_unchanged)
+            return {
+                'pose': pose,
+                'method': 'tf_lookup_at_latest_common_sim_time',
+                'fresh': fresh,
+                'frame_ids_valid': component_frames_valid,
+                'sampled_at_requested_time': sampled_at_requested_time,
+                'component_time_skew_sim_s': sampled_component_skew,
+                'latest_component_stamp_skew_sim_s': latest_skew,
+                'latest_component_sources_fresh': sources_fresh,
+                'latest_component_source_ages_sim_s': list(latest_source_ages),
+                'stamp_sim_s': target_time_s,
+                'age_sim_s': common_age,
+                'simulation_clock_age_wall_s': clock_wall_age,
+                'tf_epoch_generation': generation,
+                'map_to_odom': map_odom_sample,
+                'odom_to_base': odom_base_sample,
+                'map_to_base_at_common_time': common_sample,
+                'component_composition_error_m': dist(pose, composed_pose),
+                'component_composition_yaw_error_rad': abs(wrap_angle(
+                    pose[2] - composed_pose[2])),
+                'latest_common_time': common_sample,
+                'latest_source_stamps_sim_s': {
+                    'map_to_odom': map_latest_s,
+                    'odom_to_base': odom_latest_s,
+                },
+            }
         except (TransformException, RuntimeError):
             return None
+
+    def gazebo_pose_at(self, simulation_time_s):
+        """Interpolate independent Gazebo ModelStates at a TF simulation stamp."""
+        if not math.isfinite(float(simulation_time_s)):
+            return None
+        target = float(simulation_time_s)
+        with self.gazebo_history_lock:
+            history = list(self.gazebo_pose_history)
+        if not history:
+            return None
+        result = interpolate_gazebo_pose(history, target)
+        if result is None:
+            return None
+        contributing = [sample for sample in history
+                        if sample['simulation_time_s'] in result['source_stamps_sim_s']]
+        received_ns = [int(sample['received_timestamp_ns']) for sample in contributing
+                       if sample.get('received_timestamp_ns')]
+        result['sample_age_wall_s'] = (
+            max(0.0, (time.time_ns() - max(received_ns)) * 1e-9) if received_ns else None)
+        result['source_timestamps_ns'] = [sample.get('source_timestamp_ns')
+                                          for sample in contributing]
+        result['clock_interpolation_evidence'] = [sample.get('timestamp_evidence')
+                                                  for sample in contributing]
+        return result
+
+    def gazebo_observer_diagnostics(self):
+        with self.gazebo_history_lock:
+            latest = self.gazebo_pose_history[-1] if self.gazebo_pose_history else None
+        receive_age = None
+        if latest and latest.get('received_timestamp_ns'):
+            receive_age = (time.time_ns() - int(latest['received_timestamp_ns'])) * 1e-9
+        source_bounds = self.tf_observer.clock_source_timestamp_bounds()
+        _, epoch, clock_sim_s, _ = self.tf_observer.tf_snapshot()
+        return {
+            'clock_epoch': epoch,
+            'clock_sim_s': clock_sim_s,
+            'raw_model_states_callbacks': self.gazebo_pose_count,
+            'aligned_model_states_samples': self.gazebo_valid_sample_count,
+            'unaligned_model_states_callbacks': self.gazebo_unaligned_sample_count,
+            'discarded_unaligned_model_states_samples': self.gazebo_discarded_unaligned_sample_count,
+            'pending_model_states_samples': len(self.pending_gazebo_samples),
+            'last_unaligned_sample': self.gazebo_unaligned_last,
+            'clock_source_timestamp_bounds_ns': source_bounds,
+            'latest_aligned_sim_time_s': (latest.get('simulation_time_s') if latest else None),
+            'latest_aligned_received_age_wall_s': receive_age,
+            'latest_aligned_source_timestamp_ns': (latest.get('source_timestamp_ns')
+                                                   if latest else None),
+        }
+
+    def map_gazebo_pose_pair(self, minimum_stamp_s=None):
+        latest = self.map_pose_sample()
+        with self.gazebo_history_lock:
+            latest_gazebo = (self.gazebo_pose_history[-1]
+                             if self.gazebo_pose_history else None)
+        if latest is None or latest_gazebo is None:
+            return None, None
+        target = common_pose_pair_stamp(
+            latest['stamp_sim_s'], latest_gazebo['simulation_time_s'], minimum_stamp_s)
+        if target is None:
+            return None, None
+        tf_sample = self.map_pose_sample(at_sim_time_s=target)
+        gazebo_sample = self.gazebo_pose_at(target)
+        if tf_sample is None or gazebo_sample is None:
+            return None, None
+        tf_sample['pose_pair_timestamp_sim_s'] = target
+        tf_sample['pose_pair_time_skew_sim_s'] = abs(
+            tf_sample['stamp_sim_s'] - gazebo_sample['simulation_time_s'])
+        tf_sample['gazebo_sample'] = gazebo_sample
+        return tf_sample, gazebo_sample
+
+    def destroy_node(self):
+        executor = getattr(self, 'motion_executor', None)
+        if executor is not None:
+            executor.remove_node(self)
+        self.tf_observer.close()
+        super().destroy_node()
 
     @staticmethod
     def joint_snapshot(sample):
@@ -590,10 +1317,10 @@ class MotionProbe(Node):
             'watchdog_result': watchdog_result,
         }
 
-    def map_goal_candidate(self):
+    def map_goal_candidate(self, pose=None):
         if self.map is None:
             return None, 'map_message_unavailable'
-        pose = self.map_pose()
+        pose = pose if pose is not None else self.map_pose()
         if pose is None:
             return None, 'TF_map_to_base_footprint_unavailable'
         grid = self.map
@@ -656,15 +1383,31 @@ class MotionProbe(Node):
                                min(timeout, 15.0)):
             return {'passed': False, 'server_ready': True,
                     'reason': 'map_or_map_to_base_footprint_unavailable'}
-        goal_pose, goal_error = self.map_goal_candidate()
+        map_reference, gazebo_reference = self.map_gazebo_pose_pair()
+        pose0 = (map_reference or {}).get('pose')
+        gazebo0 = (gazebo_reference or {}).get('pose')
+        gazebo_reference_age = (gazebo_reference or {}).get('sample_age_wall_s')
+        pair_skew = (map_reference or {}).get('pose_pair_time_skew_sim_s')
+        if (pose0 is None or not map_reference.get('fresh') or gazebo0 is None
+                or gazebo_reference_age is None or gazebo_reference_age > 1.0
+                or pair_skew is None or pair_skew > MAX_TF_COMPONENT_SKEW_SIM_S):
+            return {'passed': False, 'server_ready': True,
+                    'reason': 'fresh_synchronized_map_tf_and_gazebo_pose_pair_unavailable_before_goal',
+                    'map_tf_start': map_reference, 'gazebo_pose_start': gazebo0,
+                    'gazebo_pose_age_start_wall_s': gazebo_reference_age,
+                    'map_tf_gazebo_skew_sim_s': pair_skew}
+        goal_pose, goal_error = self.map_goal_candidate(pose0)
         if goal_pose is None:
             return {'passed': False, 'server_ready': True, 'reason': goal_error}
 
         x, y, yaw = goal_pose
-        pose0, gazebo0 = self.map_pose(), self.gazebo_pose
-        if pose0 is None or gazebo0 is None:
+        current_world = self.gazebo_pose
+        if (current_world is None or dist(gazebo0, current_world) > 0.01
+                or abs(wrap_angle(gazebo0[2] - current_world[2])) > 0.01):
             return {'passed': False, 'server_ready': True,
-                    'reason': 'map_or_gazebo_pose_missing_before_goal', 'goal': goal_pose}
+                    'reason': 'robot_moved_while_navigation_start_pose_was_confirmed',
+                    'goal': goal_pose, 'map_tf_start': map_reference,
+                    'gazebo_pose_start': gazebo0, 'gazebo_pose_before_goal': current_world}
         command_index = len(self.nav_cmd_events)
         selected_index = len(self.selected_cmd_events)
         owner_index = len(self.command_owner_events)
@@ -677,18 +1420,28 @@ class MotionProbe(Node):
         goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
         goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
 
+        # Capture the complete direct Nav2 run on the independent TF observer.
+        # The terminal pair alone cannot show whether map->odom drifted
+        # gradually, jumped during scan matching, or became misaligned only
+        # after the action completed.
+        self.navigation_trace = []
+        self.navigation_trace_started = None
+        self.navigation_trace_last_sample = 0.0
+        self.navigation_trace_enabled = True
         deadline = time.monotonic() + timeout
         goal_future = self.navigation.send_goal_async(goal)
         while time.monotonic() < deadline and not goal_future.done():
             self.pump(timeout=0.03)
         if not goal_future.done():
             self.stop_direct(nav_source=True)
+            self.navigation_trace_enabled = False
             return {'passed': False, 'server_ready': True,
                     'reason': 'goal_acceptance_timeout:/navigate_to_pose',
                     'goal': goal_pose}
         goal_handle = goal_future.result()
         if not goal_handle or not goal_handle.accepted:
             self.stop_direct(nav_source=True)
+            self.navigation_trace_enabled = False
             return {'passed': False, 'server_ready': True,
                     'reason': 'goal_rejected:/navigate_to_pose', 'goal': goal_pose,
                     'accepted': False}
@@ -715,8 +1468,33 @@ class MotionProbe(Node):
                 '(NavigateToPose result has no error detail field)'
             )
 
+        self.record_navigation_sample(force=True)
         stop_result = self.stop_direct(nav_source=True)
-        pose1, gazebo1 = self.map_pose(), self.gazebo_pose
+        settling = self.wait_mechanical_settling(timeout=20.0, wall_timeout=90.0)
+        tf_usable_after_settling = self.wait_until(
+            lambda: transform_is_confirmable_when_settled(self.map_pose_sample()), 3.0)
+        fresh_gazebo_after_settling = self.wait_until(
+            lambda: (self.gazebo_pose_sample_monotonic is not None
+                     and time.monotonic() - self.gazebo_pose_sample_monotonic <= 1.0), 3.0)
+        self.record_navigation_sample(force=True)
+        self.navigation_trace_enabled = False
+        map_terminal_sample, gazebo_terminal_sample = self.map_gazebo_pose_pair()
+        pose1 = (map_terminal_sample['pose']
+                 if transform_is_confirmable_when_settled(map_terminal_sample) else None)
+        gazebo1 = (gazebo_terminal_sample or {}).get('pose')
+        ground_truth_map_pose = (map_pose_from_world(pose0, gazebo0, gazebo1)
+                                 if gazebo1 is not None else None)
+        ground_truth_goal_error = (dist(ground_truth_map_pose, goal_pose)
+                                   if ground_truth_map_pose is not None else None)
+        ground_truth_goal_yaw_error = (
+            abs(wrap_angle(ground_truth_map_pose[2] - goal_pose[2]))
+            if ground_truth_map_pose is not None else None)
+        map_tf_vs_ground_truth_error_m = (
+            dist(pose1, ground_truth_map_pose)
+            if pose1 is not None and ground_truth_map_pose is not None else None)
+        map_tf_vs_ground_truth_yaw_error_rad = (
+            abs(wrap_angle(pose1[2] - ground_truth_map_pose[2]))
+            if pose1 is not None and ground_truth_map_pose is not None else None)
         commands = self.nav_cmd_events[command_index:]
         active_commands = [row for row in commands
                            if any(abs(value) > 1e-4 for value in row[1:])]
@@ -729,34 +1507,72 @@ class MotionProbe(Node):
         drive_active = any(any(abs(value) > 1e-4 for value in row[1:]) for row in drives)
         pose_change = dist(pose0, pose1) if pose1 is not None else None
         physical_change = dist(gazebo0, gazebo1) if gazebo1 is not None else None
-        # The requested goal and /map -> base_footprint pose share the active
-        # map frame. Gazebo ModelStates is in the world frame and is used only
-        # for physical displacement, never for map-frame goal error.
         final_goal_error = dist(pose1, goal_pose) if pose1 is not None else None
         final_yaw_error = (abs(wrap_angle(pose1[2] - goal_pose[2]))
                            if pose1 is not None else None)
-        passed = bool(
-            terminal_status == 'SUCCEEDED' and active_commands and active_selected
-            and nav_owner_seen and drive_active
-            and pose_change is not None and pose_change > TRANSLATION_TOLERANCE_M
-            and physical_change is not None and physical_change > TRANSLATION_TOLERANCE_M
-            and final_goal_error is not None
-            and final_goal_error <= NAV_GOAL_XY_TOLERANCE_M
-            and final_yaw_error is not None
-            and final_yaw_error <= NAV_GOAL_YAW_TOLERANCE_RAD
-            and stop_result['zero_drive_command_seen'])
+        acceptance_checks = {
+            'action_succeeded': terminal_status == 'SUCCEEDED',
+            'navigation_cmd_vel_observed': bool(active_commands),
+            'selected_navigation_cmd_vel_observed': bool(active_selected),
+            'nav2_command_owner_observed': nav_owner_seen,
+            'nonzero_drive_command_observed': drive_active,
+            'map_tf_motion_observed': (pose_change is not None
+                                       and pose_change > TRANSLATION_TOLERANCE_M),
+            'gazebo_motion_observed': (physical_change is not None
+                                       and physical_change > TRANSLATION_TOLERANCE_M),
+            'map_tf_goal_translation_within_0_05m': (final_goal_error is not None
+                and final_goal_error <= NAV_GOAL_XY_TOLERANCE_M),
+            'map_tf_goal_yaw_within_0_05rad': (final_yaw_error is not None
+                and final_yaw_error <= NAV_GOAL_YAW_TOLERANCE_RAD),
+            'settling_confirmed': settling.get('passed') is True,
+            'terminal_tf_fresh': tf_usable_after_settling,
+            'terminal_gazebo_sample_fresh': fresh_gazebo_after_settling,
+            'projected_gazebo_goal_translation_within_0_05m': (
+                ground_truth_goal_error is not None
+                and ground_truth_goal_error <= NAV_GOAL_XY_TOLERANCE_M),
+            'projected_gazebo_goal_yaw_within_0_05rad': (
+                ground_truth_goal_yaw_error is not None
+                and ground_truth_goal_yaw_error <= NAV_GOAL_YAW_TOLERANCE_RAD),
+            'map_tf_gazebo_translation_agreement_within_0_05m': (
+                map_tf_vs_ground_truth_error_m is not None
+                and map_tf_vs_ground_truth_error_m <= TRANSLATION_TOLERANCE_M),
+            'map_tf_gazebo_yaw_agreement_within_0_05rad': (
+                map_tf_vs_ground_truth_yaw_error_rad is not None
+                and map_tf_vs_ground_truth_yaw_error_rad <= ROTATION_TOLERANCE_RAD),
+            'zero_drive_command_after_stop': bool(stop_result.get('zero_drive_command_seen')),
+        }
+        failed_checks = failed_acceptance_conditions(acceptance_checks)
+        passed = not failed_checks
         return {
             'passed': passed, 'server_ready': True, 'accepted': True, 'status': terminal_status,
             'reason': None if passed else (exact_reason or
-                'goal_succeeded_without_observed_cmd_vel_controller_command_or_pose_change'),
+                'acceptance_checks_failed:' + ','.join(failed_checks)),
+            'acceptance_checks': acceptance_checks,
+            'failed_acceptance_checks': failed_checks,
             'goal': goal_pose, 'p0': pose0, 'p1': pose1,
+            'map_tf_start': map_reference,
+            'map_tf_after_settling': map_terminal_sample,
+            'gazebo_pose_pair_at_start': gazebo_reference,
+            'gazebo_pose_pair_after_settling': gazebo_terminal_sample,
+            'gazebo_pose_age_start_wall_s': gazebo_reference_age,
+            'map_tf_gazebo_skew_start_sim_s': pair_skew,
             'gazebo_p0': gazebo0, 'gazebo_p1': gazebo1,
+            'ground_truth_map_pose_after_settling': ground_truth_map_pose,
+            'ground_truth_goal_error_m': ground_truth_goal_error,
+            'ground_truth_goal_yaw_error_rad': ground_truth_goal_yaw_error,
+            'map_tf_vs_ground_truth_error_m': map_tf_vs_ground_truth_error_m,
+            'map_tf_vs_ground_truth_yaw_error_rad': map_tf_vs_ground_truth_yaw_error_rad,
+            'settling': settling,
+            'fresh_tf_after_settling': bool(map_terminal_sample and map_terminal_sample.get('fresh')),
+            'tf_usable_after_settling': tf_usable_after_settling,
+            'fresh_gazebo_after_settling': fresh_gazebo_after_settling,
             'displacement_m': pose_change, 'gazebo_displacement_m': physical_change,
             'final_goal_error_m': final_goal_error,
             'final_goal_yaw_error_rad': final_yaw_error,
             'goal_xy_tolerance_m': NAV_GOAL_XY_TOLERANCE_M,
             'goal_yaw_tolerance_rad': NAV_GOAL_YAW_TOLERANCE_RAD,
             'stop_result': stop_result,
+            'navigation_trace_samples': self.navigation_trace,
             'cmd_vel_nonzero_samples': len(active_commands),
             'selected_cmd_vel_nonzero_samples': len(active_selected),
             'command_owner': 'NAV2' if nav_owner_seen else None,
@@ -786,20 +1602,42 @@ def find_goal_status(probe, x, y, robot_id):
 
 def set_mode(probe, ws, robot_id, mode, timeout=8.0):
     initial = len(probe.control_statuses)
+    previous_request_ids = {
+        str(item.get('request_id')) for item in probe.control_statuses[:initial]
+        if item.get('robot_id') == robot_id and item.get('request_id')
+    }
+    request = {'request_ids': set(), 'applied_ids': set(), 'failure': None}
     ws.send(json.dumps({'type': 'ROBOT_MODE', 'robot_id': robot_id, 'mode': mode}))
-    passed = probe.wait_until(
-        lambda: any(item.get('robot_id') == robot_id and item.get('mode') == mode
-                    and item.get('accepted') is True
+
+    def matching_mode_request_applied():
+        for item in probe.control_statuses[initial:]:
+            if item.get('robot_id') != robot_id:
+                continue
+            if item.get('requested_mode', item.get('mode')) != mode:
+                continue
+            request_id = str(item.get('request_id') or '')
+            if not request_id or request_id in previous_request_ids:
+                continue
+            if (item.get('accepted') is False
+                    or item.get('mode_transition_state') == 'FAILED'):
+                request['failure'] = str(item.get('reason') or 'mode_transition_rejected')
+                return False
+            if (item.get('accepted') is True
+                    and item.get('mode_transition_state') == 'REQUESTED'):
+                request['request_ids'].add(request_id)
+            if (item.get('accepted') is True
                     and item.get('mode_transition_state') == 'APPLIED'
-                    and item.get('applied_mode') == mode
-                    for item in probe.control_statuses[initial:]),
-        timeout, ws,
-    )
+                    and item.get('applied_mode') == mode):
+                request['applied_ids'].add(request_id)
+        return bool(request['request_ids'] & request['applied_ids'])
+
+    passed = probe.wait_until(matching_mode_request_applied, timeout, ws)
     reason = None
     if not passed:
-        failures = [item for item in probe.control_statuses[initial:]
-                    if item.get('robot_id') == robot_id and item.get('accepted') is False]
-        reason = str(failures[-1].get('reason') if failures else 'no_accepted_ROBOT_CONTROL_STATUS')
+        reason = (request['failure'] or
+                  ('no_correlated_ROBOT_CONTROL_STATUS_APPLIED'
+                   if request['request_ids'] or request['applied_ids']
+                   else 'no_new_ROBOT_CONTROL_STATUS_request_id'))
     return passed, reason
 
 
@@ -991,15 +1829,100 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     }
 
 
-def web_navigation(probe, ws, robot_id, timeout):
+def web_navigation(probe, ws, robot_id, timeout, minimum_pose_stamp_s=None,
+                   verified_local_map_identity=None):
     if not probe.wait_until(lambda: probe.map is not None and probe.map_pose() is not None,
                             10.0, ws):
         return {'passed': False, 'reason': 'map_or_map_to_base_footprint_unavailable'}
-    if probe.gazebo_pose is None:
-        return {'passed': False, 'reason': 'gazebo_model_pose_unavailable_before_web_goal'}
-    goal, goal_error = probe.map_goal_candidate()
+    paired_start = {'tf': None, 'gazebo': None}
+
+    def capture_fresh_start_pair():
+        tf_sample, gazebo_sample = probe.map_gazebo_pose_pair(minimum_pose_stamp_s)
+        if tf_sample is None or gazebo_sample is None:
+            return False
+        age = gazebo_sample.get('sample_age_wall_s')
+        pair_skew = tf_sample.get('pose_pair_time_skew_sim_s')
+        if (not tf_sample.get('fresh') or age is None or age > 1.0
+                or pair_skew is None or pair_skew > MAX_TF_COMPONENT_SKEW_SIM_S):
+            return False
+        paired_start['tf'] = tf_sample
+        paired_start['gazebo'] = gazebo_sample
+        return True
+
+    pair_ready = probe.wait_until(capture_fresh_start_pair, 5.0, ws)
+    map_reference_sample = paired_start['tf']
+    gazebo_reference_sample = paired_start['gazebo']
+    pose0 = (map_reference_sample or {}).get('pose')
+    gazebo0 = (gazebo_reference_sample or {}).get('pose')
+    gazebo_reference_age_wall_s = (gazebo_reference_sample or {}).get('sample_age_wall_s')
+    pair_skew = (map_reference_sample or {}).get('pose_pair_time_skew_sim_s')
+    if (not pair_ready or pose0 is None or not map_reference_sample.get('fresh') or gazebo0 is None
+            or gazebo_reference_age_wall_s is None or gazebo_reference_age_wall_s > 1.0
+            or pair_skew is None or pair_skew > MAX_TF_COMPONENT_SKEW_SIM_S):
+        return {'passed': False,
+                'reason': ('fresh_synchronized_post_transition_map_tf_and_gazebo_pose_pair_unavailable'
+                           if minimum_pose_stamp_s is not None else
+                           'fresh_synchronized_map_tf_and_gazebo_pose_pair_unavailable_before_web_goal'),
+                'map_tf_start': map_reference_sample, 'gazebo_pose_start': gazebo0,
+                'gazebo_pose_age_start_wall_s': gazebo_reference_age_wall_s,
+                'map_tf_gazebo_skew_start_sim_s': pair_skew,
+                'minimum_pose_pair_stamp_sim_s': minimum_pose_stamp_s,
+                'pose_observer': probe.gazebo_observer_diagnostics(),
+                'latest_tf_sample': probe.map_pose_sample()}
+    goal, goal_error = probe.map_goal_candidate(pose0)
     if goal is None:
         return {'passed': False, 'reason': goal_error}
+    stable_map = {'signature': None, 'since_monotonic_s': None}
+
+    def navigation_map_stable():
+        signature = ready_navigation_map_signature(
+            probe.runtime_status, robot_id,
+            verified_local_map_identity=verified_local_map_identity)
+        if signature is None:
+            stable_map.update(signature=None, since_monotonic_s=None)
+            return False
+        if signature != stable_map['signature']:
+            stable_map.update(signature=signature,
+                              since_monotonic_s=time.monotonic())
+            return False
+        return time.monotonic() - stable_map['since_monotonic_s'] >= 2.0
+
+    if not probe.wait_until(navigation_map_stable, min(30.0, max(10.0, timeout * 0.2)), ws):
+        return {'passed': False,
+                'reason': 'NAVIGATION_MAP_NOT_READY_OR_REGISTRATION_NOT_STABLE',
+                'goal': goal,
+                'navigation_map_status': (probe.runtime_status or {}).get('navigation_maps', {}).get(robot_id),
+                'active_map_status': (probe.runtime_status or {}).get('local_active_maps', {}).get(robot_id),
+                'last_stable_map_signature': stable_map['signature'],
+                'map_signature_stable_for_wall_s': (
+                    time.monotonic() - stable_map['since_monotonic_s']
+                    if stable_map['since_monotonic_s'] is not None else 0.0)}
+    # Readiness can take several wall seconds while a new registration is
+    # published.  Re-sample after the map barrier so the start pose is fresh at
+    # the point the operator could actually submit the goal.
+    paired_start.update(tf=None, gazebo=None)
+    pair_ready = probe.wait_until(capture_fresh_start_pair, 5.0, ws)
+    map_reference_sample = paired_start['tf']
+    gazebo_reference_sample = paired_start['gazebo']
+    pose0 = (map_reference_sample or {}).get('pose')
+    gazebo0 = (gazebo_reference_sample or {}).get('pose')
+    gazebo_reference_age_wall_s = (gazebo_reference_sample or {}).get('sample_age_wall_s')
+    pair_skew = (map_reference_sample or {}).get('pose_pair_time_skew_sim_s')
+    if (not pair_ready or pose0 is None or not map_reference_sample.get('fresh')
+            or gazebo0 is None or gazebo_reference_age_wall_s is None
+            or gazebo_reference_age_wall_s > 1.0 or pair_skew is None
+            or pair_skew > MAX_TF_COMPONENT_SKEW_SIM_S):
+        return {'passed': False,
+                'reason': 'fresh_synchronized_map_tf_and_gazebo_pose_pair_unavailable_after_map_readiness',
+                'map_tf_start': map_reference_sample, 'gazebo_pose_start': gazebo0,
+                'gazebo_pose_age_start_wall_s': gazebo_reference_age_wall_s,
+                'map_tf_gazebo_skew_start_sim_s': pair_skew,
+                'minimum_pose_pair_stamp_sim_s': minimum_pose_stamp_s,
+                'pose_observer': probe.gazebo_observer_diagnostics(),
+                'navigation_map_status': (probe.runtime_status or {}).get(
+                    'navigation_maps', {}).get(robot_id),
+                'active_map_status': (probe.runtime_status or {}).get(
+                    'local_active_maps', {}).get(robot_id)}
     mode_ok, mode_error = set_mode(probe, ws, robot_id, 'AUTONOMOUS')
     if not mode_ok:
         return {'passed': False, 'reason': f'ROBOT_MODE_AUTONOMOUS_rejected:{mode_error}', 'goal': goal}
@@ -1056,12 +1979,27 @@ def web_navigation(probe, ws, robot_id, timeout):
             },
         }
 
-    pose0, gazebo0 = probe.map_pose(), probe.gazebo_pose
+    _, gazebo_before_goal_sample = probe.map_gazebo_pose_pair()
+    gazebo_before_goal = (gazebo_before_goal_sample or {}).get('pose')
+    gazebo_before_goal_age_wall_s = (gazebo_before_goal_sample or {}).get('sample_age_wall_s')
+    if (gazebo_before_goal is None or gazebo_before_goal_age_wall_s is None
+            or gazebo_before_goal_age_wall_s > 1.0 or dist(gazebo0, gazebo_before_goal) > 0.01
+            or abs(wrap_angle(gazebo0[2] - gazebo_before_goal[2])) > 0.01):
+        probe.navigation_trace_enabled = False
+        return {'passed': False, 'reason': 'robot_moved_while_navigation_preview_was_confirmed',
+                'map_tf_start': map_reference_sample,
+                'gazebo_pose_start': gazebo0,
+                'gazebo_pose_before_goal': gazebo_before_goal,
+                'gazebo_pose_age_before_goal_wall_s': gazebo_before_goal_age_wall_s}
     command_index = len(probe.nav_cmd_events)
     selected_index = len(probe.selected_cmd_events)
     owner_index = len(probe.command_owner_events)
     drive_index = len(probe.drive_events)
     action_status_index = len(probe.action_status_events)
+    probe.navigation_trace = []
+    probe.navigation_trace_started = None
+    probe.navigation_trace_last_sample = 0.0
+    probe.navigation_trace_enabled = True
     goal_payload = {
         'type': 'NAV_GOAL', 'robot_id': robot_id, 'x': x, 'y': y,
         'yaw': yaw, 'frame_id': 'map', 'preview_request_id': request_id,
@@ -1098,17 +2036,47 @@ def web_navigation(probe, ws, robot_id, timeout):
     if terminal is None:
         ws.send(json.dumps({'type': 'NAV_CANCEL', 'robot_id': robot_id}))
         terminal = {'status': 'TIMEOUT', 'reason': f'no terminal NAV_STATUS within {timeout:.1f}s'}
-    terminal_pose, terminal_gazebo = probe.map_pose(), probe.gazebo_pose
+    probe.record_navigation_sample(force=True)
+    terminal_trace_index = len(probe.navigation_trace) - 1
+    terminal_sample, terminal_gazebo_sample = probe.map_gazebo_pose_pair()
+    terminal_pose = (terminal_sample['pose']
+                     if terminal_sample and terminal_sample.get('fresh') else None)
+    terminal_gazebo = (terminal_gazebo_sample or {}).get('pose')
+    terminal_gazebo_age_wall_s = (terminal_gazebo_sample or {}).get('sample_age_wall_s')
     terminal_goal_error = dist(terminal_pose, goal) if terminal_pose is not None else None
     terminal_goal_yaw_error = (abs(wrap_angle(terminal_pose[2] - goal[2]))
                                if terminal_pose is not None else None)
 
     # Nav2 can report its terminal result just before wheel/chassis motion has
-    # settled. Also, `goal` is in the active map frame while Gazebo ModelStates
-    # is in the world frame; only compare the target against map -> base TF.
+    # settled. Pair the authoritative map-frame TF with Gazebo ground truth,
+    # projected through the alignment measured at this goal's start.
     settling = probe.wait_mechanical_settling(ws, timeout=20.0, wall_timeout=90.0)
+    tf_usable_after_settling = probe.wait_until(
+        lambda: transform_is_confirmable_when_settled(probe.map_pose_sample()), 3.0, ws)
+    fresh_gazebo_after_settling = probe.wait_until(
+        lambda: (probe.gazebo_pose_sample_monotonic is not None
+                 and time.monotonic() - probe.gazebo_pose_sample_monotonic <= 1.0), 3.0, ws)
+    probe.record_navigation_sample(force=True)
+    probe.navigation_trace_enabled = False
 
-    pose1, gazebo1 = probe.map_pose(), probe.gazebo_pose
+    settled_sample, settled_gazebo_sample = probe.map_gazebo_pose_pair()
+    pose1 = (settled_sample['pose']
+             if transform_is_confirmable_when_settled(settled_sample) else None)
+    gazebo1 = (settled_gazebo_sample or {}).get('pose')
+    gazebo_settled_age_wall_s = (settled_gazebo_sample or {}).get('sample_age_wall_s')
+    ground_truth_map_pose = (map_pose_from_world(pose0, gazebo0, gazebo1)
+                             if gazebo1 is not None else None)
+    ground_truth_goal_error = (dist(ground_truth_map_pose, goal)
+                               if ground_truth_map_pose is not None else None)
+    ground_truth_goal_yaw_error = (
+        abs(wrap_angle(ground_truth_map_pose[2] - goal[2]))
+        if ground_truth_map_pose is not None else None)
+    map_tf_vs_ground_truth_error_m = (
+        dist(pose1, ground_truth_map_pose)
+        if pose1 is not None and ground_truth_map_pose is not None else None)
+    map_tf_vs_ground_truth_yaw_error_rad = (
+        abs(wrap_angle(pose1[2] - ground_truth_map_pose[2]))
+        if pose1 is not None and ground_truth_map_pose is not None else None)
     commands = probe.nav_cmd_events[command_index:]
     active_commands = [row for row in commands if any(abs(value) > 1e-4 for value in row[1:])]
     selected_commands = probe.selected_cmd_events[selected_index:]
@@ -1125,20 +2093,45 @@ def web_navigation(probe, ws, robot_id, timeout):
                       if pose1 is not None else None)
     status_name = str(terminal.get('status') or 'UNKNOWN').upper()
     accepted = accepted or status_name == 'SUCCEEDED'
-    passed = bool(accepted and status_name == 'SUCCEEDED' and active_commands
-                  and active_selected_commands and nav_owner_seen
-                  and drive_active and pose_change is not None
-                  and pose_change > TRANSLATION_TOLERANCE_M
-                  and physical_change is not None
-                  and physical_change > TRANSLATION_TOLERANCE_M
-                  and settling.get('passed') is True
-                  and goal_distance is not None
-                  and goal_distance <= NAV_GOAL_XY_TOLERANCE_M
-                  and goal_yaw_error is not None
-                  and goal_yaw_error <= NAV_GOAL_YAW_TOLERANCE_RAD)
+    acceptance_checks = {
+        'goal_accepted': accepted,
+        'action_succeeded': status_name == 'SUCCEEDED',
+        'navigation_cmd_vel_observed': bool(active_commands),
+        'selected_navigation_cmd_vel_observed': bool(active_selected_commands),
+        'nav2_command_owner_observed': nav_owner_seen,
+        'nonzero_drive_command_observed': drive_active,
+        'map_tf_motion_observed': (pose_change is not None
+                                   and pose_change > TRANSLATION_TOLERANCE_M),
+        'gazebo_motion_observed': (physical_change is not None
+                                   and physical_change > TRANSLATION_TOLERANCE_M),
+        'settling_confirmed': settling.get('passed') is True,
+        'terminal_tf_fresh': tf_usable_after_settling,
+        'terminal_gazebo_sample_fresh': fresh_gazebo_after_settling,
+        'map_tf_goal_translation_within_0_05m': (goal_distance is not None
+            and goal_distance <= NAV_GOAL_XY_TOLERANCE_M),
+        'map_tf_goal_yaw_within_0_05rad': (goal_yaw_error is not None
+            and goal_yaw_error <= NAV_GOAL_YAW_TOLERANCE_RAD),
+        'projected_gazebo_goal_translation_within_0_05m': (
+            ground_truth_goal_error is not None
+            and ground_truth_goal_error <= NAV_GOAL_XY_TOLERANCE_M),
+        'projected_gazebo_goal_yaw_within_0_05rad': (
+            ground_truth_goal_yaw_error is not None
+            and ground_truth_goal_yaw_error <= NAV_GOAL_YAW_TOLERANCE_RAD),
+        'map_tf_gazebo_translation_agreement_within_0_05m': (
+            map_tf_vs_ground_truth_error_m is not None
+            and map_tf_vs_ground_truth_error_m <= TRANSLATION_TOLERANCE_M),
+        'map_tf_gazebo_yaw_agreement_within_0_05rad': (
+            map_tf_vs_ground_truth_yaw_error_rad is not None
+            and map_tf_vs_ground_truth_yaw_error_rad <= ROTATION_TOLERANCE_RAD),
+    }
+    failed_checks = failed_acceptance_conditions(acceptance_checks)
+    passed = not failed_checks
     return {
         'passed': passed,
-        'reason': None if passed else str(terminal.get('reason') or f'action_status={status_name}'),
+        'reason': None if passed else (str(terminal.get('reason')) if status_name != 'SUCCEEDED'
+            else 'acceptance_checks_failed:' + ','.join(failed_checks)),
+        'acceptance_checks': acceptance_checks,
+        'failed_acceptance_checks': failed_checks,
         'accepted': accepted, 'status': status_name, 'goal': goal,
         'path_preview_request': preview_payload,
         'path_preview': {
@@ -1159,6 +2152,32 @@ def web_navigation(probe, ws, robot_id, timeout):
         'ros_goal': {'x': goal[0], 'y': goal[1], 'yaw': goal[2], 'frame_id': 'map'},
         'goal_reason': terminal.get('reason'), 'p0': pose0, 'p1': pose1,
         'pose_at_terminal': terminal_pose, 'gazebo_pose_at_terminal': terminal_gazebo,
+        'map_tf_sample_at_terminal': terminal_sample,
+        'gazebo_pose_pair_at_terminal': terminal_gazebo_sample,
+        'gazebo_pose_age_at_terminal_wall_s': terminal_gazebo_age_wall_s,
+        'map_tf_start': map_reference_sample,
+        'minimum_pose_pair_stamp_sim_s': minimum_pose_stamp_s,
+        'map_tf_gazebo_skew_start_sim_s': pair_skew,
+        'gazebo_pose_pair_at_start': gazebo_reference_sample,
+        'gazebo_pose_before_goal': gazebo_before_goal,
+        'gazebo_pose_sample_before_goal': gazebo_before_goal_sample,
+        'gazebo_pose_age_before_goal_wall_s': gazebo_before_goal_age_wall_s,
+        'gazebo_pose_start': gazebo0,
+        'gazebo_pose_age_start_wall_s': gazebo_reference_age_wall_s,
+        'map_tf_fresh_after_settling': bool(settled_sample and settled_sample.get('fresh')),
+        'map_tf_usable_after_settling': tf_usable_after_settling,
+        'gazebo_pose_fresh_after_settling': fresh_gazebo_after_settling,
+        'gazebo_pose_age_after_settling_wall_s': gazebo_settled_age_wall_s,
+        'map_tf_sample_after_settling': settled_sample,
+        'gazebo_pose_pair_after_settling': settled_gazebo_sample,
+        'ground_truth_map_pose_after_settling': ground_truth_map_pose,
+        'ground_truth_goal_error_m': ground_truth_goal_error,
+        'ground_truth_goal_yaw_error_rad': ground_truth_goal_yaw_error,
+        'map_tf_vs_ground_truth_error_m': map_tf_vs_ground_truth_error_m,
+        'map_tf_vs_ground_truth_yaw_error_rad': map_tf_vs_ground_truth_yaw_error_rad,
+        'terminal_trace_sample': (probe.navigation_trace[terminal_trace_index]
+                                  if 0 <= terminal_trace_index < len(probe.navigation_trace) else None),
+        'navigation_trace_samples': probe.navigation_trace,
         'goal_error_at_terminal_m': terminal_goal_error,
         'goal_yaw_error_at_terminal_rad': terminal_goal_yaw_error,
         'gazebo_p0': gazebo0, 'gazebo_p1': gazebo1,
@@ -1219,6 +2238,13 @@ def main() -> int:
 
         idle = probe.observe_idle_cmd_vel()
         result['idle_cmd_vel'] = idle
+        initial_pose_ready = probe.wait_until(
+            lambda: probe.map_pose_sample() is not None and probe.gazebo_pose is not None
+            and probe.map is not None and probe.map_sample_count > 0, 15.0, ws)
+        initial_map_sample = probe.map_pose_sample() if initial_pose_ready else None
+        result['initial_pose_map'] = initial_map_sample
+        result['initial_pose_gazebo'] = probe.gazebo_pose if initial_pose_ready else None
+        result['initial_pose_ready'] = initial_pose_ready
         idle_arbiter_passed = bool(
             idle['selected_velocity_zero']
             and idle['selected_owner'] == 'NONE'

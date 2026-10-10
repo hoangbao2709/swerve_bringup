@@ -7,12 +7,23 @@ from .runtime import runtime
 from .control_timing import profile_async
 from .realtime_consumer import RealtimeDispatchMixin
 from .visualization_outbox import VisualizationOutbox
-from .operator_security import authorize_websocket_message
+from .operator_security import authorize_websocket_message, scope_operator_payload
 
 log = logging.getLogger(__name__)
 
 class TwinConsumer(RealtimeDispatchMixin, AsyncJsonWebsocketConsumer):
     database_free_types = frozenset({'MANUAL_ACQUIRE', 'ROBOT_MANUAL', 'ROBOT_MODE', 'ROBOT_DETAIL_VIEW', 'ROBOT_DETAIL_FRAME_RECEIVED'})
+
+    async def send_json(self, content, close=False):
+        scoped = scope_operator_payload(content, getattr(self, 'operator', None))
+        if scoped is None:
+            return
+        await super().send_json(scoped, close=close)
+
+    def offer_visualization(self, payload):
+        scoped = scope_operator_payload(payload, getattr(self, 'operator', None))
+        if scoped is not None and hasattr(self, 'visualization_outbox'):
+            self.visualization_outbox.offer(scoped)
 
     async def connect(self):
         query = parse_qs(self.scope.get('query_string', b'').decode())

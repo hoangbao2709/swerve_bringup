@@ -1,58 +1,55 @@
-# Release hardening evidence (NO-GO)
+# Release hardening evidence — NO-GO
 
-Evidence captured 2026-10-09 11:23 UTC on the uncommitted working tree. This is a release audit record, not a certification. Physical hardware was not connected or operated.
+Evidence captured on 2026-10-09 from the final uncommitted working tree on Ubuntu 22.04.5 LTS / ROS 2 Humble. This is a software test record, not a certification. No physical robot was connected or operated. Machine-readable details are in [`release-evidence.json`](release-evidence.json); temporary logs and reports remain under `/tmp/waretwin-final-acceptance.9M9UZU` and `/tmp/pytest-of-yahboom/pytest-70` on the test host.
 
 ## Build identity
 
 | Field | Value |
 |---|---|
 | Branch | `robot-real-sim-v5-demo-visual` |
-| Base commit | `73f301eadc0f303c81442a8f4494c00f639cd66f` |
-| Working tree | Modified and uncommitted; no commit or push performed |
-| OS | Ubuntu 22.04.5 LTS |
-| ROS | Humble |
+| HEAD / starting commit | `d7491ea55df625b23cf74bdecac25184f6725e78` |
+| Working tree | Modified and uncommitted; no commit or push |
+| Build | `install5-nonsymlink-20261009` |
+| OS / ROS | Ubuntu 22.04.5 LTS / Humble |
 | Python | 3.10.12 |
 | Node / npm | 22.23.2 / 10.9.8 |
 | Python lock SHA-256 | `3498e8eb5e7f31aa36d330fbbcfce76dfb7303e5fb45ff5e1aca34f04a101aef` |
 | npm lock SHA-256 | `8bb61e7867505203a1f110aa615decb0acecd481443e855fb75c1b571e96a079` |
+| Copied install | `/tmp/waretwin-final-acceptance.9M9UZU/install5` |
 
-The copied, non-symlink install was built under `/tmp/waretwin-release-final-20261009`. No build was performed into the source tree's `install/` directory.
+## Final-source test results
 
-## Test evidence
-
-| Check | Result | Evidence |
+| Test | Result | Evidence |
 |---|---|---|
-| `./scripts/build_ros.sh --build-base /tmp/waretwin-release-final-20261009/build --install-base /tmp/waretwin-release-final-20261009/install --log-base /tmp/waretwin-release-final-20261009/log` | PASS: `swerve_bringup`, `swerve_bridge`, `waretwin_web` built and installed | Colcon summary: 3 packages finished. One existing Gazebo/CMake developer warning was emitted. |
-| `colcon list --base-paths /home/yahboom/swerve_bringup /home/yahboom/swerve_bringup/swerve_bridge /home/yahboom/swerve_bringup/waretwin` | PASS: all three packages discovered | `ros.ament_cmake` / `ros.ament_python` package listing |
-| `ros2 pkg prefix {swerve_bringup,swerve_bridge,waretwin_web}` from `/tmp` after sourcing copied install | PASS | All prefixes resolve under `/tmp/waretwin-release-final-20261009/install` |
-| Both installed launch files with `--show-args` from `/tmp` | PASS | Web and full-stack arguments resolved by ROS launch |
-| `scripts/check_waretwin_release_artifacts.py <installed waretwin_web share>` | PASS | No source DB, secrets, node_modules, venv, or local-map artifacts in installed package |
-| Django `manage.py check`; `makemigrations --check --dry-run` | PASS | No system-check issues; no model/migration drift |
-| Django `manage.py test twin.tests --verbosity 1` | PASS: 196 tests | Final source; isolated DB at `/tmp/waretwin-release-final-20261009/backend-test.sqlite3` |
-| Frontend `npm run build` | PASS | `tsc --noEmit` and Vite production build completed |
-| Frontend `npm test` | PASS: 161 tests in 26 files | Final frontend source |
-| `npm audit` | PASS: 0 vulnerabilities | npm audit output |
-| `pip-audit -r waretwin/runtime/requirements.lock` | PASS: no known vulnerabilities | pip-audit output using temporary audit venv |
-| `pytest tests/test_setup_scripts.py scripts/tests waretwin/runtime/tests` | PASS: 22 tests | Runtime/setup regression suite |
-| `pytest tests/test_manual_transport.py tests/test_manual_refresh_process.py` | PASS: 9 tests | Manual command transport/refresh suite |
-| `pytest swerve_bridge/test/test_navigation_target_handoff.py` | PASS: 23 tests | Bridge and navigation handoff suite |
-| `pytest tests/test_swerve_kinematics.py scripts/test_command_ownership.py swerve_bridge/test/test_navigation_target_handoff.py` | PASS: 32 tests | Kinematics, command ownership, and bridge coverage |
-| Installed Web-only lifecycle suite from `/tmp` | PASS: 11 tests | Non-symlink package; API/Channels, assets, SPA, persistence, restart, config/port failures, fail-closed map selection |
-| `colcon test` for all three packages | NOT TESTED by Colcon: 0 tests registered | Use the direct pytest/Django commands above; the green Colcon package summary alone is not test evidence |
-| Installed Gazebo/Nav2 mission, final source build | FAIL: mission goal exceeded the 5 cm translation limit | `/tmp/pytest-of-yahboom/pytest-37/test_installed_full_stack_reac0/runtime/end-to-end.json`; settled error `0.0524255097 m`, yaw error `0.0062331274 rad`, action status `SUCCEEDED`. All preceding mission checks passed. |
-| Installed Gazebo/Nav2 mission, immediately preceding shutdown-only adjustment | PASS: 45/45 stages | `/tmp/pytest-of-yahboom/pytest-35/test_installed_full_stack_reac0/runtime/end-to-end.json`; settled error `0.0483479853 m`, yaw error `0.0445555335 rad`. This is not counted as final-source simulation acceptance because the controller's final-zero shutdown race was subsequently fixed. |
-| 24–72 hour soak | NOT TESTED | Harness exists at `scripts/waretwin_soak_test.py`; run on a representative deployment host |
-| Protected-LAN gateway acceptance | NOT TESTED | No live TLS identity gateway was configured |
-| Physical robot acceptance | NOT TESTED | No physical hardware was connected |
+| `./scripts/build_ros.sh --build-base /tmp/waretwin-final-acceptance.9M9UZU/build5 --install-base /tmp/waretwin-final-acceptance.9M9UZU/install5 --log-base /tmp/waretwin-final-acceptance.9M9UZU/log5` | PASS — all 3 packages built and copied into a non-symlink install | Colcon summary: `swerve_bringup`, `swerve_bridge`, `waretwin_web` finished; build log under `log5/build_2026-10-09_22-49-22/` |
+| `colcon list --base-paths . swerve_bridge waretwin`; `ros2 pkg prefix` for all 3 packages; both launch files with `--show-args` from `/tmp` | PASS | `/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/final-{web,full}-launch-args.txt`; package prefixes resolved under `install5` |
+| Installed package artifact scan | PASS | `scripts/check_waretwin_release_artifacts.py` found no bundled runtime database, secrets, virtualenv, `node_modules`, or robot-local map artifacts |
+| Django `check`; `makemigrations --check --dry-run`; `manage.py test twin.tests --verbosity 1` | PASS — 198 tests | `/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/django-final.log`; isolated test DB |
+| Frontend `npm test && npm run build && npm audit --audit-level=low` | PASS — 161 tests / 26 files; typecheck and Vite build passed; audit reported 0 vulnerabilities | `/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/frontend-final.log` (captured in test run; no generated source artifacts tracked) |
+| Focused ROS, map, safety, readiness, deployment-contract and runtime tests | PASS — 109 tests | `simulation-evidence/ros-focused-final.xml` and `.log` |
+| Manual transport/refresh, 8-direction swerve kinematics and command ownership | PASS — 18 tests with the copied `install5` overlay sourced | `/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/manual-kinematics-final.log`; a first invocation without the generated action overlay had 4 import failures, then the correctly sourced rerun passed |
+| Installed Web deployment from `/tmp`, non-symlink install | PASS — 11 tests, including HTTP/WS/assets/SPA/persistence/restart/child failure/ports/duplicate launch/fail-closed map | `simulation-evidence/web-deployment-final-install5.xml` and `.log` |
+| `actionlint` 1.7.7 on `.github/workflows/quality.yml` | PASS locally | Workflow syntax/context lint passed; this does not establish hosted CI success |
+| Hosted GitHub Actions quality run | NOT VERIFIED | The reported run [37925505444](https://github.com/hoangbao2709/swerve_bringup/actions/runs/37925505444) completed failed with zero jobs / zero-duration public metadata. The prior workflow used `runner.temp` at job-level; that context is unavailable there. The workflow now uses `github.workspace`, but no hosted run of this uncommitted tree was possible without publishing it. The remote failure's precise diagnostic is unavailable, so the expression defect is a confirmed workflow defect, not proven as the sole cause of that historical run. |
+| Final installed Gazebo/Nav2 acceptance | FAIL | `simulation-evidence/full-stack-final-install5.xml`, `/tmp/pytest-of-yahboom/pytest-70/test_installed_full_stack_reac0/runtime/end-to-end.json`, and `.log`; one complete installed full-stack test, 361.863 s, exited 1 |
+| Save → Load → initial-pose → navigation acceptance | FAIL / incomplete | `/tmp/pytest-of-yahboom/pytest-70/test_installed_full_stack_reac0/runtime/save-load-navigation.json`; save and map-server load/content checks passed, but a fresh post-load localization confirmation was not established; zero navigation runs followed |
+| Protected-LAN gateway / TLS identity boundary | NOT TESTED | No deployed gateway or end-to-end live identity test |
+| DDS/SROS2 authorization | NOT TESTED | No DDS ACL artifacts or negative participant-publish acceptance; `ROS_DOMAIN_ID` is not an access-control boundary |
+| Live VDA5050 broker | NOT TESTED | Django/deterministic behavior is covered, no live broker used |
+| 24–72 hour soak / target computer / physical robot | NOT TESTED | No long-duration or target hardware evidence; no physical robot was operated |
 
-The latest simulation used an isolated ROS domain (`213`), a fresh temporary Django database, and a copied install launched from `/tmp`. Its Gazebo real-time factor was approximately `0.34`; Nav2 reported `SUCCEEDED`, but the final measured pose was outside the test's pre-existing 5 cm acceptance bound. The bound was not relaxed. A previous run on the immediately preceding build passed narrowly, demonstrating insufficient repeatability for a release gate.
+The final installed simulation produced two `SUCCEEDED` Nav2 actions but did not pass the release acceptance. In the direct mission, map-frame error after settling was `0.0493079451 m` and `0.0369712355 rad`, while projected Gazebo-ground-truth error was `0.0834782799 m` and `0.0174134580 rad`; map TF and projected ground truth disagreed by `0.0376594841 m` and `0.0543846935 rad`. In the Web mission, ground-truth error was `0.0131838481 m` / `0.0032819418 rad`, but the terminal map TF was stale (`1.405 s` in simulation time) and the acceptance rejected it. Gazebo RTF was about `0.366`. These measurements do not isolate a single underlying cause; the final build did not achieve five repeatable accepted missions. The 5 cm / 0.05 rad limits were not relaxed.
 
-The final-source shutdown log showed the owned Python controller, arbiter, odometry, LiDAR preprocessor, bridge, Gazebo and Nav2 processes exiting, and a process scan found no owned processes left behind. The external `ekf_node` was reported by ROS launch as signal-terminated (`exit code -2`) during Ctrl+C; no orphan remained. The failed mission assertion is the pytest failure, not a hidden shutdown pass.
+The real Gazebo mapping workflow saved these isolated test artifacts (not promoted to canonical): robot `R01`, map ID `ca5d93aa8a70452c9aa09a670493472a`, revision `ca5d93aa8a70`; source SLAM session `8c1edd105efc`, source map `SLAM-8c1edd105efc@session-8c1edd105efc`. The map was `699 × 598` at `0.05 m` resolution with 136,308 known cells. PGM, YAML, serialized `.data`, and `.posegraph` files were present and hashed in the JSON report. Nav2's fresh `/navigation_map` matched the saved occupancy grid exactly (418,002 cells). However, the initial-pose check encountered stale/inconsistent TF evidence after the runtime transition, so the sequence stopped before navigation. This is a partial Save/Load result, not end-to-end acceptance.
 
-## Protected data and limits
+## Confirmed corrections and residual risks
 
-At initial inspection, the tracked source database and robot-local map registry already had user changes, and robot-local `.pgm` / `.yaml` and SLAM session files were already untracked. They were preserved. Integration tests used temporary data roots and did not copy or overwrite those files. The tracked development database remains in the repository and its contents have not been audited for operational records or secrets; it must be reviewed and separated before distributing a release artifact.
+- **Workflow:** replaced job-level `runner.temp` references with checkout-scoped `.ci-runtime` paths and documented that CI uploads no runtime artifacts. Local `actionlint` passes; hosted CI remains open.
+- **Operator scope:** scoped operators can handshake with `operator:read` without wildcard robot scope. Robot-scoped state/broadcast filtering and command checks now have regression tests. The Django suite passes. This does not secure direct DDS publishers or establish a deployed Protected-LAN gateway.
+- **Simulation clock / TF:** dynamic localization TF is freshness-checked; backward Gazebo clock jumps clear the TF buffer, invalidate pending pose/map operations and stop the manual command lease. Focused regression tests pass. The end-to-end TF and final-pose acceptance still fails under observed simulation load.
+- **Map artifacts:** save validates the paused SLAM snapshot and serializes the session before registering artifacts; existing files are not replaced. Integration proved files and occupancy consistency, but not the entire load-to-navigation workflow.
+- **User data:** the source database and R01 map registry had pre-existing modifications, and robot-local map/session files were already present as untracked data. They were preserved. Integration used fresh temporary data roots. Schema review identified operational-looking records and credential-bearing field names; contents were not disclosed in this report. Review and rotate/separate operational data before distributing the repository or artifacts.
 
-The frontend still has exactly five sidebar entries—`CONTROL`, `MAPPING`, `LOCALIZATION`, `VDA5050`, `DIAGNOSIS`—with map management inside `MAPPING`. No separate `MAPS` sidebar entry was introduced.
+## Release decision
 
-The browser-facing authorization boundary does not secure direct ROS 2 DDS publishers. SROS2 enclaves/topic ACLs, an independently validated Protected-LAN gateway, hardware E-stop feedback, a physical safety assessment, and long-duration soak evidence remain outstanding. See [ROS_DEPLOYMENT.md](../waretwin/ROS_DEPLOYMENT.md) for setup, launch, backup/restore, rollback, and troubleshooting procedures.
+**NO-GO — software release blockers remain.** Do not expose this build to an untrusted LAN or authorize physical-robot operation. Close the hosted CI gate, diagnose and stabilize map/ground-truth TF and final pose, complete uninterrupted Save → Load → Initial Pose → Navigation acceptance, validate a real gateway and DDS security boundary, and complete qualified hardware safety acceptance before production. Exact build/test commands and install/runtime procedures are in [`ROS_DEPLOYMENT.md`](../waretwin/ROS_DEPLOYMENT.md).

@@ -14,6 +14,7 @@ import ipaddress
 import logging
 import re
 import time
+from copy import deepcopy
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -196,15 +197,216 @@ def http_permission(path: str, method: str) -> tuple[str | None, str | None]:
 def authorized(operator: dict | None, permission: str, robot_id: str | None = None) -> bool:
     if mode() == 'LOCAL_LOOPBACK':
         return True
-    if not operator or float(operator.get('expires_at', 0)) <= time.time():
-        return False
-    permissions = operator.get('permissions', frozenset())
-    if 'operator:admin' not in permissions and permission not in permissions:
+    if not has_permission(operator, permission):
         return False
     robots = operator.get('robots', frozenset())
     if robot_id:
         return '*' in robots or robot_id in robots
     return '*' in robots
+
+
+def has_permission(operator: dict | None, permission: str) -> bool:
+    """Check identity/capability without implying fleet-wide robot access.
+
+    WebSocket connection establishment and RESYNC are operator-level actions:
+    robot scope is enforced on each command and every outbound payload instead.
+    """
+    if mode() == 'LOCAL_LOOPBACK':
+        return True
+    if not operator or float(operator.get('expires_at', 0)) <= time.time():
+        return False
+    permissions = operator.get('permissions', frozenset())
+    return 'operator:admin' in permissions or permission in permissions
+
+
+def _robot_ids(operator: dict) -> set[str] | None:
+    robots = operator.get('robots', frozenset())
+    if '*' in robots:
+        return None
+    return {str(robot_id) for robot_id in robots}
+
+
+def _filter_robot_mapping(value, allowed: set[str]):
+    if not isinstance(value, dict):
+        return {}
+    return {key: row for key, row in value.items()
+            if str(key) in allowed and isinstance(row, dict)}
+
+
+def _scoped_twin_state(state: dict, allowed: set[str]) -> dict:
+    """Keep robot-owned state and omit environment data with fleet attribution."""
+    if not isinstance(state, dict):
+        return {}
+    robots = state.get('robots') if isinstance(state.get('robots'), dict) else {}
+    visible_robots = {rid: deepcopy(row) for rid, row in robots.items()
+                      if str(rid) in allowed and isinstance(row, dict)}
+    def owned_rows(section):
+        entries = state.get(section)
+        return ({key: deepcopy(value) for key, value in entries.items()
+                 if isinstance(value, dict)
+                 and str(value.get('robot_id') or '') in allowed}
+                if isinstance(entries, dict) else {})
+
+    entries = state.get('recent_events')
+    visible_events = ([deepcopy(value) for value in entries if isinstance(value, dict)
+                       and str(value.get('robot_id') or '') in allowed]
+                      if isinstance(entries, list) else [])
+    original_sim = state.get('sim') if isinstance(state.get('sim'), dict) else {}
+    sim = {key: original_sim[key] for key in ('tick', 'tick_ms') if key in original_sim}
+    # These sections contain cross-robot aggregates or ownership fields (for
+    # example zone robot_count and lift occupant/queues). Their records do not
+    # have a sufficiently reliable robot-scope contract, so scoped operators
+    # receive empty collections. Wildcard administrators retain the full UI.
+    result = {
+        'schema_version': state.get('schema_version', '1.0'),
+        'layout_id': state.get('layout_id'),
+        'sim': sim,
+        'robots': visible_robots,
+        'tasks': owned_rows('tasks'),
+        'alerts': owned_rows('alerts'),
+        'recent_events': visible_events,
+        'recent_decisions': [],
+        'lifts': {}, 'zones': {}, 'conveyors': {}, 'cameras': {},
+        'sensors': {}, 'people': {}, 'subsystems': {},
+    }
+    kpi = state.get('kpi') if isinstance(state.get('kpi'), dict) else {}
+    statuses = [str(row.get('status') or '').upper() for row in visible_robots.values()]
+    result['kpi'] = {
+        'tick': int(kpi.get('tick') or 0),
+        'fleet': {
+            'total': len(visible_robots),
+            'active': statuses.count('ACTIVE'),
+            'charging': statuses.count('CHARGING'),
+            'idle': statuses.count('IDLE'),
+            'warning': statuses.count('WARNING'),
+            'error': statuses.count('ERROR'),
+            'offline': statuses.count('OFFLINE'),
+        },
+        'operation': {'throughput_per_min': 0, 'completed_today': 0,
+                      'completed_target': 0, 'pending': 0, 'ongoing': 0,
+                      'avg_task_time_s': 0, 'on_time_rate': 0, 'avg_utilization': 0},
+        'efficiency': {'avg_travel_distance_m': 0, 'avg_wait_time_s': 0,
+                       'congestion_index': 0, 'energy_kwh': 0},
+        'throughput_series': [],
+        'lifts': {'trips': 0, 'utilization': 0, 'avg_wait_s': 0, 'faults': 0},
+    }
+    return result
+
+
+def scope_operator_payload(payload: dict, operator: dict | None) -> dict | None:
+    """Return only data authorized for a protected robot-scoped WebSocket.
+
+    A payload with ambiguous/global robot ownership is withheld by default.
+    The unrestricted loopback and wildcard policies retain the legacy wire
+    contract. This function operates on copies so the shared runtime state is
+    never modified for another client.
+    """
+    if not isinstance(payload, dict):
+        return None
+    if mode() == 'LOCAL_LOOPBACK':
+        return payload
+    if not operator or float(operator.get('expires_at', 0)) <= time.time():
+        return None
+    allowed = _robot_ids(operator)
+    if allowed is None:
+        return payload
+    kind = str(payload.get('type') or '').upper()
+
+    if kind == 'FULL':
+        result = deepcopy(payload)
+        result['state'] = _scoped_twin_state(result.get('state'), allowed)
+        return result
+    if kind == 'PATCH':
+        patch = payload.get('patch') if isinstance(payload.get('patch'), dict) else {}
+        scoped = {}
+        for section, value in patch.items():
+            if section == 'robots':
+                scoped[section] = _filter_robot_mapping(value, allowed)
+            elif section in ('tasks', 'alerts') and isinstance(value, dict):
+                # A deletion tombstone has no robot owner. Withhold it rather
+                # than revealing another robot's task/alert identifier.
+                scoped[section] = {key: deepcopy(row) for key, row in value.items()
+                                   if isinstance(row, dict)
+                                   and str(row.get('robot_id') or '') in allowed}
+            elif section == 'sim' and isinstance(value, dict):
+                scoped[section] = {key: value[key] for key in ('tick', 'tick_ms')
+                                   if key in value}
+            # Zones, lifts, conveyors, cameras, sensors, people, KPI, and
+            # unknown sections are withheld because they can encode fleet state.
+        events = payload.get('events')
+        filtered_events = ([deepcopy(row) for row in events if isinstance(row, dict)
+                            and str(row.get('robot_id') or '') in allowed]
+                           if isinstance(events, list) else [])
+        return {
+            'type': 'PATCH', 'base_tick': payload.get('base_tick'),
+            'tick': payload.get('tick'), 'patch': scoped, 'events': filtered_events,
+        }
+    if kind == 'RUNTIME_STATUS':
+        connected = sorted(set(payload.get('connected_robot_ids') or ()) & allowed)
+        maps = _filter_robot_mapping(payload.get('local_active_maps'), allowed)
+        sync = _filter_robot_mapping(payload.get('robot_map_sync'), allowed)
+        navigation = _filter_robot_mapping(payload.get('navigation_maps'), allowed)
+        capabilities = _filter_robot_mapping(payload.get('robot_capabilities'), allowed)
+        sessions = payload.get('robot_mapping_sessions')
+        sessions = ({rid: value for rid, value in sessions.items() if str(rid) in allowed}
+                    if isinstance(sessions, dict) else {})
+        selected = next(iter(connected or sorted(allowed)), None)
+        row = sync.get(selected, {}) if selected else {}
+        active = maps.get(selected, {}) if selected else {}
+        cap = capabilities.get(selected, {}) if selected else {}
+        result = {
+            'type': 'RUNTIME_STATUS',
+            'runtime_mode': payload.get('runtime_mode'),
+            'runtime_state': payload.get('runtime_state'),
+            'bridge_state': 'CONNECTED' if bool(connected) else 'DISCONNECTED',
+            'ros_connected': bool(connected),
+            'connected_robot_ids': connected,
+            'nav2_state': ('READY' if cap.get('nav2_ready') else
+                           'CONNECTED' if connected else 'OFFLINE'),
+            'last_telemetry_at': None,
+            'published_revision': active.get('canonical_map_revision'),
+            'published_version': payload.get('published_version'),
+            'ros_revision': row.get('ros_revision'),
+            'gazebo_revision': row.get('gazebo_revision'),
+            'nav2_revision': row.get('nav2_revision'),
+            'tag_map_revision': row.get('tag_map_revision'),
+            'tf_status': row.get('tf_status', False),
+            'map_sync_status': active.get('map_sync_status', 'PENDING'),
+            'map_sync_error': row.get('error'),
+            'robot_map_sync': sync,
+            'navigation_maps': navigation,
+            'local_active_maps': maps,
+            'robot_capabilities': capabilities,
+            'robot_mapping_sessions': sessions,
+        }
+        return result
+
+    robot_id = str(payload.get('robot_id') or '')
+    if not robot_id:
+        for nested in ('map', 'scan', 'controller', 'diagnostics'):
+            value = payload.get(nested)
+            if isinstance(value, dict) and value.get('robot_id'):
+                robot_id = str(value['robot_id'])
+                break
+    if robot_id:
+        return payload if robot_id in allowed else None
+    if kind == 'ERROR':
+        safe_errors = {
+            'OPERATOR_PERMISSION_REQUIRED': 'operator is not authorized for this operation',
+            'BAD_MESSAGE': 'message format is invalid',
+            'RATE_LIMITED': 'request rate limit exceeded',
+            'MANUAL_RATE_LIMITED': 'manual command rate exceeded; release control and retry',
+            'CONTROL_CHANNEL_RESTRICTED': 'operation is unavailable on this control channel',
+        }
+        code = str(payload.get('code') or '')
+        if code in safe_errors:
+            return {'type': 'ERROR', 'code': code, 'message': safe_errors[code]}
+        return None
+    if kind == 'ROBOT_MANUAL_CHANNEL_READY':
+        return payload
+    # Global heatmaps, layout events, and unknown unscoped payloads could
+    # contain fleet information; deny by default for robot-limited operators.
+    return None
 
 
 def websocket_permission(message: dict) -> tuple[tuple[str, ...], str | None]:
@@ -242,6 +444,8 @@ def websocket_permission(message: dict) -> tuple[tuple[str, ...], str | None]:
 
 def authorize_websocket_message(operator: dict | None, message: dict) -> bool:
     permissions, robot_id = websocket_permission(message)
+    if str(message.get('type') or '').upper() == 'RESYNC':
+        return has_permission(operator, 'operator:read')
     return any(authorized(operator, permission, robot_id) for permission in permissions)
 
 
@@ -297,7 +501,7 @@ class OperatorSecurityMiddleware:
                          operator['identity'], permission, method, path)
 
         if scope_type == 'websocket' and path.rstrip('/') == '/ws':
-            if protected and not authorized(operator, 'operator:read'):
+            if protected and not has_permission(operator, 'operator:read'):
                 return await self._deny(scope_type, send, 4403, 'OPERATOR_PERMISSION_REQUIRED', 'operator identity lacks WebSocket read permission')
             scope = dict(scope, waretwin_operator=operator)
         return await self.app(scope, receive, send)

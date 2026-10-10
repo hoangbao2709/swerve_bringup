@@ -12,6 +12,7 @@ from twin.operator_security import (
     sign_assertion,
     verify_assertion,
     authorize_websocket_message,
+    scope_operator_payload,
 )
 from twin.runtime import runtime
 
@@ -190,10 +191,15 @@ class OperatorSecurityTests(SimpleTestCase):
             unsigned = self.invoke(app, self.scope(scope_type='websocket', path='/ws', method='GET', signed=False))
             accepted = self.invoke(app, self.scope(scope_type='websocket', path='/ws', method='GET',
                                                    permissions=['operator:read'], robots='*'))
+            robot_scoped = self.invoke(app, self.scope(scope_type='websocket', path='/ws', method='GET',
+                                                       permissions=['operator:read', 'robot:manual'], robots='R01'))
+            scoped_operator = target.scope.get('waretwin_operator')
             bridge = self.invoke(app, self.scope(scope_type='websocket', path='/ws/ros', method='GET',
                                                  origin='', signed=False, client=('192.0.2.10', 4000)))
         self.assertEqual(unsigned[0]['code'], 4401)
         self.assertEqual(accepted[0]['type'], 'websocket.accept')
+        self.assertEqual(robot_scoped[0]['type'], 'websocket.accept')
+        self.assertEqual(scoped_operator['robots'], frozenset({'R01'}))
         self.assertNotIn('waretwin_operator', target.scope)
         self.assertEqual(bridge[0]['type'], 'websocket.accept')
         self.assertNotIn('waretwin_operator', target.scope)
@@ -232,3 +238,147 @@ class OperatorSecurityTests(SimpleTestCase):
         dispatch.assert_not_awaited()
         consumer.send_json.assert_awaited_once()
         self.assertEqual(consumer.send_json.await_args.args[0]['code'], 'OPERATOR_PERMISSION_REQUIRED')
+
+    def test_scoped_operators_can_resync_without_receiving_other_robot_state(self):
+        operator_a = {'identity': 'operator-a',
+                      'permissions': frozenset({'operator:read', 'robot:manual'}),
+                      'robots': frozenset({'R01'}), 'expires_at': time.time() + 30}
+        with self.protected_settings():
+            self.assertTrue(authorize_websocket_message(operator_a, {'type': 'RESYNC'}))
+            self.assertTrue(authorize_websocket_message(operator_a, {
+                'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'FORWARD'}))
+            self.assertFalse(authorize_websocket_message(operator_a, {
+                'type': 'ROBOT_MANUAL', 'robot_id': 'R02', 'action': 'FORWARD'}))
+
+            full = {
+                'type': 'FULL',
+                'state': {
+                    'sim': {'tick': 1},
+                    'robots': {'R01': {'id': 'R01', 'position': [1, 2, 0]},
+                               'R02': {'id': 'R02', 'position': [9, 8, 0]}},
+                    'tasks': {'T1': {'robot_id': 'R01'}, 'T2': {'robot_id': 'R02'}},
+                    'alerts': {'A1': {'robot_id': 'R01'}, 'A2': {'robot_id': 'R02'}},
+                    'zones': {'Z1': {'robot_count': 2, 'status': 'BLOCKED'}},
+                    'lifts': {'L1': {'occupant': 'R02', 'queue': {'1': ['R01', 'R02']}}},
+                    'conveyors': {'C1': {'last_command': 'private'}},
+                    'people': {'P1': {'position': [9, 8, 0]}},
+                    'recent_events': [{'robot_id': 'R01', 'message': 'visible'},
+                                      {'robot_id': 'R02', 'message': 'private'}],
+                    'recent_decisions': [{'robot_id': 'R02', 'secret': 'private'}],
+                    'subsystems': {'NETWORK': 'ERROR'},
+                    'kpi': {'tick': 1, 'fleet': {'total': 2},
+                            'operation': {'pending': 9}, 'throughput_series': [{'completed': 9}]},
+                },
+            }
+            scoped_full = scope_operator_payload(full, operator_a)
+            self.assertEqual(set(scoped_full['state']['robots']), {'R01'})
+            self.assertEqual(set(scoped_full['state']['tasks']), {'T1'})
+            self.assertEqual(set(scoped_full['state']['alerts']), {'A1'})
+            self.assertEqual(scoped_full['state']['recent_events'], [{'robot_id': 'R01', 'message': 'visible'}])
+            self.assertEqual(scoped_full['state']['zones'], {})
+            self.assertEqual(scoped_full['state']['lifts'], {})
+            self.assertEqual(scoped_full['state']['conveyors'], {})
+            self.assertEqual(scoped_full['state']['people'], {})
+            self.assertEqual(scoped_full['state']['recent_decisions'], [])
+            self.assertEqual(scoped_full['state']['kpi']['fleet']['total'], 1)
+            self.assertEqual(scoped_full['state']['kpi']['operation']['pending'], 0)
+            self.assertEqual(full['state']['robots']['R02']['id'], 'R02')  # Shared state was not mutated.
+            operator_b = {**operator_a, 'identity': 'operator-b', 'robots': frozenset({'R02'})}
+            scoped_b = scope_operator_payload(full, operator_b)
+            self.assertEqual(set(scoped_b['state']['robots']), {'R02'})
+
+            scoped_patch = scope_operator_payload({
+                'type': 'PATCH', 'base_tick': 4, 'tick': 5,
+                'patch': {
+                    'robots': {'R01': {'id': 'R01'}, 'R02': {'id': 'R02'}},
+                    'tasks': {'T1': {'robot_id': 'R01'}, 'T2': {'robot_id': 'R02'},
+                              'T3': None},
+                    'zones': {'Z1': {'robot_count': 2}},
+                    'lifts': {'L1': {'occupant': 'R02'}},
+                    'sim': {'tick': 5, 'seed': 42},
+                },
+                'events': [{'robot_id': 'R01', 'message': 'visible'},
+                           {'robot_id': 'R02', 'message': 'private'}],
+                'untrusted_extra': {'robot_id': 'R02'},
+            }, operator_a)
+            self.assertEqual(scoped_patch['patch']['robots'], {'R01': {'id': 'R01'}})
+            self.assertEqual(scoped_patch['patch']['tasks'], {'T1': {'robot_id': 'R01'}})
+            self.assertNotIn('zones', scoped_patch['patch'])
+            self.assertNotIn('lifts', scoped_patch['patch'])
+            self.assertEqual(scoped_patch['patch']['sim'], {'tick': 5})
+            self.assertEqual(scoped_patch['events'], [{'robot_id': 'R01', 'message': 'visible'}])
+            self.assertNotIn('untrusted_extra', scoped_patch)
+
+            status = {
+                'type': 'RUNTIME_STATUS', 'runtime_mode': 'GAZEBO_ROS', 'runtime_state': 'UNIFIED',
+                'connected_robot_ids': ['R01', 'R02'], 'ros_connected': True,
+                'local_active_maps': {'R01': {'active_map_id': 'M1'}, 'R02': {'active_map_id': 'M2'}},
+                'robot_map_sync': {'R01': {'status': 'SYNCED'}, 'R02': {'status': 'ERROR', 'error': 'private'}},
+                'robot_capabilities': {'R01': {'nav2_ready': True}, 'R02': {'goal_blocker_reason': 'private'}},
+                'robot_mapping_sessions': {'R01': 'S1', 'R02': 'S2'},
+                'diagnostics': {'nodes': ['/robot/R02/private']},
+            }
+            scoped_status = scope_operator_payload(status, operator_a)
+            self.assertEqual(scoped_status['connected_robot_ids'], ['R01'])
+            self.assertEqual(set(scoped_status['local_active_maps']), {'R01'})
+            self.assertEqual(set(scoped_status['robot_map_sync']), {'R01'})
+            self.assertEqual(set(scoped_status['robot_mapping_sessions']), {'R01'})
+            self.assertNotIn('diagnostics', scoped_status)
+            self.assertIsNone(scope_operator_payload({'type': 'MAP_SNAPSHOT', 'map': {'robot_id': 'R02'}}, operator_a))
+            self.assertIsNone(scope_operator_payload({'type': 'HEATMAP', 'layer': {'floor': 1}}, operator_a))
+            self.assertIsNone(scope_operator_payload({
+                'type': 'ERROR', 'code': 'R02_NAVIGATION_ERROR',
+                'message': 'R02 private navigation state'}, operator_a))
+            self.assertEqual(scope_operator_payload({
+                'type': 'ERROR', 'code': 'OPERATOR_PERMISSION_REQUIRED',
+                'message': 'private detail from another robot'}, operator_a), {
+                    'type': 'ERROR', 'code': 'OPERATOR_PERMISSION_REQUIRED',
+                    'message': 'operator is not authorized for this operation'})
+            self.assertEqual(scope_operator_payload({'type': 'MAP_SNAPSHOT', 'map': {'robot_id': 'R01'}}, operator_a)
+                             ['map']['robot_id'], 'R01')
+            administrator = {**operator_a, 'identity': 'admin',
+                             'permissions': frozenset({'operator:admin'}),
+                             'robots': frozenset({'*'})}
+            self.assertIs(scope_operator_payload(full, administrator), full)
+
+            consumer = TwinConsumer()
+            consumer.operator = operator_a
+            consumer.base_send = AsyncMock()
+            asyncio.run(consumer.send_json({'type': 'ROBOT_CONTROL_STATUS', 'robot_id': 'R02', 'accepted': True}))
+            consumer.base_send.assert_not_awaited()
+            asyncio.run(consumer.send_json({'type': 'ROBOT_CONTROL_STATUS', 'robot_id': 'R01', 'accepted': True}))
+            consumer.base_send.assert_awaited_once()
+
+            consumer.control_only = False
+            consumer._manual_window_started = time.monotonic()
+            consumer._manual_window_count = 0
+            consumer._message_window_started = consumer._manual_window_started
+            consumer._message_window_count = 0
+            with patch.object(runtime, 'handle_message', new=AsyncMock()) as dispatch:
+                asyncio.run(consumer.receive_json({'type': 'ROBOT_MANUAL', 'robot_id': 'R02',
+                                                   'action': 'FORWARD'}))
+            dispatch.assert_not_awaited()
+
+            outbox = type('Outbox', (), {'offer': lambda self, value: setattr(self, 'last', value)})()
+            consumer.visualization_outbox = outbox
+            consumer.offer_visualization({'type': 'LIDAR_SCAN', 'robot_id': 'R02', 'scan': {'robot_id': 'R02'}})
+            self.assertFalse(hasattr(outbox, 'last'))
+            consumer.offer_visualization({'type': 'LIDAR_SCAN', 'robot_id': 'R01', 'scan': {'robot_id': 'R01'}})
+            self.assertEqual(outbox.last['robot_id'], 'R01')
+
+    def test_robot_scope_does_not_override_command_permission_or_estop_reset_policy(self):
+        operator = {'identity': 'operator-a',
+                    'permissions': frozenset({'operator:read', 'robot:manual'}),
+                    'robots': frozenset({'R01'}), 'expires_at': time.time() + 30}
+        with self.protected_settings():
+            self.assertTrue(authorize_websocket_message(operator, {'type': 'RESYNC'}))
+            self.assertTrue(authorize_websocket_message(operator, {
+                'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'FORWARD'}))
+            self.assertFalse(authorize_websocket_message(operator, {
+                'type': 'ROBOT_MANUAL', 'robot_id': 'R02', 'action': 'FORWARD'}))
+            from twin.operator_security import authorized
+            self.assertFalse(authorized(operator, 'safety:reset', 'R01'))
+            self.assertTrue(authorized({**operator,
+                'permissions': frozenset({'operator:read', 'safety:reset'})}, 'safety:reset', 'R01'))
+            self.assertFalse(authorize_websocket_message({**operator, 'expires_at': time.time() - 1}, {
+                'type': 'ROBOT_MANUAL', 'robot_id': 'R01', 'action': 'FORWARD'}))

@@ -42,12 +42,13 @@ from std_msgs.msg import Bool, String
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from tf2_ros import Buffer, TransformException, TransformListener
 from robot_localization.srv import SetPose
-from slam_toolbox.srv import (Pause as SlamPause, SaveMap as SlamSaveMap,
-                              SerializePoseGraph as SlamSerializePoseGraph)
+from slam_toolbox.srv import Pause as SlamPause
+from slam_toolbox.srv import SerializePoseGraph as SlamSerializePoseGraph
 
 from .qos import canonical_map_qos_profile, gazebo_clock_qos_profile
 from .coordinates import (is_small_future_tf_skew, pose_from_transform,
-                          quaternion_yaw, rotate_translate_xy)
+                          is_fresh_tf_sample, quaternion_yaw,
+                          rotate_translate_xy)
 from .web_map_renderer import (
     BoundedVoxelMap, LatestFrameBuffer, compress_occupancy_grid,
     laser_scan_xy, path_length, successful_path_result,
@@ -57,6 +58,7 @@ from .web_map_renderer import (
     occupancy_grid_statistics,
 )
 from .navigation_map import transform_occupancy_grid, validate_target_coverage
+from .local_map_writer import write_trinary_map
 
 
 NAV2_LIVE_LIFECYCLE_NODES = (
@@ -65,6 +67,11 @@ NAV2_LIVE_LIFECYCLE_NODES = (
 )
 NAV2_LIFECYCLE_STATE_MAX_AGE_S = 2.5
 NAV2_LIFECYCLE_POLL_INTERVAL_S = 0.75
+INITIAL_POSE_POSITION_TOLERANCE_M = 0.05
+INITIAL_POSE_YAW_TOLERANCE_RAD = 0.05
+INITIAL_POSE_STABLE_DURATION_SIM_S = 0.25
+INITIAL_POSE_MIN_STABLE_SAMPLES = 3
+INITIAL_POSE_MAX_SAMPLE_GAP_SIM_S = 0.5
 
 
 def yaw_from_quaternion(q) -> float:
@@ -112,7 +119,11 @@ class SwerveBridge(Node):
         # response therefore expires closed instead of leaving a stale route
         # queued indefinitely.
         self.declare_parameter('tag_route_leg_auth_timeout_s', 5.0)
-        self.declare_parameter('tf_max_age_s', 2.0)
+        # Localization-dependent commands fail closed when the dynamic map TF
+        # is more than half a simulation second old. A multi-second grace can
+        # make a stale pose appear usable while Nav2 reports success against a
+        # robot that has already moved elsewhere.
+        self.declare_parameter('tf_max_age_s', 0.5)
         self.declare_parameter('tf_future_tolerance_s', 0.1)
         # Mapping scans/clouds can arrive slightly ahead of the TF listener on
         # a slow Gazebo clock. Wait for their exact timestamp on the separate
@@ -248,6 +259,8 @@ class SwerveBridge(Node):
         # because SLAM explored another cell.
         self.mapping_map_revision = f'session-{self.mapping_session_id}'
         self.mapping_map_content_revision = None
+        self._map_save_lock = threading.Lock()
+        self.pending_map_save = None
         self.mapping_map_version = 0
         self.last_logged_map_identity = None
         self.last_logged_map_content_revision = None
@@ -409,8 +422,6 @@ class SwerveBridge(Node):
             SetPose, self._scoped_topic('/set_pose'))
         self.slam_pause_client = self.create_client(
             SlamPause, self._scoped_topic('/slam_toolbox/pause_new_measurements'))
-        self.slam_save_client = self.create_client(
-            SlamSaveMap, self._scoped_topic('/slam_toolbox/save_map'))
         self.slam_serialize_client = self.create_client(
             SlamSerializePoseGraph, self._scoped_topic('/slam_toolbox/serialize_map'))
         scan_topic = self._scoped_topic(self.get_parameter('scan_topic').value)
@@ -446,6 +457,8 @@ class SwerveBridge(Node):
             self.command_diagnostics_cb, 10)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_epoch = 0
+        self.tf_epoch_reset_count = 0
         # Visualization has its own monotonic wall-clock worker. Sensor ROS
         # callbacks only replace the latest references; control keeps its ROS
         # executor and never waits for cloud transforms/map compression.
@@ -1077,15 +1090,83 @@ class SwerveBridge(Node):
         now = time.monotonic()
         stamp = msg.clock
         simulation_time = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        clock_rewound = (self.simulation_time is not None
+                         and simulation_time < self.simulation_time - 0.5)
         if self.simulation_time is not None and self.previous_simulation_wall is not None:
             sim_delta = simulation_time - self.simulation_time
             wall_delta = now - self.previous_simulation_wall
             if sim_delta >= 0.0 and wall_delta > 0.0:
                 self.gazebo_rtf = sim_delta / wall_delta
+        if clock_rewound:
+            # Runtime mode switches may restart Gazebo while this bridge stays
+            # alive. Clear the buffer *and replace its subscriptions*: clearing
+            # alone leaves old /tf samples queued in the DDS reader, where they
+            # can repopulate the buffer with future-dated transforms from the
+            # previous clock epoch. Recreating the /tf_static subscription also
+            # reacquires transient-local robot-state-publisher transforms.
+            self._reset_tf_epoch()
+            self.gazebo_rtf = None
+            self.last_tf_error = 'simulation clock rewound; waiting for current-epoch TF'
+            self.manual_twist = Twist()
+            self.manual_deadline = 0.0
+            self.cmd_pub.publish(self.manual_twist)
+
+            pending_pose = self.pending_initial_pose
+            self.pending_initial_pose = None
+            if pending_pose:
+                self._send_local_control_result(
+                    pending_pose['data'], False,
+                    error='simulation clock reset during initial-pose confirmation; submit again after localization is ready')
+
+            pending_load = self.pending_local_map_load
+            self.pending_local_map_load = None
+            self.local_map_load_pending = False
+            if pending_load:
+                self._send_local_control_result(
+                    pending_load['data'], False,
+                    error='simulation clock reset during map load; active map was not confirmed')
+
+            save_lock = getattr(self, '_map_save_lock', None)
+            if save_lock is not None:
+                with save_lock:
+                    pending_save = self.pending_map_save
+                    self.pending_map_save = None
+                if pending_save:
+                    self._send_local_control_result(
+                        pending_save['data'], False,
+                        error='simulation clock reset during map save; any incomplete artifacts remain unregistered')
         self.previous_simulation_time = self.simulation_time
         self.previous_simulation_wall = now
         self.simulation_time = simulation_time
         self.last_clock_monotonic = now
+
+    def _reset_tf_epoch(self):
+        """Discard both cached and queued transforms after a Gazebo clock rewind."""
+        previous_listener = getattr(self, 'tf_listener', None)
+        if previous_listener is not None:
+            try:
+                previous_listener.unregister()
+            except (AttributeError, RuntimeError) as exc:
+                self.get_logger().error(
+                    f'Could not unregister previous TF listener after clock rewind: {exc}')
+
+        # Assign a new empty buffer before creating subscriptions. If listener
+        # recreation fails, localization-dependent lookups fail closed instead
+        # of continuing to use transforms from the previous simulation run.
+        self.tf_buffer = Buffer()
+        self.tf_listener = None
+        try:
+            self.tf_listener = TransformListener(self.tf_buffer, self)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            self.tf_status = False
+            self.tf_error = f'TF listener could not be recreated after simulation clock reset: {exc}'
+            self.last_tf_error = self.tf_error
+            self.get_logger().error(self.tf_error)
+            return False
+
+        self.tf_epoch += 1
+        self.tf_epoch_reset_count += 1
+        return True
 
     def send(self, payload):
         if not isinstance(payload, dict):
@@ -1434,8 +1515,16 @@ class SwerveBridge(Node):
                 stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1e-9
                 now_s = self.get_clock().now().nanoseconds * 1e-9
                 age = now_s - stamp_s
-                if stamp_s > 0.0 and age > max_age:
-                    raise TransformException(f'TF {target}->{frame} stale ({age:.2f}s)')
+                future_tolerance = max(0.0, float(self.get_parameter(
+                    'tf_future_tolerance_s').value))
+                if not is_fresh_tf_sample(now_s, stamp_s, max_age, future_tolerance):
+                    if stamp_s <= 0.0:
+                        detail = 'has no dynamic timestamp'
+                    elif age < -future_tolerance:
+                        detail = f'is future-dated ({-age:.2f}s; possible simulation clock reset)'
+                    else:
+                        detail = f'is stale ({age:.2f}s)'
+                    raise TransformException(f'TF {target}->{frame} {detail}')
                 pose = pose_from_transform(transform)
                 # Keep the TF sample's ROS clock stamp distinct from the wall
                 # time at which this coalesced telemetry frame is sent. The
@@ -1750,6 +1839,7 @@ class SwerveBridge(Node):
     def map_snapshot_timer(self):
         """Hash/compress only changed /map content on its isolated worker."""
         self._update_latest_map_signature()
+        self._poll_pending_map_save()
         signature = self.latest_map_signature
         if (self.processed_map is None or signature is None
                 or self.processed_map_generation != self.latest_map_generation):
@@ -2394,6 +2484,7 @@ class SwerveBridge(Node):
         })
 
     def poll_local_control_confirmations(self):
+        self._expire_pending_map_save()
         pending = self.pending_local_map_load
         if pending and time.monotonic() > pending['deadline_monotonic']:
             self.pending_local_map_load = None
@@ -2414,17 +2505,78 @@ class SwerveBridge(Node):
             self._send_local_control_result(pending['data'], False,
                                             error='active map changed while initializing pose')
             return
+        if pending.get('tf_epoch', getattr(self, 'tf_epoch', 0)) != getattr(self, 'tf_epoch', 0):
+            self.pending_initial_pose = None
+            self._send_local_control_result(
+                pending['data'], False,
+                error='simulation TF epoch changed during initial-pose confirmation; submit again')
+            return
+        if not pending.get('service_acknowledged', False):
+            if time.monotonic() > pending['deadline_monotonic']:
+                self.pending_initial_pose = None
+                self._send_local_control_result(
+                    pending['data'], False,
+                    error='ekf_v30e /set_pose service did not acknowledge before the confirmation deadline')
+            return
         try:
             actual, _frame = self._lookup_robot_pose()
+            actual_stamp_s = float(actual.get('source_timestamp_s', 0.0))
+            request_stamp_s = float(pending.get('request_stamp_s', 0.0))
+            if (not math.isfinite(actual_stamp_s) or not math.isfinite(request_stamp_s)
+                    or actual_stamp_s < request_stamp_s):
+                # A nearby pose already present in TF before /set_pose was
+                # accepted is not evidence that localization applied this
+                # request. Wait for a post-request transform or fail on the
+                # existing bounded confirmation deadline.
+                raise TransformException('waiting for a post-request map-frame transform')
             distance = math.hypot(float(actual['x']) - pending['pose']['x'],
                                   float(actual['y']) - pending['pose']['y'])
             yaw_error = math.atan2(math.sin(float(actual['yaw']) - pending['pose']['yaw']),
                                    math.cos(float(actual['yaw']) - pending['pose']['yaw']))
-            if distance <= 0.25 and abs(yaw_error) <= 0.35:
+            pending['last_position_error_m'] = distance
+            pending['last_yaw_error_rad'] = abs(yaw_error)
+            last_stamp_s = pending.get('last_confirmation_stamp_s')
+            if (distance > INITIAL_POSE_POSITION_TOLERANCE_M
+                    or abs(yaw_error) > INITIAL_POSE_YAW_TOLERANCE_RAD):
+                pending['confirmation_start_stamp_s'] = None
+                pending['confirmation_sample_count'] = 0
+                pending['last_confirmation_stamp_s'] = actual_stamp_s
+            elif (pending.get('confirmation_start_stamp_s') is None
+                    or last_stamp_s is None):
+                pending['confirmation_start_stamp_s'] = actual_stamp_s
+                pending['confirmation_sample_count'] = 1
+                pending['last_confirmation_stamp_s'] = actual_stamp_s
+            elif actual_stamp_s > float(last_stamp_s):
+                sample_gap_s = actual_stamp_s - float(last_stamp_s)
+                if sample_gap_s > INITIAL_POSE_MAX_SAMPLE_GAP_SIM_S:
+                    pending['confirmation_start_stamp_s'] = actual_stamp_s
+                    pending['confirmation_sample_count'] = 1
+                else:
+                    pending['confirmation_sample_count'] = int(
+                        pending.get('confirmation_sample_count', 0)) + 1
+                pending['last_confirmation_stamp_s'] = actual_stamp_s
+            stable_duration_s = (actual_stamp_s - float(
+                pending['confirmation_start_stamp_s'])
+                if pending.get('confirmation_start_stamp_s') is not None else 0.0)
+            if (distance <= INITIAL_POSE_POSITION_TOLERANCE_M
+                    and abs(yaw_error) <= INITIAL_POSE_YAW_TOLERANCE_RAD
+                    and int(pending.get('confirmation_sample_count', 0))
+                    >= INITIAL_POSE_MIN_STABLE_SAMPLES
+                    and stable_duration_s >= INITIAL_POSE_STABLE_DURATION_SIM_S):
                 self.pending_initial_pose = None
                 self._send_local_control_result(pending['data'], True, {
-                    'message': 'authoritative ekf_v30e /set_pose accepted and map-frame TF confirmed',
+                    'message': ('authoritative ekf_v30e /set_pose acknowledged and stable, '
+                                'post-request map-frame TF confirmed'),
                     'frame_id': 'map', 'pose': pending['pose'],
+                    'request_stamp_s': request_stamp_s,
+                    'tf_stamp_s': actual_stamp_s,
+                    'tf_age_s': self.get_clock().now().nanoseconds * 1e-9 - actual_stamp_s,
+                    'position_error_m': distance,
+                    'yaw_error_rad': abs(yaw_error),
+                    'tf_confirmation_duration_sim_s': stable_duration_s,
+                    'tf_confirmation_samples': int(pending['confirmation_sample_count']),
+                    'position_tolerance_m': INITIAL_POSE_POSITION_TOLERANCE_M,
+                    'yaw_tolerance_rad': INITIAL_POSE_YAW_TOLERANCE_RAD,
                     'active_map_id': pending['active_map_id'],
                     'active_map_revision': pending['active_map_revision'],
                     'runtime_pose_confirmed': True,
@@ -2435,7 +2587,11 @@ class SwerveBridge(Node):
         if time.monotonic() > pending['deadline_monotonic']:
             self.pending_initial_pose = None
             self._send_local_control_result(pending['data'], False,
-                                            error='ekf_v30e /set_pose accepted the request but map-frame TF did not confirm the initial pose')
+                error=('ekf_v30e /set_pose was not followed by stable map-frame TF '
+                       f'within {INITIAL_POSE_POSITION_TOLERANCE_M:.2f} m / '
+                       f'{INITIAL_POSE_YAW_TOLERANCE_RAD:.2f} rad '
+                       f'(last position={pending.get("last_position_error_m")!r} m, '
+                       f'yaw={pending.get("last_yaw_error_rad")!r} rad)'))
 
     def _loaded_nav2_revision(self, nav2_node_present):
         if self.runtime_state == 'UNIFIED':
@@ -3118,6 +3274,8 @@ class SwerveBridge(Node):
 
     def _saved_map_load_safety_error(self):
         """Authoritative bridge-side safety check shared by preflight and load."""
+        if self._map_save_is_pending():
+            return 'wait for the active SLAM map save to finish before loading a saved map'
         if self.emergency_stop_active:
             return 'clear E-STOP before loading a saved map'
         if self.applied_mode != 'MANUAL':
@@ -3131,6 +3289,13 @@ class SwerveBridge(Node):
             return 'another saved map load is already in progress'
         return None
 
+    def _map_save_is_pending(self):
+        lock = getattr(self, '_map_save_lock', None)
+        if lock is None:
+            return False
+        with lock:
+            return getattr(self, 'pending_map_save', None) is not None
+
     def local_control(self, data):
         operation = str(data.get('operation') or '').upper()
         if operation == 'CLEAR_ESTOP':
@@ -3142,6 +3307,11 @@ class SwerveBridge(Node):
             if self.runtime_state not in ('MAPPING', 'UNIFIED'):
                 self._send_local_control_result(data, False, error='SLAM Toolbox is not active in this runtime')
                 return
+            if operation == 'MAPPING_START':
+                if self._map_save_is_pending():
+                    self._send_local_control_result(data, False,
+                        error='wait for the active map save to finish before resuming SLAM')
+                    return
             if not self.slam_pause_client.service_is_ready():
                 self._send_local_control_result(data, False, error='SLAM Toolbox pause service is unavailable')
                 return
@@ -3157,8 +3327,9 @@ class SwerveBridge(Node):
             if self.runtime_state not in ('MAPPING', 'UNIFIED'):
                 self._send_local_control_result(data, False, error='map saving requires SLAM Toolbox mapping mode')
                 return
-            if not self.slam_save_client.service_is_ready():
-                self._send_local_control_result(data, False, error='SLAM Toolbox save_map service is unavailable')
+            if not self.slam_paused:
+                self._send_local_control_result(data, False,
+                    error='pause SLAM mapping before saving a stable map snapshot')
                 return
             if not self.slam_serialize_client.service_is_ready():
                 self._send_local_control_result(data, False,
@@ -3178,11 +3349,31 @@ class SwerveBridge(Node):
                 self._send_local_control_result(data, False,
                     error='map save artifact target already exists; choose a new map name')
                 return
-            request = SlamSaveMap.Request()
-            request.name.data = str(prefix)
-            future = self.slam_save_client.call_async(request)
-            future.add_done_callback(lambda completed: self.map_save_result(
-                completed, data, prefix, session_prefix))
+            active = self.active_map_identity()
+            if (active.get('active_map_id') != f'SLAM-{self.mapping_session_id}'
+                    or not active.get('active_map_revision')):
+                self._send_local_control_result(data, False,
+                    error='active SLAM map identity is unavailable; no map was saved')
+                return
+            pending = {
+                'token': uuid.uuid4().hex, 'data': data, 'prefix': prefix,
+                'session_prefix': session_prefix,
+                'active_map_id': active['active_map_id'],
+                'active_map_revision': active['active_map_revision'],
+                'deadline_monotonic': time.monotonic() + 60.0,
+                'phase': 'WAITING_FOR_VALIDATED_SNAPSHOT',
+            }
+            with self._map_save_lock:
+                if self.pending_map_save is not None:
+                    self._send_local_control_result(data, False,
+                        error='another map save is already in progress for this robot')
+                    return
+                self.pending_map_save = pending
+            # The map worker hashes and validates the most recent occupancy
+            # generation off the ROS control executor. It will persist exactly
+            # that paused snapshot, then ask SLAM Toolbox to serialize the
+            # resumable pose-graph/data session.
+            self.map_snapshot_worker.wake()
             return
         if operation == 'MAP_LOAD_PREFLIGHT':
             safety_error = self._saved_map_load_safety_error()
@@ -3274,6 +3465,8 @@ class SwerveBridge(Node):
             request = SetPose.Request()
             pose = PoseWithCovarianceStamped()
             pose.header.stamp = self.get_clock().now().to_msg()
+            request_stamp_s = (float(pose.header.stamp.sec)
+                               + float(pose.header.stamp.nanosec) * 1e-9)
             pose.header.frame_id = 'map'
             pose.pose.pose.position.x = float(data['x'])
             pose.pose.pose.position.y = float(data['y'])
@@ -3287,7 +3480,13 @@ class SwerveBridge(Node):
                 'data': data, 'pose': {key: float(data[key]) for key in ('x', 'y', 'yaw')},
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
+                'request_stamp_s': request_stamp_s,
                 'deadline_monotonic': time.monotonic() + 8.0,
+                'tf_epoch': getattr(self, 'tf_epoch', 0),
+                'service_acknowledged': False,
+                'confirmation_start_stamp_s': None,
+                'last_confirmation_stamp_s': None,
+                'confirmation_sample_count': 0,
             }
             try:
                 future = self.initial_pose_client.call_async(request)
@@ -3327,61 +3526,97 @@ class SwerveBridge(Node):
             elapsed += max(0.0, time.monotonic() - self.slam_mapping_started_monotonic)
         return round(elapsed, 1)
 
-    def map_save_result(self, future, data, prefix, session_prefix):
+    def _poll_pending_map_save(self):
+        lock = getattr(self, '_map_save_lock', None)
+        if lock is None:
+            return
+        with lock:
+            pending = self.pending_map_save
+            if pending is None or pending['phase'] != 'WAITING_FOR_VALIDATED_SNAPSHOT':
+                return
+            if time.monotonic() > pending['deadline_monotonic']:
+                self.pending_map_save = None
+                timed_out = True
+            else:
+                timed_out = False
+                if (not self.slam_paused
+                        or self.runtime_state not in ('MAPPING', 'UNIFIED')
+                        or self.processed_map is None
+                        or self.processed_map_generation != self.latest_map_generation
+                        or not self.mapping_map_content_revision):
+                    return
+                active = self.active_map_identity()
+                if (active.get('active_map_id') != pending['active_map_id']
+                        or active.get('active_map_revision') != pending['active_map_revision']):
+                    self.pending_map_save = None
+                    invalid_identity = True
+                else:
+                    invalid_identity = False
+                    pending['phase'] = 'WRITING_AND_SERIALIZING'
+                    grid = self.processed_map
+        if timed_out:
+            self._send_local_control_result(pending['data'], False,
+                error='timed out waiting for a fresh, validated paused SLAM map; no files were written')
+            return
+        if invalid_identity:
+            self._send_local_control_result(pending['data'], False,
+                error='active SLAM map identity changed before save; no files were written')
+            return
         try:
-            response = future.result()
-            success = int(response.result) == int(SlamSaveMap.Response.RESULT_SUCCESS)
+            written = write_trinary_map(grid, pending['prefix'])
         except Exception as exc:
-            self._send_local_control_result(data, False, error=f'SLAM Toolbox save_map failed: {type(exc).__name__}')
+            self._finish_map_save(pending, False,
+                error=f'validated SLAM occupancy map could not be persisted: {type(exc).__name__}: {exc}')
             return
-        yaml_path = prefix.with_suffix('.yaml')
-        if not success or not yaml_path.is_file():
-            self._cleanup_failed_map_save(yaml_path, prefix.with_suffix('.pgm'), session_prefix)
-            self._send_local_control_result(data, False, error='SLAM Toolbox did not persist a map YAML file')
-            return
-        try:
-            import yaml
-            document = yaml.safe_load(yaml_path.read_text(encoding='utf-8')) or {}
-            image = Path(str(document['image']))
-            if not image.is_absolute():
-                image = yaml_path.parent / image
-            image = image.resolve(strict=True)
-        except Exception as exc:
-            self._cleanup_failed_map_save(yaml_path, prefix.with_suffix('.pgm'), session_prefix)
-            self._send_local_control_result(data, False, error=f'map saver output is incomplete: {type(exc).__name__}')
-            return
+        with self._map_save_lock:
+            if self.pending_map_save is not pending:
+                # A timed-out request may finish its disk write late. Leave its
+                # uniquely named files unregistered rather than touching them.
+                return
+            pending['deadline_monotonic'] = time.monotonic() + 120.0
+        yaml_path = Path(written['yaml_path'])
+        image = Path(written['image_path'])
         request = SlamSerializePoseGraph.Request()
-        request.filename = str(session_prefix)
+        request.filename = str(pending['session_prefix'])
         try:
             session_future = self.slam_serialize_client.call_async(request)
         except Exception as exc:
-            self._cleanup_failed_map_save(yaml_path, image, session_prefix)
-            self._send_local_control_result(data, False,
-                error=f'SLAM Toolbox pose-graph serialization request failed: {type(exc).__name__}')
+            # Keep the successfully written raster as an unregistered artifact
+            # for recovery. A failed session serialization is not map-save
+            # success, and deleting the raster could destroy operator work.
+            self._finish_map_save(pending, False,
+                error=f'SLAM Toolbox pose-graph serialization request failed; raster retained unregistered: {type(exc).__name__}')
             return
         session_future.add_done_callback(lambda completed: self.map_serialize_result(
-            completed, data, yaml_path, image, session_prefix))
+            completed, pending, yaml_path, image, written))
 
-    def map_serialize_result(self, future, data, yaml_path, image, session_prefix):
+    def map_serialize_result(self, future, pending, yaml_path, image, written):
         try:
             response = future.result()
             success = int(response.result) == int(SlamSerializePoseGraph.Response.RESULT_SUCCESS)
         except Exception as exc:
-            self._cleanup_failed_map_save(yaml_path, image, session_prefix)
-            self._send_local_control_result(data, False,
-                error=f'SLAM Toolbox pose-graph serialization failed: {type(exc).__name__}')
+            self._finish_map_save(pending, False,
+                error=f'SLAM Toolbox pose-graph serialization failed; incomplete artifacts retained unregistered: {type(exc).__name__}')
             return
+        session_prefix = pending['session_prefix']
         posegraph_path = session_prefix.with_suffix('.posegraph')
         serialized_data_path = session_prefix.with_suffix('.data')
         if (not success or not posegraph_path.is_file() or not serialized_data_path.is_file()
                 or posegraph_path.stat().st_size <= 0 or serialized_data_path.stat().st_size <= 0):
-            self._cleanup_failed_map_save(yaml_path, image, session_prefix)
-            self._send_local_control_result(data, False,
-                error='SLAM Toolbox did not persist both non-empty posegraph and data session artifacts')
+            self._finish_map_save(pending, False,
+                error='SLAM Toolbox did not persist both non-empty session artifacts; incomplete files were retained unregistered')
             return
-        self._send_local_control_result(data, True, {
-            'name': str(data.get('name') or ''), 'yaml_path': str(yaml_path),
+        self._finish_map_save(pending, True, result={
+            'name': str(pending['data'].get('name') or ''), 'yaml_path': str(yaml_path),
             'image_path': str(image),
+            'map_identity': {
+                'active_map_id': pending['active_map_id'],
+                'active_map_revision': pending['active_map_revision'],
+                'map_content_revision': self.mapping_map_content_revision,
+            },
+            'geometry': {key: written[key] for key in (
+                'width', 'height', 'resolution', 'origin', 'known_cells',
+                'occupied_cells', 'free_cells', 'unknown_cells')},
             'slam_session': {
                 'engine': 'SLAM_TOOLBOX', 'status': 'AVAILABLE',
                 'posegraph_path': str(posegraph_path),
@@ -3389,18 +3624,31 @@ class SwerveBridge(Node):
             },
         })
 
-    def _cleanup_failed_map_save(self, yaml_path, image_path, session_prefix):
-        """Remove only this failed request's outputs below the robot map root."""
-        allowed = (Path(yaml_path), Path(image_path),
-                   Path(session_prefix).with_suffix('.posegraph'),
-                   Path(session_prefix).with_suffix('.data'))
-        for path in allowed:
-            try:
-                resolved = path.resolve()
-                if resolved.is_relative_to(self.local_map_root) and resolved.is_file():
-                    resolved.unlink()
-            except OSError as exc:
-                self.get_logger().warning(f'failed map-save cleanup for {path.name}: {type(exc).__name__}')
+    def _finish_map_save(self, pending, ok, result=None, error=None):
+        lock = getattr(self, '_map_save_lock', None)
+        if lock is None:
+            return
+        with lock:
+            if self.pending_map_save is not pending:
+                return
+            self.pending_map_save = None
+        self._send_local_control_result(pending['data'], ok, result=result, error=error)
+
+    def _expire_pending_map_save(self):
+        lock = getattr(self, '_map_save_lock', None)
+        if lock is None:
+            return
+        with lock:
+            pending = self.pending_map_save
+            if pending is None or time.monotonic() <= pending['deadline_monotonic']:
+                return
+            self.pending_map_save = None
+        if pending['phase'] == 'WAITING_FOR_VALIDATED_SNAPSHOT':
+            reason = 'timed out waiting for a fresh, validated paused SLAM map; no files were written'
+        else:
+            reason = ('timed out waiting for SLAM Toolbox session serialization; '
+                      'any incomplete artifacts were retained unregistered')
+        self._send_local_control_result(pending['data'], False, error=reason)
 
     def map_load_result(self, future, data):
         try:
@@ -3425,6 +3673,9 @@ class SwerveBridge(Node):
         self._confirm_local_map_if_ready()
 
     def initial_pose_service_result(self, future, data):
+        if (self.pending_initial_pose is None
+                or self.pending_initial_pose.get('data') is not data):
+            return
         try:
             future.result()
         except Exception as exc:
@@ -3432,6 +3683,7 @@ class SwerveBridge(Node):
             self._send_local_control_result(data, False,
                                             error=f'ekf_v30e /set_pose service failed: {type(exc).__name__}')
             return
+        self.pending_initial_pose['service_acknowledged'] = True
         self._check_initial_pose_confirmation()
 
     def simple_service_result(self, future, data, message):

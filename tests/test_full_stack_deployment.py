@@ -124,9 +124,49 @@ def test_installed_full_stack_reaches_readiness_and_executes_simulated_mission(t
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             timeout=900, check=False)
         mission_log.write_text(mission.stdout)
-        assert mission.returncode == 0, mission.stdout
         report = json.loads(mission_json.read_text())
-        assert report['passed'] is True, report
+        save_load_json = runtime / 'save-load-navigation.json'
+        save_load_log = runtime / 'save-load-navigation.log'
+        navigation_runs = int(os.environ.get('WARETWIN_SIMULATION_NAVIGATION_RUNS', '5'))
+        assert 1 <= navigation_runs <= 10, (
+            'WARETWIN_SIMULATION_NAVIGATION_RUNS must be between 1 and 10')
+        save_load = subprocess.run([python, str(ROOT / 'scripts/save_load_map_acceptance.py'),
+            '--backend-url', f'http://127.0.0.1:{backend_port}',
+            '--frontend-origin', f'http://127.0.0.1:{frontend_port}',
+            '--artifact-root', str(maps), '--runtime-dir', str(runtime),
+            '--robot-id', 'R01', '--navigation-runs', str(navigation_runs),
+            '--navigation-timeout', '240', '--json', str(save_load_json)],
+            cwd='/tmp', env={**env, 'ROS_DOMAIN_ID': domain},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            timeout=3600, check=False)
+        save_load_log.write_text(save_load.stdout)
+        assert save_load.returncode == 0, (
+            f'Save/Load acceptance exited {save_load.returncode}; full output: {save_load_log}\n'
+            f'last output lines:\n{save_load.stdout[-12000:]}'
+        )
+        save_load_report = json.loads(save_load_json.read_text())
+        assert save_load_report['passed'] is True, (
+            f'Save/Load report failed: phases={save_load_report.get("phases")}, '
+            f'reason={save_load_report.get("reason")}; report={save_load_json}'
+        )
+        assert len(save_load_report['navigation_runs']) == navigation_runs, (
+            f'Expected {navigation_runs} saved-map Nav2 runs, '
+            f'got {len(save_load_report["navigation_runs"])}; '
+            f'report={save_load_json}'
+        )
+        # Keep the real Save/Load integration evidence even when the preceding
+        # wider regression mission exposes a navigation failure. Both gates
+        # remain required for this test to pass; this only avoids masking the
+        # independent map-persistence acceptance report.
+        assert mission.returncode == 0, (
+            f'End-to-end acceptance exited {mission.returncode}; full output: {mission_log}\n'
+            f'last output lines:\n{mission.stdout[-12000:]}'
+        )
+        assert report['passed'] is True, (
+            f'End-to-end report failed: stages={report.get("stages")}, '
+            f'direct_navigation={report.get("direct_navigation")}, '
+            f'web_navigation={report.get("web_navigation")}; report={mission_json}'
+        )
     finally:
         interrupted = launch.poll() is None
         if interrupted:

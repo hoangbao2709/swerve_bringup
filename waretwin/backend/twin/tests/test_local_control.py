@@ -545,10 +545,50 @@ class LocalControlApiTests(TestCase):
 
             runtime.engine.state['robots']['R01'].update({'control_mode': 'MANUAL', 'navigation_state': 'IDLE',
                                                           'vx': 0.0, 'vy': 0.0, 'wz': 0.0})
+            with patch('twin.local_control_views._bridge_request', return_value={
+                    'ok': True, 'result': {
+                        'runtime_pose_confirmed': True,
+                        'active_map_id': runtime.active_map_state('R01')['active_map_id'],
+                        'active_map_revision': runtime.active_map_state('R01')['active_map_revision'],
+                        'request_stamp_s': 12.0, 'tf_stamp_s': 11.9, 'tf_age_s': 1.0,
+                    }}) as stale_request:
+                stale = self.client.post('/api/robots/R01/local/initial-pose',
+                    data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
+                    content_type='application/json')
+            self.assertEqual(stale.status_code, 502, stale.content)
+            stale_request.assert_called_once()
             with patch('twin.local_control_views._bridge_request', side_effect=lambda _robot, _operation, payload, **_kwargs: {
                 'ok': True, 'result': {'runtime_pose_confirmed': True,
                                        'active_map_id': payload['active_map_id'],
-                                       'active_map_revision': payload['active_map_revision']},
+                                       'active_map_revision': payload['active_map_revision'],
+                                       'request_stamp_s': 12.0, 'tf_stamp_s': 12.3,
+                                       'tf_age_s': 0.02,
+                                       'position_error_m': 0.15,
+                                       'yaw_error_rad': 0.01,
+                                       'position_tolerance_m': 0.05,
+                                       'yaw_tolerance_rad': 0.05,
+                                       'tf_confirmation_duration_sim_s': 0.3,
+                                       'tf_confirmation_samples': 4},
+            }) as displaced_request:
+                displaced = self.client.post('/api/robots/R01/local/initial-pose',
+                    data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
+                    content_type='application/json')
+            self.assertEqual(displaced.status_code, 502, displaced.content)
+            self.assertIn('outside the requested pose tolerance',
+                          displaced.json()['error']['message'])
+            displaced_request.assert_called_once()
+            with patch('twin.local_control_views._bridge_request', side_effect=lambda _robot, _operation, payload, **_kwargs: {
+                'ok': True, 'result': {'runtime_pose_confirmed': True,
+                                       'active_map_id': payload['active_map_id'],
+                                       'active_map_revision': payload['active_map_revision'],
+                                       'request_stamp_s': 12.0, 'tf_stamp_s': 12.01,
+                                       'tf_age_s': 0.02,
+                                       'position_error_m': 0.01,
+                                       'yaw_error_rad': 0.01,
+                                       'position_tolerance_m': 0.05,
+                                       'yaw_tolerance_rad': 0.05,
+                                       'tf_confirmation_duration_sim_s': 0.3,
+                                       'tf_confirmation_samples': 4},
             }) as request:
                 applied = self.client.post('/api/robots/R01/local/initial-pose',
                                            data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
@@ -556,6 +596,11 @@ class LocalControlApiTests(TestCase):
                 self.assertEqual(applied.status_code, 200, applied.content)
                 self.assertEqual(request.call_args.args[1], 'INITIAL_POSE')
                 self.assertEqual(request.call_args.args[2]['x'], 2.0)
+                self.assertEqual(applied.json()['request_stamp_s'], 12.0)
+                self.assertEqual(applied.json()['tf_stamp_s'], 12.01)
+                self.assertEqual(applied.json()['tf_age_s'], 0.02)
+                self.assertEqual(applied.json()['position_error_m'], 0.01)
+                self.assertEqual(applied.json()['tf_confirmation_samples'], 4)
 
             second_prefix = map_output_prefix('R01', 'floor-b')
             second_prefix.with_suffix('.pgm').write_bytes(b'P5\n100 100\n255\n' + bytes(9_999) + b'\xff')

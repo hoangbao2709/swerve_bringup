@@ -439,6 +439,83 @@ def test_nav2_lifecycle_transition_states_are_not_considered_settled(readiness_m
     assert not readiness_module.Readiness._lifecycle_states_are(transitioning, 1)
 
 
+def test_in_progress_nav2_startup_is_observed_without_issuing_another_startup(readiness_module):
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    names = readiness_module.NAV2_STATIC_MAP_LIFECYCLE_NODES
+    states = {name: {'id': 1, 'label': 'unconfigured'} for name in names}
+    probe.nav2_lifecycle_nodes = names
+    probe._wait_lifecycle_settled = lambda _deadline: states
+    probe._startup_state = lambda: {'state': 'IN_PROGRESS', 'request_id': 'same-request'}
+    updates = []
+    probe._update_startup_state = lambda state, **details: updates.append((state, details)) or {
+        'state': state, **details}
+    probe._report_stage = lambda result, name, passed, reason=None, success_detail=None: result.setdefault(
+        'reported', []).append((name, passed, reason, success_detail))
+    result = {'stages': {}}
+
+    ready, observed, reason = probe._ensure_nav2_lifecycle_ready(result, time.monotonic() + 1.0)
+
+    assert not ready
+    assert observed == states
+    assert 'already_consumed_but_nodes_not_active' in reason
+    assert updates and updates[-1][0] == 'IN_PROGRESS'
+    assert all(state != 'FAILED' for state, _ in updates)
+    assert result['stages']['NAV2_STARTUP_STATE'] == 'IN_PROGRESS'
+
+
+@pytest.mark.parametrize(('service_error', 'expected_state'), [
+    ('/lifecycle_manager_navigation/manage_nodes response timed out', 'IN_PROGRESS'),
+    ('/lifecycle_manager_navigation/manage_nodes service unavailable', 'NOT_REQUESTED'),
+])
+def test_nav2_startup_probe_timeout_does_not_mark_an_ambiguous_activation_failed(
+    readiness_module, monkeypatch, service_error, expected_state,
+):
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    names = readiness_module.NAV2_REGISTERED_CANONICAL_LIFECYCLE_NODES
+    states = {name: {'id': 1, 'label': 'unconfigured'} for name in names}
+    manager = {'autostart': False, 'node_names': list(names)}
+    probe.mode = 'unified'
+    probe.nav2_lifecycle_nodes = names
+    probe.nav_lifecycle_manager = object()
+    probe.lifecycle_state_file = 'unused-test-state.json'
+    probe.expected_canonical_revision = 23
+    probe._wait_lifecycle_settled = lambda _deadline: states
+    probe._lifecycle_snapshot = lambda _deadline: states
+    probe._startup_state = lambda: {'state': 'NOT_REQUESTED', 'launch_id': 'launch-test'}
+    probe._nav2_graph_counts = lambda: {
+        'map_server': 0, 'canonical_map_server': 1,
+        'lifecycle_manager_navigation': 1, 'lifecycle_manager_mapping_map': 0,
+    }
+    probe._read_nav2_manager_configuration = lambda _deadline: (manager, None)
+    probe._read_map_yaml_parameter = lambda _deadline: ('/published/map.yaml', None)
+    probe._lifecycle_log_offset = lambda: 0
+    probe._print_lifecycle_manager_log = lambda _offset: None
+    probe._record_timeline = lambda *_args, **_kwargs: None
+    updates = []
+    probe._update_startup_state = lambda state, **details: updates.append((state, details)) or {
+        'state': state, **details}
+    probe._report_stage = lambda result, name, passed, reason=None, success_detail=None: result.setdefault(
+        'reported', []).append((name, passed, reason, success_detail))
+
+    def service_call(_client, _deadline, _prepare=None):
+        probe.last_service_error = service_error
+        return None
+
+    probe._service_call = service_call
+    monkeypatch.setattr(readiness_module, 'claim_nav2_startup', lambda *_args, **_kwargs: (
+        True, {'state': 'REQUESTED', 'request_id': 'one-shot-request'}))
+    result = {'stages': {}}
+
+    ready, observed, reason = probe._ensure_nav2_lifecycle_ready(result, time.monotonic() + 1.0)
+
+    assert not ready
+    assert observed == states
+    assert service_error in reason
+    assert updates[-1][0] == expected_state
+    assert all(state != 'FAILED' for state, _ in updates)
+    assert result['stages']['NAV2_STARTUP_STATE'] == expected_state
+
+
 def test_supervisor_resets_nav2_startup_guard_for_each_new_navigation_child(
     readiness_module, tmp_path,
 ):

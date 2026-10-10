@@ -48,6 +48,12 @@ def test_nav2_swerve_controller_preserves_transit_heading_and_terminal_yaw_safet
     config = yaml.safe_load((ROOT / 'swerve_navigation/config/nav2_params.yaml').read_text(encoding='utf-8'))
     params = config['controller_server']['ros__parameters']
     checker = params['progress_checker']
+    goal_checker = params['general_goal_checker']
+
+    assert goal_checker['plugin'] == 'nav2_controller::SimpleGoalChecker'
+    assert goal_checker['stateful'] is False
+    assert goal_checker['xy_goal_tolerance'] == 0.05
+    assert goal_checker['yaw_goal_tolerance'] == 0.05
 
     assert checker['plugin'] == 'nav2_controller::PoseProgressChecker'
     assert checker['required_movement_radius'] == 0.30

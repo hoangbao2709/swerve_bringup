@@ -662,7 +662,7 @@ class TwinRuntime:
             # Avoid Channels' deep-copy/FIFO backlog for disposable clouds.
             # Each connected browser consumer owns one bounded latest-only lane.
             for client in tuple(self.visualization_clients):
-                client.visualization_outbox.offer(payload)
+                client.offer_visualization(payload)
             return
         if self.channel_layer is None:
             self.channel_layer = get_channel_layer()

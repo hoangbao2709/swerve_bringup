@@ -235,7 +235,7 @@ def main(args=None) -> None:
     rclpy.init(args=args)
     node = SwerveController()
     try:
-        rclpy.spin(node)
+        spin_until_shutdown(node)
     except KeyboardInterrupt:
         pass
     finally:
@@ -259,6 +259,20 @@ def main(args=None) -> None:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+
+def spin_until_shutdown(node) -> None:
+    """Ignore executor conversion races only after the ROS context is closed."""
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except RuntimeError:
+        # During context shutdown rclpy may invalidate a pending subscription
+        # conversion while executor.spin_once() is unwinding. The same error
+        # with a live context is a real controller failure and must propagate.
+        if rclpy.ok():
+            raise
 
 
 if __name__ == '__main__':

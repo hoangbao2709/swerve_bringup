@@ -3,7 +3,8 @@ import unittest
 from types import SimpleNamespace
 
 from swerve_bridge.coordinates import (is_small_future_tf_skew, pose_from_transform,
-                                       quaternion_yaw, rotate_translate_xy)
+                                       is_fresh_tf_sample, quaternion_yaw,
+                                       rotate_translate_xy)
 
 
 class CoordinateConversionTest(unittest.TestCase):
@@ -42,6 +43,18 @@ class CoordinateConversionTest(unittest.TestCase):
         missing = SimpleNamespace(sec=0, nanosec=0)
         self.assertFalse(is_small_future_tf_skew(old, available, 0.1))
         self.assertFalse(is_small_future_tf_skew(missing, available, 0.1))
+
+    def test_dynamic_tf_freshness_rejects_previous_simulation_epoch(self):
+        self.assertFalse(is_fresh_tf_sample(20.0, 60.0, 2.0, 0.1))
+
+    def test_dynamic_tf_freshness_accepts_only_bounded_future_skew(self):
+        self.assertTrue(is_fresh_tf_sample(20.0, 20.05, 2.0, 0.1))
+        self.assertFalse(is_fresh_tf_sample(20.0, 20.11, 2.0, 0.1))
+
+    def test_dynamic_tf_freshness_rejects_stale_zero_and_non_finite_stamps(self):
+        self.assertFalse(is_fresh_tf_sample(20.0, 17.9, 2.0, 0.1))
+        self.assertFalse(is_fresh_tf_sample(20.0, 0.0, 2.0, 0.1))
+        self.assertFalse(is_fresh_tf_sample(float('nan'), 20.0, 2.0, 0.1))
 
 
 if __name__ == '__main__':

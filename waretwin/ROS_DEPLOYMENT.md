@@ -114,6 +114,16 @@ WARETWIN_SIMULATION_TEST=1 /path/to/swerve_bringup/waretwin/backend/.venv/bin/py
 
 It creates a fresh temporary SQLite database, applies migrations, seeds only the versioned `WH-TEST-01` canonical-map fixture, and publishes that fixture beneath the temporary artifact root. It does not open, copy, or modify the source checkout database or robot-local maps. It uses ROS domain 213, waits for the existing unified-mode navigation readiness probe, executes the acceptance sequence, and stops the owned launch with SIGINT.
 
+### Latest final-install result (2026-10-09)
+
+The final copied, non-symlink `install5` build was launched from `/tmp` and completed package discovery, launch argument resolution, Web Local deployment checks (11/11), Django tests (198), frontend tests/build (161 tests), and focused ROS/runtime tests (109). The overall Gazebo acceptance is **FAIL**, not PASS. Both navigation actions returned `SUCCEEDED`, but the direct mission's map-frame and projected Gazebo pose disagreed beyond the release criteria; the Web mission's terminal map transform was stale. Observed Gazebo RTF was approximately `0.36`. The existing `0.05 m` / `0.05 rad` limits were not relaxed, and five repeatable accepted missions were not obtained.
+
+The same real installed-stack run exercised Mapping → Pause → Save and the supervised map load with actual SLAM Toolbox, Nav2 map server, bridge, and supervisor (no ROS/Gazebo mocks). Save produced and validated PGM/YAML plus SLAM `.data`/`.posegraph` files for an isolated temporary robot map. The loaded `/navigation_map` occupancy grid matched the saved image exactly (699 × 598, 0.05 m resolution; 418,002 cells) and was reported as local-only, not canonical. The workflow then **failed** to establish fresh, consistent post-load map TF for the initial-pose confirmation and executed zero navigation goals after loading. Therefore Save → Load → Initial Pose → Navigation remains unaccepted. The machine-readable sequence report and test logs are linked in [`../docs/RELEASE_EVIDENCE.md`](../docs/RELEASE_EVIDENCE.md).
+
+The bridge now rejects stale/future dynamic localization TF, requires the initial-pose confirmation transform to be newer than the request, and clears its TF buffer and invalidates in-flight pose/map operations when Gazebo time rewinds. These guards and clock-reset tests passed; they did not resolve the final end-to-end TF/pose acceptance failure. Do not bypass these guards or report a map loaded solely because an HTTP request or supervisor transition succeeded.
+
+Hosted GitHub Actions was not rerun on this uncommitted tree. Local `actionlint` passed, but the release gate needs a successful hosted run after the changes are pushed by an authorized maintainer. Protected-LAN gateway, DDS/SROS2 access control, live MQTT broker, 24–72-hour soak, target-computer performance, and physical robot acceptance are also unverified. This evidence supports only controlled development/demo use; it is not production LAN or hardware approval.
+
 ## Backup, restore, rollback, and soak evidence
 
 Backups must go to an owner-only directory with enough free space. The runtime database command takes the shared instance lock, creates a consistent SQLite snapshot, validates it, and refuses to overwrite a prior backup:

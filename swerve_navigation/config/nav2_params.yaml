@@ -20,9 +20,12 @@ controller_server:
       movement_time_allowance: 10.0
     general_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
-      stateful: true
-      # Match the 5 cm acceptance band. Live goals reached 4.35 cm and then
-      # oscillated until timeout with a stricter 3 cm requirement.
+      # Recheck translation on every controller cycle through terminal yaw
+      # alignment. Stateful mode latches XY after the first entry into the
+      # window, which can report success after the robot has drifted outside
+      # the release tolerance.
+      stateful: false
+      # Preserve the release acceptance band; do not widen it to hide misses.
       xy_goal_tolerance: 0.05
       yaw_goal_tolerance: 0.05
     FollowPath:

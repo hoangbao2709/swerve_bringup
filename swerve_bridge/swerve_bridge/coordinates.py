@@ -59,3 +59,27 @@ def is_small_future_tf_skew(requested_stamp: Any, available_stamp: Any,
     allowed_ns = max(0, int(float(tolerance_s) * 1_000_000_000))
     skew_ns = requested_ns - available_ns
     return 0 < skew_ns <= allowed_ns
+
+
+def is_fresh_tf_sample(now_s: float, stamp_s: float, max_age_s: float,
+                       future_tolerance_s: float = 0.1) -> bool:
+    """Return whether a dynamic TF sample belongs to the current clock epoch.
+
+    A negative age larger than the small publication skew allowance means the
+    transform is from the future. In simulation this commonly happens when a
+    long-lived node's TF buffer survives a Gazebo ``/clock`` rewind. Treating
+    such a transform as fresh can falsely confirm localization or an initial
+    pose from the previous simulation run.
+    """
+    try:
+        now = float(now_s)
+        stamp = float(stamp_s)
+        max_age = float(max_age_s)
+        future_tolerance = float(future_tolerance_s)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if (not all(math.isfinite(value) for value in (now, stamp, max_age, future_tolerance))
+            or stamp <= 0.0 or max_age < 0.0 or future_tolerance < 0.0):
+        return False
+    age = now - stamp
+    return -future_tolerance <= age <= max_age

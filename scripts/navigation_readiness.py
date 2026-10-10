@@ -1496,6 +1496,27 @@ class Readiness(Node):
                 self._print_lifecycle_manager_log(log_offset)
             return False, states, reason
 
+        def defer_in_progress(reason, after=None):
+            """Keep observing a STARTUP already issued by this launch.
+
+            The lifecycle manager can still be configuring nodes when one
+            short readiness probe expires.  Marking that ambiguous request
+            FAILED would make the supervisor tear down a valid in-flight
+            activation; issuing STARTUP again would be unsafe.  Preserve the
+            one-shot request identity and let the owning supervisor probe
+            lifecycle state again until its overall startup deadline.
+            """
+            if after is not None:
+                print('NAV2_LIFECYCLE_AFTER=' + self._lifecycle_states_text(after), flush=True)
+            self._report_stage(result, 'NAV2_LIFECYCLE_READY', False, reason)
+            result['stages']['NAV2_STARTUP_STATE'] = 'IN_PROGRESS'
+            print('NAV2_STARTUP_STATE=IN_PROGRESS', flush=True)
+            self._update_startup_state(
+                'IN_PROGRESS', last_probe_failure=reason,
+                lifecycle_after=after,
+            )
+            return False, (after if after is not None else states), reason
+
         if startup_state == 'INVALID':
             return fail('nav2_startup_state_file_invalid')
         if startup_state == 'FAILED':
@@ -1515,10 +1536,16 @@ class Readiness(Node):
             print('NAV2_STARTUP_STATE=ACTIVE', flush=True)
             return True, states, None
 
-        if startup_state in ('REQUESTED', 'IN_PROGRESS', 'ACTIVE'):
+        if startup_state == 'IN_PROGRESS':
             # A prior readiness process owns the only request for this launch.
-            # Never issue another STARTUP while it is in flight or after a
-            # partial transition; inspect the settled state and report it.
+            # Never issue another STARTUP while it is in flight. A later probe
+            # may observe a completed activation at its entry; otherwise leave
+            # the state pending and allow the supervisor's outer deadline to
+            # decide when to stop the stack.
+            reason = ('nav2_startup_request_already_consumed_but_nodes_not_active:'
+                      f'{startup_state}:{state_text}')
+            return defer_in_progress(reason, after=states)
+        if startup_state in ('REQUESTED', 'ACTIVE'):
             reason = ('nav2_startup_request_already_consumed_but_nodes_not_active:'
                       f'{startup_state}:{state_text}')
             return fail(reason, after=states)
@@ -1582,13 +1609,46 @@ class Readiness(Node):
             lambda request: setattr(request, 'command', ManageLifecycleNodes.Request.STARTUP),
         )
         response_success = bool(response and response.success)
+        startup_request_error = self.last_service_error
         print(f'NAV2_STARTUP_RESPONSE={str(response_success).lower()}', flush=True)
         after = self._lifecycle_snapshot(deadline)
         print('NAV2_LIFECYCLE_AFTER=' + self._lifecycle_states_text(after), flush=True)
         self._print_lifecycle_manager_log(log_offset)
         if not response_success:
-            error = self.last_service_error or 'response.success=false'
+            # The follow-up lifecycle snapshot also calls services and can
+            # overwrite last_service_error. Preserve the actual STARTUP call
+            # result before collecting diagnostics.
+            error = startup_request_error or 'response.success=false'
             reason = f'lifecycle_manager_navigation_startup_failed:{error}'
+            if (response is None and startup_request_error
+                    and startup_request_error.endswith('service unavailable')):
+                # No request was dispatched when service_is_ready stayed false.
+                # It is safe to retry startup in a later probe because the
+                # one-shot claim never reached the lifecycle manager.
+                self._update_startup_state(
+                    'NOT_REQUESTED', request_id=None,
+                    last_probe_failure=reason,
+                    lifecycle_after=after,
+                )
+                self._report_stage(result, 'NAV2_LIFECYCLE_READY', False, reason)
+                result['stages']['NAV2_STARTUP_STATE'] = 'NOT_REQUESTED'
+                print('NAV2_STARTUP_STATE=NOT_REQUESTED', flush=True)
+                return False, after, reason
+            if response is None:
+                # A timed-out or exceptional call may still be executing in
+                # Nav2. Keep its identity so the supervisor re-observes state
+                # instead of sending a duplicate STARTUP request.
+                if self._lifecycle_states_are(after, 3):
+                    self._update_startup_state('ACTIVE', lifecycle_after=after,
+                                                startup_response_error=error)
+                    result['stages']['NAV2_STARTUP_STATE'] = 'ACTIVE'
+                    self._report_stage(
+                        result, 'NAV2_LIFECYCLE_READY', True,
+                        success_detail=' active=' + ','.join('/' + name for name in self.nav2_lifecycle_nodes),
+                    )
+                    print('NAV2_STARTUP_STATE=ACTIVE', flush=True)
+                    return True, after, None
+                return defer_in_progress(reason, after=after)
             return fail(reason, after=after)
 
         states = self._wait_lifecycle_settled(deadline)

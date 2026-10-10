@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "release_verdict": "NO-GO — Software release blockers remain",
+  "source": {
+    "repository": "hoangbao2709/swerve_bringup",
+    "branch": "robot-real-sim-v5-demo-visual",
+    "head_commit": "d7491ea55df625b23cf74bdecac25184f6725e78",
+    "working_tree": "dirty; uncommitted; includes pre-existing user database/map changes preserved during testing",
+    "build_id": "install5-nonsymlink-20261009",
+    "build_install": "/tmp/waretwin-final-acceptance.9M9UZU/install5"
+  },
+  "environment": {
+    "captured_at_utc_date": "2026-10-09",
+    "os": "Ubuntu 22.04.5 LTS",
+    "ros_distribution": "Humble",
+    "python": "3.10.12",
+    "node": "v22.23.2",
+    "npm": "10.9.8",
+    "timezone": "Asia/Shanghai",
+    "python_lock_sha256": "3498e8eb5e7f31aa36d330fbbcfce76dfb7303e5fb45ff5e1aca34f04a101aef",
+    "npm_lock_sha256": "8bb61e7867505203a1f110aa615decb0acecd481443e855fb75c1b571e96a079"
+  },
+  "tests": [
+    {
+      "name": "ROS non-symlink build",
+      "command": "./scripts/build_ros.sh --build-base /tmp/waretwin-final-acceptance.9M9UZU/build5 --install-base /tmp/waretwin-final-acceptance.9M9UZU/install5 --log-base /tmp/waretwin-final-acceptance.9M9UZU/log5",
+      "started_at_utc": "2026-10-09T14:49:22Z",
+      "finished_at_utc": "2026-10-09T14:51:06Z",
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "3 packages built and installed: swerve_bringup, swerve_bridge, waretwin_web",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/log5/build_2026-10-09_22-49-22/"
+    },
+    {
+      "name": "Colcon discovery, package prefixes, installed launch argument discovery",
+      "command": "colcon list --base-paths /home/yahboom/swerve_bringup /home/yahboom/swerve_bringup/swerve_bridge /home/yahboom/swerve_bringup/waretwin; ros2 pkg prefix {swerve_bringup,swerve_bridge,waretwin_web}; ros2 launch waretwin_web web.launch.py --show-args; ros2 launch swerve_bringup full_stack.launch.py --show-args (from /tmp against install5)",
+      "started_at_utc": null,
+      "finished_at_utc": null,
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "All 3 packages discovered and installed; both launch entry points resolved outside checkout",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/final-web-launch-args.txt; /tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/final-full-launch-args.txt"
+    },
+    {
+      "name": "Installed artifact exclusion scan",
+      "command": "scripts/check_waretwin_release_artifacts.py <install5/share/waretwin_web>",
+      "started_at_utc": null,
+      "finished_at_utc": null,
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "No runtime DB, secrets, virtualenv, node_modules or robot-local map artifacts found",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/install5/share/waretwin_web"
+    },
+    {
+      "name": "Django check, migration drift check and backend test suite",
+      "command": "python manage.py check; python manage.py makemigrations --check --dry-run; python manage.py test twin.tests --verbosity 1 (isolated runtime/database)",
+      "started_at_utc": "2026-10-09T15:01:09Z",
+      "finished_at_utc": "2026-10-09T15:01:40Z",
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "198 tests passed; Django check clean; no migration drift",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/django-final.log"
+    },
+    {
+      "name": "Frontend unit tests, typecheck, production build and npm audit",
+      "command": "npm test && npm run build && npm audit --audit-level=low",
+      "started_at_utc": "2026-10-09T15:05:40Z",
+      "finished_at_utc": "2026-10-09T15:06:15Z",
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "161 tests across 26 files; TypeScript and Vite build passed; 0 reported npm vulnerabilities",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/frontend-final.log"
+    },
+    {
+      "name": "Focused ROS, mapping, navigation readiness, ownership, lifecycle and runtime regression tests",
+      "command": "pytest swerve_bridge/test/test_coordinates.py swerve_bridge/test/test_simulation_clock_reset.py swerve_bridge/test/test_navigation_target_handoff.py swerve_bridge/test/test_mapping_snapshot_handoff.py swerve_bridge/test/test_local_map_writer.py tests/test_nav2_acceptance_measurement.py tests/test_save_load_map_acceptance.py tests/test_navigation_readiness.py tests/test_unified_launch_contract.py tests/test_swerve_controller_shutdown.py scripts/tests waretwin/runtime/tests",
+      "started_at_utc": "2026-10-09T14:58:10Z",
+      "finished_at_utc": "2026-10-09T14:58:14Z",
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "109 tests passed in 3.83 seconds",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/ros-focused-final.xml; /tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/ros-focused-final.log"
+    },
+    {
+      "name": "Installed Web Local lifecycle, API, WebSocket, SPA, persistence and failure handling",
+      "command": "WARETWIN_DEPLOYMENT_TEST=1 WARETWIN_TEST_PYTHON=/tmp/waretwin-final-acceptance.9M9UZU/python-venv/bin/python XDG_STATE_HOME=/tmp/waretwin-final-acceptance.9M9UZU/xdg-state12 /usr/bin/python3 -m pytest /home/yahboom/swerve_bringup/tests/test_web_deployment.py -q",
+      "started_at_utc": "2026-10-09T14:58:22Z",
+      "finished_at_utc": "2026-10-09T15:00:52Z",
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "11 tests passed in 150.30 seconds from /tmp using non-symlink install5",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/web-deployment-final-install5.xml; /tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/web-deployment-final-install5.log"
+    },
+    {
+      "name": "Manual transport/refresh, swerve kinematics and command ownership",
+      "command": "source /opt/ros/humble/setup.bash; source /tmp/waretwin-final-acceptance.9M9UZU/install5/setup.bash; /usr/bin/python3 -m pytest -q tests/test_manual_transport.py tests/test_manual_refresh_process.py tests/test_swerve_kinematics.py scripts/test_command_ownership.py",
+      "started_at_utc": null,
+      "finished_at_utc": "2026-10-09T15:07:35Z",
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "18 tests passed in 2.33 seconds. An initial run without the generated action overlay failed 4 imports; the final run with install5 sourced passed.",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/manual-kinematics-final.log"
+    },
+    {
+      "name": "GitHub Actions quality workflow static validation",
+      "command": "actionlint 1.7.7 .github/workflows/quality.yml",
+      "started_at_utc": null,
+      "finished_at_utc": null,
+      "exit_status": 0,
+      "status": "PASS",
+      "result": "Workflow passed local actionlint; hosted CI was not rerun",
+      "evidence": ".github/workflows/quality.yml"
+    },
+    {
+      "name": "Hosted GitHub Actions quality workflow",
+      "command": "Remote run 37925505444; no rerun of uncommitted working tree",
+      "started_at_utc": null,
+      "finished_at_utc": null,
+      "exit_status": null,
+      "status": "NOT TESTED",
+      "result": "Historical public run failed with zero jobs and zero duration; exact runner diagnostic not available. Current uncommitted change cannot produce a hosted result without publishing it.",
+      "evidence": "https://github.com/hoangbao2709/swerve_bringup/actions/runs/37925505444"
+    },
+    {
+      "name": "Installed Gazebo/Nav2 mission and Save/Load acceptance",
+      "command": "source /opt/ros/humble/setup.bash; source /tmp/waretwin-final-acceptance.9M9UZU/install5/setup.bash; WARETWIN_SIMULATION_TEST=1 WARETWIN_TEST_PYTHON=/tmp/waretwin-final-acceptance.9M9UZU/python-venv/bin/python XDG_STATE_HOME=<isolated-temp> /usr/bin/python3 -m pytest /home/yahboom/swerve_bringup/tests/test_full_stack_deployment.py -q -s",
+      "started_at_utc": "2026-10-09T14:51:30.119Z",
+      "finished_at_utc": "2026-10-09T14:57:32Z",
+      "exit_status": 1,
+      "status": "FAIL",
+      "result": "The full-stack test failed: one Nav2 SUCCEEDED mission did not satisfy robust pose evidence and Save→Load stopped at stale/inconsistent post-load TF before any navigation run.",
+      "evidence": "/tmp/waretwin-final-acceptance.9M9UZU/simulation-evidence/full-stack-final-install5.xml; /tmp/pytest-of-yahboom/pytest-70/test_installed_full_stack_reac0/runtime/end-to-end.json; /tmp/pytest-of-yahboom/pytest-70/test_installed_full_stack_reac0/runtime/save-load-navigation.json"
+    },
+    {
+      "name": "24–72 hour soak, Protected-LAN gateway, DDS/SROS2 negative participant test, live MQTT broker and physical hardware",
+      "command": null,
+      "started_at_utc": null,
+      "finished_at_utc": null,
+      "exit_status": null,
+      "status": "NOT TESTED",
+      "result": "No target gateway, isolated DDS security deployment, live broker, long-duration window or physical robot acceptance was available/executed.",
+      "evidence": null
+    }
+  ],
+  "navigation_missions": [
+    {
+      "mission": "direct_navigation",
+      "nav2_status": "SUCCEEDED",
+      "goal_xy": [0.8429775166, 0.7806692006],
+      "goal_yaw_rad": 0.8291515633,
+      "map_tf_final_error_m": 0.0493079451,
+      "map_tf_final_error_yaw_rad": 0.0369712355,
+      "gazebo_projected_error_m": 0.0834782799,
+      "gazebo_projected_error_yaw_rad": 0.0174134580,
+      "map_tf_vs_gazebo_error_m": 0.0376594841,
+      "map_tf_vs_gazebo_error_yaw_rad": 0.0543846935,
+      "gazebo_rtf": 0.3663552528,
+      "status": "FAIL"
+    },
+    {
+      "mission": "web_navigation",
+      "nav2_status": "SUCCEEDED",
+      "goal_xy": [1.3233322286, 0.9751602192],
+      "goal_yaw_rad": 0.7822844935,
+      "gazebo_projected_error_m": 0.0131838481,
+      "gazebo_projected_error_yaw_rad": 0.0032819418,
+      "terminal_map_tf_age_sim_s": 1.405,
+      "gazebo_rtf": 0.3669482272,
+      "status": "FAIL — terminal map TF stale; no verified settled map-frame estimate"
+    }
+  ],
+  "save_load_map": {
+    "robot_id": "R01",
+    "slam_session_id": "8c1edd105efc",
+    "source_map_id": "SLAM-8c1edd105efc",
+    "source_map_revision": "session-8c1edd105efc",
+    "saved_map_id": "ca5d93aa8a70452c9aa09a670493472a",
+    "saved_map_revision": "ca5d93aa8a70",
+    "saved_artifacts_validated": true,
+    "nav2_map_occupancy_exact_match": true,
+    "post_load_initial_pose_confirmation": "FAIL — stale/inconsistent TF evidence",
+    "navigation_runs": 0,
+    "overall_status": "FAIL — Save and map-server load verified; complete Load→Initial Pose→Navigation not verified",
+    "report": "/tmp/pytest-of-yahboom/pytest-70/test_installed_full_stack_reac0/runtime/save-load-navigation.json"
+  },
+  "safety_gates": {
+    "robot_scoped_operator_authorization_and_websocket_state_filter_tests": "PASS in Django test suite; not a deployed LAN gateway test",
+    "browser_to_DDS_isolation": "NOT TESTED; no DDS ACL; direct DDS remains trusted-network boundary",
+    "physical_emergency_stop_and_stop_latency": "NOT TESTED",
+    "sidebar": ["CONTROL", "MAPPING", "LOCALIZATION", "VDA5050", "DIAGNOSIS"]
+  }
+}

@@ -124,6 +124,18 @@ acceptance checks. See [`RELEASE_EVIDENCE.md`](../docs/RELEASE_EVIDENCE.md) and
 the machine-readable `/tmp/swerve-release-acceptance-20261010T002100Z` report
 for exact values and logs.
 
+That earlier pass is historical, not the latest release result. In a later
+isolated run against HEAD `693fab43e0d9a8446d68dc97b3baac1aba8aff5e`, Save and
+map loading again produced an exact occupancy match, but AMCL's post-load
+localization confirmation failed closed: its log repeatedly reported LaserScan
+messages older than the transform cache, and the requested five post-load goals
+did not start. Direct navigation also exceeded the independent Gazebo pose
+gate. The installed Web Local and package regressions pass, but the current
+simulation decision remains **NO-GO** pending stable AMCL scan/TF handoff,
+pose-consistent navigation, a complete manual stop matrix, five passing goals,
+and a hosted CI run of the corrected Colcon command. Current evidence and raw
+logs are under `/tmp/swerve-final-targeted-20261010.zycCcf/release-acceptance-20261010T0425Z/`.
+
 Stop a ROS launch with Ctrl+C. Installed launches can also be inspected and stopped with `scripts/status_stack.sh` and `scripts/stop_stack.sh`; they resolve the active runtime directory through the shared ownership registry. These scripts continue to support legacy start modes and reject attempts to start a duplicate stack.
 
 ```bash
@@ -164,6 +176,8 @@ The same real installed-stack run exercised Mapping → Pause → Save and the s
 The bridge now rejects stale/future dynamic localization TF, requires the initial-pose confirmation transform to be newer than the request, and clears its TF buffer and invalidates in-flight pose/map operations when Gazebo time rewinds. These guards and clock-reset tests passed; they did not resolve the final end-to-end TF/pose acceptance failure. Do not bypass these guards or report a map loaded solely because an HTTP request or supervisor transition succeeded.
 
 Hosted GitHub Actions was not rerun on this uncommitted tree. Local `actionlint` passed, but the release gate needs a successful hosted run after the changes are pushed by an authorized maintainer. Protected-LAN gateway, DDS/SROS2 access control, live MQTT broker, 24–72-hour soak, target-computer performance, and physical robot acceptance are also unverified. This evidence supports only controlled development/demo use; it is not production LAN or hardware approval.
+
+For the 2026-10-10 targeted remediation, the corrected `colcon --log-base <path> build ...` command also passed in a clean environment with no inherited workspace overlay (57.7 s reported by Colcon). The non-symlink install resolved all three ROS package prefixes, and both installed launch files resolved their arguments from `/tmp`; the installed Web artifact scan found no operational database, secrets, or local maps. That supplemental build is at `/tmp/swerve-final-targeted-20261010.zycCcf/install-release-gate`; the real Gazebo acceptance below/linked in the evidence still used the separate `install-v4` build and remains **NO-GO**. The latest local workflow YAML parse passed; `actionlint` was unavailable in that shell, and the corrected workflow has not yet been published for hosted verification.
 
 ## Backup, restore, rollback, and soak evidence
 

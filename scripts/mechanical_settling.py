@@ -1,13 +1,16 @@
 """Physics-time settling monitor; no commands, synthetic feedback or ROS imports."""
 import math
 from collections import deque
+from statistics import median
 
 
 class MechanicalSettling:
     def __init__(self, sim_start, wall_start, *, timeout_sim=45.0, timeout_wall=180.0,
                  clock_stall_wall=5.0, window_sim=0.8, body_tolerance=0.02,
                  wheel_position_rate=0.005, body_position_rate=0.001,
-                 steering_span=0.03, data_age_wall=2.0, wheel_radius=None):
+                 steering_span=0.03, data_age_wall=2.0,
+                 data_age_sim=0.25, future_stamp_skew_sim=0.1,
+                 wheel_radius=None):
         if wheel_radius is not None:
             if not math.isfinite(wheel_radius) or wheel_radius <= 0:
                 raise ValueError('measured wheel radius must be positive')
@@ -17,7 +20,8 @@ class MechanicalSettling:
         if not all(math.isfinite(value) and value > 0 for value in (
                 timeout_sim, timeout_wall, clock_stall_wall, window_sim,
                 body_tolerance, wheel_position_rate, body_position_rate,
-                steering_span, data_age_wall)):
+                steering_span, data_age_wall, data_age_sim,
+                future_stamp_skew_sim)):
             raise ValueError('settling limits must be positive')
         self.sim_start = self.last_sim = sim_start
         self.wall_start = self.last_advance_wall = wall_start
@@ -25,7 +29,8 @@ class MechanicalSettling:
         self.clock_stall_wall, self.window_sim = clock_stall_wall, window_sim
         self.body_tolerance, self.wheel_position_rate = body_tolerance, wheel_position_rate
         self.body_position_rate, self.steering_span = body_position_rate, steering_span
-        self.data_age_wall = data_age_wall
+        self.data_age_wall, self.data_age_sim = data_age_wall, data_age_sim
+        self.future_stamp_skew_sim = future_stamp_skew_sim
         self.wheel_radius = wheel_radius
         self.samples = deque(maxlen=2000)
         self.metrics = {}
@@ -55,10 +60,16 @@ class MechanicalSettling:
                 'wheel_velocities', 'steering_positions', 'steering_targets', 'body_pose')
         valid = sample is not None and all(key in sample for key in keys)
         if valid:
+            source_sim_stamps = sample.get('source_sim_stamps')
             valid = (all(isinstance(sample[key], (tuple, list)) for key in keys)
                      and bool(sample.get('source_wall_times'))
+                     and isinstance(source_sim_stamps, (tuple, list))
+                     and bool(source_sim_stamps)
                      and all(0 <= wall - stamp < self.data_age_wall
                              for stamp in sample['source_wall_times'])
+                     and all(math.isfinite(stamp)
+                             and -self.future_stamp_skew_sim <= sim - stamp <= self.data_age_sim
+                             for stamp in source_sim_stamps)
                      and all(math.isfinite(v) for key in keys for v in sample[key])
                      and len(sample['wheel_positions']) == len(sample['wheel_velocities']) == 2
                      and len(sample['steering_positions']) == 2
@@ -81,8 +92,28 @@ class MechanicalSettling:
         if span < self.window_sim or len(self.samples) < 4:
             return None
         rows = [row[1] for row in self.samples]
-        wheel_rates = [(max(row['wheel_positions'][i] for row in rows)
-                        - min(row['wheel_positions'][i] for row in rows)) / span for i in (0, 1)]
+        wheel_excursion_rates = [
+            (max(row['wheel_positions'][i] for row in rows)
+             - min(row['wheel_positions'][i] for row in rows)) / span
+            for i in (0, 1)]
+        # Keep the established peak-to-peak wheel-position rate as a hard
+        # limit. The median adjacent slope is additional evidence against a
+        # zero-net oscillation, while reported instantaneous velocity remains
+        # diagnostic because Gazebo's velocity estimate can exceed the
+        # encoder-derived rolling rate by a few milliradians/s at rest.
+        wheel_rates = []
+        for index in (0, 1):
+            adjacent_rates = []
+            for (before_sim, before), (after_sim, after) in zip(self.samples,
+                                                                  list(self.samples)[1:]):
+                delta_sim = after_sim - before_sim
+                if delta_sim > 0.0:
+                    adjacent_rates.append(
+                        (after['wheel_positions'][index]
+                         - before['wheel_positions'][index]) / delta_sim)
+            wheel_rates.append(abs(median(adjacent_rates)) if adjacent_rates else math.inf)
+        wheel_velocity_max = max(abs(value) for row in rows
+                                 for value in row['wheel_velocities'])
         steer_spans = [max(row['steering_positions'][i] for row in rows)
                        - min(row['steering_positions'][i] for row in rows) for i in (0, 1)]
         target_spans = [max(row['steering_targets'][i] for row in rows)
@@ -95,7 +126,9 @@ class MechanicalSettling:
                           math.cos(row['body_pose'][2] - yaw0)) for row in rows]
         yaw_rate = (max(yaw) - min(yaw)) / span
         self.metrics = {'wheel_position_drift_rates': wheel_rates,
+                        'wheel_position_excursion_rates': wheel_excursion_rates,
                         'wheel_position_rate_limit': self.wheel_position_rate,
+                        'wheel_velocity_max_rad_s': wheel_velocity_max,
                         'wheel_rolling_drift_rates': (
                             [rate * self.wheel_radius for rate in wheel_rates]
                             if self.wheel_radius is not None else None),
@@ -104,6 +137,7 @@ class MechanicalSettling:
                         'body_velocity': list(sample['body_velocity']),
                         'odom_velocity': list(sample['odom_velocity']), 'stable_sim_window': span}
         if (max(wheel_rates) <= self.wheel_position_rate
+                and max(wheel_excursion_rates) <= self.wheel_position_rate
                 and max(steer_spans) <= self.steering_span
                 and max(target_spans) <= self.steering_span
                 and xy_rate <= self.body_position_rate

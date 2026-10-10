@@ -1,14 +1,66 @@
 #!/usr/bin/env python3
 """Filter the native 3D LiDAR cloud without changing its message type."""
 
-import math
 import signal
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
+
+
+# Large point clouds are time-sensitive sensor data. A deeper queue lets a
+# CPU-bound callback publish old scans after odometry/TF has already advanced;
+# keep only the latest sample instead of feeding Nav2 stale measurements.
+LIDAR_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
+
+
+def filter_xyz_points(points, *, min_range, max_range, voxel_size, min_height,
+                     max_height, remove_floor, floor_z, floor_band,
+                     self_min, self_max):
+    """Vectorized equivalent of the point-wise range, height and self filters.
+
+    The simulator emits 11k+ points per cloud. Iterating structured NumPy
+    records and hashing every point in Python consumed a material fraction of
+    a core, starving the low-RTF Nav2 control loop. Preserve input order and
+    the original first-point-per-voxel rule while moving the per-point work to
+    NumPy's compiled operations.
+    """
+    if not len(points):
+        return np.empty((0, 3), dtype=np.float32)
+
+    # Work in float64 to retain the previous Python-float boundary behavior
+    # for min/max range, height, and voxel calculations.
+    x = points['x'].astype(np.float64, copy=False)
+    y = points['y'].astype(np.float64, copy=False)
+    z = points['z'].astype(np.float64, copy=False)
+    distance_squared = x * x + y * y + z * z
+    keep = (np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+            & (z >= min_height) & (z <= max_height)
+            & (distance_squared >= min_range * min_range)
+            & (distance_squared <= max_range * max_range))
+    if remove_floor:
+        keep &= np.abs(z - floor_z) > floor_band
+    in_self_box = ((x >= self_min[0]) & (x <= self_max[0])
+                   & (y >= self_min[1]) & (y <= self_max[1])
+                   & (z >= self_min[2]) & (z <= self_max[2]))
+    keep &= ~in_self_box
+    xyz = np.column_stack((x[keep], y[keep], z[keep]))
+
+    if voxel_size > 0.0 and len(xyz):
+        voxels = np.floor(xyz / voxel_size).astype(np.int64)
+        _, first_indices = np.unique(voxels, axis=0, return_index=True)
+        # np.unique sorts voxel keys; restore the source point ordering so the
+        # retained point is exactly the first valid point as before.
+        xyz = xyz[np.sort(first_indices)]
+    return xyz.astype(np.float32, copy=False)
 
 
 class LidarPreprocessor(Node):
@@ -36,9 +88,9 @@ class LidarPreprocessor(Node):
 
         input_topic = str(self.get_parameter('input_topic').value)
         output_topic = str(self.get_parameter('output_topic').value)
-        self.publisher = self.create_publisher(PointCloud2, output_topic, 10)
+        self.publisher = self.create_publisher(PointCloud2, output_topic, LIDAR_QOS)
         self.subscription = self.create_subscription(
-            PointCloud2, input_topic, self.callback, qos_profile_sensor_data)
+            PointCloud2, input_topic, self.callback, LIDAR_QOS)
 
         self.min_range = float(self.get_parameter('min_range').value)
         self.max_range = float(self.get_parameter('max_range').value)
@@ -58,34 +110,15 @@ class LidarPreprocessor(Node):
             f'voxel={self.voxel_size:.3f} m')
 
     def callback(self, msg: PointCloud2) -> None:
-        points = []
-        occupied = set()
-        min_r2 = self.min_range * self.min_range
-        max_r2 = self.max_range * self.max_range
-
-        for point in point_cloud2.read_points(
-                msg, field_names=('x', 'y', 'z'), skip_nans=True):
-            x, y, z = (float(point[0]), float(point[1]), float(point[2]))
-            if not all(math.isfinite(value) for value in (x, y, z)):
-                continue
-            if z < self.min_height or z > self.max_height:
-                continue
-            if self.remove_floor and abs(z - self.floor_z) <= self.floor_band:
-                continue
-            if x * x + y * y + z * z < min_r2 or x * x + y * y + z * z > max_r2:
-                continue
-            if all(self.self_min[i] <= value <= self.self_max[i]
-                   for i, value in enumerate((x, y, z))):
-                continue
-
-            if self.voxel_size > 0.0:
-                key = (math.floor(x / self.voxel_size),
-                       math.floor(y / self.voxel_size),
-                       math.floor(z / self.voxel_size))
-                if key in occupied:
-                    continue
-                occupied.add(key)
-            points.append((x, y, z))
+        fields = point_cloud2.read_points(
+            msg, field_names=('x', 'y', 'z'), skip_nans=False)
+        points = filter_xyz_points(
+            fields, min_range=self.min_range, max_range=self.max_range,
+            voxel_size=self.voxel_size, min_height=self.min_height,
+            max_height=self.max_height, remove_floor=self.remove_floor,
+            floor_z=self.floor_z, floor_band=self.floor_band,
+            self_min=self.self_min, self_max=self.self_max,
+        ).tolist()
 
         # The native sensor cloud remains untouched; this is a new XYZ cloud
         # in the same lidar_link frame and timestamp for downstream consumers.

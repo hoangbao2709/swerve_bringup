@@ -325,5 +325,144 @@
     },
     "process_cleanup": "PASS — full-stack test teardown returned; no owned Gazebo/ROS/backend acceptance processes remained",
     "data_safety": "PASS — all integration writes used the isolated /tmp runtime; existing operational DB/maps were not targeted; source Git history still needs separate operational-data review"
+  },
+  "latest_targeted_follow_up_2026-10-10": {
+    "source": {
+      "repository": "hoangbao2709/swerve_bringup",
+      "branch": "robot-real-sim-v5-demo-visual",
+      "head_commit": "693fab43e0d9a8446d68dc97b3baac1aba8aff5e",
+      "working_tree": "dirty; implementation, tests, and release evidence are uncommitted",
+      "build_id": "install-v4",
+      "build_install": "/tmp/swerve-final-targeted-20261010.zycCcf/install-v4",
+      "runtime_source_fingerprint_sha256": "6f4763bf689d5374297f7f13334b84a95e4259763a77c82cc3caf14841b27e4c",
+      "ros_distribution": "Humble",
+      "python": "3.10.12",
+      "ros_domain_id": 213
+    },
+    "evidence_directory": "/tmp/swerve-final-targeted-20261010.zycCcf/release-acceptance-20261010T0425Z",
+    "verdict": "NO-GO — direct pose consistency, post-load AMCL confirmation, manual BACKWARD_RIGHT settling, five-run repeatability, and hosted CI remain open",
+    "local_ci_and_build": {
+      "workflow_colcon_argument_order": "FIXED — --log-base precedes the build verb",
+      "workflow_yaml_parse": "PASS",
+      "actionlint": "NOT RUN — executable unavailable in this follow-up shell",
+      "corrected_colcon_build": "PASS — swerve_bringup, swerve_bridge, waretwin_web; non-symlink copied install",
+      "clean_environment_colcon_build": {
+        "status": "PASS",
+        "duration_seconds": 57.7,
+        "start_utc": "2026-10-10T04:30:37Z",
+        "finish_utc": "2026-10-10T04:31:35Z",
+        "install": "/tmp/swerve-final-targeted-20261010.zycCcf/install-release-gate",
+        "package_prefixes": "All three package prefixes resolved under the copied install",
+        "installed_launch_discovery": "PASS from /tmp for web.launch.py and full_stack.launch.py",
+        "artifact_scan": "PASS — no operational DB, secrets, development environment or local maps",
+        "integration_scope": "Build/launch discovery only; Gazebo results below came from install-v4"
+      },
+      "installed_artifact_scan": "PASS — no operational DB, secrets, venv, node_modules, or local maps in copied package",
+      "hosted_run_38018160887": "FAIL on baseline commit 693fab4; ros-packages exit code 2",
+      "hosted_run_for_corrected_source": "PENDING PUBLICATION"
+    },
+    "software_regressions": {
+      "backend": "PASS — 199 tests; isolated database",
+      "frontend": "PASS — 161 tests, typecheck and production build; npm audit reported zero vulnerabilities",
+      "focused_ros_python": "PASS — 177 passed, 12 skipped",
+      "focused_ros": "PASS — 65 passed",
+      "copied_install_web_deployment": "PASS — 11 tests in 80.17 s",
+      "initial_pose_confirmation_metadata_order": "PASS — owner/interface metadata is validated before local-map confirmation state is recorded"
+    },
+    "artifact_root": {
+      "override_in_real_save_load": "PASS — saved under isolated runtime/maps/local_robot_maps/R01",
+      "default_root_independent_test": "NOT TESTED",
+      "read_only_and_invalid_root_tests": "NOT TESTED"
+    },
+    "navigation_runs": [
+      {
+        "run_id": "v4-direct",
+        "nav2": "SUCCEEDED",
+        "acceptance": "FAIL — map TF/Gazebo yaw disagreement 0.058499 rad",
+        "gazebo_goal_error_m": 0.0488366351,
+        "gazebo_goal_yaw_error_rad": 0.0144141985,
+        "map_tf_gazebo_translation_error_m": 0.0350743812,
+        "map_tf_gazebo_yaw_error_rad": 0.0584990365
+      },
+      {
+        "run_id": "v4-web",
+        "nav2": "SUCCEEDED",
+        "acceptance": "PASS",
+        "gazebo_goal_error_m": 0.0073308619,
+        "gazebo_goal_yaw_error_rad": 0.0016005770,
+        "map_tf_gazebo_translation_error_m": 0.0217981830,
+        "map_tf_gazebo_yaw_error_rad": 0.0051487160
+      },
+      {
+        "run_id": "v4-saved-map",
+        "nav2": "SUCCEEDED",
+        "acceptance": "PASS",
+        "saved_map_mission_count": 1,
+        "gazebo_goal_error_m": 0.0399394226,
+        "gazebo_goal_yaw_error_rad": 0.0002572265
+      },
+      {
+        "run_id": "v5-direct",
+        "nav2": "SUCCEEDED",
+        "acceptance": "FAIL — projected Gazebo error 0.057102 m and map TF/Gazebo yaw disagreement 0.058594 rad",
+        "gazebo_goal_error_m": 0.0571021649,
+        "gazebo_goal_yaw_error_rad": 0.0095134161,
+        "map_tf_gazebo_translation_error_m": 0.0352442643,
+        "map_tf_gazebo_yaw_error_rad": 0.0585940981,
+        "terminal_tf_age_sim_s": 0.0069192616
+      },
+      {
+        "run_id": "v5-web",
+        "nav2": "SUCCEEDED",
+        "acceptance": "FAIL — map TF/Gazebo translation disagreement 0.052847 m",
+        "gazebo_goal_error_m": 0.0275664972,
+        "gazebo_goal_yaw_error_rad": 0.0034005265,
+        "map_tf_gazebo_translation_error_m": 0.0528474593,
+        "map_tf_gazebo_yaw_error_rad": 0.0047760760
+      }
+    ],
+    "direct_pose_diagnostic": {
+      "same_simulation_timestamp_pairing": true,
+      "v5_map_to_odom_yaw_correction_rad": -0.05933,
+      "v5_correction_simulation_time_s": 21.495,
+      "v5_terminal_tf_age_sim_s": 0.0069192616,
+      "confirmed_failure_class": "SLAM map-to-odom correction and resulting map-pose/Gazebo disagreement; not stale terminal TF or a non-loaded controller tolerance"
+    },
+    "manual_motion": {
+      "manual_right": "PASS in v4 and v5; approximately 0.600 m body-right, yaw change below 0.0017 rad, zero command observed after release",
+      "translations": "7 of 8 pass in v5; BACKWARD_RIGHT direction and command chain pass but stop-settling fails",
+      "backward_right": {
+        "displacement_m": 0.4072539236,
+        "zero_command_observed": true,
+        "settling_timeout_sim_s": 45,
+        "settling_timeout_wall_s": 100.7646,
+        "wheel_position_drift_rad_s": [0.0061036130, 0.0048924369],
+        "wheel_rate_limit_rad_s": 0.005,
+        "body_position_drift_m_s": 0.0004028036
+      },
+      "rotation_left_and_right": "NOT RUN — test stopped safely when BACKWARD_RIGHT stop was unproven"
+    },
+    "save_load_initial_pose": {
+      "v4": "PASS once; one post-load Nav2 goal passed",
+      "v5_save_artifacts": "PASS — PGM/YAML/data/posegraph hashes recorded; exact 418002-cell Nav2 occupancy match",
+      "v5_map_id": "e23a406e37fb466a8fa17854c0f00d98",
+      "v5_map_revision": "e23a406e37fb",
+      "v5_initial_pose": "FAIL — HTTP 502; last position/yaw errors 0.005811 m / 0.006531 rad but required stable confirmation absent",
+      "v5_amcl_scan_drops": 142,
+      "v5_amcl_drop_reason": "scan timestamp earlier than all data in transform cache; stamps 6.306–21.863 simulation seconds",
+      "v5_post_load_navigation_runs": 0,
+      "v5_post_load_requested_runs": 5
+    },
+    "release_gates": {
+      "direct_navigation_05m_005rad": "FAIL",
+      "web_navigation": "FAIL in latest v5 run; v4 passed but does not cancel later failure",
+      "save_load_initial_pose_navigation": "FAIL in latest v5 run; one earlier v4 pass only",
+      "five_independent_passing_missions": "FAIL — five Nav2 actions were attempted across v4/v5; only two passed all independent gates; no v5 post-load goal ran",
+      "manual_all_eight_translations_and_two_rotations": "FAIL — BACKWARD_RIGHT settling failure; rotations not run",
+      "physical_robot_or_hardware_estop": "NOT TESTED",
+      "protected_lan_gateway_and_dds_acl": "NOT TESTED"
+    },
+    "operational_data": "Preserved; tracked database, map registry, and map/session records were not modified and are absent from the installed package, but remain visible in public Git history",
+    "physical_robot_tested": false
   }
 }

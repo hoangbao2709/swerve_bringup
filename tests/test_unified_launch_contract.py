@@ -73,6 +73,16 @@ def test_static_navigation_uses_map_server_local_amcl_not_required_v30e_simulati
     assert "'/ekf_v30e/set_pose'" not in bridge
 
 
+def test_custom_artifact_root_also_owns_robot_local_map_storage():
+    system = (ROOT / 'launch/system.launch.py').read_text(encoding='utf-8')
+    bridge = (ROOT / 'swerve_bridge/launch/bridge.launch.py').read_text(encoding='utf-8')
+
+    assert 'PathJoinSubstitution' in system
+    assert "'local_map_root': PathJoinSubstitution([artifact_root, 'local_robot_maps'])" in system
+    assert "'local_map_root': PathJoinSubstitution([artifact_root, 'local_robot_maps'])" in bridge
+    assert "os.path.join(default_artifact_root, 'local_robot_maps')" not in system
+
+
 def test_nav2_swerve_controller_preserves_transit_heading_and_terminal_yaw_safety():
     config = yaml.safe_load((ROOT / 'swerve_navigation/config/nav2_params.yaml').read_text(encoding='utf-8'))
     params = config['controller_server']['ros__parameters']
@@ -81,7 +91,7 @@ def test_nav2_swerve_controller_preserves_transit_heading_and_terminal_yaw_safet
 
     assert goal_checker['plugin'] == 'nav2_controller::SimpleGoalChecker'
     assert goal_checker['stateful'] is False
-    assert goal_checker['xy_goal_tolerance'] == 0.05
+    assert goal_checker['xy_goal_tolerance'] == 0.03
     assert goal_checker['yaw_goal_tolerance'] == 0.05
 
     assert checker['plugin'] == 'nav2_controller::PoseProgressChecker'
@@ -90,7 +100,8 @@ def test_nav2_swerve_controller_preserves_transit_heading_and_terminal_yaw_safet
     assert checker['movement_time_allowance'] == 10.0
 
     follow_path = params['FollowPath']
-    assert follow_path['Oscillation.oscillation_reset_angle'] == follow_path['xy_goal_tolerance']
+    assert follow_path['xy_goal_tolerance'] == 0.03
+    assert follow_path['Oscillation.oscillation_reset_angle'] == 0.05
     assert follow_path['critics'].count('Oscillation') == 1
     assert 'RotateToGoal' in follow_path['critics']
     assert 'BaseObstacle' in follow_path['critics']

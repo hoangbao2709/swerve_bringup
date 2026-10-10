@@ -1030,15 +1030,15 @@ def initialize_robot_pose(request, robot_id: str):
             or yaw_error_rad > yaw_tolerance_rad
             or confirmation_duration_s < 0.25 or confirmation_samples < 3):
         return _error('localization confirmation is stale, unstable, or outside the requested pose tolerance', 502)
+    localization_owner = str(applied.get('localization_owner') or '').strip()
+    initial_pose_interface = str(applied.get('initial_pose_interface') or '').strip()
+    if not localization_owner or not initial_pose_interface:
+        return _error('localization confirmation omitted its discovered owner or Initial Pose interface', 502)
     if active_map.get('map_source') == 'LOCAL_MAP':
         runtime.local_map_localization_confirmations[robot_id] = {
             'active_map_id': str(active_map['active_map_id']),
             'active_map_revision': str(active_map['active_map_revision']),
         }
-    localization_owner = str(applied.get('localization_owner') or '').strip()
-    initial_pose_interface = str(applied.get('initial_pose_interface') or '').strip()
-    if not localization_owner or not initial_pose_interface:
-        return _error('localization confirmation omitted its discovered owner or Initial Pose interface', 502)
     return JsonResponse({'ok': True, 'robot_id': robot_id, 'frame_id': frame_id,
                          'pose': pose, 'active_map_id': active_map['active_map_id'],
                          'active_map_revision': active_map['active_map_revision'],

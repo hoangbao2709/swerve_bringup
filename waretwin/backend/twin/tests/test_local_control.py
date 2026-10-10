@@ -609,6 +609,57 @@ class LocalControlApiTests(TestCase):
                 self.assertEqual(applied.json()['localization_owner'], 'amcl')
                 self.assertEqual(applied.json()['initial_pose_interface'], '/initialpose')
 
+            confirmed_localization = deepcopy(runtime.local_map_localization_confirmations['R01'])
+            valid_confirmation = {
+                'runtime_pose_confirmed': True,
+                'active_map_id': runtime.active_map_state('R01')['active_map_id'],
+                'active_map_revision': runtime.active_map_state('R01')['active_map_revision'],
+                'request_stamp_s': 12.0, 'tf_stamp_s': 12.01, 'tf_age_s': 0.02,
+                'position_error_m': 0.01, 'yaw_error_rad': 0.01,
+                'position_tolerance_m': 0.05, 'yaw_tolerance_rad': 0.05,
+                'tf_confirmation_duration_sim_s': 0.3, 'tf_confirmation_samples': 4,
+                'localization_owner': 'amcl', 'initial_pose_interface': '/initialpose',
+            }
+            invalid_confirmations = []
+            for field, value in (
+                    ('localization_owner', ''),
+                    ('initial_pose_interface', ''),
+                    ('active_map_id', 'wrong-map'),
+                    ('active_map_revision', 'wrong-revision'),
+                    ('tf_stamp_s', 11.99),
+                    ('tf_age_s', 1.0),
+                    ('position_error_m', 0.06),
+                    ('yaw_error_rad', 0.06),
+                    ('tf_confirmation_duration_sim_s', 0.1),
+                    ('tf_confirmation_samples', 2)):
+                invalid = {**valid_confirmation, field: value}
+                invalid_confirmations.append((field, invalid))
+            missing_owner = dict(valid_confirmation)
+            missing_owner.pop('localization_owner')
+            invalid_confirmations.append(('missing-localization-owner', missing_owner))
+            for reason, invalid in invalid_confirmations:
+                with self.subTest(invalid_confirmation=reason), \
+                        patch('twin.local_control_views._bridge_request', return_value={
+                            'ok': True, 'result': invalid,
+                        }):
+                    response = self.client.post(
+                        '/api/robots/R01/local/initial-pose',
+                        data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
+                        content_type='application/json')
+                self.assertEqual(response.status_code, 502, response.content)
+                self.assertEqual(runtime.local_map_localization_confirmations['R01'],
+                                 confirmed_localization)
+            with patch('twin.local_control_views._bridge_request', return_value={
+                    'ok': False, 'error': 'localization service unavailable',
+            }):
+                failed_bridge = self.client.post(
+                    '/api/robots/R01/local/initial-pose',
+                    data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
+                    content_type='application/json')
+            self.assertEqual(failed_bridge.status_code, 502, failed_bridge.content)
+            self.assertEqual(runtime.local_map_localization_confirmations['R01'],
+                             confirmed_localization)
+
             second_prefix = map_output_prefix('R01', 'floor-b')
             second_prefix.with_suffix('.pgm').write_bytes(b'P5\n100 100\n255\n' + bytes(9_999) + b'\xff')
             second_prefix.with_suffix('.yaml').write_text(

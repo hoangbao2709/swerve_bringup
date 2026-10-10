@@ -15,4 +15,7 @@ pointcloud_to_laserscan:
     range_max: 30.0
     use_inf: true
     inf_epsilon: 1.0
-    queue_size: 10
+    # Discard older clouds under host load; a deep input queue makes the
+    # resulting LaserScan arrive after the matching odom/TF history has moved
+    # on, and Nav2/AMCL then drop it as a stale transform request.
+    queue_size: 1

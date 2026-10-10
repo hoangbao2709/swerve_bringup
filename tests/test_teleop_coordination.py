@@ -209,7 +209,8 @@ def test_mechanical_settling_requires_actual_wheel_position_stability(monkeypatc
     def pump(*args):
         clock[0] += 0.1
         current = dict(positions, wheel_front_drive_joint=(clock[0] - 10) * wheel_drift)
-        probe.joint_state = {'positions': current, 'velocities': velocities, 'monotonic_s': clock[0]}
+        probe.joint_state = {'positions': current, 'velocities': velocities,
+                             'monotonic_s': clock[0], 'source_sim_s': clock[0]}
         probe.selected_cmd_events = [(clock[0], 0.0, 0.0, 0.0)]
         probe.drive_events = [(clock[0], 0.0, 0.0)]
         probe.steering_events = [(clock[0], 0.0, 0.0)]

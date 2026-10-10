@@ -27,10 +27,11 @@ from rclpy.duration import Duration
 from rclpy.executors import SingleThreadedExecutor, await_or_execute
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, LaserScan
 from std_msgs.msg import Float64MultiArray, String
 from tf2_ros import Buffer, TransformException, TransformListener
 from mechanical_settling import MechanicalSettling
@@ -46,6 +47,7 @@ TF_LOOKUP_TIMEOUT_S = 0.05
 MAX_SIM_CLOCK_WALL_AGE_S = 1.0
 MOTION_DURATION_SIM_S = 2.0
 WEB_COMMAND_REFRESH_WALL_S = 0.10
+NAVIGATION_TRACE_SAMPLE_WALL_S = 0.20
 EXPECTED_ROBOT_ENTITY = 'swerve_base'
 
 
@@ -234,6 +236,35 @@ def pose_from_pose(pose) -> tuple[float, float, float]:
 
 def dist(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
     return math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def controller_stop_sim_budget(max_wheel_target_rad_s: float,
+                               max_wheel_acceleration_rad_s2: float,
+                               control_rate_hz: float) -> float:
+    """Bound the measured wheel-command ramp-down in simulation seconds."""
+    values = (max_wheel_target_rad_s, max_wheel_acceleration_rad_s2, control_rate_hz)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError('controller stopping profile must be finite')
+    speed, acceleration, rate = (abs(float(max_wheel_target_rad_s)),
+                                 float(max_wheel_acceleration_rad_s2),
+                                 float(control_rate_hz))
+    if acceleration <= 0.0 or rate <= 0.0:
+        raise ValueError('controller acceleration and rate must be positive')
+    return speed / acceleration + 2.0 / rate
+
+
+def controller_stop_wall_budget(timeout_wall_s: float, required_stop_sim_s: float,
+                                recent_rtf: float | None) -> float:
+    """Convert the modeled simulation-time ramp to a measured wall watchdog."""
+    timeout, required = float(timeout_wall_s), float(required_stop_sim_s)
+    if not math.isfinite(timeout) or timeout <= 0.0:
+        raise ValueError('wall timeout must be finite and positive')
+    if not math.isfinite(required) or required < 0.0:
+        raise ValueError('simulation stop budget must be finite and non-negative')
+    rtf = float(recent_rtf) if recent_rtf is not None else 0.05
+    if not math.isfinite(rtf) or rtf <= 0.0:
+        rtf = 0.05
+    return max(timeout, required / max(rtf, 0.05) * 1.25 + 0.20)
 
 
 def failed_acceptance_conditions(checks: dict[str, bool]) -> list[str]:
@@ -484,13 +515,20 @@ class MotionProbe(Node):
         self.gazebo_history_lock = RLock()
         self.gazebo_history_epoch = 0
         self.pending_gazebo_samples = deque(maxlen=100)
+        self.gazebo_model_decode_period_wall_s = 0.05
+        self.gazebo_model_decode_last_wall_s = 0.0
+        self.gazebo_model_received_callbacks = 0
+        self.gazebo_model_decimated_callbacks = 0
         self.gazebo_unaligned_sample_count = 0
         self.gazebo_discarded_unaligned_sample_count = 0
         self.gazebo_unaligned_last = None
         self.gazebo_valid_sample_count = 0
+        self.scan_events = deque(maxlen=10000)
         self.tf_observer.add_clock_update_callback(self._flush_pending_gazebo_samples)
         self.joint_state = None
         self.wheel_radius = None
+        self.max_wheel_acceleration = None
+        self.swerve_control_rate = None
         self.joint_events: list[tuple[float, dict, dict]] = []
         self.map = None
         self.map_sample_count = 0
@@ -528,11 +566,27 @@ class MotionProbe(Node):
         # the dedicated observer executor with /clock and TF so synchronous
         # HTTP/WebSocket calls on MotionProbe cannot queue stale samples and
         # later mislabel an old callback as the newest pose.
+        model_states_qos = QoSProfile(
+            depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE)
         self.model_states_subscription = self.tf_observer.create_subscription(
-            ModelStates, '/model_states', self._model_states_cb, 10)
+            ModelStates, '/model_states', self._raw_model_states_cb,
+            model_states_qos, raw=True)
         self.tf_observer.tf_executor.info_subscriptions.add(
             self.model_states_subscription)
-        self.create_subscription(JointState, '/joint_states', self._joint_state_cb, 20)
+        # JointStates are live actuator feedback. Keep the newest sample only;
+        # a reliable/deep queue can make a freshly dispatched callback carry
+        # encoder state from several simulation seconds earlier under load.
+        joint_state_qos = QoSProfile(
+            depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE)
+        self.joint_state_subscription = self.create_subscription(
+            JointState, '/joint_states', self._joint_state_cb, joint_state_qos)
+        scan_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+                               durability=DurabilityPolicy.VOLATILE)
+        self.scan_subscription = self.tf_observer.create_subscription(
+            LaserScan, '/scan', self._scan_cb, scan_qos)
+        self.tf_observer.tf_executor.info_subscriptions.add(self.scan_subscription)
         self.create_subscription(OccupancyGrid, '/map', self._map_cb,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                             durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -567,7 +621,7 @@ class MotionProbe(Node):
             GoalStatusArray, '/navigate_to_pose/_action/status', self._action_status_cb, 10)
         self.navigation = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.motion_executor = PublisherInfoExecutor(
-            self, (self.cmd_subscription,))
+            self, (self.cmd_subscription, self.joint_state_subscription))
 
     def _odom_cb(self, msg):
         p = pose_from_odom(msg)
@@ -629,6 +683,20 @@ class MotionProbe(Node):
                 pose, velocity, info_source_timestamp, info_received_timestamp,
                 source_time, epoch)
 
+    def _raw_model_states_cb(self, raw, info=None):
+        # ModelStates contains the entire Gazebo world at physics rate. The
+        # independent truth observer only needs a dense interpolation series;
+        # deserialize the latest sample at 20 wall-Hz instead of spending CPU
+        # decoding dozens of large world snapshots while Nav2 is controlling.
+        wall_now = time.monotonic()
+        self.gazebo_model_received_callbacks += 1
+        if wall_now - self.gazebo_model_decode_last_wall_s < self.gazebo_model_decode_period_wall_s:
+            self.gazebo_model_decimated_callbacks += 1
+            return
+        self.gazebo_model_decode_last_wall_s = wall_now
+        from rclpy.serialization import deserialize_message
+        self._model_states_cb(deserialize_message(raw, ModelStates), info)
+
     def _record_aligned_gazebo_sample(self, pose, velocity, source_timestamp_ns,
                                       received_timestamp_ns, source_time, epoch):
             simulation_time_s = float(source_time['simulation_time_s'])
@@ -684,7 +752,7 @@ class MotionProbe(Node):
                 sample['pose'], sample['velocity'], source_ns,
                 sample['received_timestamp_ns'], source_time, current_epoch)
 
-    def _joint_state_cb(self, msg):
+    def _joint_state_cb(self, msg, info=None):
         positions = {name: float(msg.position[index]) for index, name in enumerate(msg.name)
                      if index < len(msg.position) and math.isfinite(msg.position[index])}
         velocities = {name: float(msg.velocity[index]) for index, name in enumerate(msg.name)
@@ -692,11 +760,62 @@ class MotionProbe(Node):
         if not positions and not velocities:
             return
         sample_time = time.monotonic()
+        source_sim_time = (float(msg.header.stamp.sec)
+                           + float(msg.header.stamp.nanosec) * 1e-9)
+        source_timestamp_ns = (int(info.get('source_timestamp', 0) or 0)
+                               if isinstance(info, dict) else 0)
+        source_clock_time = self.tf_observer.simulation_time_at_source_timestamp(
+            source_timestamp_ns)
+        aligned_sim_time = (float(source_clock_time['simulation_time_s'])
+                            if source_clock_time is not None else source_sim_time)
         self.joint_state = {'monotonic_s': sample_time,
+                            'stamp_sim_s': source_sim_time,
+                            'source_sim_s': aligned_sim_time,
+                            'source_stamp_alignment': (source_clock_time or {}).get('method',
+                                'joint_state_header_stamp'),
                             'positions': positions, 'velocities': velocities}
         self.joint_events.append((sample_time, positions, velocities))
         if len(self.joint_events) > 5000:
             del self.joint_events[:-2500]
+
+    def _scan_cb(self, msg, info=None):
+        _, epoch, simulation_time_s, _clock_wall = self.tf_observer.tf_snapshot()
+        stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+        received_ns = (int(info.get('received_timestamp', 0) or 0)
+                       if isinstance(info, dict) else 0)
+        self.scan_events.append({
+            'frame_id': str(msg.header.frame_id),
+            'stamp_sim_s': stamp,
+            'observer_sim_s': simulation_time_s,
+            'age_sim_s': (float(simulation_time_s) - stamp
+                          if simulation_time_s is not None else None),
+            'epoch_generation': epoch,
+            'received_timestamp_ns': received_ns,
+            'wall_monotonic_s': time.monotonic(),
+        })
+
+    def scan_timing_summary(self, start_index=0):
+        rows = list(self.scan_events)[max(0, start_index):]
+        ages = sorted(row['age_sim_s'] for row in rows
+                      if isinstance(row.get('age_sim_s'), (int, float))
+                      and math.isfinite(row['age_sim_s']))
+        def percentile(fraction):
+            if not ages:
+                return None
+            return ages[min(len(ages) - 1, math.ceil(fraction * len(ages)) - 1)]
+        return {
+            'sample_count': len(rows),
+            'frame_ids': sorted({row['frame_id'] for row in rows}),
+            'negative_age_count': sum(age < 0.0 for age in ages),
+            'over_0_25_sim_s_count': sum(age > 0.25 for age in ages),
+            'age_min_sim_s': ages[0] if ages else None,
+            'age_median_sim_s': percentile(0.50),
+            'age_p95_sim_s': percentile(0.95),
+            'age_max_sim_s': ages[-1] if ages else None,
+            'epoch_generations': sorted({row['epoch_generation'] for row in rows}),
+            'first_stamp_sim_s': rows[0]['stamp_sim_s'] if rows else None,
+            'last_stamp_sim_s': rows[-1]['stamp_sim_s'] if rows else None,
+        }
 
     def _map_cb(self, msg):
         if (msg.info.width > 0 and msg.info.height > 0
@@ -770,7 +889,8 @@ class MotionProbe(Node):
         if not self.navigation_trace_enabled:
             return
         monotonic_now = time.monotonic()
-        if not force and monotonic_now - self.navigation_trace_last_sample < 0.10:
+        if (not force and monotonic_now - self.navigation_trace_last_sample
+                < NAVIGATION_TRACE_SAMPLE_WALL_S):
             return
         if self.navigation_trace_started is None:
             self.navigation_trace_started = monotonic_now
@@ -802,6 +922,111 @@ class MotionProbe(Node):
             if predicate():
                 return True
         return bool(predicate())
+
+    def swerve_stopping_profile(self, ws=None, keepalive=None):
+        """Read the live controller ramp limits used to prove a safe stop."""
+        client = self.create_client(GetParameters, '/swerve_controller/get_parameters')
+        try:
+            service_deadline = time.monotonic() + 3.0
+            service_ready = False
+            while time.monotonic() < service_deadline:
+                if client.wait_for_service(timeout_sec=0.1):
+                    service_ready = True
+                    break
+                if keepalive is not None:
+                    keepalive()
+                self.pump(ws, 0.02)
+            if not service_ready:
+                return None
+            request = GetParameters.Request()
+            request.names = ['max_wheel_acceleration', 'control_rate']
+            future = client.call_async(request)
+            response_deadline = time.monotonic() + 5.0
+            while not future.done() and time.monotonic() < response_deadline:
+                if keepalive is not None:
+                    keepalive()
+                self.pump(ws, 0.02)
+            if not future.done():
+                return None
+            values = future.result().values
+            acceleration = float(values[0].double_value)
+            control_rate = float(values[1].double_value)
+            if (not math.isfinite(acceleration) or acceleration <= 0.0
+                    or not math.isfinite(control_rate) or control_rate <= 0.0):
+                return None
+            self.max_wheel_acceleration = acceleration
+            self.swerve_control_rate = control_rate
+            return acceleration, control_rate
+        finally:
+            self.destroy_client(client)
+
+    def nav2_runtime_parameters(self, ws=None):
+        names = [
+            'controller_frequency',
+            'general_goal_checker.stateful',
+            'general_goal_checker.xy_goal_tolerance',
+            'general_goal_checker.yaw_goal_tolerance',
+            'FollowPath.vx_samples', 'FollowPath.vy_samples',
+            'FollowPath.vtheta_samples', 'FollowPath.xy_goal_tolerance',
+        ]
+        client = self.create_client(GetParameters, '/controller_server/get_parameters')
+        try:
+            if not client.wait_for_service(timeout_sec=3.0):
+                return {'available': False, 'reason': 'controller_server/get_parameters unavailable'}
+            request = GetParameters.Request()
+            request.names = names
+            future = client.call_async(request)
+            if not self.wait_until(future.done, 5.0, ws):
+                return {'available': False, 'reason': 'controller parameter request timed out'}
+            response = future.result()
+            decoded = {}
+            for name, value in zip(names, response.values):
+                if value.type == ParameterType.PARAMETER_BOOL:
+                    decoded[name] = bool(value.bool_value)
+                elif value.type == ParameterType.PARAMETER_INTEGER:
+                    decoded[name] = int(value.integer_value)
+                elif value.type == ParameterType.PARAMETER_DOUBLE:
+                    decoded[name] = float(value.double_value)
+                else:
+                    return {'available': False,
+                            'reason': f'unexpected parameter type for {name}: {value.type}'}
+            required = names[:4]
+            if len(decoded) != len(names):
+                return {'available': False, 'reason': 'controller parameter response was incomplete'}
+            try:
+                xy_tolerance = float(decoded['general_goal_checker.xy_goal_tolerance'])
+                yaw_tolerance = float(decoded['general_goal_checker.yaw_goal_tolerance'])
+                dwb_xy_tolerance = float(decoded['FollowPath.xy_goal_tolerance'])
+                frequency = float(decoded['controller_frequency'])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return {'available': False, 'reason': 'controller goal-checker parameters were invalid'}
+            passed = bool(
+                decoded['general_goal_checker.stateful'] is False
+                and math.isfinite(xy_tolerance) and 0.0 < xy_tolerance <= 0.05
+                and math.isfinite(dwb_xy_tolerance) and 0.0 < dwb_xy_tolerance <= 0.05
+                and math.isfinite(yaw_tolerance) and 0.0 < yaw_tolerance <= 0.05
+                and math.isfinite(frequency) and frequency > 0.0
+            )
+            return {'available': True, 'passed': passed, 'service': '/controller_server/get_parameters',
+                    'values': decoded, 'required_parameters': required}
+        finally:
+            self.destroy_client(client)
+
+    def recent_simulation_rtf(self):
+        samples = list(self.tf_observer.clock_samples)
+        if len(samples) < 2:
+            return None
+        latest = samples[-1]
+        recent = [sample for sample in samples
+                  if latest['wall_monotonic_s'] - sample['wall_monotonic_s'] <= 2.0]
+        if len(recent) < 2:
+            return None
+        first, last = recent[0], recent[-1]
+        wall_delta = last['wall_monotonic_s'] - first['wall_monotonic_s']
+        sim_delta = last['simulation_time_s'] - first['simulation_time_s']
+        if wall_delta <= 0.0 or sim_delta <= 0.0:
+            return None
+        return sim_delta / wall_delta
 
     def sim_time(self) -> float:
         _, _epoch, observer_time, _clock_wall = self.tf_observer.tf_snapshot()
@@ -860,6 +1085,7 @@ class MotionProbe(Node):
                         for name in ('steer_front_joint', 'steer_rear_joint')],
                     'body_velocity': self.gazebo_velocity, 'odom_velocity': self.odom_velocity,
                     'body_pose': self.gazebo_pose,
+                    'source_sim_stamps': [joints['source_sim_s']],
                     'source_wall_times': [joints['monotonic_s'], self.selected_cmd_events[-1][0],
                         self.drive_events[-1][0], self.steering_events[-1][0],
                         self.odom_sample_monotonic, self.gazebo_pose_sample_monotonic],
@@ -1013,7 +1239,9 @@ class MotionProbe(Node):
         return {
             'clock_epoch': epoch,
             'clock_sim_s': clock_sim_s,
-            'raw_model_states_callbacks': self.gazebo_pose_count,
+            'raw_model_states_callbacks': self.gazebo_model_received_callbacks,
+            'decoded_model_states_callbacks': self.gazebo_pose_count,
+            'decimated_model_states_callbacks': self.gazebo_model_decimated_callbacks,
             'aligned_model_states_samples': self.gazebo_valid_sample_count,
             'unaligned_model_states_callbacks': self.gazebo_unaligned_sample_count,
             'discarded_unaligned_model_states_samples': self.gazebo_discarded_unaligned_sample_count,
@@ -1120,22 +1348,63 @@ class MotionProbe(Node):
 
     def stop_direct(self, timeout=1.5, *, nav_source=False):
         start_time = time.monotonic()
+        start_sim = self.sim_time()
         start_index = len(self.drive_events)
-        stop_until = start_time + timeout
-        last_publish = 0.0
+        selected_start_index = len(self.selected_cmd_events)
+        publisher = self.nav_command if nav_source else self.command
+        def publish_zero():
+            publisher.publish(Twist())
+
+        publish_zero()
+        last_publish = start_time
         zero_seen = False
+        selected_zero_seen = False
+        profile = self.swerve_stopping_profile(keepalive=publish_zero)
+        last_drive = self.drive_events[-1][1:] if self.drive_events else ()
+        last_drive_speed = max((abs(value) for value in last_drive), default=0.0)
+        if profile is None:
+            acceleration, control_rate = None, None
+            required_stop_sim_s = 0.0
+            wall_budget_s = timeout
+        else:
+            acceleration, control_rate = profile
+            # The controller ramps wheel targets in simulation time. Observe
+            # its measured live acceleration/rate and wait for enough simulated
+            # time for the last drive command to ramp fully to zero.
+            rtf = self.recent_simulation_rtf()
+            required_stop_sim_s = controller_stop_sim_budget(
+                last_drive_speed, acceleration, control_rate)
+            wall_budget_s = controller_stop_wall_budget(
+                timeout, required_stop_sim_s, rtf)
+        stop_until = start_time + min(60.0, wall_budget_s)
         while time.monotonic() < stop_until:
             now = time.monotonic()
             if now - last_publish >= 0.10:
-                (self.nav_command if nav_source else self.command).publish(Twist())
+                publisher.publish(Twist())
                 last_publish = now
             self.pump(timeout=0.02)
             zero_seen = any(all(abs(value) <= 1e-4 for value in row[1:])
                             for row in self.drive_events[start_index:])
-            if zero_seen and now - start_time >= 0.20:
+            selected_zero_seen = any(
+                all(abs(value) <= 1e-4 for value in row[1:])
+                for row in self.selected_cmd_events[selected_start_index:])
+            sim_elapsed = max(0.0, self.sim_time() - start_sim)
+            if (zero_seen and selected_zero_seen
+                    and (profile is None or sim_elapsed >= required_stop_sim_s)):
                 break
-        return {'zero_drive_command_seen': zero_seen,
-                'wall_time_s': time.monotonic() - start_time}
+        return {
+            'zero_drive_command_seen': zero_seen,
+            'zero_selected_command_seen': selected_zero_seen,
+            'wall_time_s': time.monotonic() - start_time,
+            'sim_time_s': max(0.0, self.sim_time() - start_sim),
+            'required_stop_sim_s': required_stop_sim_s,
+            'wheel_target_at_stop_rad_s': last_drive_speed,
+            'wheel_acceleration_rad_s2': acceleration,
+            'controller_rate_hz': control_rate,
+            'controller_profile_available': profile is not None,
+            'estimated_rtf': self.recent_simulation_rtf(),
+            'wall_budget_s': min(60.0, wall_budget_s),
+        }
 
     def direct_motion(self, label, velocity, duration=MOTION_DURATION_SIM_S,
                       timeout=45.0):
@@ -1281,7 +1550,9 @@ class MotionProbe(Node):
             elapsed_sim > 0.0 and direction_passed and active_cmd and active_selected_cmd
             and direct_owner_seen and drive_active
             and (wheel_velocity_max > 0.05 or wheel_position_change > 0.05)
-            and steering_response and stop_result['zero_drive_command_seen']
+            and steering_response and stop_result['controller_profile_available']
+            and stop_result['zero_drive_command_seen']
+            and stop_result['zero_selected_command_seen']
             and (label != 'FORWARD' or watchdog_result.get('zero_selected_command_seen')))
         max_command_refresh_gap = max(
             (later - earlier for earlier, later in zip(command_send_times, command_send_times[1:])),
@@ -1382,6 +1653,11 @@ class MotionProbe(Node):
         if not self.navigation.wait_for_server(timeout_sec=min(timeout, 5.0)):
             return {'passed': False, 'server_ready': False,
                     'reason': 'action_server_unavailable:/navigate_to_pose'}
+        effective_parameters = self.nav2_runtime_parameters()
+        if not effective_parameters.get('available') or not effective_parameters.get('passed'):
+            return {'passed': False, 'server_ready': True,
+                    'reason': 'effective_Nav2_controller_parameters_unavailable_or_outside_release_contract',
+                    'effective_parameters': effective_parameters}
         if not self.wait_until(lambda: self.map is not None and self.map_pose() is not None,
                                min(timeout, 15.0)):
             return {'passed': False, 'server_ready': True,
@@ -1412,6 +1688,7 @@ class MotionProbe(Node):
                     'goal': goal_pose, 'map_tf_start': map_reference,
                     'gazebo_pose_start': gazebo0, 'gazebo_pose_before_goal': current_world}
         command_index = len(self.nav_cmd_events)
+        scan_index = len(self.scan_events)
         selected_index = len(self.selected_cmd_events)
         owner_index = len(self.command_owner_events)
         drive_index = len(self.drive_events)
@@ -1548,6 +1825,7 @@ class MotionProbe(Node):
         passed = not failed_checks
         return {
             'passed': passed, 'server_ready': True, 'accepted': True, 'status': terminal_status,
+            'effective_parameters': effective_parameters,
             'reason': None if passed else (exact_reason or
                 'acceptance_checks_failed:' + ','.join(failed_checks)),
             'acceptance_checks': acceptance_checks,
@@ -1576,6 +1854,7 @@ class MotionProbe(Node):
             'goal_yaw_tolerance_rad': NAV_GOAL_YAW_TOLERANCE_RAD,
             'stop_result': stop_result,
             'navigation_trace_samples': self.navigation_trace,
+            'laser_scan_timing': self.scan_timing_summary(scan_index),
             'cmd_vel_nonzero_samples': len(active_commands),
             'selected_cmd_vel_nonzero_samples': len(active_selected),
             'command_owner': 'NAV2' if nav_owner_seen else None,
@@ -1706,22 +1985,40 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     gazebo_delta = probe.body_displacement(gazebo0, gazebo1)
     odom_delta = probe.body_displacement(pose0, pose1)
     pose_change = dist(pose0, pose1) if pose1 is not None else None
-    if action in ('FORWARD', 'BACKWARD'):
-        physical_metric = gazebo_delta['forward_m'] if gazebo_delta else None
-        odom_metric = odom_delta['forward_m'] if odom_delta else None
-        if action == 'BACKWARD':
-            physical_metric = -physical_metric if physical_metric is not None else None
-            odom_metric = -odom_metric if odom_metric is not None else None
-        expected_component = 'linear_x'
-        expected_sign = 1 if action == 'FORWARD' else -1
-    elif action in ('LEFT', 'RIGHT'):
-        physical_metric = gazebo_delta['lateral_m'] if gazebo_delta else None
-        odom_metric = odom_delta['lateral_m'] if odom_delta else None
-        if action == 'RIGHT':
-            physical_metric = -physical_metric if physical_metric is not None else None
-            odom_metric = -odom_metric if odom_metric is not None else None
-        expected_component = 'linear_y'
-        expected_sign = 1 if action == 'LEFT' else -1
+    translation_directions = {
+        'FORWARD': (1.0, 0.0), 'BACKWARD': (-1.0, 0.0),
+        'LEFT': (0.0, 1.0), 'RIGHT': (0.0, -1.0),
+        'FORWARD_LEFT': (1.0 / math.sqrt(2.0), 1.0 / math.sqrt(2.0)),
+        'FORWARD_RIGHT': (1.0 / math.sqrt(2.0), -1.0 / math.sqrt(2.0)),
+        'BACKWARD_LEFT': (-1.0 / math.sqrt(2.0), 1.0 / math.sqrt(2.0)),
+        'BACKWARD_RIGHT': (-1.0 / math.sqrt(2.0), -1.0 / math.sqrt(2.0)),
+    }
+    expected_direction_body = translation_directions.get(action)
+    if expected_direction_body is not None:
+        expected_forward, expected_lateral = expected_direction_body
+        physical_metric = (gazebo_delta['forward_m'] * expected_forward
+                           + gazebo_delta['lateral_m'] * expected_lateral
+                           if gazebo_delta else None)
+        odom_metric = (odom_delta['forward_m'] * expected_forward
+                       + odom_delta['lateral_m'] * expected_lateral
+                       if odom_delta else None)
+        expected_component = ('linear_xy' if expected_forward and expected_lateral
+                              else 'linear_x' if expected_forward else 'linear_y')
+        expected_sign = 1
+        command_direction_seen = any(
+            row[1] * expected_forward + row[2] * expected_lateral > 0.01
+            and abs(row[1] * expected_lateral - row[2] * expected_forward) <= 1e-3
+            and abs(row[3]) <= 1e-3
+            for row in active_selected_commands)
+        unwanted_motion_error = (abs(gazebo_delta['dyaw_rad'])
+                                 if gazebo_delta else None)
+        unwanted_motion_within_tolerance = (
+            unwanted_motion_error is not None
+            and unwanted_motion_error <= ROTATION_TOLERANCE_RAD)
+        expected_direction_components = {
+            'linear_x': expected_forward, 'linear_y': expected_lateral,
+            'angular_z': 0.0,
+        }
     else:
         physical_metric = gazebo_delta['dyaw_rad'] if gazebo_delta else None
         odom_metric = odom_delta['dyaw_rad'] if odom_delta else None
@@ -1730,6 +2027,21 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
             odom_metric = -odom_metric if odom_metric is not None else None
         expected_component = 'angular_z'
         expected_sign = 1 if action == 'ROTATE_LEFT' else -1
+        component_index = 3
+        command_direction_seen = any(
+            row[component_index] * expected_sign > 0.01
+            and all(abs(row[index]) <= 1e-3 for index in (1, 2))
+            for row in active_selected_commands)
+        unwanted_motion_error = (math.hypot(gazebo_delta['forward_m'],
+                                            gazebo_delta['lateral_m'])
+                                 if gazebo_delta else None)
+        unwanted_motion_within_tolerance = (
+            unwanted_motion_error is not None
+            and unwanted_motion_error <= TRANSLATION_TOLERANCE_M)
+        expected_direction_components = {
+            'linear_x': 0.0, 'linear_y': 0.0,
+            'angular_z': float(expected_sign),
+        }
     wheel_velocity_max = max((abs(value) for _, _, velocities in joint_samples
                               for name, value in velocities.items()
                               if name.endswith('_drive_joint')), default=0.0)
@@ -1750,11 +2062,6 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
     action_statuses = probe.control_statuses[control_index:]
     command_ack = any(item.get('robot_id') == robot_id and item.get('accepted') is True
                       for item in action_statuses)
-    component_index = {'linear_x': 1, 'linear_y': 2, 'angular_z': 3}[expected_component]
-    command_direction_seen = any(
-        row[component_index] * expected_sign > 0.01
-        and all(abs(row[index]) <= 1e-3 for index in range(1, 4) if index != component_index)
-        for row in active_selected_commands)
     direction_tolerance = (ROTATION_TOLERANCE_RAD if expected_component == 'angular_z'
                            else TRANSLATION_TOLERANCE_M)
     passed = bool(command_ack and command_direction_seen and active_selected_commands
@@ -1762,6 +2069,7 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
                   and physical_metric is not None
                   and physical_metric > direction_tolerance
                   and odom_metric is not None and odom_metric > direction_tolerance * 0.5
+                  and unwanted_motion_within_tolerance
                   and zero_seen and stop_settling['passed'])
     max_refresh_gap = max((later - earlier for earlier, later in zip(send_times, send_times[1:])),
                           default=None)
@@ -1795,9 +2103,15 @@ def web_manual(probe, ws, robot_id, action, duration_sim_s=0.8, timeout=45.0):
                                'angular_z': row[3]} for row in active_commands[:5]]),
         'expected_direction_component': expected_component,
         'expected_direction_sign': expected_sign,
+        'expected_direction_body': expected_direction_components,
         'command_direction_seen': command_direction_seen,
         'physical_directional_delta': physical_metric,
         'odom_directional_delta': odom_metric,
+        'unwanted_motion_error': unwanted_motion_error,
+        'unwanted_motion_tolerance': (ROTATION_TOLERANCE_RAD
+                                      if expected_direction_body is not None
+                                      else TRANSLATION_TOLERANCE_M),
+        'unwanted_motion_within_tolerance': unwanted_motion_within_tolerance,
         'direction_tolerance': direction_tolerance,
         'controller_command_ack': command_ack,
         'control_statuses': [{'accepted': item.get('accepted'),
@@ -1900,6 +2214,12 @@ def web_navigation(probe, ws, robot_id, timeout, minimum_pose_stamp_s=None,
                 'map_signature_stable_for_wall_s': (
                     time.monotonic() - stable_map['since_monotonic_s']
                     if stable_map['since_monotonic_s'] is not None else 0.0)}
+    effective_parameters = probe.nav2_runtime_parameters(ws)
+    if not effective_parameters.get('available') or not effective_parameters.get('passed'):
+        return {'passed': False,
+                'reason': 'effective_Nav2_controller_parameters_unavailable_or_outside_release_contract',
+                'effective_parameters': effective_parameters,
+                'goal': goal}
     # Readiness can take several wall seconds while a new registration is
     # published.  Re-sample after the map barrier so the start pose is fresh at
     # the point the operator could actually submit the goal.
@@ -1995,6 +2315,7 @@ def web_navigation(probe, ws, robot_id, timeout, minimum_pose_stamp_s=None,
                 'gazebo_pose_before_goal': gazebo_before_goal,
                 'gazebo_pose_age_before_goal_wall_s': gazebo_before_goal_age_wall_s}
     command_index = len(probe.nav_cmd_events)
+    scan_index = len(probe.scan_events)
     selected_index = len(probe.selected_cmd_events)
     owner_index = len(probe.command_owner_events)
     drive_index = len(probe.drive_events)
@@ -2131,6 +2452,7 @@ def web_navigation(probe, ws, robot_id, timeout, minimum_pose_stamp_s=None,
     passed = not failed_checks
     return {
         'passed': passed,
+        'effective_parameters': effective_parameters,
         'reason': None if passed else (str(terminal.get('reason')) if status_name != 'SUCCEEDED'
             else 'acceptance_checks_failed:' + ','.join(failed_checks)),
         'acceptance_checks': acceptance_checks,
@@ -2181,6 +2503,7 @@ def web_navigation(probe, ws, robot_id, timeout, minimum_pose_stamp_s=None,
         'terminal_trace_sample': (probe.navigation_trace[terminal_trace_index]
                                   if 0 <= terminal_trace_index < len(probe.navigation_trace) else None),
         'navigation_trace_samples': probe.navigation_trace,
+        'laser_scan_timing': probe.scan_timing_summary(scan_index),
         'goal_error_at_terminal_m': terminal_goal_error,
         'goal_yaw_error_at_terminal_rad': terminal_goal_yaw_error,
         'gazebo_p0': gazebo0, 'gazebo_p1': gazebo1,
@@ -2392,6 +2715,8 @@ def main() -> int:
             result['stages']['WEB_MANUAL_MODE_R01'] = mode_ok
             print(f'WEB_MANUAL_MODE_R01={"PASS" if mode_ok else "FAIL reason=" + str(mode_reason)}', flush=True)
             manual_actions = ('FORWARD', 'BACKWARD', 'LEFT', 'RIGHT',
+                              'FORWARD_LEFT', 'FORWARD_RIGHT',
+                              'BACKWARD_LEFT', 'BACKWARD_RIGHT',
                               'ROTATE_LEFT', 'ROTATE_RIGHT')
             manual_results = {}
             if mode_ok:
@@ -2506,7 +2831,9 @@ def main() -> int:
             'WEB_MANUAL_CMD_VEL', 'WEB_MANUAL_CONTROLLER_COMMAND', 'WEB_MANUAL_COMMAND_OWNER',
             'WEB_MANUAL_COMMAND_ACCEPTED', 'WEB_MANUAL_MOTION', 'WEB_MANUAL_STOP_ZERO',
             'WEB_MANUAL_FORWARD', 'WEB_MANUAL_BACKWARD', 'WEB_MANUAL_LEFT',
-            'WEB_MANUAL_RIGHT', 'WEB_MANUAL_ROTATE_LEFT', 'WEB_MANUAL_ROTATE_RIGHT'))
+            'WEB_MANUAL_RIGHT', 'WEB_MANUAL_FORWARD_LEFT', 'WEB_MANUAL_FORWARD_RIGHT',
+            'WEB_MANUAL_BACKWARD_LEFT', 'WEB_MANUAL_BACKWARD_RIGHT',
+            'WEB_MANUAL_ROTATE_LEFT', 'WEB_MANUAL_ROTATE_RIGHT'))
         all_web_nav = all(result['stages'].get(key) is True for key in (
             'WEB_NAV_GOAL_ACCEPTED', 'WEB_NAV_CMD_VEL', 'WEB_NAV_COMMAND_OWNER',
             'WEB_NAV_CONTROLLER_COMMAND',

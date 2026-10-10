@@ -79,9 +79,9 @@ jobs:
         shell: bash
         run: |
           source /opt/ros/humble/setup.bash
-          colcon build --base-paths . swerve_bridge waretwin \
+          colcon --log-base "$RUNNER_TEMP/colcon-log" build \
+            --base-paths . swerve_bridge waretwin \
             --packages-select swerve_bringup swerve_bridge waretwin_web \
             --build-base "$RUNNER_TEMP/build" \
-            --install-base "$RUNNER_TEMP/install" \
-            --log-base "$RUNNER_TEMP/colcon-log"
+            --install-base "$RUNNER_TEMP/install"
           python3 scripts/check_waretwin_release_artifacts.py "$RUNNER_TEMP/install/waretwin_web/share/waretwin_web"

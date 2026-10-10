@@ -18,6 +18,9 @@ slam_toolbox:
     # the outer portion of open-space rays unknown despite the 30 m sensor.
     max_laser_range: 30.0
     minimum_time_interval: 0.5
+    # Mapping must process current scans, not build a backlog which publishes
+    # delayed map->odom corrections during navigation.
+    scan_queue_size: 1
     transform_timeout: 0.2
     tf_buffer_duration: 30.0
     transform_publish_period: 0.02

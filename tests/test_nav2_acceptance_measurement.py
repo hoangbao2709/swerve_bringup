@@ -37,6 +37,19 @@ def test_common_tf_time_interpolates_at_edge_intersection_without_extrapolation(
     assert acceptance.common_tf_sample_time(float('nan'), 19.797) is None
 
 
+def test_controller_stop_observation_uses_live_simulation_ramp_and_rtf():
+    required_sim_s = acceptance.controller_stop_sim_budget(3.7, 10.0, 50.0)
+    assert required_sim_s == pytest.approx(0.41)
+    assert acceptance.controller_stop_wall_budget(1.5, required_sim_s, 0.25) == pytest.approx(2.25)
+    assert acceptance.controller_stop_wall_budget(1.5, required_sim_s, 0.8) == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize(('acceleration', 'rate'), [(0.0, 50.0), (10.0, 0.0), (float('nan'), 50.0)])
+def test_controller_stop_measurement_rejects_invalid_runtime_parameters(acceleration, rate):
+    with pytest.raises(ValueError):
+        acceptance.controller_stop_sim_budget(3.7, acceleration, rate)
+
+
 def test_pose_pair_requires_both_sources_after_localization_confirmation():
     assert acceptance.common_pose_pair_stamp(14.799, 14.762, 14.799) is None
     assert acceptance.common_pose_pair_stamp(14.820, 14.805, 14.799) == pytest.approx(14.805)

@@ -22,7 +22,9 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, SetLaunchConfiguration
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, Command, EnvironmentVariable, PythonExpression
+from launch.substitutions import (
+    LaunchConfiguration, Command, EnvironmentVariable, PathJoinSubstitution, PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -326,7 +328,7 @@ def generate_launch_description():
                                'django_token': LaunchConfiguration('bridge_token'),
                                'django_ws_url': LaunchConfiguration('bridge_ws_url'),
                                'artifact_root': artifact_root,
-                               'local_map_root': os.path.join(default_artifact_root, 'local_robot_maps'),
+                               'local_map_root': PathJoinSubstitution([artifact_root, 'local_robot_maps']),
                                'gazebo_world_file': LaunchConfiguration('world'),
                                'nav2_map_file': map_file,
                                'datamatrix_map_file': datamatrix_map_file,

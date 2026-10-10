@@ -44,7 +44,9 @@ for topic in ('/cmd_vel_manual','/cmd_vel_selected'):
  n.create_subscription(Twist,topic,lambda m,key=topic:record(key,twist(m)),100)
 for topic in ('/steering_controller/commands','/drive_controller/commands'):
  n.create_subscription(Float64MultiArray,topic,lambda m,key=topic:record(key,list(m.data)),50)
-n.create_subscription(JointState,'/joint_states',lambda m:record('joints',{'positions':dict(zip(m.name,m.position)),'velocities':dict(zip(m.name,m.velocity))}),feedback_qos)
+n.create_subscription(JointState,'/joint_states',lambda m:record('joints',{
+ 'positions':dict(zip(m.name,m.position)),'velocities':dict(zip(m.name,m.velocity)),
+ 'stamp_sim_s':m.header.stamp.sec+m.header.stamp.nanosec*1e-9}),feedback_qos)
 n.create_subscription(Odometry,'/odom',lambda m:record('odom',{'pose':a.pose_from_odom(m),'velocity':twist(m.twist.twist)}),feedback_qos)
 def imu(m):record('imu',{'yaw':a.yaw_from_quaternion(m.orientation),'angular_velocity_z':m.angular_velocity.z})
 n.create_subscription(Imu,'/imu/data',imu,feedback_qos)
@@ -120,6 +122,7 @@ def settle(timeout=45):
     'wheel_velocities':[joint['velocities'][k] for k in ('wheel_front_drive_joint','wheel_rear_drive_joint')],
     'steering_positions':[joint['positions'][k] for k in ('steer_front_joint','steer_rear_joint')],
     'body_velocity':body['velocity'],'odom_velocity':odom['velocity'],'body_pose':body['pose'],
+    'source_sim_stamps':[joint['stamp_sim_s']],
     'source_wall_times':[data[k][-1][0] for k in keys]}
   except (IndexError,KeyError):pass
   result=monitor.update(sim[0],time.monotonic(),sample)

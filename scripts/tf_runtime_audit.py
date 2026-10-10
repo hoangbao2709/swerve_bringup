@@ -18,6 +18,8 @@ import subprocess
 import time
 
 import rclpy
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.srv import GetParameters
 from rclpy.executors import SingleThreadedExecutor, await_or_execute
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy)
@@ -49,6 +51,12 @@ class PublisherInfoExecutor(SingleThreadedExecutor):
 
 def ros_stamp_seconds(stamp) -> float:
     return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+
+def resolve_ros_service_type(service_type: str):
+    """Resolve a Python request class without assuming every overlay has it."""
+    from rosidl_runtime_py.utilities import get_service
+    return get_service(str(service_type))
 
 
 class TfAudit(Node):
@@ -169,7 +177,101 @@ class TfAudit(Node):
             output[topic] = rows
         return output
 
-    def reports(self, *, mode: str, map_id: str | None, map_revision: str | None):
+    def localization_endpoints(self):
+        """Record the actual SetPose servers and graph owner for each endpoint."""
+        services = []
+        try:
+            nodes = self.get_node_names_and_namespaces()
+        except Exception:
+            nodes = []
+        for name, namespace in nodes:
+            try:
+                endpoints = self.get_service_names_and_types_by_node(name, namespace)
+            except Exception:
+                continue
+            for service_name, service_types in endpoints:
+                matching_types = [str(value) for value in service_types
+                                  if (str(value).endswith('/srv/SetPose')
+                                      or str(value).endswith('/srv/SetInitialPose'))]
+                if matching_types:
+                    parameter_names = (
+                        ['world_frame', 'map_frame', 'odom_frame', 'base_link_frame']
+                        if any(value.endswith('/srv/SetPose') for value in matching_types)
+                        else ['global_frame_id', 'odom_frame_id', 'base_frame_id'])
+                    parameter_service = (
+                        f"/{str(namespace or '').strip('/') + '/' if str(namespace or '').strip('/') else ''}"
+                        f"{str(name).strip('/')}/get_parameters")
+                    parameter_values = self._read_node_parameters(
+                        parameter_service, parameter_names)
+                    services.append({
+                        'service_name': str(service_name),
+                        'service_types': matching_types,
+                        'server_node': name,
+                        'server_namespace': namespace,
+                        'frame_parameters': parameter_values,
+                    })
+        return sorted(services, key=lambda row: (row['service_name'], row['server_node']))
+
+    def initial_pose_topic_endpoints(self):
+        """Report publishers/subscribers on AMCL's standard Initial Pose topic."""
+        endpoints = []
+        try:
+            rows = self.get_subscriptions_info_by_topic('/initialpose')
+        except Exception:
+            rows = []
+        for row in rows:
+            endpoints.append({
+                'topic_name': '/initialpose',
+                'topic_type': str(getattr(row, 'topic_type', '')),
+                'subscriber_node': str(row.node_name),
+                'subscriber_namespace': str(row.node_namespace),
+                'endpoint_gid': bytes(row.endpoint_gid).hex(),
+                'qos': {
+                    'reliability': str(row.qos_profile.reliability),
+                    'durability': str(row.qos_profile.durability),
+                    'history': str(row.qos_profile.history),
+                    'depth': int(row.qos_profile.depth),
+                },
+            })
+        return sorted(endpoints, key=lambda item: (
+            item['subscriber_namespace'], item['subscriber_node'], item['endpoint_gid']))
+
+    def _read_node_parameters(self, service_name, parameter_names):
+        client = self.create_client(GetParameters, service_name)
+        try:
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and not client.service_is_ready():
+                self.audit_executor.spin_once(timeout_sec=0.02)
+            if not client.service_is_ready():
+                return {'status': 'UNAVAILABLE', 'parameters': {}}
+            request = GetParameters.Request()
+            request.names = list(parameter_names)
+            future = client.call_async(request)
+            while time.monotonic() < deadline and not future.done():
+                self.audit_executor.spin_once(timeout_sec=0.02)
+            if not future.done():
+                return {'status': 'TIMEOUT', 'parameters': {}}
+            values = future.result().values
+            parameters = {}
+            for name, value in zip(parameter_names, values):
+                if value.type == ParameterType.PARAMETER_STRING:
+                    parameters[name] = value.string_value
+                elif value.type == ParameterType.PARAMETER_BOOL:
+                    parameters[name] = value.bool_value
+                elif value.type == ParameterType.PARAMETER_DOUBLE:
+                    parameters[name] = value.double_value
+                elif value.type == ParameterType.PARAMETER_INTEGER:
+                    parameters[name] = value.integer_value
+                else:
+                    parameters[name] = None
+            return {'status': 'PASS', 'parameters': parameters}
+        except Exception as exc:
+            return {'status': f'ERROR:{type(exc).__name__}', 'parameters': {}}
+        finally:
+            self.destroy_client(client)
+
+    def reports(self, *, mode: str, map_id: str | None, map_revision: str | None,
+                localization_backend: str = 'AMCL', set_pose_owner: str | None = None):
         elapsed = max(1e-9, time.monotonic() - self.started_monotonic)
         endpoints = self.publisher_endpoints()
         endpoint_names = {}
@@ -243,16 +345,103 @@ class TfAudit(Node):
             'audit_window_end_sim_s': self.latest_clock_s,
             'message_info_publisher_gid_available': self.message_info_identity_available,
         }
-        expected_owner = 'slam_toolbox' if mode.lower() in ('mapping', 'unified') else 'ekf_v30e'
+        selected_backend = localization_backend.strip().upper()
+        expected_owner = (
+            'slam_toolbox' if mode.lower() in ('mapping', 'unified') else
+            set_pose_owner if selected_backend == 'SET_POSE' else 'amcl'
+        )
+        initial_pose_services = self.localization_endpoints()
+        set_pose_services = [row for row in initial_pose_services
+                             if any(service_type.endswith('/srv/SetPose')
+                                    for service_type in row['service_types'])]
+        amcl_initial_pose_services = [row for row in initial_pose_services
+                                       if row['server_node'].lstrip('/') == 'amcl'
+                                       and any(service_type.endswith('/srv/SetInitialPose')
+                                               for service_type in row['service_types'])]
+        map_odom_edges = [row for row in edge_rows
+                          if row['channel'] == 'dynamic'
+                          and row['parent_frame'] == 'map'
+                          and row['child_frame'] == 'odom']
+        observed_map_odom_owners = sorted({row['publisher_node'] for row in map_odom_edges
+                                           if row['publisher_node']})
+        selected_set_pose_services = [row for row in set_pose_services
+                                      if set_pose_owner
+                                      and row['server_node'].lstrip('/') == set_pose_owner.lstrip('/')]
+        initial_pose_topic_endpoints = self.initial_pose_topic_endpoints()
+        amcl_initial_pose_topics = [row for row in initial_pose_topic_endpoints
+                                    if row['subscriber_node'].lstrip('/') == 'amcl'
+                                    and row['topic_type'] ==
+                                    'geometry_msgs/msg/PoseWithCovarianceStamped']
+        amcl_initial_pose_services = [row for row in initial_pose_services
+                                      if row['server_node'].lstrip('/') == 'amcl'
+                                      and any(value.endswith('/srv/SetInitialPose')
+                                              for value in row['service_types'])]
+        service_type_resolution = {'status': 'NOT_REQUIRED', 'error': None}
+        amcl_service_usable = False
+        if selected_backend == 'AMCL' and len(amcl_initial_pose_services) == 1:
+            try:
+                resolve_ros_service_type('nav2_msgs/srv/SetInitialPose')
+            except (AttributeError, ImportError, ModuleNotFoundError, ValueError) as exc:
+                service_type_resolution = {
+                    'status': 'PYTHON_TYPE_UNAVAILABLE',
+                    'error': f'{type(exc).__name__}:{exc}',
+                }
+            else:
+                service_type_resolution = {'status': 'AVAILABLE', 'error': None}
+                amcl_service_usable = True
+        if selected_backend == 'AMCL' and amcl_service_usable:
+            selected_initial_pose_interface = {
+                'api': 'service',
+                'name': amcl_initial_pose_services[0]['service_name'],
+                'type': 'nav2_msgs/srv/SetInitialPose',
+                'owner': 'amcl',
+            }
+        elif selected_backend == 'AMCL' and len(amcl_initial_pose_topics) == 1:
+            selected_initial_pose_interface = {
+                'api': 'topic', 'name': '/initialpose',
+                'type': 'geometry_msgs/msg/PoseWithCovarianceStamped',
+                'owner': 'amcl',
+            }
+        elif len(selected_set_pose_services) == 1:
+            try:
+                resolve_ros_service_type('robot_localization/srv/SetPose')
+            except (AttributeError, ImportError, ModuleNotFoundError, ValueError) as exc:
+                service_type_resolution = {
+                    'status': 'PYTHON_TYPE_UNAVAILABLE',
+                    'error': f'{type(exc).__name__}:{exc}',
+                }
+                selected_initial_pose_interface = None
+            else:
+                service_type_resolution = {'status': 'AVAILABLE', 'error': None}
+                selected_initial_pose_interface = {
+                    'api': 'service',
+                    'name': selected_set_pose_services[0]['service_name'],
+                    'type': 'robot_localization/srv/SetPose',
+                    'owner': set_pose_owner,
+                }
+        else:
+            selected_initial_pose_interface = None
         architecture = {
             'environment': environment,
             'expected_runtime_contract': {
                 'map_to_odom_owner': expected_owner,
+                'localization_backend': selected_backend,
+                'set_pose_service_owner': set_pose_owner,
                 'odom_to_base_footprint_owner': 'ekf_filter_node',
                 'swerve_odometry_publish_tf_expected': False,
                 'frame_chain': ['map', 'odom', 'base_footprint'],
             },
             'observed_edges': edge_rows,
+            'observed_map_to_odom_publishers': observed_map_odom_owners,
+            'map_to_odom_owner_matches_contract': (
+                len(observed_map_odom_owners) == 1
+                and observed_map_odom_owners[0] == expected_owner),
+            'set_pose_services': set_pose_services,
+            'initial_pose_services': initial_pose_services,
+            'initial_pose_topic_subscribers': initial_pose_topic_endpoints,
+            'initial_pose_service_type_resolution': service_type_resolution,
+            'selected_set_pose_services': selected_set_pose_services,
+            'initial_pose_interface': selected_initial_pose_interface,
             'duplicate_dynamic_or_static_edges': duplicate_edges,
             'duplicate_edge_attribution_status': (
                 'ATTRIBUTABLE' if self.message_info_identity_available
@@ -286,6 +475,8 @@ def main() -> int:
     parser.add_argument('--mode', default='unified')
     parser.add_argument('--map-id')
     parser.add_argument('--map-revision')
+    parser.add_argument('--localization-backend', choices=('AMCL', 'SET_POSE'), default='AMCL')
+    parser.add_argument('--set-pose-owner')
     args = parser.parse_args()
     if args.duration <= 0 or args.max_age <= 0:
         parser.error('--duration and --max-age must be positive')
@@ -297,7 +488,9 @@ def main() -> int:
     try:
         node.collect()
         architecture, publishers, timing = node.reports(
-            mode=args.mode, map_id=args.map_id, map_revision=args.map_revision)
+            mode=args.mode, map_id=args.map_id, map_revision=args.map_revision,
+            localization_backend=args.localization_backend,
+            set_pose_owner=args.set_pose_owner)
         for name, value in (
                 ('tf_architecture.json', architecture),
                 ('tf_publishers.json', {'environment': architecture['environment'],
@@ -319,6 +512,9 @@ def main() -> int:
         elif architecture['duplicate_dynamic_or_static_edges']:
             status = 'FAIL_DUPLICATE_TF_EDGE_PUBLISHERS'
             exit_code = 4
+        elif not architecture['map_to_odom_owner_matches_contract']:
+            status = 'FAIL_MAP_TO_ODOM_AUTHORITY_MISMATCH'
+            exit_code = 5
         else:
             status = 'PASS'
             exit_code = 0

@@ -767,8 +767,12 @@ def test_saved_map_preflight_confirms_manual_stop_before_unified_handoff():
     assert 'active navigation goal' in rejected['error']
 
 
-def test_saved_map_load_fails_closed_when_nav2_lifecycle_is_not_active():
+def test_saved_map_load_fails_closed_when_map_server_lifecycle_is_not_active():
     bridge = _saved_map_load_bridge('NAVIGATION')
+    bridge.nav2_lifecycle_status.return_value = {
+        'ready': False, 'states': {'map_server': 'inactive', 'bt_navigator': 'inactive'},
+        'blocker_reason': 'map_server inactive',
+    }
     bridge.local_map_root = Path('/tmp/local-map-test')
     bridge.local_control({
         'operation': 'MAP_LOAD', 'request_id': 'map-load-inactive',
@@ -777,5 +781,5 @@ def test_saved_map_load_fails_closed_when_nav2_lifecycle_is_not_active():
     })
     result = bridge.send.call_args.args[0]
     assert result['ok'] is False
-    assert '/bt_navigator=inactive' in result['error']
+    assert 'map_server is not ACTIVE' in result['error']
     bridge.map_load_client.service_is_ready.assert_not_called()

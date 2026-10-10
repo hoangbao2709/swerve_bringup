@@ -48,6 +48,7 @@ def generate_launch_description():
         'proper_caster_mu1', 'proper_caster_mu2', 'caster_swivel_friction',
         'caster_swivel_damping', 'caster_roll_friction', 'caster_roll_damping')}
     mode = LaunchConfiguration('mode')
+    enable_v30e_sim = LaunchConfiguration('enable_v30e_sim')
     defer_nav2_start = LaunchConfiguration('defer_nav2_start')
     nav2_autostart = PythonExpression([
         "'false' if '", defer_nav2_start, "' == 'true' else 'true'"])
@@ -58,11 +59,12 @@ def generate_launch_description():
     legacy_navigation_mode = IfCondition(PythonExpression([
         "'", mode, "' == 'navigation'"]))
     simulated_navigation_mode = IfCondition(PythonExpression([
-        "'", use_sim, "' == 'true' and '", mode, "' == 'navigation'"]))
+        "'", use_sim, "' == 'true' and '", mode, "' == 'navigation' and '",
+        enable_v30e_sim, "' == 'true'"]))
     require_canonical_map = ParameterValue(PythonExpression([
         "'", mode, "' in ('navigation', 'unified')"]), value_type=bool)
     require_tag_map = ParameterValue(PythonExpression([
-        "'", mode, "' == 'navigation'"]), value_type=bool)
+        "'", mode, "' == 'navigation' and '", enable_v30e_sim, "' == 'true'"]), value_type=bool)
     lidar_topic = LaunchConfiguration('real_lidar_topic')
     imu_topic = LaunchConfiguration('real_imu_topic')
     odom_topic = LaunchConfiguration('real_odom_topic')
@@ -112,7 +114,10 @@ def generate_launch_description():
                 raise ValueError('selected Gazebo world is not the manifest world artifact')
             world_xml = ET.parse(world).getroot()
             if world_xml.find(".//plugin[@name='gazebo_ros_state'][@filename='libgazebo_ros_state.so']") is None:
-                raise ValueError('Gazebo world lacks gazebo_ros_state plugin required for V30E simulation')
+                raise ValueError('Gazebo world lacks gazebo_ros_state plugin required for independent model-state verification')
+            legacy_v30e = (
+                LaunchConfiguration('enable_v30e_sim').perform(context).lower() == 'true'
+                and LaunchConfiguration('mode').perform(context).lower() == 'navigation')
             wanted = str(LaunchConfiguration('robot_id').perform(context))
             robot = next((row for row in manifest.get('robots', []) if str(row.get('id')) == wanted), None)
             if robot is None:
@@ -126,16 +131,28 @@ def generate_launch_description():
             nav2_rel = (manifest.get('nav2_maps') or {}).get(str(robot.get('floor_id')))
             if not nav2_rel:
                 nav2_rel = manifest['artifacts']['nav2_map']
-            expected = {
-                'datamatrix_map_file': (artifact_root / manifest['artifacts']['datamatrix_map']).resolve(),
-                'tag_graph_file': (artifact_root / manifest['artifacts']['tag_graph']).resolve(),
-            }
-            expected['map_file'] = (artifact_root / nav2_rel).resolve()
+            expected = {'map_file': (artifact_root / nav2_rel).resolve()}
+            if legacy_v30e:
+                expected.update({
+                    'datamatrix_map_file': (artifact_root / manifest['artifacts']['datamatrix_map']).resolve(),
+                    'tag_graph_file': (artifact_root / manifest['artifacts']['tag_graph']).resolve(),
+                })
             for arg, path in expected.items():
                 actual = Path(LaunchConfiguration(arg).perform(context)).expanduser().resolve()
                 if actual != path:
                     raise ValueError(f'{arg} is not from published revision {revision}: {actual}')
+            required_hashes = {
+                manifest['artifacts']['gazebo_world'],
+                manifest['artifacts']['canonical_map'],
+                manifest['artifacts']['gazebo_manifest'],
+                nav2_rel,
+            }
+            if legacy_v30e:
+                required_hashes.update((manifest['artifacts']['datamatrix_map'],
+                                        manifest['artifacts']['tag_graph']))
             for relative, expected_hash in (manifest.get('sha256') or {}).items():
+                if relative not in required_hashes:
+                    continue
                 path = (artifact_root / relative).resolve(strict=True)
                 if not path.is_relative_to(artifact_root):
                     raise ValueError(f'artifact path escapes revision bundle: {relative}')
@@ -187,13 +204,15 @@ def generate_launch_description():
             raise RuntimeError(
                 f'Published map bundle validation failed before simulation startup: {exc}. '
                 'Publish a valid map or explicitly set allow_dev_world:=true.') from exc
-        return [
-            SetLaunchConfiguration('v30e_initial_x', str(spawn[0])),
-            SetLaunchConfiguration('v30e_initial_y', str(spawn[1])),
-            SetLaunchConfiguration('v30e_initial_yaw', str(spawn[3])),
-            LogInfo(msg=f'Published canonical map bundle verified: revision={revision}, frame=map'),
-            LogInfo(msg=f'Global localization prior loaded from robot spawn: x={spawn[0]}, y={spawn[1]}, yaw={spawn[3]}'),
-        ]
+        actions = [LogInfo(msg=f'Published canonical map bundle verified: revision={revision}, frame=map')]
+        if legacy_v30e:
+            actions.extend([
+                SetLaunchConfiguration('v30e_initial_x', str(spawn[0])),
+                SetLaunchConfiguration('v30e_initial_y', str(spawn[1])),
+                SetLaunchConfiguration('v30e_initial_yaw', str(spawn[3])),
+                LogInfo(msg=f'Legacy V30E localization prior loaded from robot spawn: x={spawn[0]}, y={spawn[1]}, yaw={spawn[3]}'),
+            ])
+        return actions
 
     mode_guard = OpaqueFunction(function=validate_mode)
     map_guard = OpaqueFunction(function=validate_map_bundle)
@@ -274,6 +293,11 @@ def generate_launch_description():
                                                     'map_source': PythonExpression([
                                                         "'REGISTERED_CANONICAL' if '", mode,
                                                         "' == 'unified' else 'STATIC_MAP'"]),
+                                                    'localization_backend': PythonExpression([
+                                                        "'SET_POSE' if '", enable_v30e_sim,
+                                                        "' == 'true' and '", use_sim,
+                                                        "' == 'true' and '", mode,
+                                                        "' == 'navigation' else 'AMCL'"]),
                                                     'allow_dev_map': allow_dev_world}.items(),
                                   condition=navigation_mode)
     bridge = Node(package='swerve_bridge', executable='swerve_bridge_node', name='swerve_bridge', output='screen',
@@ -283,6 +307,16 @@ def generate_launch_description():
                                'gazebo_model_name': 'swerve_base',
                                'namespace': namespace,
                                'runtime_state': mode,
+                               'initial_pose_backend': PythonExpression([
+                                   "'SET_POSE' if '", enable_v30e_sim,
+                                   "' == 'true' and '", use_sim,
+                                   "' == 'true' and '", mode,
+                                   "' == 'navigation' else 'AMCL'"]),
+                               'initial_pose_service_node': PythonExpression([
+                                   "'ekf_v30e' if '", enable_v30e_sim,
+                                   "' == 'true' and '", use_sim,
+                                   "' == 'true' and '", mode,
+                                   "' == 'navigation' else ''"]),
                                'map_topic': PythonExpression([
                                    "'/map' if '", mode,
                                    "' in ('mapping', 'unified') else '/navigation_map'"]),
@@ -323,6 +357,8 @@ def generate_launch_description():
         DeclareLaunchArgument('allow_dev_world', default_value='false',
                               description='Explicitly permit development world/map fallback.'),
         DeclareLaunchArgument('map_sync_request_file', default_value='.runtime/map-sync-request.json'),
+        DeclareLaunchArgument('enable_v30e_sim', default_value='false',
+                              description='Opt in to the legacy simulated V30E/tag localizer; Web Local defaults to Nav2 AMCL.'),
         DeclareLaunchArgument('v30e_initial_x', default_value='0.0'),
         DeclareLaunchArgument('v30e_initial_y', default_value='0.0'),
         DeclareLaunchArgument('v30e_initial_yaw', default_value='0.0'),

@@ -39,7 +39,14 @@ def generate_launch_description():
             output='screen', parameters=[ekf_cfg, {
                 'use_sim_time': use_sim_time,
                 'initial_state': initial_state,
-            }], remappings=[('odometry/filtered', '/odometry/v30e')],
+            }], remappings=[
+                ('odometry/filtered', '/odometry/v30e'),
+                # The common odom-frame EKF also advertises robot_localization's
+                # default /set_pose service. Give this map-frame filter an
+                # unambiguous endpoint so Initial Pose cannot reset the wrong
+                # filter after a supervised Navigation transition.
+                ('set_pose', '/ekf_v30e/set_pose'),
+            ],
         )]
 
     ekf = OpaqueFunction(function=ekf_from_spawn, condition=IfCondition(enabled))

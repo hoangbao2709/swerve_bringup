@@ -66,7 +66,7 @@ def verify_bundle(root: Path, revision: int, robot_id: str) -> tuple[dict, dict]
     world_xml = ET.parse(world_path).getroot()
     state_plugin = world_xml.find(".//plugin[@name='gazebo_ros_state'][@filename='libgazebo_ros_state.so']")
     if state_plugin is None:
-        raise ValueError('Gazebo world lacks gazebo_ros_state plugin required for V30E simulation/readiness')
+        raise ValueError('Gazebo world lacks gazebo_ros_state plugin required for independent model-state verification')
     canonical_floors = {str(item.get('id')): item for item in canonical.get('floors', [])}
     gazebo_floors = {str(item.get('id')): item for item in gazebo_manifest.get('floors', [])}
     if set(canonical_floors) != set(gazebo_floors):

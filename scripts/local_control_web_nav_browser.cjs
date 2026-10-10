@@ -72,13 +72,16 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     await page.getByRole('button', { name: 'SET INITIAL POSE', exact: true }).click();
     const poseResponse = await poseResponsePromise;
     const poseResult = poseResponse.ok() ? await poseResponse.json() : null;
-    if (!poseResult?.ok || poseResult.localization_owner !== 'ekf_v30e') {
-      throw Error(`authoritative localization service did not accept initial pose (HTTP ${poseResponse.status()})`);
+    if (!poseResult?.ok || typeof poseResult.localization_owner !== 'string'
+        || !poseResult.localization_owner || typeof poseResult.initial_pose_interface !== 'string'
+        || !poseResult.initial_pose_interface) {
+      throw Error(`discovered localization interface did not accept initial pose (HTTP ${poseResponse.status()})`);
     }
-    await page.getByText(/INITIAL POSE ACCEPTED BY ekf_v30e/).waitFor({ state: 'visible', timeout: 30000 });
+    await page.getByText(/INITIAL POSE ACCEPTED BY [A-Z0-9_]+/).waitFor({ state: 'visible', timeout: 30000 });
     writeJson('pose-set.json', { pose: poseSeed, gazebo_pose: readJson('pose-seed.json'),
       load_notice: loadNotice,
       localization_owner: poseResult.localization_owner,
+      initial_pose_interface: poseResult.initial_pose_interface,
       result_notice: (await page.locator('.local-feedback.ok').last().textContent()).trim() });
 
     await page.getByRole('tab', { name: 'CONTROL', exact: true }).click();

@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "release_verdict": "NO-GO — Software release blockers remain",
-  "source": {
+  "historical_snapshot_2026-10-09": {
+    "source": {
     "repository": "hoangbao2709/swerve_bringup",
     "branch": "robot-real-sim-v5-demo-visual",
     "head_commit": "d7491ea55df625b23cf74bdecac25184f6725e78",
@@ -188,5 +189,141 @@
     "browser_to_DDS_isolation": "NOT TESTED; no DDS ACL; direct DDS remains trusted-network boundary",
     "physical_emergency_stop_and_stop_latency": "NOT TESTED",
     "sidebar": ["CONTROL", "MAPPING", "LOCALIZATION", "VDA5050", "DIAGNOSIS"]
+    }
+  },
+  "source": {
+    "repository": "hoangbao2709/swerve_bringup",
+    "branch": "robot-real-sim-v5-demo-visual",
+    "head_commit": "b85add1eaaaf8e6c2efc210c30081b0d1aac0b1c",
+    "working_tree": "dirty; 25 tracked files were modified at build/test time, followed by two release-evidence documentation edits; final tree has 27 tracked modified files; operational database/map/session files were not targets; no commit or push",
+    "runtime_source_diff_sha256": "64a64007f4d106c9b277bd8cbaa6acafc7c212d17a9aa2fd9c2cc6d3bde351d9",
+    "build_id": "install-v30e-independent-final-handoff-2",
+    "build_install": "/tmp/swerve-release-acceptance-20261010T002100Z/install-v30e-independent-final-handoff-2",
+    "ros_distribution": "Humble",
+    "python": "3.10.12"
+  },
+  "latest_verification": {
+    "captured_at_utc": "2026-10-10",
+    "verdict": "PARTIAL HANDOFF PASS; FULL STACK FAIL; RELEASE NO-GO",
+    "runtime_mode_tested": "UNIFIED, followed by supervised NAVIGATION",
+    "v30e_enabled": false,
+    "physical_robot_tested": false,
+    "isolated_test_environment": {
+      "ROS_DOMAIN_ID": 213,
+      "ROS_LOCALHOST_ONLY": 1,
+      "runtime_root": "/tmp/swerve-release-acceptance-20261010T002100Z/tmp/full-stack-v30e-independent-final-handoff-2/test_installed_full_stack_reac0/runtime",
+      "database": "isolated runtime/db.sqlite3",
+      "map_root": "isolated runtime/maps",
+      "install_prefix": "/tmp/swerve-release-acceptance-20261010T002100Z/install-v30e-independent-final-handoff-2"
+    },
+    "build": {
+      "command": "./scripts/build_ros.sh --build-base /tmp/swerve-release-acceptance-20261010T002100Z/build-v30e-independent-final-handoff-2 --install-base /tmp/swerve-release-acceptance-20261010T002100Z/install-v30e-independent-final-handoff-2 --log-base /tmp/swerve-release-acceptance-20261010T002100Z/log-v30e-independent-final-handoff-2",
+      "duration_seconds": 57.7,
+      "exit_status": 0,
+      "status": "PASS",
+      "packages": ["swerve_bringup", "swerve_bridge", "waretwin_web"],
+      "evidence": "/tmp/swerve-release-acceptance-20261010T002100Z/log-v30e-independent-final-handoff-2/build_2026-10-10_10-23-26"
+    },
+    "installed_package_checks": {
+      "package_prefixes": "PASS — all resolve to the isolated non-symlink install",
+      "web_launch_show_args": "PASS from /tmp",
+      "full_stack_launch_show_args": "PASS from /tmp",
+      "operational_artifact_scan": "PASS — no bundled DB, secret, node_modules, venv, or local map artifacts"
+    },
+    "focused_tests": {
+      "command": "python3 -m pytest -q tests/test_save_load_map_acceptance.py tests/test_navigation_readiness.py swerve_bridge/test/test_simulation_clock_reset.py tests/test_unified_launch_contract.py",
+      "duration_seconds": 1.22,
+      "exit_status": 0,
+      "status": "PASS",
+      "tests_passed": 67
+    },
+    "backend_tests": {
+      "command": "python manage.py test twin.tests --verbosity 1 (isolated database)",
+      "duration_seconds": 10.267,
+      "exit_status": 0,
+      "status": "PASS",
+      "tests_passed": 199
+    },
+    "frontend_localization_workflow_test": {
+      "command": "npm test -- tests/robot_control_workflow.test.tsx",
+      "duration_seconds": 6.67,
+      "exit_status": 0,
+      "status": "PASS",
+      "tests_passed": 51
+    },
+    "localization_architecture": {
+      "MAPPING": {
+        "map_to_odom_owner": "slam_toolbox",
+        "initial_pose": "NOT_APPLICABLE — live SLAM localization; no static-map Initial Pose service"
+      },
+      "UNIFIED": {
+        "map_to_odom_owner": "slam_toolbox",
+        "initial_pose": "NOT_APPLICABLE — Nav2 consumes registered map while SLAM remains the localizer"
+      },
+      "NAVIGATION": {
+        "map_to_odom_owner": "amcl",
+        "set_initial_pose_service": "/set_initial_pose",
+        "service_type": "nav2_msgs/srv/SetInitialPose",
+        "fallback": "verified AMCL-owned /initialpose subscriber only when the service class cannot be resolved"
+      },
+      "REAL_ROBOT": {
+        "map_to_odom_owner": "amcl",
+        "runtime_contract": "use_sim:=false mode:=navigation; physical drivers feed standard scan/odom interfaces",
+        "hardware_status": "NOT TESTED"
+      },
+      "legacy_v30e": "Optional only; enable_v30e_sim defaults false. SetPose owner is discovered and verified when explicitly selected."
+    },
+    "save_load_initial_pose_navigation": {
+      "command": "WARETWIN_SIMULATION_TEST=1 WARETWIN_SIMULATION_NAVIGATION_RUNS=1 python3 -m pytest -q -s tests/test_full_stack_deployment.py (isolated install, database, maps, ports and ROS domain)",
+      "full_pytest_duration_seconds": 311.02,
+      "full_pytest_exit_status": 1,
+      "full_pytest_status": "FAIL — distinct manual-right and direct-navigation acceptance failures",
+      "save_load_report": "/tmp/swerve-release-acceptance-20261010T002100Z/tmp/full-stack-v30e-independent-final-handoff-2/test_installed_full_stack_reac0/runtime/save-load-navigation.json",
+      "save_load_duration_seconds": 120.05,
+      "save_load_status": "PASS",
+      "saved_map_id": "679ea039de8a4ee0a3635a628651c8bb",
+      "saved_map_revision": "679ea039de8a",
+      "saved_map_dimensions": [696, 598],
+      "resolution_m": 0.05,
+      "occupancy_cells": 416208,
+      "occupancy_mismatch_count": 0,
+      "unknown_cells_preserved": 285667,
+      "map_server_lifecycle": "active",
+      "post_request_tf_epoch": 1,
+      "initial_pose_request_stamp_sim_s": 12.1,
+      "initial_pose_confirmed_tf_stamp_sim_s": 12.556,
+      "initial_pose_tf_age_sim_s": 0.044,
+      "initial_pose_position_error_m": 0.00669047637034691,
+      "initial_pose_yaw_error_rad": 0.0006540993357823221,
+      "initial_pose_stable_samples": 3,
+      "post_load_navigation_runs": 1,
+      "post_load_goal": [0.5424162572522435, -0.012269578622498264, -0.003718683857513295],
+      "post_load_nav2_status": "SUCCEEDED",
+      "post_load_map_tf_error_m": 0.043957211592349166,
+      "post_load_map_tf_yaw_error_rad": 0.0007586201761156097,
+      "post_load_gazebo_error_m": 0.046192831942089466,
+      "post_load_gazebo_yaw_error_rad": 0.004247557970944005,
+      "post_load_terminal_tf_age_sim_s": 0.01,
+      "post_load_passed": true
+    },
+    "other_navigation_results": {
+      "direct_nav2_status": "SUCCEEDED",
+      "direct_projected_gazebo_goal_error_m": 0.08494930319098828,
+      "direct_acceptance": "FAIL — projected Gazebo translation exceeds 0.05 m; map TF/Gazebo yaw agreement also fails 0.05 rad gate",
+      "web_nav2_status": "SUCCEEDED",
+      "web_projected_gazebo_goal_error_m": 0.029357690069015407,
+      "web_projected_gazebo_goal_yaw_error_rad": 0.002376213072400102,
+      "web_acceptance": "PASS",
+      "repeatability": "NOT TESTED — one saved-map mission, not five independent runs"
+    },
+    "hosted_ci": {
+      "workflow_url": "https://github.com/hoangbao2709/swerve_bringup/actions/runs/38008005683",
+      "overall": "FAIL",
+      "backend_job": "PASS",
+      "frontend_job": "PASS",
+      "ros_packages_job": "FAIL — non-symlink nested-package build step exited 2; detailed log unavailable publicly"
+    },
+    "process_cleanup": "PASS — full-stack test teardown returned; no owned Gazebo/ROS/backend acceptance processes remained",
+    "data_safety": "PASS — all integration writes used the isolated /tmp runtime; existing operational DB/maps were not targeted; source Git history still needs separate operational-data review"
   }
 }

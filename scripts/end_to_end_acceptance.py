@@ -509,6 +509,7 @@ class MotionProbe(Node):
         self.action_status_events: list[tuple[float, dict[bytes, int]]] = []
         self.ws_messages: list[dict] = []
         self.ws_errors: list[str] = []
+        self.command_diagnostics: list[tuple[float, dict]] = []
         self.operator_ws_closed = False
         self.nav_statuses: list[dict] = []
         self.control_statuses: list[dict] = []
@@ -756,6 +757,8 @@ class MotionProbe(Node):
                             self.nav_statuses.append(message)
                         elif message.get('type') == 'ROBOT_CONTROL_STATUS':
                             self.control_statuses.append(message)
+                        elif message.get('type') == 'COMMAND_DIAGNOSTICS':
+                            self.command_diagnostics.append((time.monotonic(), message))
                         elif message.get('type') == 'ERROR':
                             self.ws_errors.append(
                                 f'{message.get("code", "ERROR")}:{message.get("message", "")}'

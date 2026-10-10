@@ -771,17 +771,17 @@ def load_robot_map(request, robot_id: str):
         _clear_pending_local_map_load(robot_id)
         return _error('robot bridge did not confirm saved-map load safety', 409)
     if (readiness.get('runtime_state') != 'NAVIGATION'
-            or readiness.get('nav2_lifecycle_ready') is not True
+            or readiness.get('map_server_lifecycle_ready') is not True
             or readiness.get('map_load_service_ready') is not True):
         transition = adapter.get_mode_status(robot_id) if adapter else None
         if pending.get('previous_mode') in ('UNIFIED', 'MAPPING'):
             pending['phase'] = 'NAV2_WAIT'
             pending_loads[robot_id] = pending
-            reason = readiness.get('nav2_lifecycle_blocker_reason') or 'waiting for map_server/load_map service'
+            reason = ('waiting for ACTIVE map_server/load_map; navigation action servers remain guarded '
+                      'until Initial Pose is localized')
             return transitioning('STARTING_NAV2', f'Nav2 is not fully ready yet: {reason}', transition)
         _clear_pending_local_map_load(robot_id)
-        return _error(readiness.get('nav2_lifecycle_blocker_reason')
-                      or 'Nav2 lifecycle nodes or map_server/load_map service are not ready', 503)
+        return _error('Nav2 map_server lifecycle or map_server/load_map service is not ready', 503)
 
     if (pending.get('previous_local_map_id') != map_id
             or str(pending.get('previous_local_map_revision') or '') != str(record['revision'])):
@@ -1035,10 +1035,15 @@ def initialize_robot_pose(request, robot_id: str):
             'active_map_id': str(active_map['active_map_id']),
             'active_map_revision': str(active_map['active_map_revision']),
         }
+    localization_owner = str(applied.get('localization_owner') or '').strip()
+    initial_pose_interface = str(applied.get('initial_pose_interface') or '').strip()
+    if not localization_owner or not initial_pose_interface:
+        return _error('localization confirmation omitted its discovered owner or Initial Pose interface', 502)
     return JsonResponse({'ok': True, 'robot_id': robot_id, 'frame_id': frame_id,
                          'pose': pose, 'active_map_id': active_map['active_map_id'],
                          'active_map_revision': active_map['active_map_revision'],
-                         'localization_owner': 'ekf_v30e',
+                         'localization_owner': localization_owner,
+                         'initial_pose_interface': initial_pose_interface,
                          'request_stamp_s': request_stamp_s,
                          'tf_stamp_s': tf_stamp_s,
                          'tf_age_s': tf_age_s,

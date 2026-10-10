@@ -255,8 +255,10 @@ def main():
             and active_after_load['active_map_id'] == preview.get('active_map_id')
             and str(active_after_load['active_map_revision']) == str(preview.get('active_map_revision')))
         result['init_pose_request'] = {
-            'passed': bool(pose_set.get('localization_owner') == 'ekf_v30e' and pose_confirmed),
+            'passed': bool(pose_set.get('localization_owner')
+                and pose_set.get('initial_pose_interface') and pose_confirmed),
             'expected_pose': expected_pose, 'localization_owner': pose_set.get('localization_owner'),
+            'initial_pose_interface': pose_set.get('initial_pose_interface'),
             'map_pose_after': pre_nav_map_pose,
             'gazebo_pose_at_request': pose_seed,
             'map_to_odom_after': transform_pose(probe, 'map', 'odom'),

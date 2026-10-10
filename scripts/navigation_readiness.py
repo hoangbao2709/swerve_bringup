@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authoritative readiness gate for a fresh swerve navigation session."""
+"""Authoritative runtime readiness gate for a swerve navigation session."""
 import argparse
 import fcntl
 import json
@@ -48,7 +48,7 @@ NAV2_LIVE_SLAM_LIFECYCLE_NODES = (
     'bt_navigator',
     'waypoint_follower',
 )
-NAV2_STATIC_MAP_LIFECYCLE_NODES = ('map_server', *NAV2_LIVE_SLAM_LIFECYCLE_NODES)
+NAV2_STATIC_MAP_LIFECYCLE_NODES = ('map_server', 'amcl', *NAV2_LIVE_SLAM_LIFECYCLE_NODES)
 NAV2_REGISTERED_CANONICAL_LIFECYCLE_NODES = (
     'canonical_map_server', *NAV2_LIVE_SLAM_LIFECYCLE_NODES,
 )
@@ -60,6 +60,14 @@ NAV2_TRANSITION_STATE_LABELS = {
 NAV2_STARTUP_STATES = {
     'NOT_REQUESTED', 'REQUESTED', 'IN_PROGRESS', 'ACTIVE', 'FAILED',
 }
+
+
+def resolve_ros_service_type(service_type):
+    """Resolve an advertised service type through this process' ROS install."""
+    from rosidl_runtime_py.utilities import get_service
+    return get_service(str(service_type))
+
+
 CONTROLLER_SERVICE_RESPONSE_TIMEOUT_S = 10.0
 # Controller state queries are deliberately much slower than the control loop:
 # the spawners own activation, and readiness only verifies the settled result.
@@ -231,6 +239,8 @@ class Readiness(Node):
             self.nav2_lifecycle_nodes + ('lifecycle_manager_navigation',)
             if self.navigation_required else ()
         )
+        self.localization_backend = None
+        self.localization_service_owner = ''
         self.expected_map_file = os.path.realpath(map_file) if map_file else None
         self.expected_canonical_revision = self._bundle_revision_for_map(self.expected_map_file)
         self.robot_id = str(robot_id)
@@ -331,6 +341,7 @@ class Readiness(Node):
             ListHardwareInterfaces, '/controller_manager/list_hardware_interfaces')
         names = self.nav2_lifecycle_nodes
         self.lifecycle = {name: self.create_client(GetState, f'/{name}/get_state') for name in names}
+        self._nav2_startup_future = None
         self.nav_lifecycle_manager = (
             self.create_client(ManageLifecycleNodes, '/lifecycle_manager_navigation/manage_nodes')
             if self.navigation_required else None)
@@ -1115,12 +1126,18 @@ class Readiness(Node):
              + ('NAV2_LIFECYCLE_READY',
                 'MAP_READY' if mode == 'unified' else 'MAP_FILE_READY',
                 *(('REGISTERED_NAVIGATION_MAP_READY',) if mode == 'unified' else ()),
+                *(('LOCALIZATION_INTERFACE_READY',) if mode == 'navigation' else ()),
                 'COMPUTE_PATH_ACTION_SERVER_READY', 'ACTION_SERVER_READY')),
             ('BRIDGE_READY', ('ROS_BRIDGE_R01_READY',)),
         )
         for summary_name, stages in groups:
             if summary_name == 'GAZEBO_READY' and not getattr(self, 'use_sim', True):
                 print('GAZEBO_READY=NOT_APPLICABLE physical_robot', flush=True)
+                continue
+            if (summary_name == 'NAV2_READY' and result.get('runtime_ready')
+                    and not result.get('nav_ready')):
+                print('NAV2_READY=WAITING reason=initial_pose_required; '
+                      'map_server=ACTIVE; autonomous_actions=GUARDED', flush=True)
                 continue
             observed = [result['stages'].get(name) for name in stages]
             if all(value is True for value in observed):
@@ -1182,14 +1199,105 @@ class Readiness(Node):
 
     def _lifecycle_snapshot(self, deadline):
         states = {}
-        for name, client in self.lifecycle.items():
+        for name in self.nav2_lifecycle_nodes:
+            client = self.lifecycle.get(name)
+            if client is None:
+                states[name] = self._lifecycle_state_value(None)
+                continue
             response = self._service_call(client, min(deadline, time.monotonic() + 2.0))
             state = response.current_state if response else None
             states[name] = self._lifecycle_state_value(state)
         return states
 
+    def _lifecycle_snapshot_for(self, names, deadline):
+        states = {}
+        for name in names:
+            client = self.lifecycle.get(name)
+            if client is None:
+                states[name] = self._lifecycle_state_value(None)
+                continue
+            response = self._service_call(client, min(deadline, time.monotonic() + 1.0))
+            states[name] = self._lifecycle_state_value(
+                response.current_state if response else None)
+        return states
+
+    def _begin_static_navigation_startup(self, result, deadline, *, contract_validated=False):
+        """Issue Nav2's one-shot STARTUP without waiting for planner activation.
+
+        Static-map Nav2 activates AMCL before its global costmaps. Those
+        costmaps require map->odom, while AMCL cannot publish map->odom until
+        Web Local supplies Initial Pose. Awaiting the lifecycle-manager
+        response here deadlocks the supervised mode handoff. Dispatch STARTUP
+        once, then let the existing stopped-robot Initial Pose gate create the
+        transform; action readiness remains false until every lifecycle node
+        is active.
+        """
+        if not contract_validated:
+            contract_ok, contract_error = self._deferred_nav2_contract(deadline)
+            if not contract_ok:
+                return False, contract_error
+
+        startup = self._startup_state()
+        state = startup['state']
+        if state in ('FAILED', 'INVALID'):
+            return False, f'nav2_startup_state_{state.lower()}'
+        if state in ('REQUESTED', 'IN_PROGRESS', 'ACTIVE'):
+            return True, None
+
+        lifecycle_before = self._lifecycle_snapshot(deadline)
+        if not lifecycle_before or any(item.get('id') != 1 for item in lifecycle_before.values()):
+            return False, ('static_navigation_lifecycle_not_unconfigured_before_startup:'
+                           + self._lifecycle_states_text(lifecycle_before))
+        if not self.nav_lifecycle_manager.service_is_ready():
+            return False, 'lifecycle_manager_navigation_manage_nodes_unavailable'
+
+        claimed, request_state = claim_nav2_startup(
+            self.lifecycle_state_file, lifecycle_before=lifecycle_before)
+        if not claimed:
+            return (request_state['state'] in ('REQUESTED', 'IN_PROGRESS', 'ACTIVE'),
+                    None if request_state['state'] in ('REQUESTED', 'IN_PROGRESS', 'ACTIVE')
+                    else f'nav2_startup_already_claimed:{request_state["state"]}')
+        request = ManageLifecycleNodes.Request()
+        request.command = ManageLifecycleNodes.Request.STARTUP
+        try:
+            self._nav2_startup_future = self.nav_lifecycle_manager.call_async(request)
+        except Exception as exc:
+            self._update_startup_state('NOT_REQUESTED', request_id=None,
+                                       startup_dispatch_error=type(exc).__name__)
+            return False, f'nav2_startup_request_dispatch_failed:{type(exc).__name__}'
+        self._update_startup_state(
+            'IN_PROGRESS', startup_request_dispatched=True,
+            startup_request_id=request_state.get('request_id'),
+        )
+        self._record_timeline(
+            'T15_NAV2_LIFECYCLE_STARTUP_BEGIN',
+            detail=f'one-shot asynchronous STARTUP request_id={request_state.get("request_id")}',
+        )
+        print('NAV2_STARTUP_REQUEST_SENT=PASS '
+              f'request_id={request_state.get("request_id")} response=async', flush=True)
+        return True, None
+
+    def _wait_static_navigation_localizer(self, deadline):
+        names = ('map_server', 'amcl') if self.localization_backend == 'AMCL' else ('map_server',)
+        states = {}
+        while time.monotonic() < deadline:
+            states = self._lifecycle_snapshot_for(names, deadline)
+            if states and self._lifecycle_states_are(states, 3):
+                return True, states, None
+            future = self._nav2_startup_future
+            if future is not None and future.done():
+                try:
+                    response = future.result()
+                except Exception as exc:
+                    return False, states, f'nav2_startup_response_failed:{type(exc).__name__}'
+                if not response.success:
+                    self._update_startup_state('FAILED', failure='lifecycle manager returned success=false')
+                    return False, states, 'nav2_lifecycle_manager_startup_response_false'
+            rclpy.spin_once(self, timeout_sec=0.05)
+        return False, states, 'map_server_or_amcl_not_active_before_readiness_deadline:' + self._lifecycle_states_text(states)
+
     def _nav2_graph_counts(self):
-        counts = {'map_server': 0, 'canonical_map_server': 0,
+        counts = {'map_server': 0, 'canonical_map_server': 0, 'amcl': 0,
                   'lifecycle_manager_navigation': 0,
                   'lifecycle_manager_mapping_map': 0}
         for name, _namespace in self.get_node_names_and_namespaces():
@@ -1214,6 +1322,149 @@ class Readiness(Node):
             'autostart': bool(autostart.bool_value),
             'node_names': list(node_names.string_array_value),
         }, None
+
+    def _read_localization_backend_configuration(self, deadline):
+        """Read the runtime-selected map localizer from the live bridge."""
+        response = self._service_call(
+            self.bridge_parameters,
+            min(deadline, time.monotonic() + 3.0),
+            lambda request: setattr(
+                request, 'names', ['initial_pose_backend', 'initial_pose_service_node']),
+        )
+        if response is None or len(response.values) != 2:
+            return None, self.last_service_error or 'bridge localization backend parameters unavailable'
+        backend, owner = response.values
+        if (backend.type != ParameterType.PARAMETER_STRING
+                or owner.type != ParameterType.PARAMETER_STRING):
+            return None, 'bridge localization backend parameters have unexpected types'
+        backend_name = backend.string_value.strip().upper()
+        owner_name = owner.string_value.strip().strip('/')
+        if backend_name not in ('AMCL', 'SET_POSE'):
+            return None, f'unsupported_bridge_localization_backend:{backend_name!r}'
+        if backend_name == 'AMCL' and owner_name:
+            return None, 'AMCL backend must not select a SetPose service owner'
+        if backend_name == 'SET_POSE' and not owner_name:
+            return None, 'SET_POSE backend requires an explicit runtime service owner'
+        return {'backend': backend_name, 'service_owner': owner_name}, None
+
+    def _navigation_localization_api(self):
+        """Verify the selected map localizer exposes its real Initial Pose API.
+
+        The generic robot_localization /set_pose service resets the odometry
+        filter; it is not sufficient evidence that the selected map->odom
+        localizer is ready. Service names and topic endpoints are discovered
+        from the current ROS graph rather than inferred from a component name.
+        """
+        backend = self.localization_backend
+        configured_owner = self.localization_service_owner.strip('/')
+        owner_leaf = ('amcl' if backend == 'AMCL'
+                      else configured_owner.rsplit('/', 1)[-1])
+        expected_type = ('nav2_msgs/srv/SetInitialPose' if backend == 'AMCL'
+                         else 'robot_localization/srv/SetPose')
+        try:
+            node_rows = self.get_node_names_and_namespaces()
+            tf_publishers = self.get_publishers_info_by_topic('/tf')
+            amcl_pose_publishers = self.get_publishers_info_by_topic('/amcl_pose')
+            initial_pose_subscribers = self.get_subscriptions_info_by_topic('/initialpose')
+        except Exception as exc:
+            return False, f'localization_graph_query_failed:{type(exc).__name__}'
+        owner_rows = [
+            (name, namespace) for name, namespace in node_rows
+            if str(name).strip('/').rsplit('/', 1)[-1] == owner_leaf
+            and (backend == 'AMCL' or not configured_owner or
+                 (self._graph_node_id(name, namespace) == configured_owner
+                  if '/' in configured_owner else
+                  str(name).strip('/').rsplit('/', 1)[-1] == configured_owner))
+        ]
+        if len(owner_rows) != 1:
+            return False, f'{backend}_LOCALIZER_NODE_COUNT_INVALID:{owner_rows}'
+        owner_id = self._graph_node_id(*owner_rows[0])
+        try:
+            services = self.get_service_names_and_types_by_node(*owner_rows[0])
+        except Exception as exc:
+            return False, f'{backend}_SERVICE_GRAPH_QUERY_FAILED:{type(exc).__name__}'
+        interfaces = [
+            {'name': str(name), 'owner': self._graph_node_id(*owner_rows[0]),
+             'type': str(service_type)}
+            for name, service_types in services
+            for service_type in service_types
+            if str(service_type) == expected_type
+        ]
+        service_type_resolution_error = None
+        if len(interfaces) == 1:
+            try:
+                resolve_ros_service_type(expected_type)
+            except (AttributeError, ImportError, ModuleNotFoundError, ValueError) as exc:
+                service_type_resolution_error = f'{type(exc).__name__}:{exc}'
+                interfaces = []
+        topic_interfaces = [
+            {'name': '/initialpose', 'owner': self._graph_node_id(row.node_name, row.node_namespace),
+             'type': str(getattr(row, 'topic_type', ''))}
+            for row in initial_pose_subscribers
+            if (self._graph_node_id(row.node_name, row.node_namespace) == owner_id
+                and str(getattr(row, 'topic_type', ''))
+                == 'geometry_msgs/msg/PoseWithCovarianceStamped')
+        ]
+        tf_owner_ids = {
+            self._graph_node_id(row.node_name, row.node_namespace)
+            for row in tf_publishers
+        }
+        amcl_pose_owner_ids = {
+            self._graph_node_id(row.node_name, row.node_namespace)
+            for row in amcl_pose_publishers
+            if str(getattr(row, 'topic_type', ''))
+            == 'geometry_msgs/msg/PoseWithCovarianceStamped'
+        }
+        if backend == 'AMCL' and not interfaces and len(topic_interfaces) == 1:
+            interfaces = [{
+                'name': topic_interfaces[0]['name'], 'owner': topic_interfaces[0]['owner'],
+                'type': topic_interfaces[0]['type'], 'api': 'topic',
+            }]
+        elif len(interfaces) == 1:
+            interfaces[0]['api'] = 'service'
+        if len(interfaces) != 1:
+            return False, (f'{backend}_INITIAL_POSE_INPUT_COUNT_INVALID:'
+                           f'services={interfaces}:topics={topic_interfaces}:'
+                           f'service_type_resolution_error={service_type_resolution_error}')
+        if interfaces[0]['owner'] != owner_id:
+            return False, f'{backend}_INITIAL_POSE_INPUT_OWNER_MISMATCH:{interfaces[0]}'
+        if owner_id not in tf_owner_ids:
+            return False, f'{backend}_MAP_TF_PUBLISHER_NOT_ADVERTISED:{owner_id}'
+        if backend == 'AMCL' and amcl_pose_owner_ids != {owner_id}:
+            return False, (f'AMCL_POSE_OUTPUT_OWNER_MISMATCH:expected={owner_id}:'
+                           f'observed={sorted(amcl_pose_owner_ids)}')
+        return True, {
+            'backend': backend,
+            'owner': owner_id,
+            'interface': interfaces[0]['name'],
+            'interface_type': interfaces[0]['type'],
+            'interface_api': interfaces[0]['api'],
+            'tf_publisher_endpoint': owner_id,
+            'localization_pose_topic': '/amcl_pose' if backend == 'AMCL' else None,
+            'service_type_resolution_error': service_type_resolution_error,
+        }
+
+    @staticmethod
+    def _graph_node_id(name, namespace=''):
+        return f'{str(namespace or "").rstrip("/")}/{str(name or "").lstrip("/")}'.strip('/')
+
+    def _global_localization_tf_status(self):
+        """Return whether a present map->odom chain is timestamp-fresh."""
+        try:
+            map_odom = self.tf.lookup_transform('map', 'odom', rclpy.time.Time())
+        except (TransformException, RuntimeError):
+            return None, 'waiting_for_initial_pose_to_establish_map_to_odom'
+        try:
+            self.tf.lookup_transform('map', 'base_link', rclpy.time.Time())
+        except (TransformException, RuntimeError) as exc:
+            return False, f'map_to_base_tf_chain_incomplete:{type(exc).__name__}'
+        stamp_ns = (int(map_odom.header.stamp.sec) * 1_000_000_000
+                    + int(map_odom.header.stamp.nanosec))
+        now_ns = self.get_clock().now().nanoseconds
+        age_s = (now_ns - stamp_ns) * 1e-9
+        if not math.isfinite(age_s) or age_s < -0.05 or age_s > 0.5:
+            return False, f'map_to_odom_tf_not_fresh:age_sim_s={age_s:.6f}'
+        return True, f'map_to_odom_tf_fresh:age_sim_s={age_s:.6f}'
 
     def _read_map_yaml_parameter(self, deadline):
         client = (self.canonical_map_parameters if self.mode == 'unified'
@@ -1440,8 +1691,25 @@ class Readiness(Node):
             f'{name}={count}' for name, count in graph_counts.items()), flush=True)
         expected_map_server_count = 1 if self.mode == 'navigation' else 0
         expected_canonical_server_count = 1 if self.mode == 'unified' else 0
+        if self.mode == 'navigation':
+            localization, localization_error = self._read_localization_backend_configuration(deadline)
+            if localization_error:
+                return False, localization_error
+            self.localization_backend = localization['backend']
+            self.localization_service_owner = localization['service_owner']
+            self.nav2_lifecycle_nodes = (
+                'map_server', *(['amcl'] if self.localization_backend == 'AMCL' else []),
+                *NAV2_LIVE_SLAM_LIFECYCLE_NODES,
+            )
+            self.nav2_required_nodes = self.nav2_lifecycle_nodes + (
+                'lifecycle_manager_navigation',)
+            print('NAV2_LOCALIZATION_BACKEND=' + json.dumps(localization, sort_keys=True), flush=True)
+            expected_amcl_count = 1 if self.localization_backend == 'AMCL' else 0
+        else:
+            expected_amcl_count = 0
         if (graph_counts['map_server'] != expected_map_server_count
                 or graph_counts['canonical_map_server'] != expected_canonical_server_count
+                or graph_counts['amcl'] != expected_amcl_count
                 or graph_counts['lifecycle_manager_navigation'] != 1
                 or graph_counts['lifecycle_manager_mapping_map'] != 0):
             return False, f'invalid_nav2_lifecycle_graph:{graph_counts}'
@@ -1772,11 +2040,161 @@ class Readiness(Node):
         print(f'GAZEBO_WORLD={sorted(self.gazebo_model_names)}', flush=True)
         return None
 
+    def _check_static_navigation(self, result, started, deadline):
+        """Make static-map runtime available for stopped-robot localization.
+
+        Humble AMCL in the deployment image uses /initialpose (not a
+        SetInitialPose service). Nav2's single lifecycle manager activates
+        map_server and AMCL before the global costmaps, but its STARTUP call
+        cannot finish until AMCL publishes map->odom. This gate exposes only
+        the confirmed map/localizer services to Web Local while localization
+        is pending; all navigation actions remain unready until every Nav2
+        lifecycle node is active and map-frame TF is fresh.
+        """
+        contract_ok, contract_error = self._deferred_nav2_contract(deadline)
+        if not contract_ok:
+            return self._finish(result, f'Nav2 deferred runtime contract invalid: {contract_error}')
+
+        for name in self.nav2_required_nodes:
+            if not self._stage(
+                    result, f'NODE_{name.upper()}_READY',
+                    lambda name=name: self._node_present(name),
+                    f'Nav2 {name}', f'node_missing:/{name}'):
+                return self._finish(result, 'one or more required Nav2 nodes are not running')
+
+        startup_ok, startup_error = self._begin_static_navigation_startup(
+            result, deadline, contract_validated=True)
+        if not startup_ok:
+            return self._finish(result, f'Nav2 startup request could not be safely issued: {startup_error}')
+
+        # The one startup request may still be activating the planner. Wait
+        # only for the prerequisites needed to load a map and accept a safe
+        # Initial Pose; do not wait on a costmap that itself needs map->odom.
+        localizer_ok, localizer_states, localizer_error = self._wait_static_navigation_localizer(
+            deadline)
+        if not localizer_ok:
+            return self._finish(result, f'static-map localization nodes are not active: {localizer_error}')
+        self._report_stage(
+            result, 'NAV2_LOCALIZER_READY', True,
+            success_detail=' map_server=active AMCL=active' if self.localization_backend == 'AMCL'
+            else ' map_server=active configured_map_localizer=active')
+
+        map_file_ok = self._wait_map_file(deadline)
+        self._report_stage(
+            result, 'MAP_FILE_READY', map_file_ok,
+            None if map_file_ok else f'map_server_yaml_filename_mismatch:expected={self.expected_map_file}',
+            success_detail=f' yaml_filename={self.expected_map_file}' if map_file_ok else None)
+        if not map_file_ok:
+            return self._finish(result, 'Nav2 map source is not ready')
+
+        interface_ok, interface_detail = self._navigation_localization_api()
+        self._report_stage(
+            result, 'LOCALIZATION_INTERFACE_READY', interface_ok,
+            interface_detail if not interface_ok else None,
+            success_detail=(
+                f' backend={interface_detail["backend"]}'
+                f' map_to_odom_owner={interface_detail["owner"]}'
+                f' interface={interface_detail["interface"]}'
+                f' api={interface_detail["interface_api"]}'
+                f' type={interface_detail["interface_type"]}'
+            ) if interface_ok else None)
+        if not interface_ok:
+            return self._finish(
+                result, f'configured map localization interface is unavailable: {interface_detail}')
+
+        bridge_ok, bridge_reason = self._wait_ros_bridge(deadline)
+        self._report_stage(
+            result, 'ROS_BRIDGE_R01_READY', bridge_ok, bridge_reason,
+            f' robot_id={self.robot_id} backend_health=connected' if bridge_ok else None)
+        if not bridge_ok:
+            return self._finish(result, f'R01 ROS bridge is not ready: {bridge_reason}')
+
+        tf_ok, tf_detail = self._global_localization_tf_status()
+        if tf_ok is None:
+            self._report_stage(result, 'GLOBAL_TF_READY', None, tf_detail)
+            self._report_stage(result, 'TF_READY', None,
+                               'waiting for a post-load Initial Pose update')
+            self._report_stage(result, 'NAV2_LIFECYCLE_READY', None,
+                               'control lifecycle waits for AMCL map->odom')
+            self._report_stage(result, 'COMPUTE_PATH_ACTION_SERVER_READY', None,
+                               'action servers remain guarded until localization')
+            self._report_stage(result, 'ACTION_SERVER_READY', None,
+                               'action servers remain guarded until localization')
+            result['stages']['INITIAL_POSE_REQUIRED'] = True
+            result['localization_ready'] = False
+            result['localization_state'] = 'WAITING_FOR_INITIAL_POSE'
+            result['runtime_ready'] = True
+            result['nav_ready'] = False
+            result['startup_wall_time'] = time.monotonic() - started
+            result['startup_sim_time'] = self.get_clock().now().nanoseconds * 1e-9
+            result['reason'] = 'waiting_for_initial_pose; navigation actions remain guarded'
+            print('NAV_RUNTIME_READY PASS state=WAITING_FOR_INITIAL_POSE '
+                  'map_load=READY initial_pose=READY autonomous_actions=GUARDED', flush=True)
+            self._print_required_status_summary(result)
+            self._print_startup_timeline(result)
+            return result
+        if tf_ok is not True:
+            self._report_stage(result, 'GLOBAL_TF_READY', False, tf_detail)
+            self._report_stage(result, 'TF_READY', False, tf_detail)
+            result['localization_ready'] = False
+            result['localization_state'] = 'INVALID_TF'
+            return self._finish(result, tf_detail)
+
+        self._report_stage(result, 'GLOBAL_TF_READY', True, success_detail=f' {tf_detail}')
+        self._report_stage(result, 'TF_READY', True,
+                           success_detail=' frames=map->odom->base_link')
+        result['localization_ready'] = True
+        result['localization_state'] = 'LOCALIZED'
+        result['stages']['INITIAL_POSE_REQUIRED'] = False
+
+        while time.monotonic() < deadline:
+            lifecycle_states = self._lifecycle_snapshot_for(self.nav2_lifecycle_nodes, deadline)
+            if self._lifecycle_states_are(lifecycle_states, 3):
+                break
+            rclpy.spin_once(self, timeout_sec=0.05)
+        else:
+            return self._finish(
+                result, 'map TF is fresh but Nav2 control lifecycle did not become active: '
+                + self._lifecycle_states_text(lifecycle_states))
+
+        self._update_startup_state('ACTIVE', lifecycle_after=lifecycle_states)
+        result['stages']['NAV2_STARTUP_STATE'] = 'ACTIVE'
+        self._report_stage(
+            result, 'NAV2_LIFECYCLE_READY', True,
+            success_detail=' active=' + ','.join('/' + name for name in self.nav2_lifecycle_nodes))
+        result['stages']['COMPUTE_PATH_ACTION_SERVER_READY'] = self._stage(
+            result, 'COMPUTE_PATH_ACTION_SERVER_READY',
+            lambda: self.path_action.wait_for_server(timeout_sec=0.0),
+            '/compute_path_to_pose action server',
+            'action_server_unavailable:/compute_path_to_pose')
+        if not result['stages']['COMPUTE_PATH_ACTION_SERVER_READY']:
+            return self._finish(result, '/compute_path_to_pose action server not ready')
+        result['stages']['ACTION_SERVER_READY'] = self._stage(
+            result, 'ACTION_SERVER_READY',
+            lambda: self.action.wait_for_server(timeout_sec=0.0),
+            '/navigate_to_pose action server',
+            'action_server_unavailable:/navigate_to_pose')
+        result['stages']['NAVIGATE_TO_POSE_ACTION_SERVER_READY'] = result['stages'].get(
+            'ACTION_SERVER_READY', False)
+        if not result['stages']['ACTION_SERVER_READY']:
+            return self._finish(result, '/navigate_to_pose action server not ready')
+        result['nav_ready'] = True
+        result['runtime_ready'] = True
+        result['startup_wall_time'] = time.monotonic() - started
+        result['startup_sim_time'] = self.get_clock().now().nanoseconds * 1e-9
+        result['reason'] = None
+        print('Navigation runtime READY; localization=LOCALIZED; action servers=ACTIVE', flush=True)
+        print('NAV_READY PASS localization_state=LOCALIZED', flush=True)
+        self._print_required_status_summary(result)
+        self._print_startup_timeline(result)
+        return result
+
     def check(self, timeout):
         started, deadline = time.monotonic(), time.monotonic() + timeout
         self.deadline = deadline
         result = {'stages': {}, 'startup_wall_time': None, 'startup_timeline': [],
-                  'spawn_entity_duration_s': None, 'nav_ready': False, 'reason': None}
+                  'spawn_entity_duration_s': None, 'nav_ready': False,
+                  'runtime_ready': False, 'reason': None}
         if self.use_sim:
             failure = self._simulation_prerequisites(result, deadline)
             if failure is not None:
@@ -1920,17 +2338,10 @@ class Readiness(Node):
                 return self._finish(result, f'mapping TF invalid: {self.mapping_tf_error}')
             self._print_mapping_sensor_inputs()
         if self.navigation_required:
-            # In UNIFIED, mapping readiness above has already verified that
-            # SLAM Toolbox owns the live /map and map->odom chain. Legacy
-            # Navigation retains its separate localization contract.
-            if not self._stage(
-                result, 'GLOBAL_TF_READY',
-                lambda: tf_exists('map', 'odom') and tf_exists('map', 'base_link'),
-                'TF map -> odom -> base_link', 'tf_unavailable:map->odom->base_link',
-            ):
-                return self._finish(result, 'global TF chain map->odom->base_link unavailable')
-            self._report_stage(result, 'TF_READY', True,
-                               success_detail=' frames=odom->base_footprint,map->base_link')
+            if self.mode == 'navigation':
+                return self._check_static_navigation(result, started, deadline)
+            # UNIFIED was already localized by SLAM above, so its Nav2 action
+            # stack can use the ordinary fully-active lifecycle gate.
             nav_nodes_ok = True
             for name in self.nav2_required_nodes:
                 node_ok = self._stage(
@@ -1986,6 +2397,48 @@ class Readiness(Node):
         )
         if not bridge_ok:
             return self._finish(result, f'R01 ROS bridge is not ready: {bridge_reason}')
+        if self.mode == 'navigation':
+            interface_ok, interface_detail = self._navigation_localization_api()
+            self._report_stage(
+                result, 'LOCALIZATION_INTERFACE_READY', interface_ok,
+                interface_detail if not interface_ok else None,
+                success_detail=(
+                    f' backend={interface_detail["backend"]}'
+                    f' map_to_odom_owner={interface_detail["owner"]}'
+                    f' service={interface_detail["service"]}'
+                    f' type={interface_detail["service_type"]}'
+                ) if interface_ok else None,
+            )
+            if not interface_ok:
+                return self._finish(
+                    result, f'configured map localization interface is unavailable: {interface_detail}')
+            tf_ok, tf_detail = self._global_localization_tf_status()
+            if tf_ok is True:
+                self._report_stage(result, 'GLOBAL_TF_READY', True, success_detail=f' {tf_detail}')
+                self._report_stage(result, 'TF_READY', True,
+                                   success_detail=' frames=map->odom->base_link')
+                result['localization_ready'] = True
+                result['localization_state'] = 'LOCALIZED'
+                result['stages']['INITIAL_POSE_REQUIRED'] = False
+            elif tf_ok is None:
+                # This is an explicit pending localization state, not a
+                # localization pass. It permits the UI's stopped-robot
+                # Initial Pose operation after Load Map, while all autonomous
+                # operations continue to fail closed until fresh TF exists.
+                self._report_stage(result, 'GLOBAL_TF_READY', None, tf_detail)
+                self._report_stage(result, 'TF_READY', None,
+                                   'waiting for a post-load Initial Pose update')
+                result['localization_ready'] = False
+                result['localization_state'] = 'WAITING_FOR_INITIAL_POSE'
+                result['stages']['INITIAL_POSE_REQUIRED'] = True
+                print('LOCALIZATION_STATE=WAITING_FOR_INITIAL_POSE; autonomous motion remains guarded',
+                      flush=True)
+            else:
+                self._report_stage(result, 'GLOBAL_TF_READY', False, tf_detail)
+                self._report_stage(result, 'TF_READY', False, tf_detail)
+                result['localization_ready'] = False
+                result['localization_state'] = 'INVALID_TF'
+                return self._finish(result, tf_detail)
         if self.mode == 'unified':
             navigation_map_ok, navigation_map_error = self._wait_unified_navigation_map(deadline)
             self._report_stage(
@@ -1998,11 +2451,18 @@ class Readiness(Node):
         result['startup_wall_time'] = time.monotonic() - started
         result['startup_sim_time'] = self.get_clock().now().nanoseconds * 1e-9
         result['nav_ready'] = True
+        result['runtime_ready'] = True
         ready_label = ('Unified SLAM + registered full-map Nav2 runtime READY' if self.mode == 'unified'
                        else 'Mapping stack READY' if self.mode == 'mapping'
-                       else 'Navigation stack READY')
+                       else ('Navigation stack READY; localization WAITING_FOR_INITIAL_POSE'
+                             if result.get('localization_state') == 'WAITING_FOR_INITIAL_POSE'
+                             else 'Navigation stack READY'))
         print(ready_label, flush=True)
-        print('NAV_READY PASS', flush=True)
+        localization_state = result.get(
+            'localization_state',
+            'SLAM_LOCALIZATION_ACTIVE' if self.mapping_required else 'NOT_APPLICABLE',
+        )
+        print(f'NAV_READY PASS localization_state={localization_state}', flush=True)
         self._print_required_status_summary(result)
         self._print_startup_timeline(result)
         return result
@@ -2051,7 +2511,11 @@ def main(argv=None):
     if args.json:
         with open(args.json, 'w', encoding='utf-8') as stream:
             json.dump(result, stream, indent=2)
-    return 0 if result['nav_ready'] else 1
+    # The supervised static-map runtime may be ready for a safe map load and
+    # stopped-robot Initial Pose while Nav2 actions are deliberately guarded.
+    # Keep that distinct from nav_ready in the report, but allow the supervisor
+    # to expose the runtime so localization can complete.
+    return 0 if result.get('runtime_ready') or result['nav_ready'] else 1
 
 
 if __name__ == '__main__':

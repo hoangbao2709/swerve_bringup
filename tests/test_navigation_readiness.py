@@ -121,6 +121,7 @@ def test_unified_nav2_lifecycle_contract_uses_registered_bundle_map(readiness_mo
     probe._nav2_graph_counts = lambda: {
         'map_server': 0,
         'canonical_map_server': 1,
+        'amcl': 0,
         'lifecycle_manager_navigation': 1,
         'lifecycle_manager_mapping_map': 0,
     }
@@ -133,6 +134,260 @@ def test_unified_nav2_lifecycle_contract_uses_registered_bundle_map(readiness_mo
     ready, error = probe._deferred_nav2_contract(time.monotonic() + 1.0)
 
     assert ready, error
+
+
+def test_static_navigation_lifecycle_contract_uses_bridge_selected_localizer(readiness_module):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.mode = 'navigation'
+    probe.nav2_lifecycle_nodes = readiness_module.NAV2_STATIC_MAP_LIFECYCLE_NODES
+    probe.expected_canonical_revision = None
+    probe.bridge_parameters = object()
+    probe._service_call = lambda _client, _deadline, setter: SimpleNamespace(values=[])
+    probe._read_localization_backend_configuration = lambda _deadline: (
+        {'backend': 'AMCL', 'service_owner': ''}, None)
+    probe._nav2_graph_counts = lambda: {
+        'map_server': 1, 'canonical_map_server': 0, 'amcl': 1,
+        'lifecycle_manager_navigation': 1, 'lifecycle_manager_mapping_map': 0,
+    }
+    probe._read_nav2_manager_configuration = lambda _deadline: ({
+        'autostart': False,
+        'node_names': list(readiness_module.NAV2_STATIC_MAP_LIFECYCLE_NODES),
+    }, None)
+    probe._read_map_yaml_parameter = lambda _deadline: ('/maps/warehouse.yaml', None)
+
+    ready, error = probe._deferred_nav2_contract(time.monotonic() + 1.0)
+
+    assert ready, error
+    assert probe.localization_backend == 'AMCL'
+    assert probe.localization_service_owner == ''
+
+    # The explicit legacy SET_POSE backend does not launch AMCL and its owner
+    # name comes from the bridge configuration rather than a V30E constant.
+    probe._read_localization_backend_configuration = lambda _deadline: (
+        {'backend': 'SET_POSE', 'service_owner': 'legacy_map_filter'}, None)
+    probe._nav2_graph_counts = lambda: {
+        'map_server': 1, 'canonical_map_server': 0, 'amcl': 0,
+        'lifecycle_manager_navigation': 1, 'lifecycle_manager_mapping_map': 0,
+    }
+    probe._read_nav2_manager_configuration = lambda _deadline: ({
+        'autostart': False,
+        'node_names': ['map_server', *readiness_module.NAV2_LIVE_SLAM_LIFECYCLE_NODES],
+    }, None)
+    ready, error = probe._deferred_nav2_contract(time.monotonic() + 1.0)
+    assert ready, error
+    assert probe.localization_backend == 'SET_POSE'
+    assert probe.localization_service_owner == 'legacy_map_filter'
+
+
+def test_static_navigation_discovers_amcl_initial_pose_not_ekf_odom_reset(readiness_module):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.localization_backend = 'AMCL'
+    probe.localization_service_owner = ''
+    probe.get_node_names_and_namespaces = lambda: [
+        ('amcl', '/'), ('ekf_filter_node', '/'),
+    ]
+    probe.get_publishers_info_by_topic = lambda topic: (
+        [SimpleNamespace(node_name='amcl', node_namespace='/',
+                         topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+        if topic == '/amcl_pose' else [
+            SimpleNamespace(node_name='amcl', node_namespace='/'),
+            SimpleNamespace(node_name='ekf_filter_node', node_namespace='/'),
+        ])
+    probe.get_service_names_and_types_by_node = lambda name, namespace: (
+        [('/set_pose', ['robot_localization/srv/SetPose'])]
+        if name == 'ekf_filter_node' else [])
+    probe.get_subscriptions_info_by_topic = lambda _topic: [
+        SimpleNamespace(node_name='amcl', node_namespace='/',
+                        topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+
+    ready, evidence = probe._navigation_localization_api()
+
+    assert ready
+    assert evidence == {
+        'backend': 'AMCL', 'owner': 'amcl',
+        'interface': '/initialpose',
+        'interface_type': 'geometry_msgs/msg/PoseWithCovarianceStamped',
+        'interface_api': 'topic',
+        'tf_publisher_endpoint': 'amcl',
+        'localization_pose_topic': '/amcl_pose',
+        'service_type_resolution_error': None,
+    }
+
+
+def test_amcl_service_graph_with_missing_python_binding_uses_verified_initialpose_topic(
+    readiness_module, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.localization_backend = 'AMCL'
+    probe.localization_service_owner = ''
+    probe.get_node_names_and_namespaces = lambda: [
+        ('amcl', '/'), ('ekf_filter_node', '/'),
+    ]
+    probe.get_publishers_info_by_topic = lambda topic: (
+        [SimpleNamespace(node_name='amcl', node_namespace='/',
+                         topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+        if topic == '/amcl_pose' else [
+            SimpleNamespace(node_name='amcl', node_namespace='/'),
+            SimpleNamespace(node_name='ekf_filter_node', node_namespace='/'),
+        ])
+    probe.get_service_names_and_types_by_node = lambda name, namespace: (
+        [('/set_initial_pose', ['nav2_msgs/srv/SetInitialPose'])]
+        if name == 'amcl' else
+        [('/set_pose', ['robot_localization/srv/SetPose'])]
+        if name == 'ekf_filter_node' else [])
+    probe.get_subscriptions_info_by_topic = lambda _topic: [
+        SimpleNamespace(node_name='amcl', node_namespace='/',
+                        topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+    monkeypatch.setattr(
+        readiness_module, 'resolve_ros_service_type',
+        lambda _type: (_ for _ in ()).throw(AttributeError('generated Python class absent')))
+
+    ready, evidence = probe._navigation_localization_api()
+
+    assert ready
+    assert evidence['owner'] == 'amcl'
+    assert evidence['interface'] == '/initialpose'
+    assert evidence['interface_api'] == 'topic'
+    assert evidence['service_type_resolution_error'].startswith('AttributeError:')
+
+
+def test_static_navigation_rejects_odometry_set_pose_when_amcl_input_is_missing(readiness_module):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.localization_backend = 'AMCL'
+    probe.localization_service_owner = ''
+    probe.get_node_names_and_namespaces = lambda: [
+        ('amcl', '/'), ('ekf_filter_node', '/'),
+    ]
+    probe.get_publishers_info_by_topic = lambda topic: (
+        [SimpleNamespace(node_name='amcl', node_namespace='/',
+                         topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+        if topic == '/amcl_pose' else [
+            SimpleNamespace(node_name='amcl', node_namespace='/'),
+            SimpleNamespace(node_name='ekf_filter_node', node_namespace='/'),
+        ])
+    probe.get_service_names_and_types_by_node = lambda name, namespace: (
+        [('/set_pose', ['robot_localization/srv/SetPose'])]
+        if name == 'ekf_filter_node' else [])
+    probe.get_subscriptions_info_by_topic = lambda _topic: []
+
+    ready, error = probe._navigation_localization_api()
+
+    assert not ready
+    assert 'AMCL_INITIAL_POSE_INPUT_COUNT_INVALID' in error
+    assert '/set_pose' not in error
+
+
+def test_static_navigation_dispatches_lifecycle_startup_once_without_waiting_for_costmaps(
+    readiness_module,
+):
+    from unittest.mock import Mock
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.mode = 'navigation'
+    probe.localization_backend = 'AMCL'
+    probe.nav2_lifecycle_nodes = readiness_module.NAV2_STATIC_MAP_LIFECYCLE_NODES
+    probe.lifecycle = {name: object() for name in probe.nav2_lifecycle_nodes}
+    probe.lifecycle_state_file = None
+    startup = {'state': 'NOT_REQUESTED'}
+    probe._startup_state = lambda: dict(startup)
+    probe._update_startup_state = lambda state, **_details: startup.update(state=state)
+    probe._deferred_nav2_contract = lambda _deadline: (True, None)
+    probe._lifecycle_snapshot = lambda _deadline: {
+        name: {'id': 1, 'label': 'unconfigured'} for name in probe.nav2_lifecycle_nodes
+    }
+    client = SimpleNamespace(
+        service_is_ready=lambda: True, call_async=Mock(return_value=object()))
+    probe.nav_lifecycle_manager = client
+    probe._record_timeline = Mock()
+
+    assert probe._begin_static_navigation_startup({}, time.monotonic() + 1.0)
+    assert client.call_async.call_count == 1
+    assert client.call_async.call_args.args[0].command == 0
+    assert startup['state'] == 'IN_PROGRESS'
+
+    assert probe._begin_static_navigation_startup({}, time.monotonic() + 1.0)
+    assert client.call_async.call_count == 1
+
+
+def test_static_navigation_runtime_can_be_ready_for_initial_pose_while_actions_stay_guarded(
+    readiness_module,
+):
+    from types import SimpleNamespace
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.mode = 'navigation'
+    probe.localization_backend = 'AMCL'
+    probe.nav2_required_nodes = readiness_module.NAV2_STATIC_MAP_LIFECYCLE_NODES + (
+        'lifecycle_manager_navigation',)
+    probe._deferred_nav2_contract = lambda _deadline: (True, None)
+    probe._stage = lambda _result, *_args, **_kwargs: True
+    probe._begin_static_navigation_startup = lambda *_args, **_kwargs: (True, None)
+    probe._wait_static_navigation_localizer = lambda _deadline: (
+        True, {'map_server': {'id': 3}, 'amcl': {'id': 3}}, None)
+    probe._report_stage = lambda result, name, status, *_args, **_kwargs: result[
+        'stages'].__setitem__(name, status)
+    probe._wait_map_file = lambda _deadline: True
+    probe.expected_map_file = '/isolated/map.yaml'
+    probe._navigation_localization_api = lambda: (True, {
+        'backend': 'AMCL', 'owner': 'amcl', 'interface': '/initialpose',
+        'interface_type': 'geometry_msgs/msg/PoseWithCovarianceStamped',
+        'interface_api': 'topic',
+    })
+    probe._wait_ros_bridge = lambda _deadline: (True, None)
+    probe.robot_id = 'R01'
+    probe._global_localization_tf_status = lambda: (
+        None, 'waiting_for_initial_pose_to_establish_map_to_odom')
+    probe.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=1_000_000_000))
+    probe._print_required_status_summary = lambda _result: None
+    probe._print_startup_timeline = lambda _result: None
+
+    result = probe._check_static_navigation(
+        {'stages': {}, 'nav_ready': False, 'runtime_ready': False},
+        time.monotonic(), time.monotonic() + 1.0)
+
+    assert result['runtime_ready'] is True
+    assert result['nav_ready'] is False
+    assert result['localization_ready'] is False
+    assert result['localization_state'] == 'WAITING_FOR_INITIAL_POSE'
+    assert result['stages']['NAV2_LIFECYCLE_READY'] is None
+    assert result['stages']['ACTION_SERVER_READY'] is None
+
+
+def test_static_navigation_localization_can_be_pending_but_not_falsely_fresh(readiness_module):
+    from types import SimpleNamespace
+    from tf2_ros import TransformException
+
+    probe = readiness_module.Readiness.__new__(readiness_module.Readiness)
+    probe.tf = SimpleNamespace(lookup_transform=lambda *_args: (_ for _ in ()).throw(
+        TransformException('no map to odom yet')))
+    status, reason = probe._global_localization_tf_status()
+    assert status is None
+    assert reason == 'waiting_for_initial_pose_to_establish_map_to_odom'
+
+    stale = SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)))
+    probe.tf = SimpleNamespace(lookup_transform=lambda target, source, _time: (
+        stale if target == 'map' and source == 'odom' else object()))
+    probe.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=2_000_000_000))
+    status, reason = probe._global_localization_tf_status()
+    assert status is False
+    assert reason == 'map_to_odom_tf_not_fresh:age_sim_s=1.000000'
+
+    probe.tf = SimpleNamespace(lookup_transform=lambda target, source, _time: (
+        stale if target == 'map' and source == 'odom' else
+        (_ for _ in ()).throw(TransformException('broken chain'))))
+    status, reason = probe._global_localization_tf_status()
+    assert status is False
+    assert reason == 'map_to_base_tf_chain_incomplete:TransformException'
 
 
 def _grid(width, height, resolution, origin_x, origin_y):
@@ -483,7 +738,7 @@ def test_nav2_startup_probe_timeout_does_not_mark_an_ambiguous_activation_failed
     probe._lifecycle_snapshot = lambda _deadline: states
     probe._startup_state = lambda: {'state': 'NOT_REQUESTED', 'launch_id': 'launch-test'}
     probe._nav2_graph_counts = lambda: {
-        'map_server': 0, 'canonical_map_server': 1,
+        'map_server': 0, 'canonical_map_server': 1, 'amcl': 0,
         'lifecycle_manager_navigation': 1, 'lifecycle_manager_mapping_map': 0,
     }
     probe._read_nav2_manager_configuration = lambda _deadline: (manager, None)

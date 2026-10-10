@@ -576,8 +576,8 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
     if (!window.confirm(`Initialize ${robotId} at x=${pose.x.toFixed(2)}, y=${pose.y.toFixed(2)}, yaw=${pose.yaw.toFixed(2)} rad?`)) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      await initializeLocalRobotPose(robotId, { ...pose, frame_id: "map" });
-      setNotice("INITIAL POSE ACCEPTED BY ekf_v30e · waiting for the next localization update");
+      const result = await initializeLocalRobotPose(robotId, { ...pose, frame_id: "map" });
+      setNotice(`INITIAL POSE ACCEPTED BY ${result.localization_owner.toUpperCase()} · waiting for the next localization update`);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Initial pose was not accepted"); }
     finally { setBusy(false); }
   };
@@ -593,7 +593,7 @@ function LocalizationPanel({ robotId, robot, localizationMap, controlOnline, loc
           ? runtimeCapabilities?.localization_ready ? "LOCALIZED" : "INITIAL POSE REQUIRED"
           : localization} />
         {activeLocalMapId && <Metric label="ACTIVE SAVED MAP" value={`${activeLocalMapId} · r${activeLocalMapRevision ?? "—"}`} mono />}
-        <Metric label="OWNER" value="ekf_v30e · map → odom" mono />
+        <Metric label="TF AUTHORITY" value="runtime localization source · map → odom" mono />
       </div>
       {activeLocalMapId && <p className={runtimeCapabilities?.localization_ready ? "local-feedback ok" : "local-feedback warning"} role="status">
         {runtimeCapabilities?.localization_ready ? "LOCALIZED · confirmed TF matches the active saved map." : "INITIAL POSE REQUIRED · point navigation remains unavailable until the requested map-frame pose is confirmed."}

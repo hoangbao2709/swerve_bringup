@@ -34,6 +34,7 @@ from .canonical_pose import (GazeboCanonicalAlignment,
                              interpolate_canonical_pose_at)
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import LoadMap
+from rosidl_runtime_py.utilities import get_service
 from rosgraph_msgs.msg import Clock
 from swerve_bringup.action import GoToTag
 from sensor_msgs.msg import JointState, LaserScan, PointCloud2
@@ -41,7 +42,6 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Bool, String
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from tf2_ros import Buffer, TransformException, TransformListener
-from robot_localization.srv import SetPose
 from slam_toolbox.srv import Pause as SlamPause
 from slam_toolbox.srv import SerializePoseGraph as SlamSerializePoseGraph
 
@@ -88,6 +88,8 @@ class SwerveBridge(Node):
         self.declare_parameter('robot_id', 'R01')
         self.declare_parameter('namespace', '')
         self.declare_parameter('runtime_state', 'MAPPING')
+        self.declare_parameter('initial_pose_backend', 'AMCL')
+        self.declare_parameter('initial_pose_service_node', '')
         self.declare_parameter('require_nav2_map', False)
         self.declare_parameter('require_tag_map', False)
         self.declare_parameter('django_ws_url', os.environ.get('ROS_WS_URL', 'ws://127.0.0.1:8000/ws/ros'))
@@ -163,6 +165,11 @@ class SwerveBridge(Node):
         self.robot_id = str(self.get_parameter('robot_id').value)
         self.namespace = self._normalize_namespace(self.get_parameter('namespace').value)
         self.runtime_state = str(self.get_parameter('runtime_state').value).upper()
+        self.initial_pose_backend = str(self.get_parameter('initial_pose_backend').value).strip().upper()
+        self.initial_pose_service_node = str(
+            self.get_parameter('initial_pose_service_node').value).strip()
+        if self.initial_pose_backend not in ('AMCL', 'SET_POSE'):
+            raise ValueError('initial_pose_backend must be AMCL or SET_POSE')
         self.require_nav2_map = bool(self.get_parameter('require_nav2_map').value)
         self.require_tag_map = bool(self.get_parameter('require_tag_map').value)
         if self.runtime_state not in ('IDLE', 'SIMULATION', 'MAPPING', 'NAVIGATION', 'UNIFIED', 'ERROR'):
@@ -381,6 +388,13 @@ class SwerveBridge(Node):
         self.create_subscription(Clock, clock_topic, self.clock_cb, gazebo_clock_qos_profile())
         self.cmd_pub = self.create_publisher(
             Twist, cmd_vel_topic, 20)
+        # Humble AMCL receives an initial estimate on the standard
+        # PoseWithCovarianceStamped topic.  Some Nav2 builds additionally
+        # expose SetInitialPose; the graph-discovery path below prefers that
+        # service only when it is actually present and otherwise publishes
+        # here after verifying AMCL's subscription endpoint.
+        self.initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, self._scoped_topic('/initialpose'), 10)
         mode_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -407,8 +421,13 @@ class SwerveBridge(Node):
             self, ComputePathToPose, self._scoped_topic('/compute_path_to_pose'))
         map_lifecycle_node = ({'UNIFIED': 'canonical_map_server',
                               'NAVIGATION': 'map_server'}.get(self.runtime_state))
-        self.nav2_lifecycle_nodes = ((map_lifecycle_node, *NAV2_LIVE_LIFECYCLE_NODES)
-                                     if map_lifecycle_node else ())
+        localization_lifecycle_node = (
+            'amcl' if self.runtime_state == 'NAVIGATION'
+            and self.initial_pose_backend == 'AMCL' else None)
+        self.nav2_lifecycle_nodes = (
+            (map_lifecycle_node, *([localization_lifecycle_node]
+                                   if localization_lifecycle_node else []),
+             *NAV2_LIVE_LIFECYCLE_NODES) if map_lifecycle_node else ())
         self.nav2_lifecycle_clients = {
             name: self.create_client(GetState, self._scoped_topic(f'/{name}/get_state'))
             for name in self.nav2_lifecycle_nodes
@@ -418,8 +437,12 @@ class SwerveBridge(Node):
         self.nav2_lifecycle_next_poll_monotonic = 0.0
         self.map_load_client = self.create_client(
             LoadMap, self._scoped_topic('/map_server/load_map'))
-        self.initial_pose_client = self.create_client(
-            SetPose, self._scoped_topic('/set_pose'))
+        self.latest_amcl_pose = None
+        self.create_subscription(
+            PoseWithCovarianceStamped, self._scoped_topic('/amcl_pose'),
+            self.amcl_pose_cb, QoSProfile(
+                depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.slam_pause_client = self.create_client(
             SlamPause, self._scoped_topic('/slam_toolbox/pause_new_measurements'))
         self.slam_serialize_client = self.create_client(
@@ -532,6 +555,179 @@ class SwerveBridge(Node):
         if not self.namespace or not topic:
             return topic
         return f'/{self.namespace}/{topic.lstrip("/")}'
+
+    @staticmethod
+    def _graph_node_id(name, namespace=''):
+        return f'{str(namespace or "").rstrip("/")}/{str(name or "").lstrip("/")}'.strip('/')
+
+    def discover_localization_interface(self):
+        """Discover the configured map->odom owner and its usable initial-pose API."""
+        try:
+            node_rows = self.get_node_names_and_namespaces()
+            tf_publishers = self.get_publishers_info_by_topic(self._scoped_topic('/tf'))
+            amcl_pose_publishers = self.get_publishers_info_by_topic(
+                self._scoped_topic('/amcl_pose'))
+            initial_pose_subscribers = self.get_subscriptions_info_by_topic(
+                self._scoped_topic('/initialpose'))
+            node_ids = {self._graph_node_id(name, namespace)
+                        for name, namespace in node_rows}
+            tf_owner_ids = {self._graph_node_id(row.node_name, row.node_namespace)
+                            for row in tf_publishers}
+        except Exception as exc:
+            return {'ready': False, 'reason': f'ros_graph_query_failed:{type(exc).__name__}'}
+
+        node_leaf_names = {node_id.rsplit('/', 1)[-1] for node_id in node_ids}
+        initial_pose_services = []
+        for name, namespace in node_rows:
+            owner = self._graph_node_id(name, namespace)
+            try:
+                services = self.get_service_names_and_types_by_node(name, namespace)
+            except Exception:
+                continue
+            for service_name, service_types in services:
+                if any(str(service_type).endswith('/srv/SetPose')
+                       or str(service_type).endswith('/srv/SetInitialPose')
+                       for service_type in service_types):
+                    initial_pose_services.append({
+                        'name': str(service_name), 'owner': owner,
+                        'types': [str(service_type) for service_type in service_types],
+                    })
+
+        base = {
+            'runtime_mode': self.runtime_state,
+            'map_to_odom_publisher_candidates': sorted(
+                node_id for node_id in tf_owner_ids
+                if node_id.rsplit('/', 1)[-1] in ('slam_toolbox', 'amcl', 'ekf_v30e')),
+            'initial_pose_services': initial_pose_services,
+        }
+        if self.runtime_state in ('MAPPING', 'UNIFIED'):
+            owner = 'slam_toolbox'
+            if owner not in node_leaf_names or owner not in {
+                    node_id.rsplit('/', 1)[-1] for node_id in tf_owner_ids}:
+                return {**base, 'ready': False, 'reason': 'SLAM map->odom publisher unavailable'}
+            return {**base, 'ready': False, 'owner': owner, 'interface': None,
+                    'reason': ('SLAM Toolbox owns map->odom by scan matching and does not expose a '
+                               'static-map Initial Pose service in this runtime mode')}
+
+        if self.initial_pose_backend == 'AMCL':
+            amcl_nodes = [node_id for node_id in node_ids
+                          if node_id.rsplit('/', 1)[-1] == 'amcl']
+            amcl_publishers = [node_id for node_id in tf_owner_ids
+                               if node_id.rsplit('/', 1)[-1] == 'amcl']
+            amcl_initial_pose_services = [
+                entry for entry in initial_pose_services
+                if entry['owner'] in amcl_nodes
+                and any(service_type.endswith('/srv/SetInitialPose')
+                        for service_type in entry['types'])]
+            amcl_initial_pose_topics = [
+                row for row in initial_pose_subscribers
+                if self._graph_node_id(row.node_name, row.node_namespace) in amcl_nodes
+                and str(getattr(row, 'topic_type', ''))
+                == 'geometry_msgs/msg/PoseWithCovarianceStamped']
+            amcl_pose_outputs = [
+                row for row in amcl_pose_publishers
+                if self._graph_node_id(row.node_name, row.node_namespace) in amcl_nodes
+                and str(getattr(row, 'topic_type', ''))
+                == 'geometry_msgs/msg/PoseWithCovarianceStamped']
+            lifecycle = self.nav2_lifecycle_status()
+            amcl_state = lifecycle.get('states', {}).get('amcl')
+            conflicts = node_leaf_names.intersection({'slam_toolbox', 'ekf_v30e'})
+            if conflicts:
+                return {**base, 'ready': False,
+                        'reason': f'competing_localization_nodes_present:{sorted(conflicts)}'}
+            service_resolution_error = None
+            service_type = 'nav2_msgs/srv/SetInitialPose'
+            if len(amcl_initial_pose_services) == 1:
+                try:
+                    # A ROS graph can advertise an interface for which this
+                    # Python installation has no generated service class.
+                    # Prefer that service only when the bridge can actually
+                    # construct its request; otherwise use AMCL's independently
+                    # verified standard topic subscription below.
+                    get_service(service_type)
+                except (AttributeError, ImportError, ModuleNotFoundError, ValueError) as exc:
+                    service_resolution_error = f'{type(exc).__name__}:{exc}'
+                else:
+                    interface = amcl_initial_pose_services[0]['name']
+                    interface_type = service_type
+            if len(amcl_initial_pose_services) != 1 or service_resolution_error:
+                interface = None
+                interface_type = None
+            if interface is None and len(amcl_initial_pose_topics) == 1:
+                # The standard AMCL input is a supported, graph-verified path
+                # even when an advertised optional service lacks Python type
+                # support in this ROS overlay.
+                interface = self._scoped_topic('/initialpose')
+                interface_type = 'geometry_msgs/msg/PoseWithCovarianceStamped_TOPIC'
+            if (len(amcl_nodes) != 1 or len(amcl_publishers) != 1
+                    or interface is None or len(amcl_pose_outputs) != 1
+                    or amcl_state != 'active'):
+                return {**base, 'ready': False,
+                        'reason': 'AMCL_NODE_TF_PUBLISHER_OR_INITIAL_POSE_INPUT_UNVERIFIED',
+                        'amcl_nodes': amcl_nodes,
+                        'amcl_tf_publishers': amcl_publishers,
+                        'amcl_pose_publishers': [
+                            self._graph_node_id(row.node_name, row.node_namespace)
+                            for row in amcl_pose_publishers],
+                        'set_initial_pose_services': amcl_initial_pose_services,
+                        'service_type_resolution_error': service_resolution_error,
+                        'initial_pose_topic_subscribers': [
+                            self._graph_node_id(row.node_name, row.node_namespace)
+                            for row in amcl_initial_pose_topics],
+                        'amcl_lifecycle_state': amcl_state}
+            return {**base, 'ready': True, 'owner': 'amcl',
+                    'interface': interface,
+                    'interface_type': interface_type,
+                'discovered_set_initial_pose_services': amcl_initial_pose_services,
+                'service_type_resolution_error': service_resolution_error,
+                    'initial_pose_api': ('service' if interface_type == 'nav2_msgs/srv/SetInitialPose'
+                                         else 'topic'),
+                    'amcl_pose_topic': self._scoped_topic('/amcl_pose')}
+
+        expected_owner = self.initial_pose_service_node.strip('/')
+        matching = [entry for entry in initial_pose_services
+                    if entry['owner'].rsplit('/', 1)[-1] == expected_owner
+                    and any(service_type.endswith('/srv/SetPose')
+                            for service_type in entry['types'])]
+        matching_publishers = [node_id for node_id in tf_owner_ids
+                               if node_id.rsplit('/', 1)[-1] == expected_owner]
+        amcl_nodes = [node_id for node_id in node_ids
+                      if node_id.rsplit('/', 1)[-1] == 'amcl']
+        if amcl_nodes:
+            return {**base, 'ready': False,
+                    'reason': 'SET_POSE_BACKEND_CONFLICTS_WITH_AMCL'}
+        if len(matching) != 1 or len(matching_publishers) != 1:
+            return {**base, 'ready': False,
+                    'reason': 'MAP_LOCALIZER_SET_POSE_SERVICE_OR_TF_PUBLISHER_UNVERIFIED',
+                    'expected_service_owner': expected_owner,
+                    'matching_set_pose_services': matching,
+                    'matching_tf_publishers': matching_publishers}
+        service_type = next(
+            service_type for service_type in matching[0]['types']
+            if service_type.endswith('/srv/SetPose'))
+        try:
+            get_service(service_type)
+        except (AttributeError, ImportError, ModuleNotFoundError, ValueError) as exc:
+            return {**base, 'ready': False,
+                    'reason': f'SET_POSE_SERVICE_TYPE_UNAVAILABLE:{type(exc).__name__}',
+                    'expected_service_owner': expected_owner,
+                    'matching_set_pose_services': matching,
+                    'matching_tf_publishers': matching_publishers}
+        return {**base, 'ready': True, 'owner': expected_owner,
+                'interface': matching[0]['name'],
+                'interface_type': service_type}
+
+    def amcl_pose_cb(self, msg):
+        stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+        position = msg.pose.pose.position
+        orientation = msg.pose.pose.orientation
+        self.latest_amcl_pose = {
+            'stamp_s': stamp,
+            'frame_id': str(msg.header.frame_id or ''),
+            'x': float(position.x), 'y': float(position.y),
+            'yaw': quaternion_yaw(orientation),
+            'received_monotonic': time.monotonic(),
+        }
 
     def _read_running_world_revision(self):
         """Read the immutable revision manifest for the launched Gazebo world."""
@@ -2511,14 +2707,25 @@ class SwerveBridge(Node):
                 pending['data'], False,
                 error='simulation TF epoch changed during initial-pose confirmation; submit again')
             return
-        if not pending.get('service_acknowledged', False):
+        if pending.get('interface_type') in (
+                'robot_localization/srv/SetPose', 'nav2_msgs/srv/SetInitialPose') \
+                and not pending.get('service_acknowledged', False):
             if time.monotonic() > pending['deadline_monotonic']:
                 self.pending_initial_pose = None
                 self._send_local_control_result(
                     pending['data'], False,
-                    error='ekf_v30e /set_pose service did not acknowledge before the confirmation deadline')
+                    error='discovered map-frame Initial Pose service did not acknowledge before the confirmation deadline')
             return
         try:
+            amcl_pose = None
+            if pending.get('localization_owner') == 'amcl':
+                amcl_pose = getattr(self, 'latest_amcl_pose', None)
+                if (not isinstance(amcl_pose, dict)
+                        or str(amcl_pose.get('frame_id') or '') != 'map'
+                        or float(amcl_pose.get('stamp_s', 0.0))
+                        < float(pending.get('request_stamp_s', 0.0))):
+                    raise TransformException('waiting for a post-request AMCL pose on /amcl_pose')
+                pending['localization_update_stamp_s'] = float(amcl_pose['stamp_s'])
             actual, _frame = self._lookup_robot_pose()
             actual_stamp_s = float(actual.get('source_timestamp_s', 0.0))
             request_stamp_s = float(pending.get('request_stamp_s', 0.0))
@@ -2533,6 +2740,17 @@ class SwerveBridge(Node):
                                   float(actual['y']) - pending['pose']['y'])
             yaw_error = math.atan2(math.sin(float(actual['yaw']) - pending['pose']['yaw']),
                                    math.cos(float(actual['yaw']) - pending['pose']['yaw']))
+            if pending.get('localization_owner') == 'amcl':
+                source_distance = math.hypot(float(actual['x']) - float(amcl_pose['x']),
+                                             float(actual['y']) - float(amcl_pose['y']))
+                source_yaw_error = math.atan2(
+                    math.sin(float(actual['yaw']) - float(amcl_pose['yaw'])),
+                    math.cos(float(actual['yaw']) - float(amcl_pose['yaw'])))
+                pending['tf_amcl_position_delta_m'] = source_distance
+                pending['tf_amcl_yaw_delta_rad'] = abs(source_yaw_error)
+                if (source_distance > INITIAL_POSE_POSITION_TOLERANCE_M
+                        or abs(source_yaw_error) > INITIAL_POSE_YAW_TOLERANCE_RAD):
+                    raise TransformException('AMCL pose and map-frame TF disagree')
             pending['last_position_error_m'] = distance
             pending['last_yaw_error_rad'] = abs(yaw_error)
             last_stamp_s = pending.get('last_confirmation_stamp_s')
@@ -2565,11 +2783,17 @@ class SwerveBridge(Node):
                     and stable_duration_s >= INITIAL_POSE_STABLE_DURATION_SIM_S):
                 self.pending_initial_pose = None
                 self._send_local_control_result(pending['data'], True, {
-                    'message': ('authoritative ekf_v30e /set_pose acknowledged and stable, '
+                    'message': (f"{pending['localization_owner']} localization update received and stable, "
                                 'post-request map-frame TF confirmed'),
+                    'localization_owner': pending['localization_owner'],
+                    'initial_pose_interface': pending['interface'],
+                    'initial_pose_services': pending.get('initial_pose_services', []),
                     'frame_id': 'map', 'pose': pending['pose'],
                     'request_stamp_s': request_stamp_s,
                     'tf_stamp_s': actual_stamp_s,
+                    'localization_update_stamp_s': pending.get('localization_update_stamp_s'),
+                    'tf_amcl_position_delta_m': pending.get('tf_amcl_position_delta_m'),
+                    'tf_amcl_yaw_delta_rad': pending.get('tf_amcl_yaw_delta_rad'),
                     'tf_age_s': self.get_clock().now().nanoseconds * 1e-9 - actual_stamp_s,
                     'position_error_m': distance,
                     'yaw_error_rad': abs(yaw_error),
@@ -2586,8 +2810,11 @@ class SwerveBridge(Node):
             pass
         if time.monotonic() > pending['deadline_monotonic']:
             self.pending_initial_pose = None
+            client = pending.get('service_client')
+            if client is not None:
+                self.destroy_client(client)
             self._send_local_control_result(pending['data'], False,
-                error=('ekf_v30e /set_pose was not followed by stable map-frame TF '
+                error=(f"{pending['localization_owner']} was not followed by stable map-frame TF "
                        f'within {INITIAL_POSE_POSITION_TOLERANCE_M:.2f} m / '
                        f'{INITIAL_POSE_YAW_TOLERANCE_RAD:.2f} rad '
                        f'(last position={pending.get("last_position_error_m")!r} m, '
@@ -3385,6 +3612,8 @@ class SwerveBridge(Node):
                     data, False, error=f'saved map loading is unavailable in {self.runtime_state} runtime')
                 return
             lifecycle = self.nav2_lifecycle_status() if self.runtime_state == 'NAVIGATION' else None
+            map_server_active = bool(
+                lifecycle and lifecycle.get('states', {}).get('map_server') == 'active')
             self._send_local_control_result(data, True, {
                 'safe_to_load': True,
                 'runtime_state': self.runtime_state,
@@ -3393,8 +3622,11 @@ class SwerveBridge(Node):
                 'nav2_lifecycle_ready': lifecycle['ready'] if lifecycle else False,
                 'nav2_lifecycle_states': lifecycle['states'] if lifecycle else {},
                 'nav2_lifecycle_blocker_reason': lifecycle['blocker_reason'] if lifecycle else None,
+                'map_server_lifecycle_ready': map_server_active,
+                'navigation_actions_ready': lifecycle['ready'] if lifecycle else False,
                 'map_load_service_ready': bool(
-                    self.runtime_state == 'NAVIGATION' and self.map_load_client.service_is_ready()),
+                    self.runtime_state == 'NAVIGATION' and map_server_active
+                    and self.map_load_client.service_is_ready()),
             })
             return
         if operation == 'MAP_LOAD':
@@ -3407,9 +3639,9 @@ class SwerveBridge(Node):
                 self._send_local_control_result(data, False, error=safety_error)
                 return
             lifecycle = self.nav2_lifecycle_status()
-            if not lifecycle['ready']:
+            if lifecycle.get('states', {}).get('map_server') != 'active':
                 self._send_local_control_result(
-                    data, False, error=lifecycle['blocker_reason'] or 'required Nav2 lifecycle nodes are not ACTIVE')
+                    data, False, error='Nav2 map_server is not ACTIVE')
                 return
             yaml_path = Path(str(data.get('map_yaml') or '')).expanduser().resolve()
             local_root = self.local_map_root
@@ -3459,10 +3691,12 @@ class SwerveBridge(Node):
                 self._send_local_control_result(data, False,
                                                 error='initial pose request does not match the confirmed active map')
                 return
-            if not self.initial_pose_client.service_is_ready():
-                self._send_local_control_result(data, False, error='authoritative /set_pose service is unavailable')
+            localization = self.discover_localization_interface()
+            if not localization.get('ready'):
+                self._send_local_control_result(
+                    data, False,
+                    error=f"localization source is not verified: {localization.get('reason')}")
                 return
-            request = SetPose.Request()
             pose = PoseWithCovarianceStamped()
             pose.header.stamp = self.get_clock().now().to_msg()
             request_stamp_s = (float(pose.header.stamp.sec)
@@ -3475,27 +3709,63 @@ class SwerveBridge(Node):
             pose.pose.covariance[0] = 0.04
             pose.pose.covariance[7] = 0.04
             pose.pose.covariance[35] = 0.03
-            request.pose = pose
             self.pending_initial_pose = {
                 'data': data, 'pose': {key: float(data[key]) for key in ('x', 'y', 'yaw')},
                 'active_map_id': active['active_map_id'],
                 'active_map_revision': active['active_map_revision'],
+                'localization_owner': localization['owner'],
+                'interface': localization['interface'],
+                'interface_type': localization['interface_type'],
+                'initial_pose_services': localization.get('initial_pose_services', []),
                 'request_stamp_s': request_stamp_s,
                 'deadline_monotonic': time.monotonic() + 8.0,
                 'tf_epoch': getattr(self, 'tf_epoch', 0),
                 'service_acknowledged': False,
+                'request_published': False,
+                'localization_update_stamp_s': None,
                 'confirmation_start_stamp_s': None,
                 'last_confirmation_stamp_s': None,
                 'confirmation_sample_count': 0,
             }
             try:
-                future = self.initial_pose_client.call_async(request)
+                if localization['interface_type'] == (
+                        'geometry_msgs/msg/PoseWithCovarianceStamped_TOPIC'):
+                    if self.initial_pose_pub.get_subscription_count() < 1:
+                        raise RuntimeError('verified AMCL /initialpose subscriber is no longer matched')
+                    self.initial_pose_pub.publish(pose)
+                    self.pending_initial_pose['request_published'] = True
+                    # Topic publication is not a remote acknowledgment. The
+                    # only acceptance signal is a newer AMCL pose plus fresh,
+                    # stable TF below.
+                    self._check_initial_pose_confirmation()
+                    return
+                if not (localization['interface_type'].endswith('/srv/SetPose')
+                        or localization['interface_type'].endswith('/srv/SetInitialPose')):
+                    raise RuntimeError('discovered localization interface type is unsupported')
+                # Resolve a ROS service class only after the live graph has
+                # advertised that exact interface. This also avoids importing
+                # a SetInitialPose interface absent from some Humble runtimes.
+                service_type = get_service(localization['interface_type'])
+                client = self.create_client(service_type, localization['interface'])
+                if not client.service_is_ready():
+                    self.destroy_client(client)
+                    self.pending_initial_pose = None
+                    self._send_local_control_result(
+                        data, False,
+                        error='discovered map-frame Initial Pose service is unavailable')
+                    return
+                request = service_type.Request()
+                request.pose = pose
+                self.pending_initial_pose['service_client'] = client
+                future = client.call_async(request)
+                future.add_done_callback(
+                    lambda completed: self.initial_pose_service_result(completed, data))
             except Exception as exc:
                 self.pending_initial_pose = None
-                self._send_local_control_result(data, False,
-                                                error=f'initial pose service request failed: {type(exc).__name__}')
+                self._send_local_control_result(
+                    data, False,
+                    error=f'discovered Initial Pose service request failed: {type(exc).__name__}')
                 return
-            future.add_done_callback(lambda completed: self.initial_pose_service_result(completed, data))
             return
         self._send_local_control_result(data, False, error=f'unsupported local control operation {operation}')
 
@@ -3679,10 +3949,18 @@ class SwerveBridge(Node):
         try:
             future.result()
         except Exception as exc:
+            pending = self.pending_initial_pose
             self.pending_initial_pose = None
-            self._send_local_control_result(data, False,
-                                            error=f'ekf_v30e /set_pose service failed: {type(exc).__name__}')
+            client = pending.get('service_client') if pending else None
+            if client is not None:
+                self.destroy_client(client)
+            self._send_local_control_result(
+                data, False,
+                error=f'discovered map-frame Initial Pose service failed: {type(exc).__name__}')
             return
+        client = self.pending_initial_pose.pop('service_client', None)
+        if client is not None:
+            self.destroy_client(client)
         self.pending_initial_pose['service_acknowledged'] = True
         self._check_initial_pose_confirmation()
 

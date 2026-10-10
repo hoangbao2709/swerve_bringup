@@ -530,7 +530,8 @@ class LocalControlApiTests(TestCase):
                 if operation == 'MAP_LOAD_PREFLIGHT':
                     return {'ok': True, 'result': {
                         'safe_to_load': True, 'runtime_state': 'NAVIGATION',
-                        'nav2_lifecycle_ready': True, 'map_load_service_ready': True,
+                        'nav2_lifecycle_ready': False, 'map_server_lifecycle_ready': True,
+                        'map_load_service_ready': True,
                     }}
                 return {'ok': True, 'result': {
                     'map_id': payload['map_id'], 'active_map_revision': payload['map_revision'],
@@ -568,7 +569,9 @@ class LocalControlApiTests(TestCase):
                                        'position_tolerance_m': 0.05,
                                        'yaw_tolerance_rad': 0.05,
                                        'tf_confirmation_duration_sim_s': 0.3,
-                                       'tf_confirmation_samples': 4},
+                                       'tf_confirmation_samples': 4,
+                                       'localization_owner': 'amcl',
+                                       'initial_pose_interface': '/initialpose'},
             }) as displaced_request:
                 displaced = self.client.post('/api/robots/R01/local/initial-pose',
                     data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
@@ -588,7 +591,9 @@ class LocalControlApiTests(TestCase):
                                        'position_tolerance_m': 0.05,
                                        'yaw_tolerance_rad': 0.05,
                                        'tf_confirmation_duration_sim_s': 0.3,
-                                       'tf_confirmation_samples': 4},
+                                       'tf_confirmation_samples': 4,
+                                       'localization_owner': 'amcl',
+                                       'initial_pose_interface': '/initialpose'},
             }) as request:
                 applied = self.client.post('/api/robots/R01/local/initial-pose',
                                            data=json.dumps({'x': 2.0, 'y': 3.0, 'yaw': 1.2, 'frame_id': 'map'}),
@@ -601,6 +606,8 @@ class LocalControlApiTests(TestCase):
                 self.assertEqual(applied.json()['tf_age_s'], 0.02)
                 self.assertEqual(applied.json()['position_error_m'], 0.01)
                 self.assertEqual(applied.json()['tf_confirmation_samples'], 4)
+                self.assertEqual(applied.json()['localization_owner'], 'amcl')
+                self.assertEqual(applied.json()['initial_pose_interface'], '/initialpose')
 
             second_prefix = map_output_prefix('R01', 'floor-b')
             second_prefix.with_suffix('.pgm').write_bytes(b'P5\n100 100\n255\n' + bytes(9_999) + b'\xff')
@@ -614,7 +621,8 @@ class LocalControlApiTests(TestCase):
             with patch('twin.local_control_views._bridge_request', side_effect=lambda _robot, operation, payload=None, **_kwargs: {
                 'ok': True, 'result': ({
                     'safe_to_load': True, 'runtime_state': 'NAVIGATION',
-                    'nav2_lifecycle_ready': True, 'map_load_service_ready': True,
+                    'nav2_lifecycle_ready': False, 'map_server_lifecycle_ready': True,
+                    'map_load_service_ready': True,
                 } if operation == 'MAP_LOAD_PREFLIGHT' else {
                     'map_id': payload['map_id'], 'active_map_revision': payload['map_revision'],
                     'runtime_map_confirmed': True, 'map_sync_status': 'LOCAL_ONLY',
@@ -668,7 +676,8 @@ class LocalControlApiTests(TestCase):
                     'request_id': 'nav-transition-1'}), \
                     patch('twin.local_control_views._bridge_request', side_effect=[
                         {'ok': True, 'result': {'safe_to_load': True, 'runtime_state': 'NAVIGATION',
-                                                'nav2_lifecycle_ready': True,
+                                                'nav2_lifecycle_ready': False,
+                                                'map_server_lifecycle_ready': True,
                                                 'map_load_service_ready': True}},
                         {'ok': True, 'result': {
                             'map_id': map_record['id'],
@@ -742,7 +751,8 @@ class LocalControlApiTests(TestCase):
                 if operation == 'MAP_LOAD_PREFLIGHT':
                     return {'ok': True, 'result': {
                         'safe_to_load': True, 'runtime_state': 'NAVIGATION',
-                        'nav2_lifecycle_ready': True, 'map_load_service_ready': True,
+                        'nav2_lifecycle_ready': False, 'map_server_lifecycle_ready': True,
+                        'map_load_service_ready': True,
                     }}
                 return {'ok': True, 'result': {
                     'map_id': payload['map_id'], 'active_map_revision': payload['map_revision'],
@@ -862,7 +872,8 @@ class LocalControlApiTests(TestCase):
                     with self.subTest(result=result):
                         preflight = {'ok': True, 'result': {
                             'safe_to_load': True, 'runtime_state': 'NAVIGATION',
-                            'nav2_lifecycle_ready': True, 'map_load_service_ready': True,
+                            'nav2_lifecycle_ready': False, 'map_server_lifecycle_ready': True,
+                            'map_load_service_ready': True,
                         }}
                         bridge.side_effect = [preflight, result]
                         response = self.client.post(

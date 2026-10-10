@@ -42,10 +42,18 @@ ROS or Gazebo processes.
   visible state only after the bridge confirms Start/Stop. Save registers an
   artifact only after a valid image and YAML exist. Runtime-mode transitions
   are adapter-owned; start/stop of SLAM does not kill unrelated processes.
-- **LOCALIZATION** shows the measured map-frame pose and applies a selected
-  initial pose through the existing `/set_pose` service served by the
-  `ekf_v30e` node. This preserves `ekf_v30e` as the single `map -> odom`
-  authority.
+- **LOCALIZATION** shows the measured map-frame pose and applies an initial
+  pose through the active runtime's discovered localization interface. Static
+  map Navigation uses the active Nav2 AMCL input discovered at runtime. A
+  SetInitialPose service is used only when the live endpoint and the bridge's
+  Python type support both resolve; otherwise the bridge uses the exact
+  AMCL-owned `/initialpose` subscriber. AMCL is the `map -> odom` authority.
+  The bridge verifies an AMCL-owned `/amcl_pose` publisher, then requires a
+  newer pose sample and stable map-frame TF. MAPPING and UNIFIED keep SLAM Toolbox as the
+  `map -> odom` authority. The common robot_localization `/set_pose` service
+  resets the odom-frame EKF and is not mistaken for a map-frame localizer.
+  The simulated V30E/tag pipeline is an explicit legacy opt-in, not a Web Local
+  dependency.
 - **VDA5050** stores one configuration per robot. MQTT passwords are encrypted
   at rest and API responses expose only `password_configured`. Test Connection
   performs a backend broker attempt. Save & Apply persists then applies the
@@ -175,10 +183,27 @@ The UI displays measured X/Y/yaw, frame, localization state, and active map.
 Operators can enter coordinates or pick X/Y from the robot's map, adjust yaw,
 preview the pose, then explicitly apply. The backend validates finite values,
 robot identity, active map, map bounds, and bridge/service availability. The
-bridge applies through the existing localization owner and confirms the
-resulting map-frame TF pose where supported. No second `map -> odom` publisher
-is introduced. Applying an initial pose changes localization; it does not
-teleport the simulation entity.
+bridge discovers the active localizer's interfaces by type and owning node,
+verifies its TF publisher and lifecycle state, and reports the selected
+endpoint. Static-map Navigation uses Nav2 AMCL's runtime-discovered
+SetInitialPose service only when this Python install can construct its request
+type. Some Humble installs advertise the service in the ROS graph without its
+generated Python class; those use the standard
+`geometry_msgs/msg/PoseWithCovarianceStamped` `/initialpose` subscription.
+Web Local verifies that the input is subscribed by the one active AMCL node and
+that AMCL advertises `/tf` and `/amcl_pose` before applying a pose. MAPPING/UNIFIED continue to use SLAM
+Toolbox without starting AMCL. The legacy robot_localization `SetPose`
+service is selected only when that optional backend is explicitly configured
+and its discovered service owner is also the map-TF publisher. After a request,
+the bridge requires a post-request localization update plus stable map-frame TF
+within the existing 5 cm / 0.05 rad bounds. Applying an initial pose changes
+localization; it does not teleport the simulation entity. Static-map runtime
+readiness makes the active map server and AMCL available for this operation
+while Nav2 control lifecycle nodes and autonomous actions remain guarded until
+AMCL establishes fresh `map -> odom`. After a supervised runtime restart, the
+backend refreshes per-robot navigation state from that authenticated bridge's
+current heartbeat even before map-frame pose telemetry resumes; unknown and
+`OFFLINE` values do not satisfy the stopped/terminal-state gate.
 
 ## Command ownership, teleop, and Nav2
 

@@ -1836,7 +1836,7 @@ describe("robot detail route stability", () => {
     setOnlineRobot();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(api.initializeLocalRobotPose).mockResolvedValueOnce({
-      ok: true, pose: { x: 0, y: 0, yaw: 0.2, frame_id: "map" }, localization_owner: "ekf_v30e",
+      ok: true, pose: { x: 0, y: 0, yaw: 0.2, frame_id: "map" }, localization_owner: "amcl",
     }).mockRejectedValueOnce(new Error("localization service unavailable"));
     renderNode(<ControlDetailHarness robotId="R01" />);
     await act(async () => { buttonNamed("LOCALIZATION")?.click(); await Promise.resolve(); });
@@ -1850,7 +1850,7 @@ describe("robot detail route stability", () => {
     expect(Number.isFinite(api.initializeLocalRobotPose.mock.calls[0][1].x)).toBe(true);
     expect(Number.isFinite(api.initializeLocalRobotPose.mock.calls[0][1].y)).toBe(true);
     expect(api.initializeLocalRobotPose.mock.calls[0][1].yaw).not.toBe(r01().heading);
-    expect(container.textContent).toContain("INITIAL POSE ACCEPTED BY ekf_v30e");
+    expect(container.textContent).toContain("INITIAL POSE ACCEPTED BY AMCL");
     await act(async () => { buttonNamed("SET INITIAL POSE")?.click(); await Promise.resolve(); });
     expect(container.textContent).toContain("localization service unavailable");
   });

@@ -1273,6 +1273,74 @@ class RosTelemetryTests(IsolatedAsyncioTestCase):
             else:
                 registry.consumers['R01'] = old_r01_bridge
 
+    async def test_authenticated_current_heartbeat_refreshes_per_robot_navigation_state(self):
+        old_mode = runtime.runtime_mode
+        old_connected = set(runtime.connected_robot_ids)
+        old_heartbeats = dict(runtime.robot_bridge_heartbeats)
+        old_bridge_connected = runtime.ros_bridge_connected
+        old_bridge_status = runtime.bridge_status
+        old_nav2_state = runtime.nav2_state
+        old_client_count = runtime.client_count
+        old_r01_bridge = registry.consumers.get('R01')
+        robot_rows = runtime.engine.state['robots']
+        old_robot = deepcopy(robot_rows.get('R01'))
+
+        class LiveBridge:
+            robot_id = 'R01'
+
+        try:
+            runtime.runtime_mode = 'GAZEBO_ROS'
+            runtime.connected_robot_ids.clear()
+            runtime.robot_bridge_heartbeats.clear()
+            runtime.ros_bridge_connected = False
+            runtime.bridge_status = 'DISCONNECTED'
+            runtime.client_count = 0
+            robot_rows['R01'] = old_robot or {'navigation_state': 'OFFLINE'}
+            robot_rows['R01']['navigation_state'] = 'OFFLINE'
+            registry.consumers['R01'] = LiveBridge()
+
+            with patch.object(runtime, 'broadcast_runtime_status', new_callable=AsyncMock):
+                await runtime.handle_ros_message({
+                    'type': 'HEARTBEAT', 'robot_id': 'R01',
+                    'bridge_state': 'CONNECTED', 'runtime_state': 'NAVIGATION',
+                    'nav2_state': 'MANUAL',
+                })
+
+                self.assertEqual(robot_rows['R01']['navigation_state'], 'MANUAL')
+                self.assertEqual(runtime.robot_bridge_heartbeats.keys(), {'R01'})
+
+                await runtime.handle_ros_message({
+                    'type': 'HEARTBEAT', 'robot_id': 'R01',
+                    'bridge_state': 'CONNECTED', 'runtime_state': 'NAVIGATION',
+                    'nav2_state': 'PENDING',
+                })
+                self.assertEqual(robot_rows['R01']['navigation_state'], 'PENDING')
+
+                # A stale/offline/unknown status cannot erase the active-goal
+                # barrier carried by a fresh authenticated heartbeat.
+                await runtime.handle_ros_message({
+                    'type': 'HEARTBEAT', 'robot_id': 'R01',
+                    'bridge_state': 'CONNECTED', 'runtime_state': 'NAVIGATION',
+                    'nav2_state': 'OFFLINE',
+                })
+                self.assertEqual(robot_rows['R01']['navigation_state'], 'PENDING')
+        finally:
+            runtime.runtime_mode = old_mode
+            runtime.connected_robot_ids = old_connected
+            runtime.robot_bridge_heartbeats = old_heartbeats
+            runtime.ros_bridge_connected = old_bridge_connected
+            runtime.bridge_status = old_bridge_status
+            runtime.nav2_state = old_nav2_state
+            runtime.client_count = old_client_count
+            if old_robot is None:
+                robot_rows.pop('R01', None)
+            else:
+                robot_rows['R01'] = old_robot
+            if old_r01_bridge is None:
+                registry.consumers.pop('R01', None)
+            else:
+                registry.consumers['R01'] = old_r01_bridge
+
 
 class RosBridgeIdentityTests(IsolatedAsyncioTestCase):
     async def test_bridge_cannot_report_another_robot_id(self):

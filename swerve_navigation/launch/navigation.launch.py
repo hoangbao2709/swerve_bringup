@@ -106,10 +106,16 @@ def _nav2_environment():
 
 def _nav_nodes(context, *, params_default: str, default_map: Path):
     map_source = LaunchConfiguration('map_source').perform(context).strip().upper()
+    localization_backend = LaunchConfiguration('localization_backend').perform(context).strip().upper()
     if map_source not in ('LIVE_SLAM', 'STATIC_MAP', 'REGISTERED_CANONICAL'):
         raise RuntimeError(
             f'unsupported Nav2 map_source={map_source!r}; choose LIVE_SLAM, STATIC_MAP, '
             'or REGISTERED_CANONICAL')
+    if localization_backend not in ('AMCL', 'SET_POSE'):
+        raise RuntimeError(
+            f'unsupported localization_backend={localization_backend!r}; choose AMCL or SET_POSE')
+    if map_source != 'STATIC_MAP' and localization_backend != 'AMCL':
+        raise RuntimeError('SET_POSE localization is only supported with STATIC_MAP')
     map_path = None
     if map_source in ('STATIC_MAP', 'REGISTERED_CANONICAL'):
         map_path = _validate_saved_map(LaunchConfiguration('map_file').perform(context), default_map)
@@ -139,6 +145,15 @@ def _nav_nodes(context, *, params_default: str, default_map: Path):
                           additional_env=nav2_env,
                           parameters=[{'use_sim_time': use_sim_time, 'yaml_filename': str(map_path)}],
                           remappings=[('map', '/navigation_map')]))
+        if localization_backend == 'AMCL':
+            nodes.append(Node(
+                package='nav2_amcl', executable=nav2_executable('nav2_amcl', 'amcl'),
+                name='amcl', output='screen',
+                additional_env=nav2_env,
+                parameters=common,
+                remappings=[('map', '/navigation_map'), ('scan', '/scan'),
+                            ('initialpose', '/initialpose')],
+            ))
     elif map_source == 'REGISTERED_CANONICAL':
         nodes.append(Node(package='nav2_map_server', executable='map_server', name='canonical_map_server', output='screen',
                           additional_env=nav2_env,
@@ -170,7 +185,8 @@ def _nav_nodes(context, *, params_default: str, default_map: Path):
                  # this changes no planning/control behavior.
                  'bond_timeout': bond_timeout,
                  'node_names': ([
-                     'map_server', 'controller_server', 'planner_server', 'behavior_server',
+                     'map_server', *(['amcl'] if localization_backend == 'AMCL' else []),
+                     'controller_server', 'planner_server', 'behavior_server',
                      'bt_navigator', 'waypoint_follower',
                  ] if map_source == 'STATIC_MAP' else [
                      *(['canonical_map_server'] if map_source == 'REGISTERED_CANONICAL' else []),
@@ -194,6 +210,8 @@ def generate_launch_description():
         DeclareLaunchArgument('map_file', default_value=str(default_map), description='Static Nav2 map YAML'),
         DeclareLaunchArgument('map_source', default_value='STATIC_MAP',
                               description='REGISTERED_CANONICAL publishes the selected map on /canonical_map for registration into /navigation_map; STATIC_MAP publishes /navigation_map; LIVE_SLAM consumes /map.'),
+        DeclareLaunchArgument('localization_backend', default_value='AMCL',
+                              description='AMCL uses the saved map and /scan; SET_POSE is an explicit legacy robot_localization backend.'),
         DeclareLaunchArgument('allow_dev_map', default_value='false',
                               description='Explicitly permit the package development Nav2 map.'),
         DeclareLaunchArgument('params_file', default_value=params, description='Nav2 parameter file'),

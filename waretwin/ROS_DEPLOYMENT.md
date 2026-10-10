@@ -83,6 +83,47 @@ ros2 launch swerve_bringup full_stack.launch.py
 
 Supported modes are `mode:=unified`, `mode:=mapping`, and `mode:=navigation`. Use `use_sim:=false` plus a valid `real_sensor_launch:=...` for the real robot driver path; this does not start Gazebo. The explicit development map fallback remains opt-in with `allow_dev_world:=true`. GUI and RViz default to off; enable with `gui:=true` or `start_rviz:=true`.
 
+### Localization ownership and Initial Pose
+
+The Web Local navigation path does not require V30E hardware or simulated
+V30E measurements. Localization ownership follows the selected map/runtime:
+
+| Runtime | Map source | `map -> odom` authority | Initial Pose interface |
+|---|---|---|---|
+| `MAPPING` | live SLAM `/map` | SLAM Toolbox | No static-map Initial Pose operation |
+| `UNIFIED` | live SLAM plus registered canonical Nav2 map | SLAM Toolbox | No second localizer is started |
+| `NAVIGATION` | saved/static Nav2 map | Nav2 AMCL | Use a discovered SetInitialPose service only if its Python type support resolves; otherwise use AMCL's verified `/initialpose` subscriber (`geometry_msgs/msg/PoseWithCovarianceStamped`) |
+| `REAL_ROBOT` | `use_sim:=false mode:=navigation` with physical sensor drivers | Nav2 AMCL | Same runtime-discovered AMCL input; hardware acceptance is separate |
+
+The common robot-localization `/set_pose` service resets the odometry-frame
+EKF and is not the map-frame Initial Pose API. The bridge discovers services
+and topic endpoints from the live ROS graph, verifies the active localizer's
+endpoint owner/lifecycle state, `/tf` and `/amcl_pose` publishers, and service
+type support before choosing a service. If AMCL advertises a service that this
+install cannot construct, the bridge requires the exact AMCL-owned
+`/initialpose` subscriber. It then requires a post-request AMCL pose plus
+stable, fresh `map -> base_footprint` TF on the
+selected map identity/revision. Navigation runtime readiness activates the
+map server and AMCL so a stopped robot can load its saved map and publish its
+Initial Pose. It reports `WAITING_FOR_INITIAL_POSE` until a newer localization
+sample and fresh TF are confirmed; Nav2 control lifecycle nodes and action
+servers remain fail-closed while that state is pending. MAPPING/UNIFIED keep
+SLAM Toolbox as the sole `map -> odom` owner and do not expose a static-map
+Initial Pose operation.
+The legacy simulated V30E/tag localization stack remains available only via
+`enable_v30e_sim:=true` for a deliberate compatibility run. That option selects
+its discovered SetPose service and cannot run beside the default AMCL owner.
+
+An isolated installed Gazebo acceptance on 2026-10-10 exercised Save → Load →
+Initial Pose → Nav2 once with V30E disabled. AMCL's discovered
+`/set_initial_pose` service and `map -> odom` ownership were confirmed, followed
+by a fresh post-request transform and a successful goal on the saved map. This
+is one passing handoff mission, not the five-run repeatability gate: the
+encompassing suite still failed separate manual-right and direct-navigation
+acceptance checks. See [`RELEASE_EVIDENCE.md`](../docs/RELEASE_EVIDENCE.md) and
+the machine-readable `/tmp/swerve-release-acceptance-20261010T002100Z` report
+for exact values and logs.
+
 Stop a ROS launch with Ctrl+C. Installed launches can also be inspected and stopped with `scripts/status_stack.sh` and `scripts/stop_stack.sh`; they resolve the active runtime directory through the shared ownership registry. These scripts continue to support legacy start modes and reject attempts to start a duplicate stack.
 
 ```bash

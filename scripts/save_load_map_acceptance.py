@@ -22,14 +22,21 @@ import uuid
 
 import rclpy
 import websocket
+from lifecycle_msgs.srv import GetState
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from end_to_end_acceptance import (MotionProbe, pose_pair_skew_sim_s, set_mode,
+from end_to_end_acceptance import (MAX_SIM_CLOCK_WALL_AGE_S,
+                                   MAX_TF_COMPONENT_AGE_SIM_S, MotionProbe,
+                                   pose_pair_skew_sim_s, set_mode,
                                    web_navigation)  # noqa: E402
 
 
 INITIAL_POSE_POSITION_TOLERANCE_M = 0.05
 INITIAL_POSE_YAW_TOLERANCE_RAD = 0.05
+SAFE_TERMINAL_NAVIGATION_STATES = frozenset({
+    'IDLE', 'MANUAL', 'SUCCEEDED', 'COMPLETED', 'FAILED', 'ERROR',
+    'CANCELED', 'CANCELLED', 'REJECTED',
+})
 
 
 def request_json(url: str, method: str = 'GET', body: dict | None = None,
@@ -48,6 +55,30 @@ def request_json(url: str, method: str = 'GET', body: dict | None = None,
         except json.JSONDecodeError:
             payload = {'raw': raw[:2000]}
         return int(response.status), payload
+
+
+def wait_command_arbiter_mode(probe, ws, robot_id: str, mode: str,
+                              *, after_count: int, timeout: float = 15.0):
+    """Wait for a fresh arbiter diagnostic, not only the bridge's mode ACK."""
+    selected = {}
+
+    def applied():
+        for received_monotonic, message in reversed(probe.command_diagnostics[after_count:]):
+            if str(message.get('robot_id') or '') != robot_id:
+                continue
+            selected.update({
+                'received_monotonic': received_monotonic,
+                'active_command_source': message.get('active_command_source'),
+                'active_control_mode': message.get('active_control_mode'),
+                'estop_active': message.get('estop_active'),
+            })
+            return (str(message.get('active_control_mode') or '').upper() == mode
+                    and message.get('estop_active') is False)
+        return False
+
+    ready = probe.wait_until(applied, timeout, ws)
+    return ready, selected or (probe.command_diagnostics[-1][1]
+                               if probe.command_diagnostics else None)
 
 
 def operator_websocket(backend_url: str, frontend_origin: str):
@@ -82,6 +113,120 @@ def transition_status(payload: dict) -> str | None:
     """Return transition status without assuming an optional object is present."""
     transition = payload.get('transition')
     return transition.get('status') if isinstance(transition, dict) else None
+
+
+def prelocalization_map_ready(*, active_identity: bool, fresh_map: bool,
+                              grid_matches: bool, nav2_available: bool,
+                              map_server_state: dict) -> tuple[bool, dict]:
+    """Prove the selected map is loaded before localization/action readiness.
+
+    ``nav2_ready`` is deliberately not an input: in static-map navigation it
+    requires AMCL's post-Initial-Pose map->odom, so checking it before sending
+    Initial Pose would make the handoff circular.
+    """
+    state_id = map_server_state.get('id') if isinstance(map_server_state, dict) else None
+    checks = {
+        'active_map_identity_and_revision': active_identity is True,
+        'fresh_navigation_map_message': fresh_map is True,
+        'saved_occupancy_exactly_matches': grid_matches is True,
+        'navigation_runtime_available': nav2_available is True,
+        'map_server_lifecycle_active': state_id == 3,
+    }
+    return all(checks.values()), {
+        'checks': checks,
+        'map_server_state': map_server_state,
+        'nav2_ready_expected_before_initial_pose': False,
+    }
+
+
+def map_server_lifecycle_state(probe, ws, timeout: float = 5.0) -> dict:
+    """Read the actual Nav2 map_server lifecycle state through its ROS service."""
+    client = getattr(probe, 'map_server_state_client', None)
+    if client is None:
+        client = probe.create_client(GetState, '/map_server/get_state')
+        probe.map_server_state_client = client
+    if not probe.wait_until(client.service_is_ready, timeout, ws):
+        return {'available': False, 'reason': '/map_server/get_state unavailable'}
+    future = client.call_async(GetState.Request())
+    if not probe.wait_until(future.done, timeout, ws):
+        return {'available': False, 'reason': '/map_server/get_state timed out'}
+    try:
+        response = future.result()
+    except Exception as exc:
+        return {'available': False,
+                'reason': f'{type(exc).__name__}: {exc}'}
+    if response is None:
+        return {'available': False, 'reason': '/map_server/get_state returned no response'}
+    return {
+        'available': True,
+        'id': int(response.current_state.id),
+        'label': str(response.current_state.label),
+        'service': '/map_server/get_state',
+        'service_type': 'lifecycle_msgs/srv/GetState',
+    }
+
+
+def odom_tf_freshness(sample: dict | None, *, expected_epoch: int,
+                      current_epoch: int) -> dict:
+    """Check the post-restart odometry edge without requiring AMCL's map edge."""
+    if not isinstance(sample, dict):
+        sample = {}
+    try:
+        age_sim_s = float(sample.get('age_sim_s'))
+        clock_age_wall_s = float(sample.get('simulation_clock_age_wall_s'))
+    except (TypeError, ValueError, OverflowError):
+        age_sim_s = math.inf
+        clock_age_wall_s = math.inf
+    checks = {
+        'current_tf_epoch': (sample.get('tf_epoch_generation') == expected_epoch
+                             and current_epoch == expected_epoch),
+        'odom_to_base_footprint_frames': (
+            str(sample.get('parent_frame') or '').lstrip('/') == 'odom'
+            and str(sample.get('child_frame') or '').lstrip('/') == 'base_footprint'),
+        'dynamic_transform_fresh_in_sim_time': (
+            math.isfinite(age_sim_s)
+            and -0.05 <= age_sim_s <= MAX_TF_COMPONENT_AGE_SIM_S),
+        'simulation_clock_fresh_in_wall_time': (
+            math.isfinite(clock_age_wall_s)
+            and 0.0 <= clock_age_wall_s <= MAX_SIM_CLOCK_WALL_AGE_S),
+    }
+    return {
+        'passed': all(checks.values()), 'checks': checks,
+        'failed_checks': [name for name, passed in checks.items() if not passed],
+        'age_sim_s': age_sim_s if math.isfinite(age_sim_s) else None,
+        'simulation_clock_age_wall_s': (clock_age_wall_s
+                                        if math.isfinite(clock_age_wall_s) else None),
+        'maximum_tf_age_sim_s': MAX_TF_COMPONENT_AGE_SIM_S,
+        'maximum_clock_age_wall_s': MAX_SIM_CLOCK_WALL_AGE_S,
+    }
+
+
+def post_reset_odom_tf_sample(probe) -> dict | None:
+    """Sample fresh odom->base TF; pre-pose AMCL must not yet own map->odom."""
+    tf, generation, clock_time_s, clock_received = probe.tf_observer.tf_snapshot()
+    if clock_time_s is None or clock_received is None:
+        return None
+    try:
+        stamped = tf.lookup_transform('odom', 'base_footprint', rclpy.time.Time())
+    except TransformException:
+        return None
+    stamp = stamped.header.stamp
+    stamp_sim_s = int(stamp.sec) + int(stamp.nanosec) * 1e-9
+    transform = stamped.transform
+    return {
+        'parent_frame': stamped.header.frame_id,
+        'child_frame': stamped.child_frame_id,
+        'stamp_sim_s': stamp_sim_s,
+        'age_sim_s': float(clock_time_s) - stamp_sim_s,
+        'simulation_clock_age_wall_s': time.monotonic() - clock_received,
+        'tf_epoch_generation': generation,
+        'pose_odom': (
+            float(transform.translation.x), float(transform.translation.y),
+            math.atan2(2.0 * (transform.rotation.w * transform.rotation.z
+                              + transform.rotation.x * transform.rotation.y),
+                       1.0 - 2.0 * (transform.rotation.y ** 2
+                                    + transform.rotation.z ** 2))),
+    }
 
 
 def position_error(left, right) -> float:
@@ -450,9 +595,19 @@ def main() -> int:
             'canonical_map_promoted': record['canonical_map_promoted'],
         }
 
+        arbiter_diag_count = len(probe.command_diagnostics)
         mode_ok, mode_reason = set_mode(probe, ws, robot, 'MANUAL')
         if not mode_ok:
             raise RuntimeError(f'could not ensure MANUAL before saved map load: {mode_reason}')
+        manual_applied, manual_diagnostics = wait_command_arbiter_mode(
+            probe, ws, robot, 'MANUAL', after_count=arbiter_diag_count)
+        if not manual_applied:
+            raise RuntimeError(
+                'bridge acknowledged MANUAL but a fresh command-arbiter MANUAL/E-STOP-clear '
+                f'diagnostic was not observed: {manual_diagnostics}')
+        report['phases']['command_arbiter_manual_confirmed'] = {
+            'passed': True, 'diagnostics': manual_diagnostics,
+        }
         settling = probe.wait_mechanical_settling(ws, timeout=30.0, wall_timeout=120.0)
         if not settling.get('passed'):
             raise RuntimeError(f'robot did not settle before saved-map load: {settling.get("reason")}')
@@ -521,9 +676,13 @@ def main() -> int:
 
         deadline = time.monotonic() + 600.0
         while status_code == 202 and load_state.get('status') == 'TRANSITIONING':
+            navigation_runtime_ready = False
             try:
                 status_text = supervisor_status.read_text(encoding='utf-8')
                 supervisor = json.loads(status_text)
+                navigation_runtime_ready = (
+                    str(supervisor.get('status') or '').upper() == 'READY'
+                    and str(supervisor.get('mode') or '').upper() == 'NAVIGATION')
                 supervisor_transitions.append({key: supervisor.get(key) for key in
                     ('status', 'mode', 'requested_mode', 'message', 'request_id')})
                 report['supervisor_transitions'] = list(supervisor_transitions)
@@ -537,10 +696,15 @@ def main() -> int:
             probe.pump(ws, 0.01)
             if probe.operator_ws_closed or not getattr(ws, 'connected', True):
                 reconnect_operator_ws(load_state.get('phase'))
-            if load_state.get('phase') == 'WAITING_FOR_MANUAL' and not reapplied_manual:
+            bridge_reconnected = (robot in ((probe.runtime_status or {}).get(
+                'connected_robot_ids') or []))
+            if ((load_state.get('phase') == 'WAITING_FOR_MANUAL'
+                 or (navigation_runtime_ready and bridge_reconnected))
+                    and not reapplied_manual):
                 first_error = None
                 mode_transport_failure = False
                 try:
+                    arbiter_diag_count = len(probe.command_diagnostics)
                     mode_ok, mode_reason = set_mode(probe, ws, robot, 'MANUAL', timeout=15.0)
                 except (OSError, websocket.WebSocketException) as exc:
                     mode_ok, mode_reason = False, f'{type(exc).__name__}:{exc}'
@@ -548,10 +712,13 @@ def main() -> int:
                 if (not mode_ok and (probe.operator_ws_closed
                                      or not getattr(ws, 'connected', True)
                                      or mode_transport_failure
-                                     or mode_reason == 'no_accepted_ROBOT_CONTROL_STATUS')):
+                                     or mode_reason in (
+                                         'no_accepted_ROBOT_CONTROL_STATUS',
+                                         'no_new_ROBOT_CONTROL_STATUS_request_id'))):
                     first_error = mode_reason
                     reconnect_operator_ws(load_state.get('phase'))
                     try:
+                        arbiter_diag_count = len(probe.command_diagnostics)
                         mode_ok, mode_reason = set_mode(
                             probe, ws, robot, 'MANUAL', timeout=15.0)
                     except (OSError, websocket.WebSocketException) as exc:
@@ -560,6 +727,12 @@ def main() -> int:
                     raise RuntimeError(
                         f'could not restore MANUAL after supervised Nav2 restart: '
                         f'{mode_reason}; first_attempt={first_error}')
+                manual_applied, manual_diagnostics = wait_command_arbiter_mode(
+                    probe, ws, robot, 'MANUAL', after_count=arbiter_diag_count)
+                if not manual_applied:
+                    raise RuntimeError(
+                        'bridge acknowledged MANUAL after restart but the command arbiter '
+                        f'did not confirm it: {manual_diagnostics}')
                 # The supervised transition destroys and recreates Gazebo and
                 # the command arbiter. Do not rely on the pre-restart STOP or
                 # a previous process's zero command. Reassert the priority
@@ -580,17 +753,21 @@ def main() -> int:
                     if (state_code == 200
                             and post_restart_state.get('robot_control_mode') == 'MANUAL'
                             and post_restart_state.get('robot_stopped') is True
-                            and post_restart_state.get('estop_active') is False):
+                            and post_restart_state.get('estop_active') is False
+                            and str(post_restart_state.get('robot_navigation_state') or '').upper()
+                                in SAFE_TERMINAL_NAVIGATION_STATES):
                         break
                     probe.pump(ws, 0.01)
                     time.sleep(0.1)
                 else:
                     raise RuntimeError(
                         'fresh backend state did not confirm MANUAL, stopped, '
-                        f'E-Stop-clear after restart: HTTP {state_code}, {post_restart_state}')
+                        'E-Stop-clear and a terminal navigation state after restart: '
+                        f'HTTP {state_code}, {post_restart_state}')
                 reapplied_manual = True
                 report['phases']['manual_restored_after_runtime_restart'] = {
                     'passed': True, 'mode': 'MANUAL', 'robot_id': robot,
+                    'command_arbiter_diagnostics': manual_diagnostics,
                     'reconnected_after_missing_ack': first_error is not None,
                     'first_attempt_error': first_error,
                 }
@@ -599,12 +776,106 @@ def main() -> int:
                     'robot_control_mode': post_restart_state.get('robot_control_mode'),
                     'robot_stopped': post_restart_state.get('robot_stopped'),
                     'estop_active': post_restart_state.get('estop_active'),
+                    'robot_navigation_state': post_restart_state.get('robot_navigation_state'),
                     'mechanical_settling': stopped_after_restart,
                 }
             time.sleep(0.5)
             status_code, load_state = request_json(
                 f'{base}/api/robots/{robot}/local/maps/load', 'POST',
                 {'map_id': record['id']}, timeout=30.0)
+        error_message = str(((load_state.get('error') or {}).get('message')
+                             or load_state.get('detail') or ''))
+        if status_code == 409 and 'command arbiter confirms MANUAL mode' in error_message:
+            # Do not bypass the API's fail-closed guard. Re-apply MANUAL in the
+            # newly supervised runtime, wait for the command arbiter's fresh
+            # clear-E-Stop diagnostic, prove the robot is stopped, then retry
+            # the same selected map exactly once.
+            runtime_deadline = time.monotonic() + 60.0
+
+            def navigation_runtime_reconnected():
+                try:
+                    transition = json.loads(
+                        supervisor_status.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    return False
+                connected_ids = ((probe.runtime_status or {}).get(
+                    'connected_robot_ids') or [])
+                return (str(transition.get('status') or '').upper() == 'READY'
+                        and str(transition.get('mode') or '').upper() == 'NAVIGATION'
+                        and robot in connected_ids)
+
+            if not probe.wait_until(navigation_runtime_reconnected, 60.0, ws):
+                raise RuntimeError(
+                    'map-load safety guard requested applied MANUAL, but the supervised '
+                    'Navigation runtime/bridge did not reconnect in 60 s')
+            arbiter_diag_count = len(probe.command_diagnostics)
+            mode_ok, mode_reason = set_mode(probe, ws, robot, 'MANUAL', timeout=15.0)
+            first_mode_error = mode_reason if not mode_ok else None
+            if (not mode_ok and mode_reason == 'no_new_ROBOT_CONTROL_STATUS_request_id'):
+                # The first mode request can land on the old/half-closed
+                # operator socket while the supervisor has already reported
+                # READY. Force a fresh operator subscription and a new
+                # RUNTIME_STATUS from this bridge generation, then retry the
+                # exact guarded MANUAL operation once.
+                reconnect_operator_ws('post_navigation_restart_before_manual')
+                if not probe.wait_until(
+                        lambda: probe.runtime_status is not None
+                        and robot in (probe.runtime_status.get('connected_robot_ids') or []),
+                        20.0, ws):
+                    raise RuntimeError(
+                        'map-load retry could not observe a fresh ROS bridge connection '
+                        f'after MANUAL request returned {first_mode_error}')
+                arbiter_diag_count = len(probe.command_diagnostics)
+                mode_ok, mode_reason = set_mode(
+                    probe, ws, robot, 'MANUAL', timeout=15.0)
+            if not mode_ok:
+                raise RuntimeError(
+                    f'map-load retry could not apply MANUAL: {mode_reason}; '
+                    f'first_attempt={first_mode_error}; '
+                    f'websocket_connected={getattr(ws, "connected", None)}; '
+                    f'operator_ws_closed={probe.operator_ws_closed}; '
+                    f'ws_errors={probe.ws_errors[-10:]}; '
+                    f'control_statuses={probe.control_statuses[-10:]}; '
+                    f'runtime_status={probe.runtime_status}')
+            manual_applied, manual_diagnostics = wait_command_arbiter_mode(
+                probe, ws, robot, 'MANUAL', after_count=arbiter_diag_count)
+            if not manual_applied:
+                raise RuntimeError(
+                    'map-load retry lacks a fresh applied MANUAL/E-STOP-clear '
+                    f'diagnostic: {manual_diagnostics}')
+            ws.send(json.dumps({'type': 'ROBOT_MANUAL', 'robot_id': robot,
+                                'action': 'STOP'}))
+            settling = probe.wait_mechanical_settling(
+                ws, timeout=30.0, wall_timeout=120.0)
+            if not settling.get('passed'):
+                raise RuntimeError(
+                    f'map-load retry stopped but robot did not settle: {settling.get("reason")}')
+            state_code, post_manual_state = request_json(local_url)
+            if (state_code != 200
+                    or post_manual_state.get('robot_control_mode') != 'MANUAL'
+                    or post_manual_state.get('robot_stopped') is not True
+                    or post_manual_state.get('estop_active') is not False
+                    or str(post_manual_state.get('robot_navigation_state') or '').upper()
+                        not in SAFE_TERMINAL_NAVIGATION_STATES):
+                raise RuntimeError(
+                    'map-load retry could not verify backend MANUAL/stopped/E-STOP-clear '
+                    'and terminal navigation state '
+                    f'state: HTTP {state_code}, {post_manual_state}')
+            report['phases']['manual_arbiter_recovered_after_load_guard'] = {
+                'passed': True, 'diagnostics': manual_diagnostics,
+                'backend_state': post_manual_state, 'mechanical_settling': settling,
+            }
+            status_code, load_state = request_json(
+                f'{base}/api/robots/{robot}/local/maps/load', 'POST',
+                {'map_id': record['id']}, timeout=30.0)
+            retry_deadline = time.monotonic() + 60.0
+            while (status_code == 202 and load_state.get('status') == 'TRANSITIONING'
+                   and time.monotonic() < retry_deadline):
+                probe.pump(ws, 0.02)
+                time.sleep(0.2)
+                status_code, load_state = request_json(
+                    f'{base}/api/robots/{robot}/local/maps/load', 'POST',
+                    {'map_id': record['id']}, timeout=30.0)
         if status_code != 200 or load_state.get('status') != 'LOADED':
             raise RuntimeError(f'backend did not confirm Nav2 map load: HTTP {status_code}, {load_state}')
         report['supervisor_transitions'] = supervisor_transitions
@@ -674,8 +945,10 @@ def main() -> int:
             and active_state.get('map_sync_status') == 'LOCAL_ONLY'
             and active_state.get('local_active_map_id') == record['id']
             and str(active_state.get('local_active_map_revision')) == str(record['revision']))
-        nav_ready = bool(((probe.runtime_status or {}).get('robot_capabilities') or {})
-                         .get(robot, {}).get('nav2_ready'))
+        nav_capabilities = (((probe.runtime_status or {}).get('robot_capabilities') or {})
+                            .get(robot, {}))
+        nav2_available = bool(nav_capabilities.get('nav2_available'))
+        nav_ready = bool(nav_capabilities.get('nav2_ready'))
         grid = probe.navigation_map
         grid_matches = bool(fresh_map and grid and int(grid.info.width) == int(record['width'])
             and int(grid.info.height) == int(record['height'])
@@ -684,10 +957,15 @@ def main() -> int:
                         if grid_matches else {'matches': False,
                                               'reason': 'active map metadata is not ready'})
         grid_matches = grid_matches and grid_content.get('matches') is True
-        if status_code != 200 or not active_identity or not nav_ready or not grid_matches:
-            raise RuntimeError('loaded map lacks independent active-state confirmation: '
-                f'active_identity={active_identity}, nav2_ready={nav_ready}, fresh_map={fresh_map}, '
-                f'grid_matches={grid_matches}, grid_content={grid_content}, state={active_state}')
+        map_server_state = map_server_lifecycle_state(probe, ws)
+        prelocalization_ready, prelocalization_evidence = prelocalization_map_ready(
+            active_identity=active_identity, fresh_map=fresh_map,
+            grid_matches=grid_matches, nav2_available=nav2_available,
+            map_server_state=map_server_state)
+        if status_code != 200 or not prelocalization_ready:
+            raise RuntimeError('loaded map lacks independent pre-localization confirmation: '
+                f'evidence={prelocalization_evidence}, nav2_ready={nav_ready}, '
+                f'grid_content={grid_content}, state={active_state}')
         report['active_ros_map'] = {
             'topic': '/navigation_map', 'fresh_message': fresh_map,
             'message_count_after_load': probe.navigation_map_sample_count - map_count_before_load,
@@ -697,21 +975,35 @@ def main() -> int:
             'active_map_id': active_state.get('active_map_id'),
             'active_map_revision': active_state.get('active_map_revision'),
             'map_source': active_state.get('map_source'), 'map_sync_status': active_state.get('map_sync_status'),
+            'nav2_available': nav2_available,
             'nav2_ready': nav_ready,
+            'prelocalization_confirmation': prelocalization_evidence,
             'content_validation': grid_content,
         }
 
-        tf_ready_after_reset = probe.wait_until(
-            lambda: (lambda sample: bool(sample and sample.get('fresh')
-                     and sample.get('tf_epoch_generation') == probe.tf_observer.epoch_generation))(
-                         probe.map_pose_sample()), 15.0, ws)
+        expected_tf_epoch = int(probe.tf_observer.clock_resets[-1]['epoch_generation'])
+        tf_reset_evidence = {'sample': None, 'freshness': None}
+
+        def odom_tf_ready_after_reset():
+            sample = post_reset_odom_tf_sample(probe)
+            freshness = odom_tf_freshness(
+                sample, expected_epoch=expected_tf_epoch,
+                current_epoch=probe.tf_observer.epoch_generation)
+            tf_reset_evidence.update({'sample': sample, 'freshness': freshness})
+            return freshness['passed']
+
+        tf_ready_after_reset = probe.wait_until(odom_tf_ready_after_reset, 15.0, ws)
         report['tf_after_clock_reset'] = {
             'passed': tf_ready_after_reset,
-            'sample': probe.map_pose_sample() if tf_ready_after_reset else None,
+            'sample': tf_reset_evidence['sample'],
+            'freshness': tf_reset_evidence['freshness'],
             'epoch_generation': probe.tf_observer.epoch_generation,
+            'map_to_odom_expected_before_initial_pose': False,
+            'pre_initial_pose_contract': 'fresh odom->base_footprint; AMCL map->odom follows Initial Pose',
         }
         if not tf_ready_after_reset:
-            raise RuntimeError('fresh map-frame TF was not available from the post-restart epoch')
+            raise RuntimeError('fresh odom->base_footprint TF was not available from the post-restart epoch: '
+                               f'{report["tf_after_clock_reset"]}')
 
         mode_ok, mode_reason = set_mode(probe, ws, robot, 'MANUAL')
         if not mode_ok:

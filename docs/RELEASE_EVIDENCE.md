@@ -1,6 +1,6 @@
 # Release hardening evidence — NO-GO
 
-Evidence captured on 2026-10-09 from the final uncommitted working tree on Ubuntu 22.04.5 LTS / ROS 2 Humble. This is a software test record, not a certification. No physical robot was connected or operated. Machine-readable details are in [`release-evidence.json`](release-evidence.json); temporary logs and reports remain under `/tmp/waretwin-final-acceptance.9M9UZU` and `/tmp/pytest-of-yahboom/pytest-70` on the test host.
+The first sections below preserve the historical 2026-10-09 test record. A newer, isolated follow-up against dirty source based on `b85add1eaaaf8e6c2efc210c30081b0d1aac0b1c` appears at the end and is authoritative for the V30E-independent save/load handoff. This is a software test record, not a certification. No physical robot was connected or operated. Machine-readable history and follow-up are in [`release-evidence.json`](release-evidence.json); temporary logs and reports remain under `/tmp/waretwin-final-acceptance.9M9UZU`, `/tmp/pytest-of-yahboom/pytest-70`, and `/tmp/swerve-release-acceptance-20261010T002100Z` on the test host.
 
 ## Build identity
 
@@ -53,3 +53,24 @@ The real Gazebo mapping workflow saved these isolated test artifacts (not promot
 ## Release decision
 
 **NO-GO — software release blockers remain.** Do not expose this build to an untrusted LAN or authorize physical-robot operation. Close the hosted CI gate, diagnose and stabilize map/ground-truth TF and final pose, complete uninterrupted Save → Load → Initial Pose → Navigation acceptance, validate a real gateway and DDS security boundary, and complete qualified hardware safety acceptance before production. Exact build/test commands and install/runtime procedures are in [`ROS_DEPLOYMENT.md`](../waretwin/ROS_DEPLOYMENT.md).
+
+## 2026-10-10 follow-up — V30E-independent localization
+
+The active baseline remained branch `robot-real-sim-v5-demo-visual`, HEAD `b85add1eaaaf8e6c2efc210c30081b0d1aac0b1c`. The build/test tree was dirty (25 tracked files modified at test time); two release-evidence documentation files were updated afterward, so the final tree has 27 tracked modified files. No commit or push was made. The isolated non-symlink build at `/tmp/swerve-release-acceptance-20261010T002100Z/install-v30e-independent-final-handoff-2` completed all three packages in 57.7 s. Package-prefix lookup, both installed launch files' `--show-args`, and the installed Web-package operational-artifact scan passed. The latest focused ROS acceptance suites passed 67 tests in 1.22 s; the isolated full Django suite passed 199 tests in 10.267 s; and the changed Web Local workflow component passed its targeted frontend suite (51 tests in 6.67 s).
+
+The verified localization owners and mode contracts are:
+
+| Mode | `map → odom` owner | Initial Pose behavior |
+|---|---|---|
+| MAPPING | SLAM Toolbox | No static-map Initial Pose service; SLAM owns scan-matched localization. |
+| UNIFIED | SLAM Toolbox | No second localizer; Nav2 consumes the registered map while SLAM publishes localization TF. |
+| NAVIGATION | Nav2 AMCL | Discover AMCL's `nav2_msgs/srv/SetInitialPose` endpoint and owner; use its verified `/initialpose` topic only if the service binding is unavailable. |
+| REAL_ROBOT (`use_sim:=false mode:=navigation`) | Nav2 AMCL | Same runtime-discovered AMCL interface; physical driver/hardware behavior was not tested. |
+
+`enable_v30e_sim` defaults to `false`; the legacy simulated V30E/SetPose path is opt-in and is not part of normal Web Local. The default static-map Navigation run reported `LOCALIZATION_INTERFACE_READY=PASS backend=AMCL map_to_odom_owner=amcl interface=/set_initial_pose api=service type=nav2_msgs/srv/SetInitialPose`. MAPPING/UNIFIED intentionally do not offer that static-map action because SLAM Toolbox is already the authoritative `map → odom` publisher.
+
+The real installed Gazebo test completed one full Mapping → Pause → Save → supervised Navigation switch → Load → Initial Pose → Nav2 goal sequence without a V30E node or measurements. Save wrote and validated YAML, PGM, SLAM `.data`, and a 39.7 MB `.posegraph`. The loaded Nav2 `/navigation_map` exactly matched all 416,208 cells from the selected PGM, including 285,667 unknown cells. The actual `/map_server/get_state` lifecycle response was `active` and selected-map ID/revision matched. AMCL accepted the post-load request on `/set_initial_pose`: fresh TF followed the request at simulation stamp 12.556 s (request 12.100 s), age 0.044 s, over three stable samples; requested-pose error was 0.00669 m / 0.000654 rad. One real post-load Nav2 goal then succeeded with map-TF error 0.04396 m / 0.000759 rad and independent Gazebo-projected error 0.04619 m / 0.00425 rad, within 0.05 m / 0.05 rad. The full machine report is `/tmp/swerve-release-acceptance-20261010T002100Z/tmp/full-stack-v30e-independent-final-handoff-2/test_installed_full_stack_reac0/runtime/save-load-navigation.json`.
+
+This does not turn the full-suite result into PASS. The encompassing installed full-stack pytest exited 1 after 311.02 s: the separate direct-navigation ground-truth translation was 0.08495 m and failed the 5 cm gate (Nav2 action status itself was `SUCCEEDED`); the Web-originated mission passed in this run (0.02936 m / 0.00238 rad); and a manual-right physical-motion check also failed. Only one saved-map post-load navigation mission ran, not the five required for repeatability. The latest hosted Actions run `38008005683` is FAILED: backend and frontend jobs succeeded, while `ros-packages` failed its non-symlink nested-package build step with exit code 2. Its detailed console log was unavailable in the public page. Therefore the localization handoff is verified, but the simulation release remains NO-GO and hosted CI is not green.
+
+No changes were made to the operational SQLite database or active map/session registry; all integration state was directed to the isolated `/tmp/swerve-release-acceptance-20261010T002100Z/tmp/...` runtime. The installed-package scan found no bundled database, secrets, or local maps. This does not remove the separate risk of operational-looking data remaining visible in the public Git tree/history.

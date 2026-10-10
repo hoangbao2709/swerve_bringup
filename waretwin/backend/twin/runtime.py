@@ -45,6 +45,11 @@ HEATMAP_EVERY = 30
 client_adapter: TypeAdapter[Any] = TypeAdapter(ClientMessage)
 MAPPING_CAPABLE_MODES = frozenset({'MAPPING', 'UNIFIED'})
 NAVIGATION_CAPABLE_MODES = frozenset({'NAVIGATION', 'UNIFIED'})
+BRIDGE_NAVIGATION_STATES = frozenset({
+    'IDLE', 'MANUAL', 'PENDING', 'PLANNING', 'NAVIGATING', 'ACTIVE', 'PAUSED',
+    'SUCCEEDED', 'COMPLETED', 'FAILED', 'ERROR', 'CANCELED', 'CANCELLED',
+    'REJECTED', 'EMERGENCY_STOPPED',
+})
 
 
 def _persist_events(run_id: str, events: list[dict[str, Any]]) -> None:
@@ -1491,6 +1496,26 @@ class TwinRuntime:
             self.ros_bridge_connected = bool(self.connected_robot_ids)
             self.bridge_status = str(data.get('bridge_state') or 'CONNECTED').upper()
             self.nav2_state = str(data.get('nav2_state') or 'CONNECTED')
+            bridge_navigation_state = str(data.get('nav2_state') or '').strip().upper()
+            if (self.bridge_status == 'CONNECTED'
+                    and bridge_navigation_state in BRIDGE_NAVIGATION_STATES):
+                robot = self.engine.state.get('robots', {}).get(robot_id)
+                if (robot is not None
+                        and robot.get('navigation_state') != bridge_navigation_state):
+                    # The authenticated, current bridge heartbeat is the
+                    # authoritative per-robot action state during a runtime
+                    # handoff. In particular, replace the previous runtime's
+                    # OFFLINE marker with the new bridge's measured IDLE/MANUAL
+                    # state even when localization has not yet produced a
+                    # map-frame ROBOT_STATE. Unknown values never clear an
+                    # active-goal safety state.
+                    robot['navigation_state'] = bridge_navigation_state
+                    if self.client_count:
+                        tick = self.engine.state['sim']['tick']
+                        await self.broadcast({
+                            'type': 'PATCH', 'base_tick': tick, 'tick': tick,
+                            'patch': {'robots': self._robot_patch()}, 'events': [],
+                        })
             previous_mode = self.robot_runtime_modes.get(robot_id)
             incoming_mode = str(data.get('runtime_state') or self.operation_mode).upper()
             mapping_session = str(data.get('mapping_session_id') or '')

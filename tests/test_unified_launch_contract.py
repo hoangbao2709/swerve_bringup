@@ -33,7 +33,7 @@ def test_unified_nav2_registers_full_published_map_on_distinct_topic():
     assert "map_source == 'STATIC_MAP'" in launch
     assert "'REGISTERED_CANONICAL'" in launch
     assert "'canonical_map_server'" in launch
-    assert "'map_server', 'controller_server'" in launch
+    assert "'map_server', *(['amcl'] if localization_backend == 'AMCL' else [])" in launch
     assert "'controller_server', 'planner_server'" in launch
 
     config = yaml.safe_load((ROOT / 'swerve_navigation/config/nav2_params.yaml').read_text(encoding='utf-8'))
@@ -42,6 +42,35 @@ def test_unified_nav2_registers_full_published_map_on_distinct_topic():
     assert static_layer['map_subscribe_transient_local'] is True
     assert static_layer['subscribe_to_updates'] is False
     assert config['planner_server']['ros__parameters']['GridBased']['allow_unknown'] is False
+
+
+def test_static_navigation_uses_map_server_local_amcl_not_required_v30e_simulation():
+    system = (ROOT / 'launch/system.launch.py').read_text(encoding='utf-8')
+    launch = (ROOT / 'swerve_navigation/launch/navigation.launch.py').read_text(encoding='utf-8')
+    config = yaml.safe_load((ROOT / 'swerve_navigation/config/nav2_params.yaml').read_text(encoding='utf-8'))
+    amcl = config['amcl']['ros__parameters']
+
+    assert "DeclareLaunchArgument('enable_v30e_sim', default_value='false'" in system
+    assert "'localization_backend': PythonExpression([" in system
+    assert "localization_backend = LaunchConfiguration('localization_backend')" in launch
+    assert "package='nav2_amcl', executable=nav2_executable('nav2_amcl', 'amcl')" in launch
+    assert "('map', '/navigation_map')" in launch
+    assert "'map_server', *(['amcl'] if localization_backend == 'AMCL' else [])" in launch
+    assert amcl['robot_model_type'] == 'nav2_amcl::OmniMotionModel'
+    assert amcl['global_frame_id'] == 'map'
+    assert amcl['odom_frame_id'] == 'odom'
+    assert amcl['base_frame_id'] == 'base_footprint'
+    assert amcl['scan_topic'] == '/scan'
+    assert amcl['tf_broadcast'] is True
+    assert amcl['set_initial_pose'] is False
+    assert amcl['transform_tolerance'] == 0.05
+
+    bridge = (ROOT / 'swerve_bridge/swerve_bridge/bridge_node.py').read_text(encoding='utf-8')
+    assert 'from rosidl_runtime_py.utilities import get_service' in bridge
+    assert "client = self.create_client(service_type, localization['interface'])" in bridge
+    assert 'def discover_localization_interface(self):' in bridge
+    assert 'geometry_msgs/msg/PoseWithCovarianceStamped_TOPIC' in bridge
+    assert "'/ekf_v30e/set_pose'" not in bridge
 
 
 def test_nav2_swerve_controller_preserves_transit_heading_and_terminal_yaw_safety():

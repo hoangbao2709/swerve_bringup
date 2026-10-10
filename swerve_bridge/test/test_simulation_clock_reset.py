@@ -145,6 +145,10 @@ def test_initial_pose_confirmation_requires_a_tf_sample_after_the_request():
         'request_stamp_s': 10.0,
         'deadline_monotonic': time.monotonic() + 10.0,
         'tf_epoch': 2,
+        'interface_type': 'robot_localization/srv/SetPose',
+        'localization_owner': 'test_localizer',
+        'interface': '/test_localizer/set_pose',
+        'initial_pose_services': [],
         'service_acknowledged': False,
         'confirmation_start_stamp_s': None,
         'last_confirmation_stamp_s': None,
@@ -212,6 +216,7 @@ def test_initial_pose_confirmation_rejects_a_transform_epoch_change():
         'request_stamp_s': 10.0,
         'deadline_monotonic': time.monotonic() + 10.0,
         'tf_epoch': 2,
+        'interface_type': 'robot_localization/srv/SetPose',
         'service_acknowledged': True,
     }
     bridge.active_map_identity = lambda: {
@@ -224,3 +229,233 @@ def test_initial_pose_confirmation_rejects_a_transform_epoch_change():
     bridge._send_local_control_result.assert_called_once()
     assert bridge._send_local_control_result.call_args.args[1] is False
     assert 'TF epoch changed' in bridge._send_local_control_result.call_args.kwargs['error']
+
+
+def test_amcl_initial_pose_requires_post_request_localization_pose_and_tf():
+    bridge = object.__new__(SwerveBridge)
+    bridge.tf_epoch = 1
+    bridge.pending_initial_pose = {
+        'data': {'request_id': 'pose'},
+        'pose': {'x': 1.0, 'y': 2.0, 'yaw': 0.1},
+        'active_map_id': 'saved-1', 'active_map_revision': 'rev-7',
+        'localization_owner': 'amcl', 'interface': '/amcl/set_initial_pose',
+        'interface_type': 'nav2_msgs/srv/SetInitialPose', 'service_acknowledged': True,
+        'request_stamp_s': 10.0,
+        'deadline_monotonic': time.monotonic() + 10.0,
+        'tf_epoch': 1, 'confirmation_start_stamp_s': None,
+        'last_confirmation_stamp_s': None, 'confirmation_sample_count': 0,
+    }
+    bridge.latest_amcl_pose = {
+        'stamp_s': 9.9, 'frame_id': 'map', 'x': 1.0, 'y': 2.0, 'yaw': 0.1,
+    }
+    bridge.active_map_identity = lambda: {
+        'active_map_id': 'saved-1', 'active_map_revision': 'rev-7'}
+    bridge.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=10_600_000_000))
+    bridge._send_local_control_result = Mock()
+    bridge._lookup_robot_pose = Mock(return_value=(
+        {'x': 1.0, 'y': 2.0, 'yaw': 0.1, 'source_timestamp_s': 10.1},
+        'base_footprint'))
+
+    SwerveBridge._check_initial_pose_confirmation(bridge)
+    assert bridge.pending_initial_pose is not None
+    bridge._send_local_control_result.assert_not_called()
+
+    for stamp in (10.2, 10.3, 10.5):
+        bridge.latest_amcl_pose = {
+            'stamp_s': stamp, 'frame_id': 'map', 'x': 1.0, 'y': 2.0, 'yaw': 0.1,
+        }
+        bridge._lookup_robot_pose.return_value = (
+            {'x': 1.0, 'y': 2.0, 'yaw': 0.1, 'source_timestamp_s': stamp},
+            'base_footprint')
+        SwerveBridge._check_initial_pose_confirmation(bridge)
+
+    assert bridge.pending_initial_pose is None
+    bridge._send_local_control_result.assert_called_once()
+    result = bridge._send_local_control_result.call_args.args[2]
+    assert result['localization_owner'] == 'amcl'
+    assert result['initial_pose_interface'] == '/amcl/set_initial_pose'
+    assert result['localization_update_stamp_s'] == 10.5
+    assert result['tf_amcl_position_delta_m'] == 0.0
+
+
+def test_amcl_initial_pose_topic_requires_post_request_localization_pose_and_tf():
+    bridge = object.__new__(SwerveBridge)
+    bridge.tf_epoch = 1
+    bridge.pending_initial_pose = {
+        'data': {'request_id': 'pose-topic'},
+        'pose': {'x': 1.0, 'y': 2.0, 'yaw': 0.1},
+        'active_map_id': 'saved-1', 'active_map_revision': 'rev-7',
+        'localization_owner': 'amcl', 'interface': '/initialpose',
+        'interface_type': 'geometry_msgs/msg/PoseWithCovarianceStamped_TOPIC',
+        'request_published': True, 'request_stamp_s': 10.0,
+        'deadline_monotonic': time.monotonic() + 10.0,
+        'tf_epoch': 1, 'confirmation_start_stamp_s': None,
+        'last_confirmation_stamp_s': None, 'confirmation_sample_count': 0,
+    }
+    bridge.latest_amcl_pose = {
+        'stamp_s': 9.9, 'frame_id': 'map', 'x': 1.0, 'y': 2.0, 'yaw': 0.1,
+    }
+    bridge.active_map_identity = lambda: {
+        'active_map_id': 'saved-1', 'active_map_revision': 'rev-7'}
+    bridge.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=10_600_000_000))
+    bridge._send_local_control_result = Mock()
+    bridge._lookup_robot_pose = Mock(return_value=(
+        {'x': 1.0, 'y': 2.0, 'yaw': 0.1, 'source_timestamp_s': 10.1},
+        'base_footprint'))
+
+    SwerveBridge._check_initial_pose_confirmation(bridge)
+    assert bridge.pending_initial_pose is not None
+    bridge._send_local_control_result.assert_not_called()
+
+    for stamp in (10.2, 10.3, 10.5):
+        bridge.latest_amcl_pose = {
+            'stamp_s': stamp, 'frame_id': 'map', 'x': 1.0, 'y': 2.0, 'yaw': 0.1,
+        }
+        bridge._lookup_robot_pose.return_value = (
+            {'x': 1.0, 'y': 2.0, 'yaw': 0.1, 'source_timestamp_s': stamp},
+            'base_footprint')
+        SwerveBridge._check_initial_pose_confirmation(bridge)
+
+    assert bridge.pending_initial_pose is None
+    bridge._send_local_control_result.assert_called_once()
+    result = bridge._send_local_control_result.call_args.args[2]
+    assert result['localization_owner'] == 'amcl'
+    assert result['initial_pose_interface'] == '/initialpose'
+    assert result['localization_update_stamp_s'] == 10.5
+    assert result['tf_amcl_position_delta_m'] == 0.0
+
+
+def test_localization_interface_discovers_amcl_and_set_pose_servers_without_selecting_odom_ekf():
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.initial_pose_backend = 'AMCL'
+    bridge.namespace = ''
+    bridge.get_node_names_and_namespaces = lambda: [
+        ('map_server', '/'), ('amcl', '/'), ('ekf_filter_node', '/'),
+    ]
+    bridge.get_publishers_info_by_topic = lambda topic: (
+        [SimpleNamespace(node_name='amcl', node_namespace='/',
+                         topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+        if topic == '/amcl_pose' else [
+            SimpleNamespace(node_name='amcl', node_namespace='/'),
+            SimpleNamespace(node_name='ekf_filter_node', node_namespace='/'),
+        ])
+    bridge.get_service_names_and_types_by_node = lambda node, _namespace: (
+        [('/set_pose', ['robot_localization/srv/SetPose'])]
+        if node == 'ekf_filter_node' else [])
+    bridge.get_subscriptions_info_by_topic = lambda _topic: [
+        SimpleNamespace(node_name='amcl', node_namespace='/',
+                        topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+    bridge.nav2_lifecycle_status = lambda: {'states': {'amcl': 'active'}}
+
+    result = SwerveBridge.discover_localization_interface(bridge)
+
+    assert result['ready']
+    assert result['owner'] == 'amcl'
+    assert result['interface'] == '/initialpose'
+    assert result['interface_type'] == 'geometry_msgs/msg/PoseWithCovarianceStamped_TOPIC'
+    assert result['initial_pose_api'] == 'topic'
+    assert result['initial_pose_services'] == [
+        {'name': '/set_pose', 'owner': 'ekf_filter_node',
+         'types': ['robot_localization/srv/SetPose']},
+    ]
+
+
+def test_amcl_set_initial_pose_service_is_used_only_with_local_python_type_support():
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.initial_pose_backend = 'AMCL'
+    bridge.namespace = ''
+    bridge.get_node_names_and_namespaces = lambda: [
+        ('map_server', '/'), ('amcl', '/'), ('ekf_filter_node', '/'),
+    ]
+    bridge.get_publishers_info_by_topic = lambda topic: (
+        [SimpleNamespace(node_name='amcl', node_namespace='/',
+                         topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+        if topic == '/amcl_pose' else [
+            SimpleNamespace(node_name='amcl', node_namespace='/'),
+            SimpleNamespace(node_name='ekf_filter_node', node_namespace='/'),
+        ])
+    bridge.get_service_names_and_types_by_node = lambda node, _namespace: (
+        [('/set_initial_pose', ['nav2_msgs/srv/SetInitialPose'])]
+        if node == 'amcl' else
+        [('/set_pose', ['robot_localization/srv/SetPose'])]
+        if node == 'ekf_filter_node' else [])
+    bridge.get_subscriptions_info_by_topic = lambda _topic: [
+        SimpleNamespace(node_name='amcl', node_namespace='/',
+                        topic_type='geometry_msgs/msg/PoseWithCovarianceStamped')]
+    bridge.nav2_lifecycle_status = lambda: {'states': {'amcl': 'active'}}
+
+    with patch.object(bridge_module, 'get_service',
+                      side_effect=AttributeError('generated Python class absent')):
+        result = SwerveBridge.discover_localization_interface(bridge)
+
+    assert result['ready']
+    assert result['owner'] == 'amcl'
+    assert result['interface'] == '/initialpose'
+    assert result['initial_pose_api'] == 'topic'
+    assert result['discovered_set_initial_pose_services'] == [{
+        'name': '/set_initial_pose', 'owner': 'amcl',
+        'types': ['nav2_msgs/srv/SetInitialPose'],
+    }]
+    assert result['service_type_resolution_error'].startswith('AttributeError:')
+
+
+def test_slam_mapping_modes_do_not_mistake_ekf_set_pose_for_map_initial_pose():
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'UNIFIED'
+    bridge.initial_pose_backend = 'AMCL'
+    bridge.initial_pose_service_node = ''
+    bridge.namespace = ''
+    bridge.get_node_names_and_namespaces = lambda: [
+        ('slam_toolbox', '/'), ('ekf_filter_node', '/'),
+    ]
+    bridge.get_publishers_info_by_topic = lambda _topic: [
+        SimpleNamespace(node_name='slam_toolbox', node_namespace='/'),
+        SimpleNamespace(node_name='ekf_filter_node', node_namespace='/'),
+    ]
+    bridge.get_service_names_and_types_by_node = lambda node, _namespace: (
+        [('/set_pose', ['robot_localization/srv/SetPose'])]
+        if node == 'ekf_filter_node' else [])
+    bridge.get_subscriptions_info_by_topic = lambda _topic: []
+
+    result = SwerveBridge.discover_localization_interface(bridge)
+
+    assert not result['ready']
+    assert result['owner'] == 'slam_toolbox'
+    assert result['interface'] is None
+    assert 'does not expose a static-map Initial Pose service' in result['reason']
+    assert result['initial_pose_services'] == [{
+        'name': '/set_pose', 'owner': 'ekf_filter_node',
+        'types': ['robot_localization/srv/SetPose'],
+    }]
+
+
+def test_legacy_set_pose_backend_uses_discovered_endpoint_and_tf_owner():
+    bridge = object.__new__(SwerveBridge)
+    bridge.runtime_state = 'NAVIGATION'
+    bridge.initial_pose_backend = 'SET_POSE'
+    bridge.initial_pose_service_node = 'map_filter'
+    bridge.namespace = ''
+    bridge.get_node_names_and_namespaces = lambda: [
+        ('map_filter', '/'), ('ekf_filter_node', '/'),
+    ]
+    bridge.get_publishers_info_by_topic = lambda _topic: [
+        SimpleNamespace(node_name='map_filter', node_namespace='/'),
+        SimpleNamespace(node_name='ekf_filter_node', node_namespace='/'),
+    ]
+    bridge.get_service_names_and_types_by_node = lambda node, _namespace: (
+        [('/map_filter/custom_pose_service', ['robot_localization/srv/SetPose'])]
+        if node == 'map_filter' else
+        [('/set_pose', ['robot_localization/srv/SetPose'])]
+        if node == 'ekf_filter_node' else [])
+    bridge.get_subscriptions_info_by_topic = lambda _topic: []
+
+    result = SwerveBridge.discover_localization_interface(bridge)
+
+    assert result['ready']
+    assert result['owner'] == 'map_filter'
+    assert result['interface'] == '/map_filter/custom_pose_service'
+    assert result['interface_type'] == 'robot_localization/srv/SetPose'

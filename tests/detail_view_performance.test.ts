@@ -1,0 +1,65 @@
+import { describe, it, expect, vi } from "vitest";
+import { EMPTY_ROBOT_DETAIL } from "../src/state/store";
+import { detailFramePatch, detailViewStatusPatch } from "../src/state/detailViewState";
+import { OccupancyRasterCache } from "../src/components/shared/maps/occupancyRaster";
+import type { RobotDetailMapSnapshot, RobotDetailLidar2D, RobotDetailLidar3D, RobotDetailViewStatus } from "../src/schema/twin_state";
+
+const map: RobotDetailMapSnapshot = { robot_id: "R01", frame_id: "map", active_map_id: "CANONICAL", active_map_revision: "21", width: 2, height: 2, resolution: .05, origin: { x: 0, y: 0, yaw: 0 }, data: [0, 0, 0, 100] };
+const ack: RobotDetailViewStatus = { robot_id: "R01", requested_view: "LIDAR_2D", applied_view: "LIDAR_2D", request_id: "new", view_epoch: 3, bridge_epoch: "bridge-a", state: "APPLIED" };
+const frame: RobotDetailLidar2D = { robot_id: "R01", frame_id: "base_footprint", source_frame_id: "laser", point_count: 1, points: [[1, 0]], path: [], goal: null, request_id: "new", view_epoch: 3, bridge_epoch: "bridge-a" };
+
+describe("display-only view transitions", () => {
+  it("ignores old ACKs and accepts only the requested robot/view/request", () => {
+    const current = { ...EMPTY_ROBOT_DETAIL, viewStatus: { ...ack, state: "REQUESTED" as const } };
+    expect(detailViewStatusPatch(current, { ...ack, request_id: "old" })).toEqual({});
+    expect(detailViewStatusPatch(current, { ...ack, robot_id: "R02" })).toEqual({});
+    expect(detailViewStatusPatch(current, ack).viewStatus?.state).toBe("APPLIED");
+  });
+  it("keeps cached frames, but old epochs/requests never make a view FRESH", () => {
+    const current = { ...EMPTY_ROBOT_DETAIL, lidar2dSensorFrame: frame, viewStatus: ack };
+    expect(detailFramePatch(current, "LIDAR_2D", { ...frame, view_epoch: 2 })).toEqual({});
+    expect(detailFramePatch(current, "LIDAR_2D", { ...frame, request_id: "old" }).viewStatus).toBeUndefined();
+    expect(detailFramePatch(current, "LIDAR_2D", { ...frame, bridge_epoch: "old-bridge" }).viewStatus).toBeUndefined();
+    expect(detailFramePatch(current, "LIDAR_2D", frame).viewStatus?.state).toBe("FRESH");
+    expect(detailFramePatch(current, "LIDAR_2D", { ...frame, robot_id: "R02" })).toEqual({});
+  });
+  it("does not call a frame fresh before the bridge applies the request", () => {
+    expect(detailFramePatch({ ...EMPTY_ROBOT_DETAIL, viewStatus: { ...ack, state: "REQUESTED" } }, "LIDAR_2D", frame).viewStatus).toBeUndefined();
+  });
+  it("does not call a stale-session SLAM grid fresh", () => {
+    const current = { ...EMPTY_ROBOT_DETAIL, mappingSessionId: "session-current",
+      slam2dMap: { ...map, map_source: "SLAM_TOOLBOX" as const, mapping_session_id: "session-old", active_map_id: "SLAM-session-old" },
+      viewStatus: { ...ack, requested_view: "LIDAR_2D" as const } };
+    expect(detailViewStatusPatch(current, ack).viewStatus?.state).toBe("APPLIED");
+  });
+  it("accepts only a bounded accumulated SLAM-frame cloud for the 3D map cache", () => {
+    const cloud: RobotDetailLidar3D = { robot_id: "R01", frame_id: "map", source_frame_id: "lidar_link",
+      point_count: 1, points: [[1, 2, 0]], bounds: null, epoch: "bridge-a", revision: 1,
+      accumulated: true, accumulation_mode: "SLAM_VISUALIZATION_VOXEL_MAP", trajectory: [], path: [], goal: null,
+      slam_pose: { x: 1, y: 2, yaw: 0, frame_id: "map", map_id: "SLAM-session-1", map_source: "SLAM_TOOLBOX",
+        map_revision: "r1", pose_source: "TF", mapping_session_id: "session-1", valid: true,
+        timestamp: new Date().toISOString() } };
+    expect(detailFramePatch(EMPTY_ROBOT_DETAIL, "LIDAR_3D", { ...cloud, accumulated: false })).toEqual({});
+    expect(detailFramePatch(EMPTY_ROBOT_DETAIL, "LIDAR_3D", cloud).slam3dAccumulatedCloud).toBe(cloud);
+    expect(detailFramePatch(EMPTY_ROBOT_DETAIL, "LIDAR_3D", { ...cloud, points: Array(20_001).fill([0, 0, 0]) })).toEqual({});
+  });
+});
+
+describe("bounded occupancy raster reuse", () => {
+  it("deduplicates identical payloads, including concurrent remounts", async () => {
+    const build = vi.fn(async () => ({ raster: true }));
+    const cache = new OccupancyRasterCache(build);
+    const a = cache.get(map), b = cache.get({ ...map });
+    expect(a).toBe(b); expect(await a).toBe(cache.peek(map)); expect(build).toHaveBeenCalledTimes(1);
+  });
+  it("invalidates content, revision, geometry, and robot identity", async () => {
+    const build = vi.fn(async () => ({})); const cache = new OccupancyRasterCache(build);
+    for (const changed of [map, { ...map, data: [1, 0, 0, 100] }, { ...map, active_map_revision: "22" }, { ...map, resolution: .1 }, { ...map, robot_id: "R02" }]) await cache.get(changed);
+    expect(build).toHaveBeenCalledTimes(5); expect(cache.size).toBe(4);
+  });
+  it("evicts old entries under repeated map updates", async () => {
+    const cache = new OccupancyRasterCache(async () => ({}));
+    for (let i = 0; i < 30; i++) await cache.get({ ...map, active_map_revision: String(i) });
+    expect(cache.size).toBe(4); expect(cache.cells).toBe(16);
+  });
+});

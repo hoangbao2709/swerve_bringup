@@ -1,9 +1,0 @@
-.venv/
-__pycache__/
-*.py[cod]
-.env
-*.sqlite3-shm
-*.sqlite3-wal
-layouts/draft.json
-layouts/active.json
-layouts/layout-v*.json

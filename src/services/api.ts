@@ -1,0 +1,341 @@
+import { runtimeApiFetch } from "./runtimeAdapter";
+import type { WifiSecurity } from "./settingsPreview";
+
+async function responseError(response: Response): Promise<string> {
+  try {
+    const body = await response.json() as {
+      detail?: string;
+      error?: string | { message?: string; code?: string; details?: { code?: string } };
+      code?: string;
+    };
+    const message = body.detail || (typeof body.error === "string" ? body.error : body.error?.message);
+    const code = body.code || (typeof body.error === "object" ? body.error.details?.code || body.error.code : undefined);
+    return [code, message || response.statusText || `HTTP ${response.status}`].filter(Boolean).join(": ");
+  } catch {
+    return response.statusText || `HTTP ${response.status}`;
+  }
+}
+
+export async function getLocalIdentity() {
+  const response = await apiFetch("/api/local/identity", { signal: AbortSignal.timeout(4000) });
+  if (!response.ok) throw new Error(await responseError(response));
+  const identity = await response.json() as { deployment_mode: string; robot_id: string; configured: boolean; bridge_online: boolean };
+  if (identity.deployment_mode !== "SINGLE_LOCAL_ROBOT" || identity.configured !== true
+      || typeof identity.robot_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(identity.robot_id)) {
+    throw new Error("LOCAL_ROBOT_ID_UNCONFIGURED");
+  }
+  return identity;
+}
+
+export type SystemStatus = {
+  status?: string;
+  ok?: boolean;
+  backend_status?: string;
+  backend_ready?: boolean;
+  system_status?: string;
+  system_ready?: boolean;
+  database?: boolean;
+  timestamp?: string | null;
+  version?: string | null;
+  mode?: string | null;
+  runtime_mode?: string | null;
+  system?: {
+    cpu_load_1m?: number | null;
+    cpu_count?: number | null;
+    memory?: { total_bytes?: number | null; used_bytes?: number | null; used_percent?: number | null };
+    disk?: { total_bytes?: number | null; free_bytes?: number | null; used_bytes?: number | null; used_percent?: number | null };
+    uptime_s?: number | null;
+  };
+  runtime?: {
+    bridge_state?: string | null;
+    ros_connected?: boolean;
+    online_robot_ids?: string[];
+    nav2_state?: string | null;
+    last_telemetry_at?: string | null;
+  };
+  robots?: Record<string, { status?: string | null; fsm?: string | null; last_telemetry_at?: string | null }>;
+};
+
+export async function getSystemStatus(signal?: AbortSignal): Promise<SystemStatus> {
+  const response = await apiFetch("/api/system/status/", signal ? { signal } : {});
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<SystemStatus>;
+}
+
+export const emergencyStop = async (robotId: string) => {
+  const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/emergency-stop`, { method: "POST" });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json();
+};
+export type ClearEmergencyStopResult = {
+  ok: true;
+  code: "CLEAR_ESTOP_APPLIED";
+  robot_id: string;
+  emergency_stop_active: false;
+  pre_stop_navigation_terminal: true;
+  message?: string;
+};
+export const clearEmergencyStop = async (robotId: string): Promise<ClearEmergencyStopResult> => {
+  const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/clear-emergency-stop`, { method: "POST" });
+  const body = await response.json().catch(() => ({})) as Partial<ClearEmergencyStopResult> & { code?: string; error?: string };
+  if (!response.ok) throw new Error(`${body.code ?? "CLEAR_ESTOP_REJECTED"}: ${body.error ?? `HTTP ${response.status}`}`);
+  if (body.ok !== true || body.code !== "CLEAR_ESTOP_APPLIED" || body.emergency_stop_active !== false
+      || body.pre_stop_navigation_terminal !== true) {
+    throw new Error("CLEAR_ESTOP_UNCONFIRMED: backend did not confirm that the E-STOP latch was cleared");
+  }
+  return body as ClearEmergencyStopResult;
+};
+
+export type LocalRobotMap = {
+  id: string;
+  name: string;
+  robot_id: string;
+  created_at: string;
+  resolution: number;
+  origin: number[];
+  revision: string;
+  frame_id: "map";
+  width?: number;
+  height?: number;
+  image_sha256?: string;
+  map_id?: string;
+  map_kind?: "SAVED_LOCAL_MAP" | string;
+  canonical_map_promoted?: boolean;
+  known_cells?: number | null;
+  unknown_cells?: number | null;
+  free_cells?: number | null;
+  occupied_cells?: number | null;
+  explored_area_m2?: number | null;
+  slam_session_state?: { status: string; engine?: string; artifact_id?: string | null };
+  navigation_artifacts?: { yaml: boolean; image: boolean; image_format?: string };
+};
+
+export type LocalRuntimeModeStatus = {
+  robot_id: string;
+  request_id?: string;
+  mode: string | null;
+  status: string;
+  message?: string | null;
+};
+
+export type LocalRuntimeModeResponse = {
+  robot_id: string;
+  current_mode: string;
+  transition: LocalRuntimeModeStatus;
+  pending_local_map_id?: string | null;
+};
+
+export type LocalMapLoadResult = {
+  ok: boolean;
+  status?: "TRANSITIONING" | "LOADED" | "FAILED" | string;
+  active_map?: LocalRobotMap;
+  active_map_id?: string;
+  active_map_revision?: string;
+  local_active_map_id?: string;
+  local_active_map_revision?: string;
+  canonical_map_revision?: string | number | null;
+  map_source?: "LOCAL_MAP" | string;
+  map_sync_status?: string;
+  request_id?: string | null;
+  transition?: LocalRuntimeModeStatus;
+  phase?: string;
+  mapping_state?: string;
+  message: string;
+};
+
+export type LocalSlamResumeResult = {
+  ok: boolean;
+  status?: "TRANSITIONING" | "RESUMED" | string;
+  map?: LocalRobotMap;
+  map_id?: string;
+  request_id?: string | null;
+  mapping_state?: string;
+  transition?: LocalRuntimeModeStatus;
+  restore_evidence?: {
+    passed?: boolean;
+    saved_dimensions?: number[];
+    live_dimensions?: number[];
+    saved_known_cells?: number;
+    live_known_cells?: number;
+    saved_coverage_ratio?: number;
+    known_overlap_ratio?: number;
+    cell_class_agreement_ratio?: number;
+    saved_image_sha256?: string;
+    live_grid_sha256?: string;
+    reason?: string;
+  } | null;
+  message: string;
+};
+
+export type Vda5050Configuration = {
+  robot_id: string;
+  enabled: boolean;
+  mqtt_host: string;
+  mqtt_port: number;
+  mqtt_username: string;
+  password_configured: boolean;
+  tls_enabled: boolean;
+  topic_prefix: string;
+  interface_name: string;
+  manufacturer: string;
+  serial_number: string;
+  protocol_version: "2.0.0" | "2.1.0" | "3.0.0";
+  mqtt_protocol_version: "3.1.1" | "5.0";
+  allow_task: boolean;
+  allow_instant_actions: boolean;
+  instant_actions_supported: boolean;
+  instant_actions_status: string;
+  auto_reconnect: boolean;
+  reconnect_interval: number;
+  connection_timeout: number;
+  keepalive: number;
+  client_id: string;
+  connection_status: string;
+  last_error: string | null;
+  ignored_orders: number;
+  updated_at: string | null;
+};
+
+async function localRobotApi<T>(robotId: string, path: string, init: RequestInit = {}): Promise<T> {
+  const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/local/${path}`, init);
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<T>;
+}
+
+export const getLocalRobotMaps = (robotId: string) =>
+  localRobotApi<{ robot_id: string; maps: LocalRobotMap[]; runtime_mode: string; mapping_state: string; mapping_duration_s: number; robot_control_mode: string; robot_stopped: boolean; robot_navigation_state?: string; estop_active?: boolean | null; active_local_map_id: string | null; local_active_map_id: string | null; local_active_map_revision: string | null; active_map_id: string | null; active_map_revision: string | null; canonical_map_revision: string | number | null; map_sync_status: string | null }>(robotId, "maps");
+
+export const getLocalRuntimeMode = (robotId: string) =>
+  localRobotApi<LocalRuntimeModeResponse>(robotId, "runtime-mode");
+
+export const requestLocalRuntimeMode = (robotId: string, mode: "MAPPING" | "NAVIGATION") =>
+  localRobotApi<{ ok: boolean; current_mode: string; requested_mode: string; request_id: string; status: string; message: string }>(robotId, "runtime-mode", { method: "POST", body: JSON.stringify({ mode }) });
+
+export const setMappingState = (robotId: string, action: "start" | "stop") =>
+  localRobotApi<{ ok: boolean; mapping_state: string }>(robotId, `mapping/${action}`, { method: "POST" });
+
+export const saveLocalRobotMap = (robotId: string, name: string) =>
+  localRobotApi<{ ok: boolean; map: LocalRobotMap }>(robotId, "maps/save", { method: "POST", body: JSON.stringify({ name }) });
+
+export const loadLocalRobotMap = (robotId: string, map_id: string) =>
+  localRobotApi<LocalMapLoadResult>(robotId, "maps/load", { method: "POST", body: JSON.stringify({ map_id }) });
+
+export const resumeLocalRobotSlamSession = (robotId: string, map_id: string) =>
+  localRobotApi<LocalSlamResumeResult>(robotId, "maps/resume-session", { method: "POST", body: JSON.stringify({ map_id }) });
+
+export type LocalInitialPoseRequest = {
+  x: number;
+  y: number;
+  yaw: number;
+  frame_id: "map";
+  active_map_id: string;
+  active_map_revision: string;
+};
+
+export type LocalInitialPoseResult = {
+  ok: boolean;
+  robot_id: string;
+  frame_id: "map";
+  pose: Pick<LocalInitialPoseRequest, "x" | "y" | "yaw">;
+  active_map_id: string;
+  active_map_revision: string;
+  localization_owner: string;
+  initial_pose_interface: string;
+  request_stamp_s: number;
+  tf_stamp_s: number;
+  tf_age_s: number;
+  position_error_m: number;
+  yaw_error_rad: number;
+  position_tolerance_m: number;
+  yaw_tolerance_rad: number;
+  tf_confirmation_duration_sim_s: number;
+  tf_confirmation_samples: number;
+};
+
+/** Submit only against the exact map identity shown in the pose confirmation. */
+export const initializeLocalRobotPose = (robotId: string, pose: LocalInitialPoseRequest) =>
+  localRobotApi<LocalInitialPoseResult>(robotId, "initial-pose", { method: "POST", body: JSON.stringify(pose) });
+
+export const getVda5050Configuration = (robotId: string) =>
+  localRobotApi<Vda5050Configuration>(robotId, "vda5050");
+
+export const applyVda5050Configuration = (robotId: string, config: Partial<Vda5050Configuration> & { mqtt_password?: string }) =>
+  localRobotApi<{ ok: boolean; applied: boolean; configuration: Vda5050Configuration }>(robotId, "vda5050", { method: "PUT", body: JSON.stringify(config) });
+
+export const testVda5050Connection = async (robotId: string, config: Partial<Vda5050Configuration> & { mqtt_password?: string }) => {
+  const response = await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/local/vda5050/test`, {
+    method: "POST", body: JSON.stringify(config),
+  });
+  const result = await response.json() as { ok: boolean; latency_ms?: number; broker?: string; error_code?: string | null; message?: string | null };
+  if (!response.ok && result.ok !== false) throw new Error(await responseError(response));
+  return result;
+};
+
+export const apiFetch = runtimeApiFetch;
+
+export type HostWifiStatus = {
+  available: boolean;
+  provider: "NetworkManager" | string;
+  device_available: boolean;
+  enabled: boolean;
+  connected_ssid: string | null;
+  saved_ssids: string[];
+};
+
+export type HostWifiNetwork = {
+  ssid: string;
+  security: WifiSecurity | "Unsupported";
+  signal_percent: number;
+};
+
+export type HostNtpStatus = {
+  available: boolean;
+  provider: string;
+  server_configurable: boolean;
+  timezone: string;
+  enabled: boolean;
+  synchronized: boolean;
+  primary_server: string;
+  secondary_server: string;
+  system_time: string;
+  request_accepted?: boolean;
+};
+
+export type HostVolumeStatus = {
+  available: boolean;
+  provider: "pipewire" | "alsa" | string;
+  level: number;
+  muted: boolean;
+};
+
+async function systemSettingsApi<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await apiFetch(`/api/system/settings/${path}`, init);
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<T>;
+}
+
+const settingsJson = (method: "POST" | "PUT", body: unknown): RequestInit => ({
+  method, body: JSON.stringify(body),
+});
+
+export const getHostWifiSettings = () => systemSettingsApi<HostWifiStatus>("wifi");
+export const scanHostWifiNetworks = () => systemSettingsApi<{ networks: HostWifiNetwork[] }>("wifi/scan", { method: "POST" });
+export const setHostWifiRadio = (enabled: boolean) =>
+  systemSettingsApi<HostWifiStatus>("wifi/radio", settingsJson("POST", { enabled }));
+export const connectHostWifi = (body: { ssid: string; security: WifiSecurity; password: string }) =>
+  systemSettingsApi<HostWifiStatus>("wifi/connect", settingsJson("POST", body));
+export const disconnectHostWifi = () => systemSettingsApi<HostWifiStatus>("wifi/disconnect", { method: "POST" });
+export const forgetHostWifi = (ssid: string) =>
+  systemSettingsApi<HostWifiStatus>("wifi/forget", settingsJson("POST", { ssid }));
+
+export const getHostNtpSettings = () => systemSettingsApi<HostNtpStatus>("ntp");
+export const updateHostNtpSettings = (settings: {
+  enabled: boolean; timezone: string; primary_server: string; secondary_server: string;
+}) => systemSettingsApi<HostNtpStatus>("ntp", settingsJson("PUT", settings));
+export const requestHostNtpSync = () =>
+  systemSettingsApi<HostNtpStatus>("ntp/synchronize", { method: "POST" });
+
+export const getHostVolumeSettings = () => systemSettingsApi<HostVolumeStatus>("volume");
+export const updateHostVolumeSettings = (settings: { level: number; muted: boolean }) =>
+  systemSettingsApi<HostVolumeStatus>("volume", settingsJson("PUT", settings));
+export const testHostVolume = () => systemSettingsApi<{ ok: boolean; message: string }>("volume/test", { method: "POST" });
